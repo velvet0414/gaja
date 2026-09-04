@@ -9701,6 +9701,13 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         state.pop("teleport_start_pos", None) 
                         state["hp_danger_cd"] = curr_time + 3.0 
                         
+                        # 👇👇👇 [핵심 수술 3: 안전장치] 텔레포트 성공 시에도 무조건 꼬리표 강제 포맷! 👇👇👇
+                        state["is_attacking"] = False
+                        state["arrow_is_firing"] = False
+                        state["has_fired_arrow"] = False
+                        state["is_pulling"] = False
+                        # 👆👆👆 =========================================================================
+                        
                         # 🚀 텔포 직후 맵이 로딩될 2.0초간 무적 시간을 줘서 발작 방지!
                         state["cooldown"] = curr_time + 1.0 
                         state["astar_fail_count"] = 0
@@ -11652,7 +11659,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         for px, py in portal_map_pts:
                             # 🚀 [오류 수정] px, py는 '맵 좌표(Map Pixels)'입니다! 화면 기준 30픽셀은 맵 기준 3.0픽셀입니다!
                             # 기존에 30.0으로 두면 화면상 300픽셀 반경을 무시해버리는 버그가 있었습니다.
-                            if math.hypot(mob_map_x - px, mob_map_y - py) <= 30.0:
+                            if math.hypot(mob_map_x - px, mob_map_y - py) <= 15.0:
                                 near_portal_mob = True
                                 break
                                 
@@ -16538,6 +16545,14 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             if state.get("sweep_active", False):
                                 pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
                                 
+                            # 👇👇👇 [핵심 수술 1: 무한 텔레포트 멍때림 방어막!] 👇👇👇
+                            # 엠탐을 위해 대피 텔포를 타기 전에, 뇌에 남은 전투 잔상을 완벽히 지웁니다!
+                            state["is_attacking"] = False
+                            state["arrow_is_firing"] = False
+                            state["has_fired_arrow"] = False
+                            state["is_pulling"] = False
+                            # 👆👆👆 ========================================== 👆👆👆
+                                
                             if "event" in settings.get("dungeon_name", ""):
                                 state["dungeon_global_path"] = []
                                 state["target_fsm"] = "TOWN_MAINT_NORMAL_RETURN"
@@ -16566,18 +16581,17 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     active_combat_fsms_local = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_LOCKED", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD", "TARGET_AIMING", "WAIT_FOR_STOP"]
                     is_currently_fighting = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or str(state.get("target_fsm", "")) in active_combat_fsms_local
                     
-                    # 👇👇👇 [수정: 파티 모드에서는 엠탐 중 다굴을 맞아도 텔레포트(도망) 치지 않도록 차단!] 👇👇👇
+                    # 👇👇👇 [수정: 파티 모드에서는 엠탐 중 다굴을 맞아도 텔레포트(도망) 치지 않도록 완벽 차단!] 👇👇👇
                     is_party_hunt_now = settings.get("use_party_hunt", False)
                     if is_party_hunt_now:
+                        # 👑 파티 모드일 때는 몹이 몰리거나 마나가 고갈된 채로 맞아도 절대 도망(텔레포트)가지 않습니다!
                         is_mptam_crowded = False
+                        is_mptam_mp_danger = False
                     else:
+                        # 👑 솔플일 때만 4마리 이상 몰리거나 마나 없이 맞을 때 도망갑니다.
                         is_mptam_crowded = (mobs and len(mobs) >= 4 and curr_time > state.get("mptam_crowded_cd", 0))
-                        
-                    is_mptam_mp_danger = (is_currently_fighting and is_mp_empty_3sec and curr_time > state.get("mptam_low_mp_tele_cd", 0))
+                        is_mptam_mp_danger = (is_currently_fighting and is_mp_empty_3sec and curr_time > state.get("mptam_low_mp_tele_cd", 0))
                     # 👆👆👆 ============================================================== 👆👆👆
-                    
-                    is_mptam_crowded = (mobs and len(mobs) >= 4 and curr_time > state.get("mptam_crowded_cd", 0))
-                    is_mptam_mp_danger = (is_currently_fighting and is_mp_empty_3sec and curr_time > state.get("mptam_low_mp_tele_cd", 0))
 
                     if is_mptam_crowded or is_mptam_mp_danger:
                         reason_str = "몹 4마리 이상 다굴" if is_mptam_crowded else f"전투 중 MP 6% 이하(3초 지속) 고갈"
@@ -16588,6 +16602,13 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         if state.get("body_held", False):
                             if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0)
                             state["body_held"] = False
+                            
+                        # 👇👇👇 [핵심 수술 2: 엠탐 중 대피 시에도 전투 꼬리표 완벽 세탁!] 👇👇👇
+                        state["is_attacking"] = False
+                        state["arrow_is_firing"] = False
+                        state["has_fired_arrow"] = False
+                        state["is_pulling"] = False
+                        # 👆👆👆 ======================================================== 👆👆👆
                             
                         if is_mp_empty_3sec or "event" in settings.get("dungeon_name", ""):
                             state["dungeon_global_path"] = []
@@ -17231,19 +17252,20 @@ def sync_gui_vars():
 
             st = ai_states.get(k, {})  
             
+            # 👇👇👇 여기서부터 current_settings[k] 딕셔너리 전체를 덮어쓰기 하세요! 👇👇👇
             current_settings[k] = {
                 "com_port": gui_vars[k]["com_port"].get().strip(),
-                "pico_hwid": st.get("pico_hwid", saved_settings.get(k, {}).get("pico_hwid", "")), 
+                "pico_hwid": st.get("pico_hwid", saved_settings.get(k, {}).get("pico_hwid", "")),
                 "role": gui_vars[k]["role"].get(),
                 
-                # 👇👇👇 [파티 탭 변수 AI 뇌로 전송] 👇👇👇
+                # 🚀 [파티 탭 공통 변수]
                 "use_party_hunt": is_party,
                 "is_party_inviter": gui_vars[k]["is_party_inviter"].get(),
                 "party_group": gui_vars[k]["party_group"].get(),
                 "party_dungeon_name": gui_vars[k]["party_dungeon_name"].get(),
                 "dungeon_name": gui_vars[k]["dungeon_name"].get(),
                 
-                # 🚀 파티 스위치에 따라 결정된 최종 값을 AI 뇌로 전송 
+                # 👑 [파티 스위치 우선순위 적용] 파티 모드면 파티값을, 아니면 메인값을 적용!
                 "heal_use": final_heal_use,
                 "heal_percent": final_heal_pct,
                 "heal_mp_percent": final_heal_mp_pct,
@@ -17261,32 +17283,14 @@ def sync_gui_vars():
                 "use_mptam": final_use_mptam,
                 "mptam_start_pct": final_mptam_start_pct,
                 "mptam_stop_pct": final_mptam_stop_pct,
-                "com_port": gui_vars[k]["com_port"].get().strip(),
-                "pico_hwid": st.get("pico_hwid", saved_settings.get(k, {}).get("pico_hwid", "")), # ✅ 이제 에러 없이 통과!
-                "role": gui_vars[k]["role"].get(),
                 
-                # 👇👇👇 [파티 탭 변수 AI 뇌로 전송] 👇👇👇
-                "use_party_hunt": gui_vars[k]["use_party_hunt"].get(),
-                "is_party_inviter": gui_vars[k]["is_party_inviter"].get(),
-                "party_group": gui_vars[k]["party_group"].get(),
-                "party_dungeon_name": gui_vars[k]["party_dungeon_name"].get(),
-                "dungeon_name": gui_vars[k]["dungeon_name"].get(),
-                "heal_use": gui_vars[k]["heal_use"].get(),
-                "heal_percent": hp_val,
-                "heal_mp_percent": heal_mp_val,
-                "potion_use": gui_vars[k]["pot_use"].get(),
-                "potion_percent": pot_val,
-                "poison_type": gui_vars[k]["poison_type"].get(),
-                "poison_delay": poison_delay_val,
+                # 🚀 [단일 적용 옵션들] (메인/보조 탭에만 있는 고유 설정들)
                 "buff_set": gui_vars[k]["buff_set"].get(),
                 "use_dec_weight": gui_vars[k]["use_dec_weight"].get(),
                 "use_trans": gui_vars[k]["use_trans"].get(),
                 "use_body": gui_vars[k]["use_body"].get(),
-                "body_percent": body_start_val,        # 🚀 오타 방어 적용 완료
-                "body_stop_percent": body_stop_val,    # 🚀 오타 방어 적용 완료
-                "use_mptam": gui_vars[k]["use_mptam"].get(),
-                "mptam_start_pct": mptam_start_val,
-                "mptam_stop_pct": mptam_stop_val,
+                "body_percent": body_start_val,        
+                "body_stop_percent": body_stop_val,    
                 "use_extra_f10": gui_vars[k]["use_extra_f10"].get(),
                 "extra_f10_dur": gui_vars[k]["extra_f10_dur"].get(),
                 "use_blue_pot": gui_vars[k]["use_blue_pot"].get(), 
@@ -17294,23 +17298,13 @@ def sync_gui_vars():
                 "blue_cd_min": blue_cd_val,
                 "tele_hunt_use": gui_vars[k]["tele_hunt_use"].get(),
                 "tele_hunt_time": tele_sec_val,
-                "hp_20_action": gui_vars[k]["hp_20_action"].get(),
-                "hp_danger_pct": hp_danger_val,        
-                "abs_return_use": gui_vars[k]["abs_return_use"].get(), # 🚀 뇌(AI)로 전송
-                "abs_return_pct": abs_return_pct_val,                  # 🚀 뇌(AI)로 전송
-                "pk_drop_pct": pk_drop_val,
-                "max_combat_time": max_combat_val,
-                "return_cond": gui_vars[k]["return_cond"].get(),
-                # (기존 코드)
-                "move_sens": move_sens_val,            # 🚀 [누락된 부분 추가 2] 추출한 숫자를 AI 뇌로 실시간 전송!
-                "hunt_first": gui_vars[k]["hunt_first"].get(), # 🚀 사냥 우선 상태 실시간 전송!
                 
-                # 👇👇👇 여기에 체인킬 동기화 추가! 👇👇👇
-                "chain_kill": gui_vars[k]["chain_kill"].get(), # 🚀 [신규] 체인킬 상태 실시간 전송!
-                "haste_match_rate": haste_match_val,           # 🚀 [신규] 헤이 매칭률 실시간 전송!
-                
-                # 👇 본체(뇌) 변수명과 일치되도록 딕셔너리에 추가!
+                "move_sens": move_sens_val,            
+                "hunt_first": gui_vars[k]["hunt_first"].get(), 
+                "chain_kill": gui_vars[k]["chain_kill"].get(), 
+                "haste_match_rate": haste_match_val,           
                 "motion_sensitivity": motion_sens_val,
+                
                 "gangbang_count_normal": gb_norm_val,
                 "gangbang_count_dungeon": gb_dng_val,
                 "use_gb_detect": gui_vars[k]["use_gb_detect"].get(),
@@ -17321,13 +17315,12 @@ def sync_gui_vars():
                 "buy_count": buy_count_val,
                 "sell_item": gui_vars[k]["sell_item"].get(),
                 
-                # 👇👇👇 [2단계 신규 추가] AI 뇌(통제실)로 창고 인출 수량 실시간 전송 👇👇👇
                 "pick_arrow": pick_arrow_val,
                 "pick_teleport": pick_tele_val,
                 "pick_ent": pick_ent_val,
                 "use_cc_buff": gui_vars[k]["use_cc_buff"].get()
-                # 👆👆👆 ==================================================== 👆👆👆
             }
+            # 👆👆👆 덮어쓰기 끝! 👆👆👆
             
             if k in ai_states and k in btn_dict:
                 fatigue = ai_states[k].get("fatigue_mult", 1.0)
