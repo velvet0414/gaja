@@ -4756,9 +4756,9 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 dng_name = settings.get("dungeon_name", "")
                                 is_sudeon_bondon = ("수던" in dng_name or "본던" in dng_name)
 
-                                # 👇👇👇 [수정 1] 파티 모드일 때는 맹인 모드(포탈 돌파) 진입 차단! 👇👇👇
-                                if is_sudeon_bondon and not settings.get("use_party_hunt", False):
-                                    # 🚀 [형님 기획 1] 포탈 반경 10픽셀 이내면 YOLO 눈을 강제로 감김! (기존 6.0 -> 15.0 상향)
+                                # 👇👇👇 [수술 완료] 파티 모드일 때도 맹인 모드(포탈 돌파) 진입 허용! 👇👇👇
+                                if is_sudeon_bondon: # 🚀 파티 모드 차단 조건(not use_party_hunt) 완전 삭제!
+                                    # 🚀 [형님 기획 1] 포탈 반경 15픽셀 이내면 YOLO 눈을 강제로 감김! 
                                     if min_portal_dist <= 15.0:
                                         if not state.get("portal_blind_mode", False):
                                             dprint(key, "🚨 [포탈 하차 감지] P노드 15px 이내 진입! 몹을 무시하고(눈 감기) 목적지를 향해 이탈합니다.")
@@ -8020,73 +8020,103 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         if key in ai_states: ai_states[key]["debug_door_pos"] = None
                                         
                                         if door_found_and_moving:
-                                            # 👇👇👇 [수술 완료: 에러 수정, 뇌피셜 디싱크 파괴 및 캐릭터 발밑 6시 정밀 타격!] 👇👇👇
-                                            dprint(key, "🏃‍♂️ [수던 진입] 0.2초 대기 후 캐릭터 6시 방향(발밑)으로 마우스를 던지고 1.5초간 돌격(무지성 클릭)합니다!")
+                                            # 👇👇👇 [형님 기획: 수던 입구 전용 스마트 탈출(6->3->7->5시) + 캐릭터 발밑 정밀 타격] 👇👇👇
+                                            dprint(key, "🏃‍♂️ [수던 진입] 0.2초 대기 후 캐릭터 발밑(6시) 돌격! 막히면 3시->7시->5시 순으로 뚫어냅니다!")
                                             
-                                            # 1. 🔒 메인 AI(버프, 사냥 등)가 절대 껴들지 못하게 특수 무적 상태로 잠금!
+                                            # 메인 AI 무적 상태 락다운
                                             ai_states[key]["target_fsm"] = "TOWN_MAINT_SUDUN_RUSH_LOCKED"
                                             
                                             wait_with_heal(0.2)
                                             
-                                            # 2. 에러 났던 화면 크기 변수(h_s) 안전하게 추출
-                                            scr_now = latest_frames.get(key)
-                                            h_s = scr_now.shape[0] if scr_now is not None else 600
+                                            # 수던 전용 탈출 시퀀스 (6시 -> 3시 -> 7시 -> 5시)
+                                            escape_angles = [92.0, 359.0, 150.0, 30.0]
+                                            escape_names = ["6시", "3시", "7시", "5시"]
                                             
-                                            # 3. 🎯 [디싱크 파괴] 파이썬 뇌가 착각 중인 마우스 위치를 실제 화면 스캔으로 완벽 동기화!
-                                            cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
-                                            if scr_now is not None:
-                                                real_c = find_cursor_pos(scr_now, last_pos=(cur_x, cur_y), allow_full_scan=True)
-                                                if real_c:
-                                                    cur_x, cur_y = real_c[0], real_c[1]
-                                                    ai_states[key]["cursor_pos"] = [cur_x, cur_y]
-                                            
-                                            # 4. 🎯 목표 지점(tx, ty) 계산: "캐릭터 중앙(400, 245) 기준 6시 방향"으로 100~150px
+                                            # 🎯 캐릭터 고정 중앙 좌표 (화면 어디에 마우스가 있든 무조건 여기서부터 각도 계산!)
                                             char_center_x, char_center_y = 400, 245
                                             
-                                            tx = char_center_x + random.randint(-10, 10)
-                                            ty = char_center_y + random.randint(100, 150)
-                                            
-                                            # 화면 밖 및 하단 UI 침범 방어막
-                                            tx = int(max(10, min(740, tx)))
-                                            ty = int(max(5, min(int(h_s * 0.68), ty)))
-                                            
-                                            # 5. 마우스 물리적 던지기 (동기화된 cur_x, cur_y 에서 -> tx, ty 로!)
-                                            dx, dy = tx - cur_x, ty - cur_y
-                                            dur = apply_human_variance(0.12 + 0.04 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if math.hypot(dx, dy) > 0 else 0.1)
-                                            deltas = generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)
-                                            
-                                            # 큐 찌꺼기 폭파
-                                            with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                                            
-                                            if deltas:
-                                                pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas})
-                                                wait_with_heal(dur + 0.05)
-                                                if key in ai_states: ai_states[key]["cursor_pos"] = [tx, ty]
+                                            for idx, angle_deg in enumerate(escape_angles):
+                                                scr_now = latest_frames.get(key)
+                                                h_s = scr_now.shape[0] if scr_now is not None else 600
+                                                
+                                                cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
+                                                if scr_now is not None:
+                                                    real_c = find_cursor_pos(scr_now, last_pos=(cur_x, cur_y), allow_full_scan=True)
+                                                    if real_c:
+                                                        cur_x, cur_y = real_c[0], real_c[1]
+                                                        ai_states[key]["cursor_pos"] = [cur_x, cur_y]
+                                                        
+                                                # 각도별 목표 지점 계산 (캐릭터 중앙 기준!)
+                                                rad = math.radians(angle_deg)
+                                                dist = random.randint(100, 150)
+                                                
+                                                tx = int(char_center_x + math.cos(rad) * dist)
+                                                ty = int(char_center_y + math.sin(rad) * (dist * 0.85))
+                                                
+                                                tx = int(max(10, min(740, tx)))
+                                                ty = int(max(5, min(int(h_s * 0.68), ty)))
+                                                
+                                                # 현재 커서(어디 박혀있든 상관없음)에서 목표 지점(tx, ty)으로 마우스 던지기
+                                                dx, dy = tx - cur_x, ty - cur_y
+                                                dur = apply_human_variance(0.12 + 0.04 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if math.hypot(dx, dy) > 0 else 0.1)
+                                                deltas = generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)
+                                                
+                                                with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                                                
+                                                if deltas:
+                                                    pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas})
+                                                    wait_with_heal(dur + 0.05)
+                                                    if key in ai_states: ai_states[key]["cursor_pos"] = [tx, ty]
 
-                                            # 6. 무지성 1.5초간 5~6회 클릭
-                                            click_cnt = random.randint(5, 6)
-                                            interval = 1.5 / click_cnt
-                                            for _ in range(click_cnt):
-                                                # 🚨 비상 텔레포트/귀환 감지 시 돌격 즉각 중단!
-                                                fsm_now = str(ai_states.get(key, {}).get("target_fsm", ""))
-                                                if fsm_now in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] or fsm_now.startswith("TOWN_MAINT_NORMAL_RETURN"):
-                                                    dprint(key, "🚨 [돌격 취소] 비상 상황 감지! 수던 진입 돌격을 즉시 중단합니다.")
-                                                    return
+                                                dprint(key, f"▶ [{escape_names[idx]} 돌격] {dist}px 투척 완료. 1.5초간 4~5회 스팸 시작!")
+                                                
+                                                # 📷 [길막 판독용 픽셀 사진 찍어두기]
+                                                before_img = None
+                                                scr_before = latest_frames.get(key)
+                                                if scr_before is not None:
+                                                    before_img = cv2.cvtColor(scr_before[200:400, 20:140], cv2.COLOR_BGR2GRAY)
                                                     
-                                                try:
-                                                    ps, pl = picos.get(key), pico_locks.get(key)
-                                                    if ps and pl:
-                                                        send_mouse_click(ps, pl, 1, 1, is_manual=True)
-                                                        wait_with_heal(g_val(0.04, 0.08))
-                                                        send_mouse_click(ps, pl, 1, 0, is_manual=True)
-                                                except: pass
+                                                click_cnt = random.randint(4, 5)
+                                                interval = 1.5 / click_cnt
+                                                moved_successfully = False
                                                 
-                                                sleep_time = interval - 0.06
-                                                if sleep_time > 0: wait_with_heal(sleep_time)
-                                                
-                                            dprint(key, "✅ [수던 돌격 완료] 입구 길막 탈출! 사냥(IDLE)을 정상 개시합니다.")
-                                            # 👆👆👆 ========================================================= 👆👆👆
+                                                for c_i in range(click_cnt):
+                                                    fsm_now = str(ai_states.get(key, {}).get("target_fsm", ""))
+                                                    if fsm_now in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] or fsm_now.startswith("TOWN_MAINT_NORMAL_RETURN"):
+                                                        dprint(key, "🚨 [돌격 취소] 비상 상황 감지! 수던 진입 돌격을 즉시 중단합니다.")
+                                                        return
+                                                        
+                                                    try:
+                                                        ps, pl = picos.get(key), pico_locks.get(key)
+                                                        if ps and pl:
+                                                            send_mouse_click(ps, pl, 1, 1, is_manual=True)
+                                                            wait_with_heal(g_val(0.04, 0.08))
+                                                            send_mouse_click(ps, pl, 1, 0, is_manual=True)
+                                                    except: pass
+                                                    
+                                                    sleep_time = interval - 0.06
+                                                    if sleep_time > 0: wait_with_heal(sleep_time)
+                                                    
+                                                    # 💡 2대 때린 직후부터 매 틱마다 픽셀이 움직였는지(길이 뚫렸는지) 직접 사진 찍어서 비교!
+                                                    if c_i >= 1 and before_img is not None and not moved_successfully:
+                                                        scr_after = latest_frames.get(key)
+                                                        if scr_after is not None:
+                                                            after_img = cv2.cvtColor(scr_after[200:400, 20:140], cv2.COLOR_BGR2GRAY)
+                                                            diff = cv2.absdiff(before_img, after_img)
+                                                            _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
+                                                            # 500픽셀 이상 변했으면 움직인 것!
+                                                            if cv2.countNonZero(thresh) > 500:
+                                                                moved_successfully = True
 
+                                                if moved_successfully:
+                                                    dprint(key, f"✅ [{escape_names[idx]}] 돌파 성공! 입구 길막을 뚫었습니다.")
+                                                    break
+                                                else:
+                                                    if idx < 3:
+                                                        dprint(key, f"🚧 [{escape_names[idx]} 길막힘] 제자리걸음 감지! 다음 우회로({escape_names[idx+1]})로 꺾습니다!")
+                                                    else:
+                                                        dprint(key, "🚨 [모든 탈출로 막힘] 4방향을 모두 찔렀으나 갇혔습니다! 강제로 사냥(IDLE)을 개시하여 AI에 맡깁니다.")
+                                            
                                             ai_states[key]["town_done_logged"] = False
                                             ai_states[key]["dungeon_map_pos"] = None
                                             ai_states[key]["dungeon_last_map_pos"] = None
@@ -11179,7 +11209,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                 state["is_hunt_active"] = original_hunt_state
                 state["target_fsm"] = original_fsm
 
-            # 👇👇👇 [신규 엔진: 내 Zone 이탈(실제 A* 경로 10노드 밖) 판독기] 👇👇👇
+            # 👇👇👇 [신규 엔진: 내 Zone 이탈(실제 A* 경로 10노드 밖) 초고속 판독기] 👇👇👇
             if "is_out_of_zone" not in state: state["is_out_of_zone"] = False
             
             if settings.get("use_party_hunt", False) and state.get("dungeon_map_pos") and pc_graph and pc_graph.get("nodes"):
@@ -11196,32 +11226,33 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     
                     is_out_of_zone = False
                     if my_zone_nodes:
-                        # 1. 내 현재 위치에서 모든 존(Zone) 노드까지의 직선(유클리드) 거리 계산
-                        zone_dist_list = []
+                        # 1. 내 현재 위치에서 직선 거리가 가장 가까운 내 구역(Zone) 노드 딱 1개만 색출! (CPU 최적화)
+                        min_d_sq = float('inf')
+                        closest_zn = None
+                        
                         for zn in my_zone_nodes:
                             z_node = pc_graph["nodes"].get(zn)
                             if z_node:
                                 zx = z_node.get("x", 0) if isinstance(z_node, dict) else z_node[0]
                                 zy = z_node.get("y", 0) if isinstance(z_node, dict) else z_node[1]
                                 d_sq = (char_map_pos_for_zone[0] - zx)**2 + (char_map_pos_for_zone[1] - zy)**2
-                                zone_dist_list.append((d_sq, zn))
+                                if d_sq < min_d_sq:
+                                    min_d_sq = d_sq
+                                    closest_zn = zn
+                        
+                        if closest_zn:
+                            # 2. 🚀 [수정 완료] 직선 거리가 60픽셀(제곱 3600) 이내일 때만 A* 검사 돌입!
+                            if min_d_sq > 3600:
+                                # 직선 거리부터 이미 60픽셀 밖이면 A* 돌릴 필요 없이 100% 이탈 확정! (연산 0%)
+                                is_out_of_zone = True
+                            else:
+                                # 3. 🚀 [형님 기획: 얇은 벽 투시 방어막]
+                                # 직선거리는 60px 이내지만 벽을 빙 돌아가야 하는 경우를 판독하기 위해 딱 1번만 A* 발사!
+                                z_path = calculate_graph_astar_path(pc_graph, char_map_pos_for_zone, closest_zn, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
                                 
-                        # 2. 직선 거리가 가까운 순으로 정렬 (1차 후보군 색출)
-                        zone_dist_list.sort(key=lambda x: x[0])
-                        
-                        # 3. 🚀 [형님 기획: 얇은 벽 투시 착각 방어막!]
-                        # 직선 거리는 가깝지만 실제로는 벽을 빙 돌아가야 하는 경우를 걸러내기 위해,
-                        # 가장 가까운 상위 5개의 노드에 대해 '실제 A* 경로(걸어가는 칸 수)'를 모두 계산합니다!
-                        is_out_of_zone = True # 일단 밖이라고 가정
-                        
-                        for d_sq, zn in zone_dist_list[:5]:
-                            # A* 알고리즘으로 벽(검은 픽셀)을 피해서 걸어가는 실제 궤적 산출!
-                            z_path = calculate_graph_astar_path(pc_graph, char_map_pos_for_zone, zn, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
-                            
-                            # 경로가 존재하고, 그 경로의 길이가 11노드(시작점 포함, 즉 10칸 이내)라면?
-                            if z_path and len(z_path) <= 11:
-                                is_out_of_zone = False # 아하! 벽을 피해서 걸어가도 10칸 내에 도달할 수 있구나! (존 내부 판정)
-                                break
+                                # 경로가 없거나(벽에 완전 막힘), 걸어가는 타일 수가 11노드(10칸)를 초과하면 이탈 처리!
+                                if not z_path or len(z_path) > 11:
+                                    is_out_of_zone = True
                                     
                     if is_out_of_zone and not state.get("is_out_of_zone", False):
                         dprint(key, f"🚨 [존 이탈 감지] 할당 구역({active_dungeon}) 실제 도보 10노드 밖으로 밀려남! 복귀 모드(회색몹차단/시야150/루팅100) 가동!")
@@ -11576,6 +11607,16 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                 valid_mobs = []
                 hidden_mobs = [] # 🚀 시야에 가려진 회색 몹 보관소
                 
+                # 👇👇👇 [신규 엔진: 포탈 노드 맵핑 (포탈 주변 몹 무시용)] 👇👇👇
+                portal_map_pts = []
+                if pc_graph and pc_graph.get("nodes"):
+                    for nid, ndata in pc_graph["nodes"].items():
+                        if isinstance(ndata, dict) and ndata.get("is_portal", False):
+                            px = ndata.get("x", 0) if isinstance(ndata, dict) else ndata[0]
+                            py = ndata.get("y", 0) if isinstance(ndata, dict) else ndata[1]
+                            portal_map_pts.append((px, py))
+                # 👆👆👆 ===================================================
+
                 # 🚀 실시간 미니맵 투시용 흑백 변환 (형님 기획)
                 minimap_gray_los = cv2.cvtColor(minimap_bgr, cv2.COLOR_BGR2GRAY) if minimap_bgr is not None else None
                 
@@ -11585,6 +11626,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     is_clear = True # 기본값 통과
                     is_event_dungeon = "event" in settings.get("dungeon_name", "") # 💡 이벤트 던전 여부 확인
                     
+                    mob_map_x, mob_map_y = None, None
+
                     # 1. 일반 던전 (맵 매칭 성공 시) -> 기존 전체 맵 투시 로직
                     if char_map_pos is not None and pc_map_gray_los is not None:
                         char_map_x, char_map_y = char_map_pos
@@ -11596,14 +11639,33 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     # 2. 이벤트 던전 (맵 매칭 실패 시) -> 👑 형님 기획: 미니맵 다이렉트 투시!
                     elif is_event_dungeon and minimap_gray_los is not None:
                         m.map_pos = (70 + map_dx, 62 + map_dy) # 💡 호환용 더미 좌표
-                        # 💡 기존 투시 함수(check_line_of_sight)에 도화지만 미니맵으로 바꿔서 그대로 발사!
                         is_clear = check_line_of_sight(minimap_gray_los, (70, 62), (70 + map_dx, 62 + map_dy), margin_steps=1)
                     
                     # 3. 맵 매칭도 안 됐고, 이벤트 던전도 아닐 때 (본던/개미굴 맵 이탈 시)
                     else:
                         m.map_pos = (70 + map_dx, 62 + map_dy) # 호환 더미 좌표
                         is_clear = True # 💡 투시를 포기하고 일단 시야가 뚫려있다고 가정하여 공격 시도
+
+                    # 👇👇👇 [형님 오더 완벽 적용: 포탈 반경 30픽셀 내 몹 절대 무시!] 👇👇👇
+                    near_portal_mob = False
+                    if mob_map_x is not None and mob_map_y is not None and portal_map_pts:
+                        for px, py in portal_map_pts:
+                            # 🚀 [오류 수정] px, py는 '맵 좌표(Map Pixels)'입니다! 화면 기준 30픽셀은 맵 기준 3.0픽셀입니다!
+                            # 기존에 30.0으로 두면 화면상 300픽셀 반경을 무시해버리는 버그가 있었습니다.
+                            if math.hypot(mob_map_x - px, mob_map_y - py) <= 30.0:
+                                near_portal_mob = True
+                                break
+                                
+                    if near_portal_mob:
+                        if DEBUG_MODE and debug_img is not None:
+                            # 💡 디버그 창에만 '어두운 회색'으로 무시했다고 표기하고 뇌(AI) 명단에선 완전히 삭제합니다!
+                            cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (100, 100, 100), 2)
+                            cv2.putText(debug_img, "PORTAL IGN", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
+                        continue # 🚀 valid_mobs, hidden_mobs 둘 다 넣지 않고 쿨하게 패스! (추적/타격 원천 금지)
+                    # 👆👆👆 ============================================================== 👆👆👆
                         
+                    # 🚀 [찌꺼기 코드 삭제 완료] 여기에 잘못 복사되어 있던 elif/else 구문 완벽히 소각됨!
+
                     if is_clear:
                         valid_mobs.append(m)
                         if DEBUG_MODE and debug_img is not None:
@@ -11611,19 +11673,19 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             if getattr(m, 'is_g_mob', False):
                                 cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (0, 255, 0), 3)
                                 cv2.circle(debug_img, (m.x, m.foot_y), 3, (0, 255, 0), -1) 
-                                cv2.putText(debug_img, "G-MOB(FIRST) (CLEAR)", (m.x1, m.y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                                cv2.putText(debug_img, "G-MOB(FIRST) (CLEAR)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                             elif getattr(m, 'is_beast', False):
                                 cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (0, 165, 255), 2)
                                 cv2.circle(debug_img, (m.x, m.foot_y), 3, (0, 165, 255), -1) 
-                                cv2.putText(debug_img, "BEAST(LAST) (CLEAR)", (m.x1, m.y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
+                                cv2.putText(debug_img, "BEAST(LAST) (CLEAR)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
                             elif getattr(m, 'is_current', False):
                                 cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (0, 255, 255), 2)
                                 cv2.circle(debug_img, (m.x, m.foot_y), 3, (0, 255, 255), -1) 
-                                cv2.putText(debug_img, "CURRENT (CLEAR)", (m.x1, m.y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                                cv2.putText(debug_img, "CURRENT (CLEAR)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
                             else:
                                 cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (0, 255, 0), 1)
                                 cv2.circle(debug_img, (m.x, m.foot_y), 3, (0, 255, 0), -1) 
-                                cv2.putText(debug_img, "MOB (CLEAR)", (m.x1, m.y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+                                cv2.putText(debug_img, "MOB (CLEAR)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
                     else:
                         # 🚨 [치명적 버그 수술] 이벤트 던전은 전체 맵(노드)이 없으므로 회색 몹을 추적할 수 없습니다!
                         if not getattr(m, 'is_slime', False) and not is_event_dungeon:
@@ -11631,7 +11693,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             if DEBUG_MODE and debug_img is not None:
                                 cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (128, 128, 128), 1)
                                 cv2.line(debug_img, (char_screen_cx, char_screen_cy), (m.x, m.foot_y), (128, 128, 128), 1)
-                                cv2.putText(debug_img, "HIDDEN(WALL)", (m.x1, m.y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (128, 128, 128), 1)
+                                cv2.putText(debug_img, "HIDDEN(WALL)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (128, 128, 128), 1)
                 
                 mobs = valid_mobs
 
@@ -17271,6 +17333,21 @@ def sync_gui_vars():
                 fatigue = ai_states[k].get("fatigue_mult", 1.0)
                 btn_dict[k].config(text=f" 📺 [{k}] 제어 패널 (피로도: x{fatigue:.3f}) ")
 
+    # 👇👇👇 [신규 엔진: 실시간 GUI 자동 저장 시스템 (재부팅/강종 완벽 방어!)] 👇👇👇
+    gui_snapshot = {}
+    for k, v_dict in gui_vars.items():
+        gui_snapshot[k] = {v_name: str(v_obj.get()) for v_name, v_obj in v_dict.items() if hasattr(v_obj, 'get')}
+        
+    current_gui_str = str(gui_snapshot)
+    
+    if not hasattr(sync_gui_vars, "last_gui_str"):
+        sync_gui_vars.last_gui_str = current_gui_str
+        
+    if sync_gui_vars.last_gui_str != current_gui_str:
+        sync_gui_vars.last_gui_str = current_gui_str
+        save_settings() # 💡 사용자가 텍스트를 바꾸거나 체크박스를 건드리는 순간 즉시 파일에 영구 박제!
+    # 👆👆👆 ==================================================================== 👆👆👆
+
     root.after(500, sync_gui_vars)
 
 def toggle_individual_hunt(key):
@@ -18626,96 +18703,226 @@ for i, pc in enumerate(MINI_PCS):
     btn_return_test = tk.Button(btn_f_maint, text="🐜 스킵 ➔ 복귀", font=("맑은 고딕", 8, "bold"), bg="#E65100", fg="white", relief="flat", command=lambda k=key: force_return_test(k))
     btn_return_test.pack(side="left", fill="x", expand=True, padx=(0, 0))
 
-    # 👇👇👇 [여기에 신규 추가!] 헤이스트(ha1~10) 인식 테스트기 👇👇👇
-    def run_haste_icon_test(target_key=key):
-        print(f"\n==========================================")
-        print(f"🧪 [{target_key}] 헤이 아이콘(ha1~10.png) 인식 테스트 시작")
-        print(f"==========================================")
-
-        def _test_thread():
-            import time, cv2, os, numpy as np
-
-            screen = latest_frames.get(target_key)
-            if screen is None:
-                print("❌ 화면 캡처 실패! 클라이언트 창을 확인해주세요.")
-                return
-
-            h_s, w_s = screen.shape[:2]
+    # 👇👇👇 [기존 헤이 테스트 지우고 수던 진입 전용 테스트기 이식!] 👇👇👇
+    def run_sudun_entry_test(target_key=key):
+        if not picos.get(target_key): 
+            print(f"❌ [{target_key}] 피코 연결 안됨!")
+            return
             
-            # 우측 상단 버프 아이콘 영역 (가로 60 x 세로 350)
-            if w_s < 60 or h_s < 350:
-                print("❌ 화면 크기가 너무 작습니다. 창 해상도를 확인해주세요.")
-                return
-                
-            buff_roi_x1 = max(0, w_s - 60)
-            buff_roi_y1 = 0
-            buff_roi_x2 = w_s
-            buff_roi_y2 = min(h_s, 350)
+        print(f"\n🏃‍♂️ [{target_key}] (수동 지시) 수던 진입 돌격(6->3->7->5) 테스트 돌입!")
+        print(f"👀 화면에 'sudun_in.png' 텍스트나 맵 좌표가 뜨는 순간 즉시 돌격을 개시합니다!")
+        
+        if target_key not in ai_states or not ai_states[target_key].get("is_hunt_active", False): 
+            toggle_individual_hunt(target_key)
             
-            buff_roi = screen[buff_roi_y1:buff_roi_y2, buff_roi_x1:buff_roi_x2]
+        def _sudun_test_thread():
+            import time, cv2, os, numpy as np, math, random
+            time.sleep(0.5)
             
-            ha_imgs = [f"qq/ha{i}.png" for i in range(1, 11)]
-            found_any = False
-            files_checked = 0
-            best_match_name = None
-            best_match_val = 0.0
+            p_serial = picos.get(target_key)
+            p_lock = pico_locks.get(target_key)
             
-            for img_path in ha_imgs:
-                if not os.path.exists(img_path):
-                    continue # 파일이 없으면 쿨하게 패스
+            global_start_t = time.time()
+            door_found_and_moving = False
+            
+            # AI 뇌 초기화 및 무적 락다운
+            with pico_queues[target_key].mutex: pico_queues[target_key].queue.clear()
+            if ai_states[target_key].get("sweep_active", False):
+                pico_queues[target_key].put({"action": "SWEEP_STOP"})
+                ai_states[target_key]["sweep_active"] = False
+            ai_states[target_key]["is_pulling"] = False
+            ai_states[target_key]["is_attacking"] = False
+            ai_states[target_key]["arrow_is_firing"] = False
+            ai_states[target_key]["town_thread_running"] = True # 다른 스레드 개입 금지
+            
+            # 메인 AI 무적 상태 락다운
+            ai_states[target_key]["target_fsm"] = "TOWN_MAINT_SUDUN_RUSH_LOCKED"
+            
+            print(f"▶ [{target_key}] sudun_in.png 텍스트 매칭을 대기합니다... (최대 2분)")
+            
+            # 👇👇👇 [에러 원인 수술] 파이썬이 모르는 단어(ManualAbort)를 알게 해줍니다! 👇👇👇
+            class ManualAbort(Exception): pass
+            
+            # 테스트 전용 비상 중단 스위치
+            def wait_with_heal(duration):
+                start_w = time.time()
+                while time.time() - start_w < duration:
+                    if active_manual_target == target_key or not ai_states.get(target_key, {}).get("is_hunt_active", False):
+                        raise ManualAbort() # 🚀 [수정] Exception 대신 방금 선언한 ManualAbort를 씁니다!
+                    time.sleep(0.02)
                     
-                files_checked += 1
-                try:
-                    # 🚀 한글 경로 등에서도 에러 없이 읽어오기 위한 파이썬 안전 읽기 방식
-                    with open(img_path, "rb") as f:
-                        np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
-                    bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
+            try:
+                # 1. sudun_in.png 대기 루프
+                while time.time() - global_start_t < 120.0:
+                    wait_with_heal(0.1)
                     
-                    if bgra is None: continue
+                    if ai_states.get(target_key, {}).get("dungeon_map_pos") is not None:
+                        print(f"🚪 [{target_key}] 수던 맵 좌표 인식 완료! 돌파 개시!")
+                        door_found_and_moving = True
+                        break
+
+                    img_path = "qq/sudun_in.png"
+                    if os.path.exists(img_path):
+                        scr = latest_frames.get(target_key)
+                        if scr is not None:
+                            h, w = scr.shape[:2]
+                            try: ANT_IN_X1_v = globals().get("ANT_IN_X1", 1)
+                            except: ANT_IN_X1_v = 1
+                            try: ANT_IN_X2_v = globals().get("ANT_IN_X2", 130)
+                            except: ANT_IN_X2_v = 130
+                            
+                            c_y1 = max(0, min(h, 430))
+                            c_y2 = max(0, min(h, 480))
+                            c_x1 = max(0, min(w, ANT_IN_X1_v))
+                            c_x2 = max(0, min(w, ANT_IN_X2_v))
+
+                            if c_x2 > c_x1 and c_y2 > c_y1:
+                                ui_check_roi = scr[c_y1:c_y2, c_x1:c_x2]
+                                try:
+                                    if "sudun_in_img" not in loaded_models:
+                                        bgra = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+                                        if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4:
+                                            loaded_models["sudun_in_img"] = {"color": cv2.cvtColor(bgra[:, :, :3], cv2.COLOR_BGR2GRAY), "mask": bgra[:, :, 3]}
+                                        else:
+                                            loaded_models["sudun_in_img"] = {"color": cv2.imread(img_path, cv2.IMREAD_GRAYSCALE), "mask": None}
+                                            
+                                    sudun_in_tmpl = loaded_models.get("sudun_in_img")
+                                    if sudun_in_tmpl and sudun_in_tmpl["color"] is not None:
+                                        roi_gray = cv2.cvtColor(ui_check_roi, cv2.COLOR_BGR2GRAY)
+                                        if sudun_in_tmpl["mask"] is not None:
+                                            res = cv2.matchTemplate(roi_gray, sudun_in_tmpl["color"], cv2.TM_CCORR_NORMED, mask=sudun_in_tmpl["mask"])
+                                        else:
+                                            res = cv2.matchTemplate(roi_gray, sudun_in_tmpl["color"], cv2.TM_CCOEFF_NORMED)
+                                        _, max_val, _, _ = cv2.minMaxLoc(res)
+                                        
+                                        if max_val >= 0.85:
+                                            print(f"🚪 [{target_key}] 진입 텍스트(sudun_in.png) 팩트 체크 완료! 돌격을 개시합니다!")
+                                            door_found_and_moving = True
+                                            break
+                                except: pass
+                time.sleep(0.1)
+
+                # 2. 진입 확인 시 6->3->7->5 돌파 시퀀스 발동!
+                if door_found_and_moving:
+                    print(f"🏃‍♂️ [{target_key}] 0.2초 대기 후 6시 돌격 개시! 막히면 3시->7시->5시 순으로 뚫어냅니다!")
+                    wait_with_heal(0.2)
                     
-                    if len(bgra.shape) == 3 and bgra.shape[2] == 4:
-                        color = bgra[:,:,:3]
-                        mask = bgra[:,:,3]
-                        res = cv2.matchTemplate(buff_roi, color, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask]*3))
-                    else:
-                        color = bgra[:,:,:3] if len(bgra.shape) == 3 else bgra
-                        res = cv2.matchTemplate(buff_roi, color, cv2.TM_CCOEFF_NORMED)
+                    escape_angles = [92.0, 359.0, 150.0, 30.0]
+                    escape_names = ["6시", "3시", "7시", "5시"]
+                    char_center_x, char_center_y = 400, 245
+                    
+                    for idx, angle_deg in enumerate(escape_angles):
+                        scr_now = latest_frames.get(target_key)
+                        h_s = scr_now.shape[0] if scr_now is not None else 600
                         
-                    _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                    
-                    if max_val > best_match_val:
-                        best_match_val = max_val
-                        best_match_name = img_path
-                    
-                    if max_val >= 0.80:
-                        found_any = True
-                        print(f"✅ [인식 성공] '{img_path}' 매칭됨! (일치율: {max_val*100:.1f}%)")
-                    else:
-                        print(f"⚠️ [인식 미달] '{img_path}' (일치율: {max_val*100:.1f}%) -> 80% 커트라인 미달")
+                        cur_x, cur_y = ai_states.get(target_key, {}).get("cursor_pos", [400, 300])
+                        if scr_now is not None:
+                            real_c = find_cursor_pos(scr_now, last_pos=(cur_x, cur_y), allow_full_scan=True)
+                            if real_c:
+                                cur_x, cur_y = real_c[0], real_c[1]
+                                ai_states[target_key]["cursor_pos"] = [cur_x, cur_y]
+                                
+                        rad = math.radians(angle_deg)
+                        dist = random.randint(100, 150)
                         
-                except Exception as e:
-                    print(f"❌ '{img_path}' 검사 중 에러 발생: {e}")
-            
-            print(f"------------------------------------------")
-            if files_checked == 0:
-                print("🚨 qq 폴더 안에 'ha1.png' ~ 'ha10.png' 이미지가 단 1장도 없습니다!")
-            elif not found_any:
-                print("🚨 우측 상단(버프 구역)에서 일치율 80%를 넘는 이미지가 없습니다!")
-                if best_match_name:
-                    print(f"   ➔ 가장 비슷한 이미지: '{best_match_name}' (일치율: {best_match_val*100:.1f}%)")
-            else:
-                print(f"🎉 테스트 통과! 현재 화면에서 아이콘이 완벽하게 인식되고 있습니다.")
-                print(f"   ➔ 가장 완벽한 일치: '{best_match_name}' ({best_match_val*100:.1f}%)")
-            print(f"==========================================\n")
+                        tx = int(char_center_x + math.cos(rad) * dist)
+                        ty = int(char_center_y + math.sin(rad) * (dist * 0.85))
+                        
+                        tx = int(max(10, min(740, tx)))
+                        ty = int(max(5, min(int(h_s * 0.68), ty)))
+                        
+                        dx, dy = tx - cur_x, ty - cur_y
+                        dur = apply_human_variance(0.12 + 0.04 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if math.hypot(dx, dy) > 0 else 0.1)
+                        deltas = generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=target_key)
+                        
+                        with pico_queues[target_key].mutex: pico_queues[target_key].queue.clear()
+                        
+                        if deltas:
+                            pico_queues[target_key].put({"action": "CUSTOM_MOVE", "deltas": deltas})
+                            wait_with_heal(dur + 0.05)
+                            if target_key in ai_states: ai_states[target_key]["cursor_pos"] = [tx, ty]
+
+                        print(f"▶ [{target_key}] [{escape_names[idx]} 돌격] {dist}px 투척 완료. 1.5초간 4~5회 스팸 시작!")
+                        
+                        before_img = None
+                        scr_before = latest_frames.get(target_key)
+                        if scr_before is not None:
+                            before_img = cv2.cvtColor(scr_before[200:400, 20:140], cv2.COLOR_BGR2GRAY)
+                            
+                        click_cnt = random.randint(4, 5)
+                        interval = 1.5 / click_cnt
+                        moved_successfully = False
+                        
+                        for c_i in range(click_cnt):
+                            try:
+                                ps, pl = picos.get(target_key), pico_locks.get(target_key)
+                                if ps and pl:
+                                    send_mouse_click(ps, pl, 1, 1, is_manual=True)
+                                    wait_with_heal(g_val(0.04, 0.08))
+                                    send_mouse_click(ps, pl, 1, 0, is_manual=True)
+                            except: pass
+                            
+                            sleep_time = interval - 0.06
+                            if sleep_time > 0: wait_with_heal(sleep_time)
+                            
+                            if c_i >= 1 and before_img is not None and not moved_successfully:
+                                scr_after = latest_frames.get(target_key)
+                                if scr_after is not None:
+                                    after_img = cv2.cvtColor(scr_after[200:400, 20:140], cv2.COLOR_BGR2GRAY)
+                                    diff = cv2.absdiff(before_img, after_img)
+                                    _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
+                                    if cv2.countNonZero(thresh) > 500:
+                                        moved_successfully = True
+
+                        if moved_successfully:
+                            print(f"✅ [{target_key}] [{escape_names[idx]}] 돌파 성공! 입구 길막을 뚫었습니다.")
+                            break
+                        else:
+                            if idx < 3:
+                                print(f"🚧 [{target_key}] [{escape_names[idx]} 길막힘] 제자리걸음 감지! 다음 우회로({escape_names[idx+1]})로 꺾습니다!")
+                            else:
+                                print(f"🚨 [{target_key}] [모든 탈출로 막힘] 4방향을 모두 찔렀으나 갇혔습니다! 강제로 사냥(IDLE)을 개시하여 AI에 맡깁니다.")
+
+                    ai_states[target_key]["town_done_logged"] = False
+                    ai_states[target_key]["dungeon_map_pos"] = None
+                    ai_states[target_key]["dungeon_last_map_pos"] = None
+                    ai_states[target_key]["dungeon_global_path"] = []
+                    ai_states[target_key]["is_pulling"] = False
+                    ai_states[target_key]["is_attacking"] = False
+                    ai_states[target_key]["arrow_is_firing"] = False
+                    ai_states[target_key]["reentry_retry_cnt"] = 0
+                    
+                    try:
+                        send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True)
+                        wait_with_heal(g_val(0.04, 0.08))
+                        send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+                    except: pass
+                    
+                    ai_states[target_key]["cooldown"] = time.time() + 1.0
+                    ai_states[target_key]["target_fsm"] = "IDLE"
+                    print(f"🎉 [{target_key}] 테스트 완료! IDLE 모드로 복귀하여 정상 사냥을 시작합니다.")
+
+                else:
+                    print(f"❌ [{target_key}] 2분 동안 sudun_in.png 를 찾지 못해 테스트가 종료되었습니다.")
+                    ai_states[target_key]["target_fsm"] = "IDLE"
+
+            except ManualAbort:
+                print(f"\n🛑 [{target_key}] 수동 모드(`) 개입 또는 사냥 정지로 테스트가 중단되었습니다.")
+                ai_states[target_key]["target_fsm"] = "IDLE"
+            except Exception as e:
+                print(f"❌ [{target_key}] 수던 진입 테스트 중 에러 발생: {e}")
+                ai_states[target_key]["target_fsm"] = "IDLE"
+            finally:
+                ai_states[target_key]["town_thread_running"] = False
 
         import threading
-        threading.Thread(target=_test_thread, daemon=True).start()
+        threading.Thread(target=_sudun_test_thread, daemon=True).start()
 
-    measure_frame = tk.LabelFrame(tab2, text=" 🧪 헤이스트(ha1~10) 인식 테스트 ", font=("맑은 고딕", 9, "bold"), bg=BG_PANEL, fg="#FFD54F", bd=1)
+    measure_frame = tk.LabelFrame(tab2, text=" 🧪 수던 진입 돌파 (6->3->7->5) 테스트 ", font=("맑은 고딕", 9, "bold"), bg=BG_PANEL, fg="#FFD54F", bd=1)
     measure_frame.pack(side="top", fill="x", padx=10, pady=(5, 5))
 
-    btn_measure = tk.Button(measure_frame, text="▶ 헤이 아이콘 감지 테스트", font=("맑은 고딕", 8, "bold"), bg="#0277BD", fg="white", relief="flat", command=lambda k=key: run_haste_icon_test(k))
-    btn_measure.pack(fill="x", expand=True, padx=5, pady=5)
+    btn_sudun_test = tk.Button(measure_frame, text="▶ 수던 진입 감지 & 돌파 대기 시작", font=("맑은 고딕", 8, "bold"), bg="#E91E63", fg="white", relief="flat", command=lambda k=key: run_sudun_entry_test(k))
+    btn_sudun_test.pack(fill="x", expand=True, padx=5, pady=5)
     # 👆👆👆 ================================================== 👆👆👆
 
     # ----------------------------------------------------
