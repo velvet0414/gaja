@@ -1628,6 +1628,9 @@ def _save_settings_internal(): # 💡 들여쓰기 보호 마법
                 "party_pk_drop_pct": v["party_pk_drop_pct"].get(),
                 "party_max_combat_time": v["party_max_combat_time"].get(),
                 "party_use_mptam": v["party_use_mptam"].get(), "party_mptam_start_pct": v["party_mptam_start_pct"].get(), "party_mptam_stop_pct": v["party_mptam_stop_pct"].get(),
+                # 👇 신규 추가
+                "party_mptam_tele_use": v["party_mptam_tele_use"].get(), "party_mptam_tele_pct": v["party_mptam_tele_pct"].get(),
+                # 👆 신규 추가
                 # 👆👆👆 ========================================== 👆👆👆
                 "dungeon_name": v["dungeon_name"].get(), 
                 "heal_use": v["heal_use"].get(), "heal_pct": v["heal_pct"].get(),
@@ -2037,8 +2040,12 @@ for pc in MINI_PCS:
         "party_pk_drop_pct": tk.StringVar(value=pc_set.get("party_pk_drop_pct", "40")), # 👈 40%
         "party_max_combat_time": tk.StringVar(value=pc_set.get("party_max_combat_time", "30")), # 👈 30초
         "party_use_mptam": tk.BooleanVar(value=pc_set.get("party_use_mptam", True)),
-        "party_mptam_start_pct": tk.StringVar(value=pc_set.get("party_mptam_start_pct", "30")), # 👈 30%
-        "party_mptam_stop_pct": tk.StringVar(value=pc_set.get("party_mptam_stop_pct", "65")),   # 👈 65%
+        "party_mptam_start_pct": tk.StringVar(value=pc_set.get("party_mptam_start_pct", "30")),
+        "party_mptam_stop_pct": tk.StringVar(value=pc_set.get("party_mptam_stop_pct", "65")),   
+        # 👇👇👇 [신규 추가: 파티 마나고갈 비상 텔레포트 변수] 👇👇👇
+        "party_mptam_tele_use": tk.BooleanVar(value=pc_set.get("party_mptam_tele_use", True)),
+        "party_mptam_tele_pct": tk.StringVar(value=pc_set.get("party_mptam_tele_pct", "12")),
+        # 👆👆👆 ========================================== 👆👆👆
         # 👆👆👆 ========================================== 👆👆👆
         
         "dungeon_name": tk.StringVar(value=pc_set.get("dungeon_name", "개미굴 6층")),
@@ -16520,8 +16527,15 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     active_combat_fsms_local = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_LOCKED", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD", "TARGET_AIMING", "WAIT_FOR_STOP"]
                     is_currently_fighting = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or str(state.get("target_fsm", "")) in active_combat_fsms_local
                     
-                    # 👑 파티 모드이거나, 솔플인데 텔사냥이 꺼져있다면 텔레포트 금지!
-                    if is_party_hunt or not tele_hunt_enabled:
+                    # 👇👇👇 [신규 엔진: 파티 모드 비상 텔레포트 예외 처리] 👇👇👇
+                    party_mptam_tele_use = settings.get("party_mptam_tele_use", False)
+                    party_mptam_tele_pct = settings.get("party_mptam_tele_pct", 12.0)
+                    
+                    # 파티 모드이고 설정이 켜져 있으며, 교전 중 MP가 설정값 이하일 때 강제 텔레포트 허용!
+                    force_party_tele = is_party_hunt and party_mptam_tele_use and mp <= party_mptam_tele_pct and is_currently_fighting
+                    
+                    # 👑 파티 모드이거나, 솔플인데 텔사냥이 꺼져있다면 텔레포트 금지! (단, 강제 텔레포트 조건 달성 시 예외 통과)
+                    if (is_party_hunt and not force_party_tele) or (not is_party_hunt and not tele_hunt_enabled):
                         if is_currently_fighting or (mobs and len(mobs) >= 2) or state.get("sweep_active", False):
                             if not state.get("pending_mptam", False):
                                 dprint(key, f"⏳ [엠탐 예약] 마나가 고갈되었습니다! 텔레포트 금지 모드이므로 현재 치고 있는 몹까지만 잡고 엠탐에 돌입합니다.")
@@ -16537,9 +16551,12 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             state["dungeon_global_path"] = []
                             state["target_fsm"] = "IDLE"
                     else:
-                        # (기존 솔플 텔사냥)
+                        # (기존 솔플 텔사냥 + 파티 비상 텔레포트 돌파구)
                         is_crowded = (mobs and len(mobs) >= 2)
                         if is_currently_fighting or is_crowded:
+                            if force_party_tele:
+                                dprint(key, f"🚨 [파티 비상 텔포] 전투 중 MP {mp:.1f}% 고갈! 파티 진형 유지를 포기하고 비상 텔레포트로 엠탐 도주를 감행합니다!")
+                                
                             state["is_mptam_mode"] = True
                             clear_movements_only(pico_queues[key])
                             if state.get("sweep_active", False):
@@ -16581,12 +16598,18 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     active_combat_fsms_local = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_LOCKED", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD", "TARGET_AIMING", "WAIT_FOR_STOP"]
                     is_currently_fighting = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or str(state.get("target_fsm", "")) in active_combat_fsms_local
                     
-                    # 👇👇👇 [수정: 파티 모드에서는 엠탐 중 다굴을 맞아도 텔레포트(도망) 치지 않도록 완벽 차단!] 👇👇👇
+                    # 👇👇👇 [수정: 파티 모드 비상 텔레포트 연계 적용!] 👇👇👇
                     is_party_hunt_now = settings.get("use_party_hunt", False)
+                    party_mptam_tele_use = settings.get("party_mptam_tele_use", False)
+                    party_mptam_tele_pct = settings.get("party_mptam_tele_pct", 12.0)
+                    
                     if is_party_hunt_now:
-                        # 👑 파티 모드일 때는 몹이 몰리거나 마나가 고갈된 채로 맞아도 절대 도망(텔레포트)가지 않습니다!
                         is_mptam_crowded = False
-                        is_mptam_mp_danger = False
+                        # 💡 엠탐 중이더라도 몹에게 맞아 전투가 걸렸는데 마나가 설정값 이하라면 도망!
+                        if party_mptam_tele_use and mp <= party_mptam_tele_pct and is_currently_fighting:
+                            is_mptam_mp_danger = True
+                        else:
+                            is_mptam_mp_danger = False
                     else:
                         # 👑 솔플일 때만 4마리 이상 몰리거나 마나 없이 맞을 때 도망갑니다.
                         is_mptam_crowded = (mobs and len(mobs) >= 4 and curr_time > state.get("mptam_crowded_cd", 0))
@@ -16594,7 +16617,11 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     # 👆👆👆 ============================================================== 👆👆👆
 
                     if is_mptam_crowded or is_mptam_mp_danger:
-                        reason_str = "몹 4마리 이상 다굴" if is_mptam_crowded else f"전투 중 MP 6% 이하(3초 지속) 고갈"
+                        if is_party_hunt_now:
+                            reason_str = f"파티 비상 마나 고갈(MP {mp:.1f}%)"
+                        else:
+                            reason_str = "몹 4마리 이상 다굴" if is_mptam_crowded else f"전투 중 MP 6% 이하(3초 지속) 고갈"
+                            
                         with pico_queues[key].mutex: pico_queues[key].queue.clear()
                         clear_movements_only(pico_queues[key])
                         if state.get("sweep_active", False):
@@ -17228,6 +17255,8 @@ def sync_gui_vars():
             p_max_combat_val = safe_float(gui_vars[k]["party_max_combat_time"], 30.0)
             p_mptam_start_val = safe_float(gui_vars[k]["party_mptam_start_pct"], 30.0)
             p_mptam_stop_val = safe_float(gui_vars[k]["party_mptam_stop_pct"], 65.0)
+            # 👇 신규 추가: 파티 비상텔레포트 파싱
+            p_mptam_tele_val = safe_float(gui_vars[k]["party_mptam_tele_pct"], 12.0)
 
             is_party = gui_vars[k]["use_party_hunt"].get()
 
@@ -17245,14 +17274,14 @@ def sync_gui_vars():
             final_hp_20_action = gui_vars[k]["party_hp_20_action"].get() if is_party else gui_vars[k]["hp_20_action"].get()
             final_pk_drop_pct = p_pk_drop_val if is_party else pk_drop_val
             final_max_combat_time = p_max_combat_val if is_party else max_combat_val
-            final_return_cond = gui_vars[k]["return_cond"].get() # 🚀 귀환조건은 파티탭에서 뺐으므로 무조건 메인 탭 값을 사용
+            final_return_cond = gui_vars[k]["return_cond"].get() # 🚀 귀환조건은 무조건 메인 탭 값을 사용
             final_use_mptam = gui_vars[k]["party_use_mptam"].get() if is_party else gui_vars[k]["use_mptam"].get()
             final_mptam_start_pct = p_mptam_start_val if is_party else mptam_start_val
             final_mptam_stop_pct = p_mptam_stop_val if is_party else mptam_stop_val
 
             st = ai_states.get(k, {})  
             
-            # 👇👇👇 여기서부터 current_settings[k] 딕셔너리 전체를 덮어쓰기 하세요! 👇👇👇
+            # 👇👇👇 여기서부터 꼬여있던 중복 데이터를 완벽히 제거하고 하나의 딕셔너리로 조립합니다! 👇👇👇
             current_settings[k] = {
                 "com_port": gui_vars[k]["com_port"].get().strip(),
                 "pico_hwid": st.get("pico_hwid", saved_settings.get(k, {}).get("pico_hwid", "")),
@@ -17283,6 +17312,10 @@ def sync_gui_vars():
                 "use_mptam": final_use_mptam,
                 "mptam_start_pct": final_mptam_start_pct,
                 "mptam_stop_pct": final_mptam_stop_pct,
+                
+                # 👇 신규 추가: 파티 비상텔레포트를 뇌로 쏴줌!
+                "party_mptam_tele_use": gui_vars[k]["party_mptam_tele_use"].get(),
+                "party_mptam_tele_pct": p_mptam_tele_val,
                 
                 # 🚀 [단일 적용 옵션들] (메인/보조 탭에만 있는 고유 설정들)
                 "buff_set": gui_vars[k]["buff_set"].get(),
@@ -17997,6 +18030,13 @@ for i, pc in enumerate(MINI_PCS):
     tk.Label(p_mptam_frame, text="% 발동, ", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left")
     tk.Entry(p_mptam_frame, textvariable=vars_dict["party_mptam_stop_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
     tk.Label(p_mptam_frame, text="% 종료", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left")
+    
+    # 👇👇👇 [신규 추가: 파티 엠탐 비상텔 UI] 👇👇👇
+    tk.Label(p_mptam_frame, text="|", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(1,0))
+    tk.Checkbutton(p_mptam_frame, text="비상텔:", variable=vars_dict["party_mptam_tele_use"], bg=BG_PANEL, fg="#FF5252", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
+    tk.Entry(p_mptam_frame, textvariable=vars_dict["party_mptam_tele_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
+    tk.Label(p_mptam_frame, text="%↓(F11)", bg=BG_PANEL, fg="#FF5252", font=("맑은 고딕", 8)).pack(side="left", padx=0)
+    # 👆👆👆 ========================================= 👆👆👆
     
     # ====================================================
     # 🚀 [1열] 힐/엠피 공백 극강 압축 및 우측 절대귀환 배치
