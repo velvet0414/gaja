@@ -2263,7 +2263,9 @@ for pc in MINI_PCS:
         # 🧠 [터미네이터 V2 전투/루팅 뇌 메모리 확장]
         # ==========================================================
         "pre_target_data": None,        # 뼈대 D: 전투 중 몰래 찍어둔 다음 타겟 (좌표 및 모션 여부 기억)
-        "exp_drop_wait_timer": 0.0      # 뼈대 E: 몹 사망 후 비동기 드랍 대기 알람시계
+        "exp_drop_wait_timer": 0.0,      # 뼈대 E: 몹 사망 후 비동기 드랍 대기 알람시계
+        "is_real_buff_received": False, # 👑 [신규] 매크로 켰을 때는 가짜 시간으로 간주하여 팩트체크 무력화!
+        "real_buff_time": 0.0           # 👑 [신규] 진짜로 버프를 받은 팩트 시간
     }
 
 def init_hardware_picos():
@@ -5476,10 +5478,10 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     state["death_btn_pos"] = (click_x, click_y)
                                     
                                     # 버프 초기화 (죽었으므로 무조건 싹 털림)
-                                    state["last_haste_time"] = 0.0; state["buff_shield_time"] = 0.0; state["buff_holy_time"] = 0.0; state["buff_enchant_time"] = 0.0; state["buff_blessed_time"] = 0.0
+                                    state["last_haste_time"] = 0.0; state["used_gangchol"] = False; state["buff_shield_time"] = 0.0; state["buff_holy_time"] = 0.0; state["buff_enchant_time"] = 0.0; state["buff_blessed_time"] = 0.0
                                     state["buff_element_time"] = 0.0; state["buff_dex_time"] = 0.0; state["buff_decrease_time"] = 0.0; state["buff_trans_time"] = 0.0; state["buff_extra_f10_time"] = 0.0
                                     state["buff_light_time"] = 0.0; state["buff_blue_pot_time"] = 0.0
-                                    save_buff_times(ai_states) 
+                                    save_buff_times(ai_states)
                                     
                                     state["target_fsm"] = "DEATH_RESTART_CLICK"
                                     state["cooldown"] = curr_time + 0.5 
@@ -6607,9 +6609,14 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         time.sleep(g_val(0.15, 0.25))
 
                                     if not drank_cholgi:
-                                        dprint(key, "⚠️ 인벤토리에서 강촐을 먹지 못했습니다. 그냥 진행합니다.")
+                                        dprint(key, "🚨 [강촐 고갈] 창고에도 인벤에도 강촐이 없습니다! 무한 귀환을 막기 위해 매크로를 일시 정지합니다.")
+                                        ai_states[key]["is_paused"] = True
+                                        ai_states[key]["target_fsm"] = "IDLE"
+                                        ai_states[key]["cooldown"] = time.time() + 0.1
+                                        ai_states[key]["town_thread_running"] = False
+                                        return # 💡 강촐이 없으면 여기서 스레드를 완전히 끊어버림!
 
-                                    # 인벤토리 닫기
+                                    # 인벤토리 닫기 (강촐을 정상적으로 먹었을 때만 실행됨)
                                     send_keyboard_key(p_serial, p_lock, 179, 1, is_manual=True)
                                     time.sleep(g_val(0.08, 0.15))
                                     send_keyboard_key(p_serial, p_lock, 179, 0, is_manual=True)
@@ -6618,6 +6625,9 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 # 6. 무조건 사냥터로 복귀하는 FSM으로 점프!
                                 dprint(key, "🚀 [비상 정비 완료] 강촐 처리 완료! 사냥터 복귀(RETURN) 모드로 진입합니다.")
                                 ai_states[key]["last_haste_time"] = time.time() # 🚀 강촐을 먹었으니 버프 1시간 50분 타이머 빵빵하게 리셋!
+                                ai_states[key]["used_gangchol"] = True
+                                ai_states[key]["is_real_buff_received"] = True # 👑 [핵심] 진짜로 강촐을 먹었음!
+                                ai_states[key]["real_buff_time"] = time.time()
                                 
                                 send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True) # F1 복귀
                                 ai_states[key]["target_fsm"] = "TOWN_MAINT_RETURN"
@@ -6965,8 +6975,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                         
                                                         # 조건 1: 2픽셀 이상 이동했는가?
                                                         if shift_dist >= 2.0: 
-                                                            # 🚀 [파티 왕관 억까 완벽 수술 3] 파티 모드일 땐 화살표가 무조건 없으므로(오인식 방지) 아예 찾지 말고 내가 던진 방향을 100% 팩트로 강제 주입!
-                                                            if settings.get("use_party_hunt", False):
+                                                            # 🚀 [파티 왕관 & 오땅 억까 완벽 수술] 파티 모드이거나 오땅/이벤트 맵일 땐 방향 인식을 묻지도 따지지도 않고 파이썬 팩트로 강제 주입!
+                                                            if settings.get("use_party_hunt", False) or "오땅" in dungeon_val or "event" in dungeon_val.lower():
                                                                 actual_facing_deg = angle_deg
                                                             else:
                                                                 facing_rad = get_character_direction(minimap_after)
@@ -7228,6 +7238,9 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     dprint(key, "🏃‍♂️ [버프 수령 종료] 통신 절차 완료! 사냥터로 출발합니다.")
                                     
                                 ai_states[key]["last_haste_time"] = time.time() 
+                                ai_states[key]["used_gangchol"] = False
+                                ai_states[key]["is_real_buff_received"] = True # 👑 [핵심] 찐 버퍼한테 헤이 받았음 인증!
+                                ai_states[key]["real_buff_time"] = time.time()
                                 
                                 send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True) # F1 복귀
                                 ai_states[key]["target_fsm"] = "TOWN_MAINT_RETURN"
@@ -9028,15 +9041,20 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         state["cooldown"] = curr_time + 0.1
 
                         # =================================================================
-                        # 🧭 창고 정리 후! 사냥터별 맞춤 헤이스트 버프 수령 결정! (수던 40분 / 일반 1시간 50분)
+                        # 🧭 창고 정리 후! 사냥터별 맞춤 헤이스트 버프 수령 결정!
                         # =================================================================
                         elif fsm_town == "TOWN_MAINT_ROUTE_CHECK":
                             last_haste = state.get("last_haste_time", 0)
                             haste_elapsed = curr_time - last_haste
                             
-                            # 👇👇👇 [신규 엔진: 사냥터별 버프 리필 주기 차등 적용] 👇👇👇
+                            # 👇👇👇 [신규 엔진: 강촐 여부 및 사냥터별 버프 리필 주기 차등 적용] 👇👇👇
                             dng_name_for_buff = settings.get("dungeon_name", "")
-                            if "수던" in dng_name_for_buff or "heine" in dng_name_for_buff.lower():
+                            is_potion_haste = state.get("used_gangchol", False)
+                            
+                            if is_potion_haste:
+                                buff_threshold = 1680.0 # 🚀 강촐은 28분 (28 * 60초)
+                                threshold_str = "28분(강촐)"
+                            elif "수던" in dng_name_for_buff or "heine" in dng_name_for_buff.lower():
                                 buff_threshold = 2400.0 # 🚀 수던: 40분 (40 * 60초)
                                 threshold_str = "40분(수던)"
                             else:
@@ -9054,7 +9072,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     state["cooldown"] = curr_time + 0.1
                                 else:
                                     # 2. 화살 부족, 무게 등 다른 이유로 정비 온 경우 -> 헤이 시간이 다 됐어도 뇌피셜로 풀타임 채우고 사냥터로 직행!
-                                    dprint(key, f"🏃 [CC연동 OFF] 버프 연동이 꺼져 있습니다. 멍때림 방지를 위해 헤이스트 타이머를 강제로 풀충전하고 사냥터로 직행합니다!")
+                                    dprint(key, f"🏃 [CC연동 OFF] 버프 연동이 꺼져 있습니다. 멍때림 방지를 위해 타이머를 강제로 풀충전하고 사냥터로 직행합니다!")
                                     state["last_haste_time"] = curr_time # 💡 타이머 빵빵하게 리셋
                                     state["target_fsm"] = "TOWN_MAINT_RETURN"
                                     state["cooldown"] = curr_time + 0.1
@@ -9063,11 +9081,11 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
 
                             # (이하는 기존 CC연동 ON 일 때의 정상 작동 코드)
                             if last_haste == 0 or haste_elapsed >= buff_threshold:
-                                dprint(key, f"🪄 [버프 루트] 헤이 받은지 {haste_elapsed/60:.1f}분 경과. [{threshold_str} 기준 초과] 버프(헤이스트)를 받으러 갑니다!")
+                                dprint(key, f"🪄 [버프 루트] 헤이/강촐 받은지 {haste_elapsed/60:.1f}분 경과. [{threshold_str} 기준 초과] 새로 리필하러 갑니다!")
                                 state["target_fsm"] = "TOWN_MAINT_BUFF" 
                                 state["cooldown"] = curr_time + 0.1
                             else:
-                                dprint(key, f"🏃 [사냥터 직행] 헤이 받은지 {haste_elapsed/60:.1f}분 경과. [{threshold_str} 기준 미달] 버프 스킵, 사냥터로 직행!")
+                                dprint(key, f"🏃 [사냥터 직행] 헤이/강촐 받은지 {haste_elapsed/60:.1f}분 경과. [{threshold_str} 기준 미달] 리필 스킵, 사냥터로 직행!")
                                 state["target_fsm"] = "TOWN_MAINT_RETURN" 
                                 state["cooldown"] = curr_time + 0.1
                                     
@@ -9448,12 +9466,14 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     # 👆👆👆 ========================================================================= 👆👆👆
 
                 # =====================================================================
-                # 🏃 [1트랙] 헤이스트 증발 팩트 체크 및 일반 귀환 로직! (오땅 / 일반 분기)
+                # 🏃 [1트랙] 헤이스트 증발 전구역 감시망 & 20분 팩트 체크 엔진!
                 # =====================================================================
                 if ret_cond in ["헤이없음", "두가지다"]:
                     fsm_for_haste = str(state.get("target_fsm", ""))
                     
-                    is_safe_fsm = not (fsm_for_haste.startswith("TOWN_MAINT") or 
+                    # 👑 [형님 오더 완벽 적용: 마을 정비 중에도 상시 감시!]
+                    # 단, 실제로 버프/강촐을 받고 있는 도중이거나 귀환/사망 대기 중일 때만 센서 정지!
+                    is_safe_fsm = not (fsm_for_haste in ["TOWN_MAINT_BUFF", "TOWN_MAINT_CHOLGI_STEAL"] or 
                                        fsm_for_haste.startswith("DEATH_RESTART_") or
                                        fsm_for_haste in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"])
 
@@ -9470,11 +9490,18 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 dng_name_haste = settings.get("dungeon_name", "")
                                 force_haste_return = False
                                 
-                                # 👇👇👇 [오땅 전용: 채팅창(haste_x.png) + 2시간 타임아웃 투트랙 엔진] 👇👇👇
+                                time_since_buff = curr_time - state.get("last_haste_time", 0)
+                                is_real_buff = state.get("is_real_buff_received", False)
+                                real_buff_time = state.get("real_buff_time", 0)
+                                time_since_real_buff = curr_time - real_buff_time
+                                
+                                is_detected_missing = False
+                                missing_reason = ""
+                                
+                                # 👇👇👇 [오땅 전용: 채팅창(haste_x.png) + 2시간 타임아웃] 👇👇👇
                                 if "오땅" in dng_name_haste:
-                                    haste_missing_detected = False
+                                    oak_haste_missing = False
                                     
-                                    # 1. 채팅창 스캔 (선생님이 나중에 수정하기 편하도록 좌표를 변수로 뺐습니다!)
                                     CHAT_X1, CHAT_X2 = 125, 600
                                     CHAT_Y1, CHAT_Y2 = 490, h
                                     
@@ -9483,43 +9510,49 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         try:
                                             img_h_x = globals().get("img_haste_x")
                                             img_h_x_m = globals().get("img_haste_x_mask")
-                                            if img_h_x_m is not None:
-                                                res_haste = cv2.matchTemplate(chat_roi, img_h_x, cv2.TM_CCORR_NORMED, mask=cv2.merge([img_h_x_m]*3))
-                                            else:
-                                                res_haste = cv2.matchTemplate(chat_roi, img_h_x, cv2.TM_CCOEFF_NORMED)
+                                            
+                                            gray_roi = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
+                                            gray_tmpl = cv2.cvtColor(img_h_x, cv2.COLOR_BGR2GRAY)
+                                            
+                                            if img_h_x_m is not None: res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCORR_NORMED, mask=img_h_x_m)
+                                            else: res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCOEFF_NORMED)
                                                 
                                             _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
-                                            if max_val_haste >= 0.92: # 오땅 헤이
-                                                haste_missing_detected = True
-                                                dprint(key, "🚨 [오땅 헤이 증발] 채팅창에서 '헤이 풀림(haste_x)' 텍스트 감지!")
+                                            OAK_HASTE_THRESHOLD = 0.75
+                                            
+                                            if curr_time > state.get("last_chat_dbg_log", 0):
+                                                dprint(key, f"🔎 [채팅창 스캔] '헤이 풀림' 매칭률: {max_val_haste*100:.1f}%")
+                                                state["last_chat_dbg_log"] = curr_time + 1.0
+
+                                            if max_val_haste >= OAK_HASTE_THRESHOLD: 
+                                                is_detected_missing = True
+                                                missing_reason = f"채팅창 텍스트 감지({max_val_haste*100:.1f}%)"
                                         except: pass
                                         
-                                    # 2. 2시간 타임아웃 백업 엔진
-                                    if not haste_missing_detected:
-                                        last_haste = state.get("last_haste_time", curr_time)
-                                        if curr_time - last_haste >= 7200.0: # 2시간(7200초) 초과
-                                            haste_missing_detected = True
-                                            dprint(key, "🚨 [오땅 헤이 타임아웃] 버프 받은 지 2시간 초과!")
-
-                                    if haste_missing_detected:
-                                        force_haste_return = True
-                                        state["haste_empty_start"] = curr_time - 100.0 # 40초 딜레이 무시하고 즉각 귀환 유도
-                                    else:
-                                        state["haste_empty_start"] = 0
-                                # 👆👆👆 ==================================================================== 👆👆👆
-                                
-                                # 👇👇👇 [일반 던전: 기존 우측 상단 아이콘 40초 증발 감시 엔진 (원본 유지)] 👇👇👇
+                                    if not is_detected_missing and time_since_buff >= 7200.0:
+                                        is_detected_missing = True
+                                        missing_reason = "2시간 타임아웃"
+                                        
+                                # 👇👇👇 [일반 던전: 기존 우측 상단 아이콘 40초 증발 감시 엔진] 👇👇👇
                                 else:
                                     haste_found = False
-                                    if w >= 60 and h >= 350:
-                                        buff_roi_x1 = max(0, w - 60)
-                                        buff_roi_y1 = 0
-                                        buff_roi_x2 = w
-                                        buff_roi_y2 = min(h, 350)
-                                        
-                                        buff_roi = img_bgr[buff_roi_y1:buff_roi_y2, buff_roi_x1:buff_roi_x2]
-                                        
-                                        if "event" in dng_name_haste or "수던" in dng_name_haste:
+                                    
+                                    # 👑 [강촐 방어막] 강촐은 30분 동안 아이콘 스캔 프리패스 (초록물약이므로 헤이 안뜸)
+                                    is_gangchol_active = state.get("used_gangchol", False) and time_since_real_buff < 1800.0
+                                    
+                                    if is_gangchol_active:
+                                        haste_found = True
+                                        if curr_time > state.get("last_chat_dbg_log3", 0):
+                                            dprint(key, f"🛡️ [강촐 방어막] 강촐 복용 상태입니다. 아이콘 스캔 30분 면제! 남은시간: {1800.0 - time_since_real_buff:.0f}초")
+                                            state["last_chat_dbg_log3"] = curr_time + 5.0
+                                    else:
+                                        if w >= 60 and h >= 350:
+                                            buff_roi_x1 = max(0, w - 60)
+                                            buff_roi_y1 = 0
+                                            buff_roi_x2 = w
+                                            buff_roi_y2 = min(h, 350)
+                                            buff_roi = img_bgr[buff_roi_y1:buff_roi_y2, buff_roi_x1:buff_roi_x2]
+                                            
                                             import os
                                             ha_dir = "qq/ha"
                                             if os.path.exists(ha_dir):
@@ -9539,55 +9572,71 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                         tmpl = loaded_models.get(img_path)
                                                         if tmpl and tmpl["color"] is not None:
                                                             try:
-                                                                if tmpl["mask"] is not None:
-                                                                    res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl["mask"]]*3))
-                                                                else:
-                                                                    res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCOEFF_NORMED)
-                                                                    
+                                                                if tmpl["mask"] is not None: res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl["mask"]]*3))
+                                                                else: res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCOEFF_NORMED)
                                                                 _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
-                                                                target_haste_match = settings.get("haste_match_rate", 92.0) / 100.0
-                                                                if max_val_haste >= target_haste_match:
+                                                                if max_val_haste >= (settings.get("haste_match_rate", 92.0) / 100.0):
                                                                     haste_found = True
                                                                     break
                                                             except: pass
                                                     if haste_found: break
-                                        else:
-                                            if globals().get("img_haste") is not None:
+
+                                            if not haste_found and globals().get("img_haste") is not None:
                                                 try:
-                                                    if globals().get("img_haste_mask") is not None:
-                                                        res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste_mask")]*3))
-                                                    else:
-                                                        res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCOEFF_NORMED)
+                                                    if globals().get("img_haste_mask") is not None: res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste_mask")]*3))
+                                                    else: res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCOEFF_NORMED)
                                                     _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
-                                                    if max_val_haste >= 0.80: haste_found = True
+                                                    if max_val_haste >= (settings.get("haste_match_rate", 92.0) / 100.0): haste_found = True
                                                 except: pass
                                                 
                                             if not haste_found and globals().get("img_haste2") is not None:
                                                 try:
-                                                    if globals().get("img_haste2_mask") is not None:
-                                                        res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste2_mask")]*3))
-                                                    else:
-                                                        res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCOEFF_NORMED)
+                                                    if globals().get("img_haste2_mask") is not None: res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste2_mask")]*3))
+                                                    else: res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCOEFF_NORMED)
                                                     _, max_val_haste2, _, _ = cv2.minMaxLoc(res_haste2)
-                                                    if max_val_haste2 >= 0.80: haste_found = True
+                                                    if max_val_haste2 >= (settings.get("haste_match_rate", 92.0) / 100.0): haste_found = True
                                                 except: pass
-                                                
-                                    if haste_found:
-                                        if state.get("haste_visible_start", 0) == 0:
-                                            state["haste_visible_start"] = curr_time
-                                        elif curr_time - state.get("haste_visible_start", 0) >= 1.5:
+                                                    
+                                        if haste_found:
                                             state["haste_empty_start"] = 0 
+                                            state["haste_visible_start"] = curr_time
+                                        else:
+                                            state["haste_visible_start"] = 0 
+                                            if state.get("haste_empty_start", 0) == 0:
+                                                state["haste_empty_start"] = curr_time 
+                                                
+                                        if state.get("haste_empty_start", 0) > 0 and curr_time - state["haste_empty_start"] >= 40.0:
+                                            is_detected_missing = True
+                                            missing_reason = "우측 아이콘 40초 증발"
+
+                                # 👑 [형님 마스터피스: 진짜 버프 vs 가짜 버프 팩트 체크 엔진!]
+                                if is_detected_missing:
+                                    if "타임아웃" in missing_reason:
+                                        force_haste_return = True # 2시간 타임아웃은 팩트체크 없이 빼박 귀환!
                                     else:
-                                        state["haste_visible_start"] = 0 
-                                        if state.get("haste_empty_start", 0) == 0:
-                                            state["haste_empty_start"] = curr_time 
+                                        # 버퍼/강촐을 직접 받은 것이 팩트고, 그 시간이 20분 이내라면?
+                                        if is_real_buff and time_since_real_buff < 1200.0:
+                                            if curr_time > state.get("last_chat_dbg_log2", 0):
+                                                dprint(key, f"🛡️ [오감지 방어막] {missing_reason} 발생! 그러나 찐 버프 수령 후 {time_since_real_buff/60:.1f}분 밖에 안 지남! 과거 잔상/오인식으로 팩트 체크하고 무시합니다!")
+                                                state["last_chat_dbg_log2"] = curr_time + 5.0
+                                            # 무한 발작을 막기 위해 찌꺼기 타이머 리셋
+                                            state["haste_empty_start"] = 0
+                                        else:
+                                            # 매크로를 껐다 켜서 시간만 갱신됐거나(가짜 버프), 20분이 지났다면 찐 증발 확정!
+                                            state["last_haste_time"] = 0.0 # 뇌 장부 알람시계 강제 0으로 포맷
+                                            state["used_gangchol"] = False
+                                            state["is_real_buff_received"] = False
                                             
-                                    if state.get("haste_empty_start", 0) > 0 and curr_time - state["haste_empty_start"] >= 40.0:
-                                        force_haste_return = True
-                                        dprint(key, "🚨 [일반 헤이스트 오링] 사냥터에서 40초 연속 버프 미발견! 일반 귀환 발동!")
-                                # 👆👆👆 (오땅 / 일반 던전 분기 끝) 👆👆👆
+                                            if fsm_for_haste.startswith("TOWN_MAINT"):
+                                                # 👑 이미 마을 정비 중이라면? 창고 정리 멈추지 않음!
+                                                if curr_time > state.get("last_chat_dbg_log3", 0):
+                                                    dprint(key, "🚨 [마을 내 헤이 증발] 정비 중 헤이 풀림 확정! 정비 완료 후 버프장소로 가도록 장부 리셋.")
+                                                    state["last_chat_dbg_log3"] = curr_time + 10.0
+                                            else:
+                                                force_haste_return = True
+                                                dprint(key, f"🚨 [헤이 증발 확정] {missing_reason}! (실제 버프수령: {is_real_buff}, 경과: {time_since_real_buff/60:.1f}분). 즉각 귀환 발동!")
                                         
-                        # 🚀 [최종 귀환 발동] 
+                        # 🚀 [최종 귀환 발동 / 마을 스위칭 처리]
                         if locals().get("force_haste_return", False):
                             clear_movements_only(pico_queues[key])
                             
@@ -9596,17 +9645,18 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 state["sweep_active"] = False
 
                             pc_num_str = current_pc_num if current_pc_num else "1"
+                            import threading
                             threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 헤이스트 없음 귀환",), daemon=True).start()
 
                             state["is_pulling"] = False
-                            
-                            # 🚀 [뇌 장부 포맷] 귀환 발동 시 타이머 찌꺼기 싹 다 초기화!
                             state["haste_empty_start"] = 0
                             state["haste_visible_start"] = 0
                             state["next_haste_scan"] = curr_time + 5.0 
                             
-                            # 👑 귀환 시 뇌의 기억을 지워서 남은 시간과 관계없이 무조건 버프를 다시 받게 유도!
-                            state["last_haste_time"] = 0.0
+                            state["last_haste_time"] = 0.0 
+                            state["real_buff_time"] = 0.0 
+                            state["is_real_buff_received"] = False 
+                            state["used_gangchol"] = False 
                             
                             state["target_fsm"] = "TOWN_MAINT_NORMAL_RETURN"
                             state["cooldown"] = curr_time + 0.1
@@ -9615,6 +9665,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         state["last_haste_loop_time"] = curr_time
 
                     else:
+                        # 버프 대기 중이거나 강촐을 사러 가는 중일 때는 타이머 멈춤
                         state["haste_empty_start"] = 0 
                         state["haste_visible_start"] = 0
                         state["next_haste_scan"] = 0
@@ -17987,6 +18038,8 @@ def toggle_individual_hunt(key):
         state["is_inv_open"] = False 
         state["was_manual_mode"] = True
         state["is_mptam_mode"] = False # 🚀 사냥 켤 때 엠탐 플래그 무조건 초기화
+        state["is_real_buff_received"] = False # 👈 [신규 추가] 수동으로 매크로를 껐다 켜면 팩트 초기화!
+        state["real_buff_time"] = 0.0
 
         state["pick_retry_cnt"] = 0
         state.pop("found_items_history", None)
