@@ -4555,6 +4555,8 @@ check_attack_cursor = patched_check_attack_cursor
 
 def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제에서 -> 전담 소대장 체제로 변경!
     import os
+    import threading # 🚨 [치명적 크래시 완벽 수술] 지역 변수 꼬임으로 인한 뻗음 현상 원천 차단!
+    
     clock_dirs = [("12시", -90), ("1시반", -45), ("3시", 0), ("4시반", 45), ("6시", 90), ("7시반", 135), ("9시", 180), ("10시반", 225)]
     
     item_limit_x, item_limit_y = 0.40, 0.35  # 1차 네모 박스 (타원을 감쌀 수 있게 넉넉하게 확장)
