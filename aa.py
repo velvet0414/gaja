@@ -655,36 +655,24 @@ def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_sc
         true_cx = (w // 2) + OFFSET_X
         true_cy = (h // 2) + OFFSET_Y
         
-        # 👇👇👇 [오땅 전용 하이브리드 엔진 - 개활지 노이즈 파괴 수술!] 👇👇👇
+        # 👇👇👇 [오땅 전용 하이브리드 엔진 - 백/흑 이진화 통일 수술!] 👇👇👇
         if is_open_map and map_gray is not None:
-            # 🌲 [X-Ray 투시 엔진] 낮 시간대의 밝은 흙바닥과 풀밭 질감이 비쳐 올라오는 현상을 막기 위해,
-            # 오직 미니맵 UI가 찍어내는 "새까만 장애물 도트"만 핀셋으로 뽑아내어 뼈대를 새로 그립니다!
-            
-            # 1. 중심 화살표가 까만색으로 잡혀서 방해될 수 있으므로, 하얗게 덮어 지워버림 (기존 빗나간 영점도 true_cx로 교정)
             cv2.circle(minimap_gray, (true_cx, true_cy), 14, 255, -1) 
             
-            # 2. 👑 커트라인을 80 -> 55로 빡빡하게 조여서, 어설픈 그림자나 잔디는 싹 무시하고 찐 검은색만 장애물(흰색)로 반전 추출!
-            _, dark_obstacles = cv2.threshold(minimap_gray, 55, 255, cv2.THRESH_BINARY_INV)
+            # 2. GUI 감도(임계값) 실시간 가져오기 (🚀 파일 세이브 연동 완료!)
+            thresh_val = int(current_settings.get(TARGET_PC_KEY, {}).get("oak_thresh", 127))
             
-            # 3. 바닥 질감 때문에 생긴 1~2픽셀짜리 자글자글한 먼지(노이즈)를 지우개로 싹 지웁니다.
-            kernel = np.ones((2, 2), np.uint8)
-            clean_obstacles = cv2.morphologyEx(dark_obstacles, cv2.MORPH_OPEN, kernel)
+            # 3. 미니맵과 전체 맵을 완벽하게 동일한 기준으로 흑백 변환 (INV 옵션 완전 삭제!)
+            _, minimap_processed = cv2.threshold(minimap_gray, thresh_val, 255, cv2.THRESH_BINARY)
+            _, full_map_target = cv2.threshold(map_gray, thresh_val, 255, cv2.THRESH_BINARY)
             
-            # 4. 장애물 뼈대를 살짝 팽창시켜서 매칭이 잘 되게 도톰하게 만듦
-            minimap_processed = cv2.dilate(clean_obstacles, kernel, iterations=1)
-            
-            # 5. 서버 원본 맵(oak.png)도 동일하게 장애물만 하얗게 반전!
-            _, full_map_target = cv2.threshold(map_gray, 80, 255, cv2.THRESH_BINARY_INV)
-            
-            # 🚨 [OpenCV 버그 방지] 화면이 텅 비어있을 때 에러(분산 0)가 나지 않도록 모서리 픽셀 지정
+            # 🚨 [OpenCV 버그 방지] 화면이 단색일 때 에러 나지 않도록 양 끝 픽셀 고정
             minimap_processed[0, 0] = 0 
             minimap_processed[-1, -1] = 255 
             
-            # 찌꺼기를 완벽히 걷어냈으므로 매칭 커트라인을 0.10 정도로 대폭 낮춰서 맵을 부드럽게 잡게 해줌!
             MATCH_THRESHOLD = 0.10 
             skip_ground_check = True # 오땅은 어디든 길바닥이므로 팩트 체크 면제!
         else:
-            # 🧱 [던전 모드] 기존 순정 Canny 엣지(미로 뼈대) 매칭 유지!
             cv2.circle(minimap_gray, (true_cx, true_cy), 8, 128, -1) 
             minimap_processed = cv2.Canny(minimap_gray, 50, 150)
             full_map_target = full_map_edges_ref
@@ -1721,9 +1709,13 @@ def _save_settings_internal(): # 💡 들여쓰기 보호 마법
                 "move_sens": v["move_sens"].get(), # 🚀 [추가] 이동 센서 감도 저장
                 "hunt_first": v["hunt_first"].get(), # 🚀 [신규] 사냥 우선 모드 영구 저장
                 
-                # 👇👇👇 여기에 체인킬 저장 추가! 👇👇👇
                 "chain_kill": v["chain_kill"].get(), # 🚀 [신규] 체인킬 영구 저장
                 "haste_match_rate": v["haste_match_rate"].get(), # 🚀 [신규] 헤이 매칭률 영구 저장
+                
+                # 👇👇👇 [신규 추가] 저장소에 영구 각인! 👇👇👇
+                "oak_thresh": v["oak_thresh"].get(),
+                # 👆👆👆 =================================
+                
                 "motion_sensitivity": v["motion_sensitivity"].get(),
                 "gb_count_normal": v["gb_count_normal"].get(),
                 "gb_count_dng": v["gb_count_dng"].get(),
@@ -2160,9 +2152,12 @@ for pc in MINI_PCS:
         "move_sens": tk.StringVar(value=pc_set.get("move_sens", "2000")),
         "hunt_first": tk.BooleanVar(value=pc_set.get("hunt_first", False)), # 🚀 [기존] 사냥 우선 모드
         
-        # 👇👇👇 여기에 체인킬 변수 추가! 👇👇👇
         "chain_kill": tk.BooleanVar(value=pc_set.get("chain_kill", False)), # 🚀 [신규] 체인킬 모드
         "haste_match_rate": tk.StringVar(value=pc_set.get("haste_match_rate", "92")), # 🚀 [신규] 수던/이벤 헤이 인식률 (기본값 92)
+        
+        # 👇👇👇 [신규 추가] 오땅 흑백 감도 👇👇👇
+        "oak_thresh": tk.StringVar(value=pc_set.get("oak_thresh", "127")),
+        # 👆👆👆 ==========================================던/이벤 헤이 인식률 (기본값 92)
         
         "motion_sensitivity": tk.StringVar(value=pc_set.get("motion_sensitivity", "35")),
         "gb_count_normal": tk.StringVar(value=pc_set.get("gb_count_normal", "3")),
@@ -4795,8 +4790,6 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     map_pos, minimap_processed = get_robust_map_pos(minimap_bgr, pc_map_edges, last_pos=state.get("dungeon_map_pos"), allow_full_scan=allow_full, map_gray=pc_map_gray, is_open_map=is_oak_active)
                     # 👆👆👆 =========================================================================
                             
-                    # 🚀 [수술 1] map_gray 파라미터를 추가하여 5픽셀 우주공간 필터링 발동!
-                    map_pos, minimap_processed = get_robust_map_pos(minimap_bgr, pc_map_edges, last_pos=state.get("dungeon_map_pos"), allow_full_scan=allow_full, map_gray=pc_map_gray)
 
                     # 👇👇👇 [신규 엔진: 개미굴/기던 전용 층수 오입장 자동 교정 시스템!] 👇👇👇
                     if map_pos is None and allow_full and not settings.get("use_party_hunt", False):
@@ -4977,6 +4970,18 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                 # 3. 레이캐스트 네비게이션 창 및 메인 화면 GPS 텍스트 렌더링
                 if DEBUG_MODE and debug_img is not None:
                     cv2.rectangle(debug_img, (0, 0), (MINIMAP_W, MINIMAP_H), (0, 255, 0), 1)
+
+                    # 👇👇👇 [신규: 파이썬이 보는 미니맵 흑백 변환 팩트 실시간 렌더링] 👇👇👇
+                    dng_name_debug = settings.get("dungeon_name", "")
+                    if ("오땅" in dng_name_debug or "event" in dng_name_debug.lower()) and minimap_processed is not None:
+                        ph, pw = minimap_processed.shape[:2]
+                        if MINIMAP_W + pw <= w: # 우측 짤림 방어
+                            proc_bgr = cv2.cvtColor(minimap_processed, cv2.COLOR_GRAY2BGR)
+                            debug_img[0:ph, MINIMAP_W:MINIMAP_W+pw] = proc_bgr
+                            cv2.rectangle(debug_img, (MINIMAP_W, 0), (MINIMAP_W+pw, ph), (255, 255, 0), 1)
+                            cv2.putText(debug_img, "AI MINIMAP", (MINIMAP_W + 3, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 0), 1)
+                    # 👆👆👆 =========================================================
+
                     if state.get("dungeon_map_pos"):
                         mx, my = state["dungeon_map_pos"]
                         cv2.putText(debug_img, f"GPS MAP: ({int(mx)}, {int(my)})", (5, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
@@ -5008,7 +5013,21 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             x2_map, y2_map = min(fw_map, cx_map + crop_size), min(fh_map, cy_map + crop_size)
 
                             if x2_map > x1_map and y2_map > y1_map:
-                                raycast_vis = cv2.cvtColor(pc_map_gray[y1_map:y2_map, x1_map:x2_map], cv2.COLOR_GRAY2BGR)
+                                
+                                # 👇👇👇 [오땅/이벤트 전체 맵 흑백 변환 실시간 시각화] 👇👇👇
+                                dng_name_ray = settings.get("dungeon_name", "")
+                                if "오땅" in dng_name_ray or "event" in dng_name_ray.lower():
+                                    # 🚀 [파일 세이브 연동 완료]
+                                    thresh_val_dbg = int(settings.get("oak_thresh", 127))
+                                    
+                                    raw_crop = pc_map_gray[y1_map:y2_map, x1_map:x2_map]
+                                    # 👑 매칭 엔진과 완벽히 동일하게 THRESH_BINARY 적용!
+                                    _, map_debug_thresh = cv2.threshold(raw_crop, thresh_val_dbg, 255, cv2.THRESH_BINARY)
+                                    raycast_vis = cv2.cvtColor(map_debug_thresh, cv2.COLOR_GRAY2BGR)
+                                else:
+                                    raycast_vis = cv2.cvtColor(pc_map_gray[y1_map:y2_map, x1_map:x2_map], cv2.COLOR_GRAY2BGR)
+                                # 👆👆👆 ==============================================================
+
                                 vis_cx, vis_cy = cx_map - x1_map, cy_map - y1_map
                                 cv2.circle(raycast_vis, (vis_cx, vis_cy), 5, (0, 255, 255), -1) 
 
@@ -5027,7 +5046,6 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     if raycast_debug_queues[key].full(): raycast_debug_queues[key].get_nowait()
                                     enlarged_vis = cv2.resize(raycast_vis, (400, 400), interpolation=cv2.INTER_NEAREST)
                                     
-                                    # 🚀 수동 모드이면 글씨를 노란색으로 다르게 표시!
                                     if active_manual_target == key:
                                         cv2.putText(enlarged_vis, f"GPS: {cx_map},{cy_map} (MANUAL)", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1)
                                     else:
@@ -5035,7 +5053,13 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         cv2.putText(enlarged_vis, f"GPS: {cx_map},{cy_map} / Path: {path_len} pts", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
                                         if target_pt:
                                             cv2.putText(enlarged_vis, f"TARGET: {int(target_pt[0])}, {int(target_pt[1])}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 1)
-                                        
+
+                                    # 👇👇👇 [X-RAY 모드 및 현재 감도 렌더링] 👇👇👇
+                                    if "오땅" in dng_name_ray or "event" in dng_name_ray.lower():
+                                        # 🚀 [파일 세이브 연동 완료]
+                                        cur_th = int(settings.get("oak_thresh", 127))
+                                        cv2.putText(enlarged_vis, f"[OAK X-RAY: THRESH {cur_th}]", (10, 380), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
                                     raycast_debug_queues[key].put_nowait(enlarged_vis)
                                 except Exception: pass
 
@@ -5419,16 +5443,17 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
             
             if state.get("is_hunt_active", False) and not state.get("is_paused", False):
 
-                # 👇👇👇 [형님 오더: 사망 엔진을 마을 정비보다 무조건 최상단 0순위로 끌어올림!] 👇👇👇
+                # 👇👇👇 [형님 오더: 사망 엔진을 무조건 최상단 0순위로 끌어올리고 헤이스트 새치기 완벽 차단!] 👇👇👇
                 # =====================================================================
                 # 💀 [절대 0순위] 사망 절대 감지 센서 & 리스타트 무한 광클(치우기) 엔진
                 # =====================================================================
                 fsm_death_chk = str(state.get("target_fsm", ""))
                 is_handling_death = fsm_death_chk.startswith("DEATH_RESTART_")
                 
-                # 1. 1초 주기 사망 센서 가동 (마 마을 정비 중이든 사냥 중이든 무조건 스캔!)
+                # 1. 사망 센서 가동 (평상시 1.0초, 사망 의심 중일 땐 0.1초 초고속 스캔!)
+                chk_interval = 0.1 if state.get("death_detect_start", 0) > 0 else 1.0
                 if not is_handling_death and curr_time > state.get("next_death_check", 0):
-                    state["next_death_check"] = curr_time + 1.0 
+                    state["next_death_check"] = curr_time + chk_interval
                     
                     if img_death is not None and w >= 180 and h >= 180:
                         death_roi_x1 = max(0, w - 180)
@@ -5445,24 +5470,32 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             _, max_val_death, _, max_loc_death = cv2.minMaxLoc(res_death)
                             state["last_death_val"] = max_val_death 
                             
-                            # 🚀 [오인식 방어 완벽 수술] 1프레임 감지가 아닌 5초 연속 감지 엔진 도입!
+                            # 🚀 [오인식 방어 완벽 수술] 5초 대기를 0.5초로 극한 단축 및 상태 강제 셧다운!
                             if max_val_death >= 0.83:
                                 # 💡 처음 83%를 넘긴 순간이라면 타이머 시작!
                                 if state.get("death_detect_start", 0) == 0:
                                     state["death_detect_start"] = curr_time
-                                    dprint(key, f"⚠️ [사망 의심] 일치율 {max_val_death*100:.1f}%. 검은 화면 오인식 방지를 위해 5초간 연속 팩트 체크를 시작합니다.")
+                                    dprint(key, f"⚠️ [사망 의심] 일치율 {max_val_death*100:.1f}%. 다른 모든 생존 로직을 강제 차단하고 0.5초 팩트 체크 돌입!")
                                     
-                                # 💡 5초 동안 한 번도 안 떨어지고 계속 83% 이상을 유지했다면 찐 사망 확정!
-                                elif curr_time - state.get("death_detect_start", 0) >= 5.0:
-                                    dprint(key, f"💀 [사망 절대 감지] 5초 연속 감지 확정! 모든 행동 강제 셧다운! 리스타트 광클 모드 진입!")
+                                    # 🚨 사망 의심 즉시 진행 중인 물리적 타건/마우스 큐 폭파하여 F9 등 다른 행동 절대 금지!
+                                    state["abort_macro"] = True
+                                    with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                                    clear_movements_only(pico_queues[key])
+                                    pico_queues[key].put({"action": "FORCE_RELEASE"})
+                                    
+                                # 💡 0.5초 동안 한 번도 안 떨어지고 계속 83% 이상을 유지했다면 찐 사망 확정!
+                                elif curr_time - state.get("death_detect_start", 0) >= 0.5:
+                                    dprint(key, f"💀 [사망 절대 감지] 0.5초 연속 감지 확정! 모든 행동 강제 셧다운! 리스타트 광클 모드 진입!")
                                     state["death_detect_start"] = 0 # 💡 발동 후 타이머 초기화
                                     
                                     pc_num_str = current_pc_num if current_pc_num else "1"
                                     threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 die",), daemon=True).start()
                                     
                                     # 👑 [절대 셧다운] 큐 폭파 및 누르고 있던 키보드/마우스 강제 해제
+                                    state["abort_macro"] = True
                                     with pico_queues[key].mutex: pico_queues[key].queue.clear()
                                     clear_movements_only(pico_queues[key])
+                                    pico_queues[key].put({"action": "FORCE_RELEASE"})
                                     
                                     if state.get("sweep_active", False):
                                         pico_queues[key].put({"action": "SWEEP_STOP"})
@@ -5489,7 +5522,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     state["cooldown"] = curr_time + 0.5 
                                     continue
                             else:
-                                # 💡 5초를 못 채우고 일치율이 83% 밑으로 떨어지면(로딩 끝남) 즉시 5초 타이머 백지화!
+                                # 💡 0.5초를 못 채우고 일치율이 83% 밑으로 떨어지면(로딩 끝남) 즉시 타이머 백지화!
                                 if state.get("death_detect_start", 0) > 0:
                                     dprint(key, "💨 [사망 오인식 해제] 화면이 정상(83% 미만)으로 돌아왔습니다. 오인식으로 간주하고 타이머를 포맷합니다.")
                                     state["death_detect_start"] = 0
@@ -5575,7 +5608,37 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 state["cooldown"] = curr_time + 0.1
                     
                     continue # 🚨 사망 처리 중일 때는 아래 정비/사냥 코드로 절대 못 내려감! (모든 행동 차단)
-                # 👆👆👆 ============================================================== 👆👆👆
+                
+                # =========================================================================
+                # 💀 [신규 엔진: 사망 판독 대기 중 타 로직(헤이없음 등) 새치기 완벽 차단!]
+                # =========================================================================
+                if state.get("death_detect_start", 0) > 0:
+                    # 💡 사망(DEATH) 팩트 체크가 진행되는 도중입니다!
+                    # 이 때 '헤이스트 풀림'이나 '은화살 오링' 센서가 먼저 발작해서 
+                    # 귀환(F9)이나 마을 정비 로직으로 FSM을 덮어씌워버리는 참사를 원천 차단합니다!
+                    
+                    # 🚀 하던 행동(전투/줍기) 즉각 중단 및 큐 폭파!
+                    state["abort_macro"] = True
+                    with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                    clear_movements_only(pico_queues[key])
+                    pico_queues[key].put({"action": "FORCE_RELEASE"})
+                    
+                    if state.get("sweep_active", False):
+                        pico_queues[key].put({"action": "SWEEP_STOP"})
+                        state["sweep_active"] = False
+                        
+                    if state.get("body_held", False):
+                        if picos.get(key) and pico_locks.get(key): 
+                            send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0)
+                        state["body_held"] = False
+                        
+                    state["is_pulling"] = False
+                    state["is_attacking"] = False
+                    state["arrow_is_firing"] = False
+                    state["has_fired_arrow"] = False
+                    
+                    continue # 🚨 아래의 모든 검사(절대귀환, 정비, 헤이스트, PK)를 아예 못하게 루프 강제 스킵!
+                # 👆👆👆 ========================================================================= 👆👆👆
 
                 # =====================================================================
                 # 🚨 [신규 긴급 0.5순위] 절대 귀환 (정비/오류 상태 씹고 무조건 생존!)
@@ -6830,6 +6893,11 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                             # 알람시계 리셋 (오감지로 헛걸음 쳤지만 억까 방지를 위해 타이머 갱신!)
                                             ai_states[key]["last_haste_time"] = time.time()
                                             
+                                            # 👇👇👇 [핵심 수술: 20분 방어막 강제 활성화!] 👇👇👇
+                                            ai_states[key]["is_real_buff_received"] = True
+                                            ai_states[key]["real_buff_time"] = time.time()
+                                            # 👆👆👆 =========================================
+                                            
                                             send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
                                             ai_states[key]["target_fsm"] = "TOWN_MAINT_RETURN"
                                             ai_states[key]["cooldown"] = time.time() + 0.1
@@ -7306,14 +7374,21 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 else:
                                     dprint(key, "🏃‍♂️ [버프 수령 종료] 통신 절차 완료! 사냥터로 출발합니다.")
                                     
-                                ai_states[key]["last_haste_time"] = time.time() 
+                                # 👇👇👇 [치명적 버그 완벽 수술] 
+                                # 스레드용 SafeTime이 아닌, 파이썬 표준 내장 모듈(builtin_time)을 명시적으로 호출하여 
+                                # AI 뇌피셜 장부에 절대 소수점 시간값(float)이 완벽하게 꽂히도록 강제 보정합니다!
+                                import time as builtin_time
+                                exact_now = builtin_time.time()
+                                
+                                ai_states[key]["last_haste_time"] = exact_now 
                                 ai_states[key]["used_gangchol"] = False
                                 ai_states[key]["is_real_buff_received"] = True # 👑 [핵심] 찐 버퍼한테 헤이 받았음 인증!
-                                ai_states[key]["real_buff_time"] = time.time()
+                                ai_states[key]["real_buff_time"] = exact_now
+                                # 👆👆👆 =================================================================================
                                 
-                                send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True) # F1 복귀
+                                send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); builtin_time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True) # F1 복귀
                                 ai_states[key]["target_fsm"] = "TOWN_MAINT_RETURN"
-                                ai_states[key]["cooldown"] = time.time() + 0.1
+                                ai_states[key]["cooldown"] = exact_now + 0.1
                             
 
                             # ======================================================
@@ -8447,9 +8522,29 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                             m_click_ack(jangro_pos[0] + random.randint(-2, 2), click_y + random.randint(-2, 2), jx=0, jy=0, double=False, pre_delay=0.1)
                                             wait_with_heal(g_val(1.2, 1.5)) # 대화창 뜰 때까지 넉넉히 대기
 
-                                            # 🚀 [오땅 진입 스크롤 완벽 소각 2] 대화창 마우스 주차 및 휠 스크롤 삭제!
-                                            dprint(key, "🔽 스크롤 생략! 다이렉트 계절 매칭 대기...")
-                                            wait_with_heal(0.5) # 대화창 렌더링될 짧은 순간만 숨고르기
+                                            # 👇👇👇 [오땅 계절 스마트 분기: 겨울에만 스크롤 발동!] 👇👇👇
+                                            if "겨울" in dungeon_name:
+                                                # 🚀 형님 오더: 마우스를 대화창 UI(좌측)로 이동 후 휠 내리기!
+                                                dprint(key, "❄️ [오땅-겨울] 대화창 상단으로 커서 주차 후 휠 스크롤 2~3회 내리기")
+                                                cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
+                                                
+                                                ui_cx, ui_cy = 150, 100 
+                                                dur = apply_human_variance(0.15 + 0.05 * math.log2((math.hypot(ui_cx - cur_x, ui_cy - cur_y) / 20.0) + 1.0))
+                                                pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(ui_cx - cur_x, ui_cy - cur_y, duration=dur, behavior="NORMAL", key=key)})
+                                                if key in ai_states: ai_states[key]["cursor_pos"] = [ui_cx, ui_cy]
+                                                wait_with_heal(dur + 0.2)
+                                                
+                                                scroll_cnt = random.randint(2, 3)
+                                                for _ in range(scroll_cnt):
+                                                    send_mouse_scroll(p_serial, p_lock, -5) # 휠 아래로 굴리기
+                                                    wait_with_heal(g_val(0.1, 0.15))
+                                                    
+                                                dprint(key, "⏳ 화면 롤링 및 관성 안정화 1.2초 대기...")
+                                                wait_with_heal(1.2) 
+                                            else:
+                                                dprint(key, "🌸 [봄/여름/가을] 스크롤 생략! 다이렉트 계절 매칭 대기...")
+                                                wait_with_heal(0.5) # 대화창 렌더링될 짧은 순간만 숨고르기
+                                            # 👆👆👆 =======================================================
                                             
                                             season_img = "spring.png"
                                             if "여름" in dungeon_name: season_img = "summer.png"
@@ -9585,13 +9680,24 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         except: pass
                                         
                                     if not is_detected_missing:
-                                        # 🚀 [형님 적발 수술!] 17억 초 버그 원천 차단!
                                         if last_haste == 0.0:
                                             is_detected_missing = True
                                             missing_reason = "버프 기록 없음 (초기화됨)"
-                                        elif last_haste > 0.0 and time_since_buff >= 7200.0:
-                                            is_detected_missing = True
-                                            missing_reason = "2시간 타임아웃"
+                                        elif last_haste > 0.0:
+                                            # 👇👇👇 [핵심 수술: 시간 역행 버그 및 2시간 타임아웃 억까 완벽 파괴!] 👇👇👇
+                                            safe_time_since = max(0.0, time_since_buff)
+                                            
+                                            if safe_time_since >= 7200.0:
+                                                # 🚨 스레드 시간 꼬임 방어막! 방금 마을에서 팩트 체크를 하고 왔다면 2시간 오류를 강제 무시!
+                                                if state.get("is_real_buff_received", False) and safe_time_since > 8000.0:
+                                                    if curr_time > state.get("last_chat_dbg_log4", 0):
+                                                        dprint(key, f"🛡️ [타임아웃 버그 차단] 시간 연산 오류 감지({safe_time_since:.1f}초)! 타이머를 강제 정상화합니다.")
+                                                        state["last_chat_dbg_log4"] = curr_time + 10.0
+                                                    state["last_haste_time"] = curr_time # 💡 타이머 강제 리셋
+                                                else:
+                                                    is_detected_missing = True
+                                                    missing_reason = "2시간 타임아웃"
+                                            # 👆👆👆 =========================================================================
                                         
                                 # 👇👇👇 [일반 던전: 기존 우측 상단 아이콘 40초 증발 감시 엔진] 👇👇👇
                                 else:
@@ -9674,10 +9780,10 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     if "타임아웃" in missing_reason:
                                         force_haste_return = True # 2시간 타임아웃은 팩트체크 없이 빼박 귀환!
                                     else:
-                                        # 버퍼/강촐을 직접 받은 것이 팩트고, 그 시간이 20분 이내라면?
-                                        if is_real_buff and time_since_real_buff < 1200.0:
+                                        # 👇👇👇 [5분 방어막 수술] 1200.0(20분)을 300.0(5분)으로 단축! 👇👇👇
+                                        if is_real_buff and time_since_real_buff < 300.0:
                                             if curr_time > state.get("last_chat_dbg_log2", 0):
-                                                dprint(key, f"🛡️ [오감지 방어막] {missing_reason} 발생! 그러나 찐 버프 수령 후 {time_since_real_buff/60:.1f}분 밖에 안 지남! 과거 잔상/오인식으로 팩트 체크하고 무시합니다!")
+                                                dprint(key, f"🛡️ [5분 오감지 방어막] {missing_reason} 발생! 그러나 찐 버프 수령 후 {time_since_real_buff/60:.1f}분 밖에 안 지남! 과거 잔상/오인식으로 팩트 체크하고 무시합니다!")
                                                 state["last_chat_dbg_log2"] = curr_time + 5.0
                                             # 무한 발작을 막기 위해 찌꺼기 타이머 리셋
                                             state["haste_empty_start"] = 0
@@ -17931,6 +18037,10 @@ def sync_gui_vars():
             
             # 👇 신규 추가: 다굴 판독 및 헤이스트 파싱 (safe_float 활용)
             haste_match_val = safe_float(gui_vars[k]["haste_match_rate"], 92.0) # 🚀 [신규] 헤이 매칭률 파싱
+            
+            # 👇👇👇 [신규 추가] 오땅 흑백 감도 파싱 👇👇👇
+            oak_thresh_val = int(safe_float(gui_vars[k]["oak_thresh"], 127.0))
+            # 👆👆👆 =================================
             motion_sens_val = int(safe_float(gui_vars[k]["motion_sensitivity"], 35.0))
             gb_norm_val = int(safe_float(gui_vars[k]["gb_count_normal"], 3.0))
             gb_dng_val = int(safe_float(gui_vars[k]["gb_count_dng"], 4.0))
@@ -18038,6 +18148,11 @@ def sync_gui_vars():
                 "hunt_first": gui_vars[k]["hunt_first"].get(), 
                 "chain_kill": gui_vars[k]["chain_kill"].get(), 
                 "haste_match_rate": haste_match_val,           
+                
+                # 👇👇👇 [신규 추가] 실시간 뇌 메모리에 저장! 👇👇👇
+                "oak_thresh": oak_thresh_val,
+                # 👆👆👆 =================================
+                
                 "motion_sensitivity": motion_sens_val,
                 
                 "gangbang_count_normal": gb_norm_val,
@@ -18393,7 +18508,9 @@ def reset_all_fatigue():
 btn_reset_fatigue = tk.Button(btn_frame, text="🔄피로", font=("맑은 고딕", 8, "bold"), bg="#E65100", fg="white", relief="flat", command=reset_all_fatigue)
 btn_reset_fatigue.pack(side="left", padx=1, ipadx=2, ipady=1)
 
-# 👇 [수술] '중앙컴' 이라는 글씨를 '컴' 으로 줄여서 피로도 리셋 바로 우측에 바짝 붙였습니다!
+tk.Label(btn_frame, text=" | 🌑감도:", bg="#2D2D30", fg="#FFEB3B", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(2, 0))
+# 👑 TARGET_PC_KEY 딕셔너리에 꽂혀있는 변수를 바라보게 만듭니다!
+tk.Entry(btn_frame, textvariable=gui_vars[TARGET_PC_KEY]["oak_thresh"], width=4, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
 tk.Label(btn_frame, text="💻컴:", bg="#2D2D30", fg="#FFD54F", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(3, 0))
 pc_num_var = tk.StringVar(value=current_pc_num) 
 pc_num_var.trace_add("write", on_pc_num_change) 
@@ -18942,7 +19059,11 @@ for i, pc in enumerate(MINI_PCS):
             class ManualAbort(BaseException): pass
             
             def check_abort():
-                if active_manual_target == target_key or ai_states.get(target_key, {}).get("is_hunt_active", False):
+                # 🚨 수동 제어(`)를 켰거나 사냥(▶)/일시정지 버튼을 누르면 예외를 뿜어내어 즉시 강제 종료!
+                if active_manual_target == key or not ai_states.get(key, {}).get("is_hunt_active", False) or ai_states.get(key, {}).get("is_paused", False):
+                    raise ManualAbort()
+                # 💀 [추가] 정비 중 사망 시 정비 스레드 즉시 폭파!
+                if str(ai_states.get(key, {}).get("target_fsm", "")).startswith("DEATH_RESTART") or ai_states.get(key, {}).get("death_detect_start", 0) > 0:
                     raise ManualAbort()
                 
             class SafeTime:
