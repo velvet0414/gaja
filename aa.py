@@ -8447,25 +8447,9 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                             m_click_ack(jangro_pos[0] + random.randint(-2, 2), click_y + random.randint(-2, 2), jx=0, jy=0, double=False, pre_delay=0.1)
                                             wait_with_heal(g_val(1.2, 1.5)) # 대화창 뜰 때까지 넉넉히 대기
 
-                                            # 🚀 형님 오더: 마우스를 대화창 UI(좌측)로 이동!
-                                            dprint(key, "🔽 대화창 상단으로 커서 주차 후 휠 스크롤 2~3회 내리기")
-                                            cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
-                                            
-                                            # 👇👇👇 [수정 완료: Y좌표 300 -> 100으로 200픽셀 위로 당김!] 👇👇👇
-                                            ui_cx, ui_cy = 150, 100 
-                                            dur = apply_human_variance(0.15 + 0.05 * math.log2((math.hypot(ui_cx - cur_x, ui_cy - cur_y) / 20.0) + 1.0))
-                                            pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(ui_cx - cur_x, ui_cy - cur_y, duration=dur, behavior="NORMAL", key=key)})
-                                            if key in ai_states: ai_states[key]["cursor_pos"] = [ui_cx, ui_cy]
-                                            wait_with_heal(dur + 0.2)
-                                            
-                                            scroll_cnt = random.randint(2, 3)
-                                            for _ in range(scroll_cnt):
-                                                send_mouse_scroll(p_serial, p_lock, -5) # 휠 아래로 굴리기
-                                                wait_with_heal(g_val(0.1, 0.15))
-                                                
-                                            # 👇👇👇 [형님 오더 완벽 적용: 스크롤 직후 관성 밀림 디싱크 파괴!] 👇👇👇
-                                            dprint(key, "⏳ 화면 롤링 및 관성 안정화 1.2초 대기...")
-                                            wait_with_heal(1.2) # 💡 기존 1.0초 + 형님 요청 0.2초 추가 대기!
+                                            # 🚀 [오땅 진입 스크롤 완벽 소각 2] 대화창 마우스 주차 및 휠 스크롤 삭제!
+                                            dprint(key, "🔽 스크롤 생략! 다이렉트 계절 매칭 대기...")
+                                            wait_with_heal(0.5) # 대화창 렌더링될 짧은 순간만 숨고르기
                                             
                                             season_img = "spring.png"
                                             if "여름" in dungeon_name: season_img = "summer.png"
