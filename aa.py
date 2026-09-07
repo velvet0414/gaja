@@ -6246,11 +6246,19 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
 
                                 try: arrow_qty = int(current_settings.get(key, {}).get("pick_arrow", 0))
                                 except: arrow_qty = 0
+                                
+                                # 👇👇👇 [신규 추가: 오땅/이벤트 은화살 5000발 강제 고정 엔진!] 👇👇👇
+                                if "오땅" in dng_name or "event" in dng_name.lower():
+                                    if arrow_qty != 5000 and pick_retry_cnt == 0:
+                                        dprint(key, f"🏹 [{dng_name}] 오땅/이벤트 맵이므로 GUI 설정({arrow_qty}발)을 무시하고 은화살을 5000발 강제 인출합니다!")
+                                    arrow_qty = 5000
+                                # 👆👆👆 ============================================================== 👆👆👆
+
                                 try: tele_qty = int(current_settings.get(key, {}).get("pick_teleport", 0))
                                 except: tele_qty = 0
 
                                 # 👇👇👇 [신규 추가: 수던/오땅 전용 축순 생략 엔진!] 👇👇👇
-                                if "수던" in dng_name or "heine" in dng_name.lower() or "오땅" in dng_name:
+                                if "수던" in dng_name or "heine" in dng_name.lower() or "오땅" in dng_name or "event" in dng_name.lower():
                                     if tele_qty > 0 and pick_retry_cnt == 0:
                                         dprint(key, f"📜 [{dng_name}] 축순이 필요 없는 사냥터입니다. 축순 인출을 생략합니다.")
                                     tele_qty = 0 # 강제로 0으로 만들어 찾기 목록에서 제외!
@@ -6771,7 +6779,66 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     
                                     dprint(key, "🗺️ [버프 준비] 미니맵을 엽니다.")
                                     ensure_minimap_open(check_time=1.5, pre_teleport=False)
-                                    
+
+                                    # 👇👇👇 [신규 엔진: 통신 전 자가 팩트체크 (오감지 귀환 완벽 방어막!)] 👇👇👇
+                                    # -------------------------------------------------------------
+                                    # 2.5 [오감지 자가 검증] 통제실에 요청 전 내 몸의 아이콘 스캔!
+                                    # -------------------------------------------------------------
+                                    if "오땅" in dungeon_val or "event" in dungeon_val.lower():
+                                        dprint(key, "🔎 [오감지 자가 검증] 통제실을 호출하기 전, 내 몸에 헤이스트가 남아있는지 팩트 체크합니다.")
+                                        time.sleep(0.5) # UI 안정화 대기
+                                        
+                                        pre_buff_found = False
+                                        ha_imgs = [f"qq/ha{i}.png" for i in range(1, 11)]
+                                        
+                                        import os
+                                        for img_path in ha_imgs:
+                                            if img_path not in loaded_models:
+                                                if os.path.exists(img_path):
+                                                    try:
+                                                        bgra = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+                                                        if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4:
+                                                            loaded_models[img_path] = {"color": bgra[:,:,:3], "mask": bgra[:,:,3]}
+                                                        else:
+                                                            loaded_models[img_path] = {"color": cv2.imread(img_path, cv2.IMREAD_COLOR), "mask": None}
+                                                    except: loaded_models[img_path] = None
+                                                else: loaded_models[img_path] = None
+                                        
+                                        # 3번 반복 스캔 (아이콘 깜빡임 대비)
+                                        for _ in range(3):
+                                            scr_chk = latest_frames.get(key)
+                                            if scr_chk is not None:
+                                                h_s, w_s = scr_chk.shape[:2]
+                                                if w_s >= 60 and h_s >= 350:
+                                                    buff_roi = scr_chk[0:min(h_s, 350), max(0, w_s - 60):w_s]
+                                                    for img_path in ha_imgs:
+                                                        tmpl = loaded_models.get(img_path)
+                                                        if tmpl and tmpl["color"] is not None:
+                                                            try:
+                                                                if tmpl["mask"] is not None: res_h = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl["mask"]]*3))
+                                                                else: res_h = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCOEFF_NORMED)
+                                                                _, max_val, _, _ = cv2.minMaxLoc(res_h)
+                                                                if max_val >= (current_settings.get(key, {}).get("haste_match_rate", 92.0) / 100.0):
+                                                                    pre_buff_found = True
+                                                                    break
+                                                            except: pass
+                                                    if pre_buff_found: break
+                                            time.sleep(0.3)
+                                            
+                                        if pre_buff_found:
+                                            dprint(key, "✅ [오감지 판명] 우측 상단 헤이 아이콘 확인! 통제실 호출을 취소하고 사냥터로 직행합니다.")
+                                            # 알람시계 리셋 (오감지로 헛걸음 쳤지만 억까 방지를 위해 타이머 갱신!)
+                                            ai_states[key]["last_haste_time"] = time.time()
+                                            
+                                            send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+                                            ai_states[key]["target_fsm"] = "TOWN_MAINT_RETURN"
+                                            ai_states[key]["cooldown"] = time.time() + 0.1
+                                            ai_states[key]["town_thread_running"] = False
+                                            return # 💡 여기서 스레드를 끊어버리므로 버퍼와 통신하지 않고 사냥터 복귀 스텝으로 토스됩니다!
+                                        else:
+                                            dprint(key, "🚨 [찐 증발 확정] 우측 아이콘 없음 확인 완료! 통제실 버퍼를 호출합니다.")
+                                    # 👆👆👆 ====================================================================================
+
                                     # -------------------------------------------------------------
                                     # 3. 통제실에 버프 최초 요청 (1회 송신)
                                     # -------------------------------------------------------------
@@ -9473,8 +9540,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                 if ret_cond in ["헤이없음", "두가지다"]:
                     fsm_for_haste = str(state.get("target_fsm", ""))
                     
-                    # 👑 [형님 오더 완벽 적용: 마을 정비 중에도 상시 감시!]
-                    # 단, 실제로 버프/강촐을 받고 있는 도중이거나 귀환/사망 대기 중일 때만 센서 정지!
+                    # 👑 [형님 오더 완벽 적용: 마을 정비 중에도 어떤 상태든 상시 감시!]
+                    # 단, 버프를 받으러 가서 이미 대기하고 있는 상태이거나, 귀환/사망/셧다운 딜레이 중일 때만 감지 정지!
                     is_safe_fsm = not (fsm_for_haste in ["TOWN_MAINT_BUFF", "TOWN_MAINT_CHOLGI_STEAL"] or 
                                        fsm_for_haste.startswith("DEATH_RESTART_") or
                                        fsm_for_haste in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"])
@@ -9492,18 +9559,19 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 dng_name_haste = settings.get("dungeon_name", "")
                                 force_haste_return = False
                                 
-                                time_since_buff = curr_time - state.get("last_haste_time", 0)
+                                # 🚨🚨🚨 [치명적 뻗음 에러 원인 해결!] 제가 누락시켰던 5줄의 팩트 변수를 부활시켰습니다!!! 🚨🚨🚨
+                                last_haste = state.get("last_haste_time", 0.0)
+                                time_since_buff = curr_time - last_haste
                                 is_real_buff = state.get("is_real_buff_received", False)
-                                real_buff_time = state.get("real_buff_time", 0)
+                                real_buff_time = state.get("real_buff_time", 0.0)
                                 time_since_real_buff = curr_time - real_buff_time
-                                
+                                # 👆👆👆 =========================================================================== 👆👆👆
+
                                 is_detected_missing = False
                                 missing_reason = ""
                                 
                                 # 👇👇👇 [오땅 전용: 채팅창(haste_x.png) + 2시간 타임아웃] 👇👇👇
                                 if "오땅" in dng_name_haste:
-                                    oak_haste_missing = False
-                                    
                                     CHAT_X1, CHAT_X2 = 125, 600
                                     CHAT_Y1, CHAT_Y2 = 490, h
                                     
@@ -9516,24 +9584,30 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                             gray_roi = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
                                             gray_tmpl = cv2.cvtColor(img_h_x, cv2.COLOR_BGR2GRAY)
                                             
-                                            if img_h_x_m is not None: res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCORR_NORMED, mask=img_h_x_m)
-                                            else: res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCOEFF_NORMED)
+                                            # 👑 [순정 복구] 마스크 투명도 연산을 완벽히 보존한 기존 방식으로 롤백!
+                                            if img_h_x_m is not None:
+                                                res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCORR_NORMED, mask=img_h_x_m)
+                                            else:
+                                                res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCOEFF_NORMED)
                                                 
                                             _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
-                                            OAK_HASTE_THRESHOLD = 0.75
                                             
-                                            if curr_time > state.get("last_chat_dbg_log", 0):
-                                                dprint(key, f"🔎 [채팅창 스캔] '헤이 풀림' 매칭률: {max_val_haste*100:.1f}%")
-                                                state["last_chat_dbg_log"] = curr_time + 1.0
+                                            OAK_HASTE_THRESHOLD = 0.80
+                                            
 
                                             if max_val_haste >= OAK_HASTE_THRESHOLD: 
                                                 is_detected_missing = True
                                                 missing_reason = f"채팅창 텍스트 감지({max_val_haste*100:.1f}%)"
                                         except: pass
                                         
-                                    if not is_detected_missing and time_since_buff >= 7200.0:
-                                        is_detected_missing = True
-                                        missing_reason = "2시간 타임아웃"
+                                    if not is_detected_missing:
+                                        # 🚀 [형님 적발 수술!] 17억 초 버그 원천 차단!
+                                        if last_haste == 0.0:
+                                            is_detected_missing = True
+                                            missing_reason = "버프 기록 없음 (초기화됨)"
+                                        elif last_haste > 0.0 and time_since_buff >= 7200.0:
+                                            is_detected_missing = True
+                                            missing_reason = "2시간 타임아웃"
                                         
                                 # 👇👇👇 [일반 던전: 기존 우측 상단 아이콘 40초 증발 감시 엔진] 👇👇👇
                                 else:
@@ -11643,13 +11717,16 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     if role != "DUNGEON" and max_combat_time == 15.0:
                         max_combat_time = 62.0
 
-                    # 👇👇👇 [특수 던전 하드코딩] 벽몹(15초 무적) 감지 및 타임아웃 👇👇👇
+                    # 👇👇👇 [특수 던전 하드코딩] 벽몹 감지 및 오땅 8초 컷 강제 엔진 👇👇👇
                     force_timeout = False
                     dng_combat_name = settings.get("dungeon_name", "")
                     
                     if "event" in dng_combat_name or "오땅" in dng_combat_name:
-                        if "오땅" not in dng_combat_name: # 🚀 오땅은 전투제한시간만 일반 던전 룰(GUI)을 따름!
-                            max_combat_time = 40.0 
+                        if "오땅" in dng_combat_name:
+                            # 👑 [형님 오더 완벽 적용] 오땅은 GUI 수치 싹 다 무시하고 무조건 8.0초 칼제동 하드코딩!
+                            max_combat_time = 8.0 
+                        else:
+                            max_combat_time = 40.0 # 이벤트 던전은 기존 40초 유지
                         
                         # 💡 전투 시작 후 15초가 지났는데도 내 피가 전혀 안 깎였다면 벽몹으로 확정!
                         if combat_dur > 15.0 and not state.get("combat_took_damage", False):
@@ -12110,8 +12187,20 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             portal_map_pts.append((px, py))
                 # 👆👆👆 ===================================================
 
-                # 🚀 실시간 미니맵 투시용 흑백 변환 (형님 기획)
-                minimap_gray_los = cv2.cvtColor(minimap_bgr, cv2.COLOR_BGR2GRAY) if minimap_bgr is not None else None
+                # ===================================================
+                # 🚀 [오땅/이벤트 벽몹 타겟팅 완벽 수술] 실시간 미니맵 투시용 흑백 변환
+                # ===================================================
+                minimap_gray_los = None
+                if minimap_bgr is not None:
+                    minimap_gray_los = cv2.cvtColor(minimap_bgr, cv2.COLOR_BGR2GRAY)
+                    
+                    dng_mob_name_chk = settings.get("dungeon_name", "")
+                    if "event" in dng_mob_name_chk.lower() or "오땅" in dng_mob_name_chk:
+                        # 💡 1. 오땅은 나무/벽이 60~80의 애매한 밝기를 가지므로 기존의 <50 검사를 무사통과하는 버그가 있었습니다!
+                        # 따라서 80을 기준으로 완전히 흑(0, 벽)과 백(255, 길)으로 이진화하여 벽 투시를 완벽하게 차단합니다!
+                        _, minimap_gray_los = cv2.threshold(minimap_gray_los, 80, 255, cv2.THRESH_BINARY)
+                        # 💡 2. 내 캐릭터 화살표나 파티원 마커 때문에 내 발밑이 벽(0)으로 인식되어 시작부터 막히는 억까 원천 차단!
+                        cv2.circle(minimap_gray_los, (70, 62), 10, 255, -1)
                 
                 for m in mobs:
                     map_dx = (m.x - char_screen_cx) * DUNGEON_SCALE_X
@@ -13740,7 +13829,12 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                 
                                     # 2. 이벤트 던전 (맵 매칭 실패 시) -> 👑 형님 기획: 미니맵 다이렉트 투시!
                                     elif is_event_dungeon and minimap_bgr is not None:
+                                        # 👇👇👇 [오땅/이벤트 벽템 완벽 차단 수술] 👇👇👇
                                         minimap_gray_item = cv2.cvtColor(minimap_bgr, cv2.COLOR_BGR2GRAY)
+                                        _, minimap_gray_item = cv2.threshold(minimap_gray_item, 80, 255, cv2.THRESH_BINARY)
+                                        cv2.circle(minimap_gray_item, (70, 62), 10, 255, -1)
+                                        # 👆👆👆 =========================================
+                                        
                                         # 💡 기존 아이템 투시 함수(check_item_line_of_sight)를 도화지만 미니맵으로 바꿔 그대로 활용!
                                         if not check_item_line_of_sight(minimap_gray_item, (70, 62), (70 + item_map_dx, 62 + item_map_dy), threshold=3):
                                             is_item_clear = False
@@ -16987,7 +17081,11 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     # 👇👇👇 [에러 치료 완료] 셋팅 장부에서 맵 이름을 확인하고 투시 모드 가동! 👇👇👇
                                     dng_name_rand = settings.get("dungeon_name", "")
                                     if ("event" in dng_name_rand or "오땅" in dng_name_rand) and minimap_bgr is not None:
+                                        # 🚀 [오땅/이벤트 방황 중 벽 비비기 완벽 수술] 
                                         minimap_gray_rt = cv2.cvtColor(minimap_bgr, cv2.COLOR_BGR2GRAY)
+                                        _, minimap_gray_rt = cv2.threshold(minimap_gray_rt, 80, 255, cv2.THRESH_BINARY)
+                                        cv2.circle(minimap_gray_rt, (70, 62), 10, 255, -1)
+                                        
                                         cx_m, cy_m = 70, 62
                                         valid_target = False
                                         tx, ty = cur_x, cur_y
@@ -18040,8 +18138,6 @@ def toggle_individual_hunt(key):
         state["is_inv_open"] = False 
         state["was_manual_mode"] = True
         state["is_mptam_mode"] = False # 🚀 사냥 켤 때 엠탐 플래그 무조건 초기화
-        state["is_real_buff_received"] = False # 👈 [신규 추가] 수동으로 매크로를 껐다 켜면 팩트 초기화!
-        state["real_buff_time"] = 0.0
 
         state["pick_retry_cnt"] = 0
         state.pop("found_items_history", None)
