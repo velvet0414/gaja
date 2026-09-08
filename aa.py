@@ -670,7 +670,7 @@ def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_sc
             minimap_processed[0, 0] = 0 
             minimap_processed[-1, -1] = 255 
             
-            MATCH_THRESHOLD = 0.10 
+            MATCH_THRESHOLD = 0.15 
             skip_ground_check = True # 오땅은 어디든 길바닥이므로 팩트 체크 면제!
         else:
             cv2.circle(minimap_gray, (true_cx, true_cy), 8, 128, -1) 
@@ -1726,6 +1726,7 @@ def _save_settings_internal(): # 💡 들여쓰기 보호 마법
                 "buy_qty": v["buy_qty"].get(),
                 "buy_count": v["buy_count"].get(),
                 "sell_item": v["sell_item"].get(),
+                "sell_qty": v["sell_qty"].get(), # 🚀 신규: 판매(인출) 수량 저장 연동
                 
                 # 👇👇👇 [2단계 신규 추가] 창고 출고 수량 json 파일에 영구 저장 👇👇👇
                 "pick_arrow": v["pick_arrow"].get(),
@@ -2167,7 +2168,8 @@ for pc in MINI_PCS:
         "buy_item": tk.StringVar(value=pc_set.get("buy_item", "은화살")),
         "buy_qty": tk.StringVar(value=pc_set.get("buy_qty", "5000")),
         "buy_count": tk.StringVar(value=pc_set.get("buy_count", "3")),
-        "sell_item": tk.StringVar(value=pc_set.get("sell_item", "(추후 추가)")),
+        "sell_item": tk.StringVar(value=pc_set.get("sell_item", "촐기")), # 🚀 수정: 기본값 변경
+        "sell_qty": tk.StringVar(value=pc_set.get("sell_qty", "50")),    # 🚀 신규: 창고 인출 수량 추가
         
         "pick_arrow": tk.StringVar(value=pc_set.get("pick_arrow", "4000")),
         "pick_teleport": tk.StringVar(value=pc_set.get("pick_teleport", "20")),
@@ -6288,7 +6290,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 if not click_img(npc_img, npc_desc, th=0.82, timeout=5.0, oy=35, jx=5, jy=6, d_min=0.3, d_max=0.45, ui_only=False): 
                                     handle_wh_fail()
                                     return
-                                if not click_img("qq/pick.png", "물건을 찾는다", th=0.75, timeout=4.0, jx=13, jy=3, d_min=0.3, d_max=0.45): 
+                                if not click_img("qq/pick.png", "물건을 찾는다", th=0.75, timeout=4.0, oy=-2, jx=13, jy=3, d_min=0.3, d_max=0.45): 
                                     handle_wh_fail()
                                     return
                                 time.sleep(0.3)
@@ -6552,7 +6554,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     handle_wh_fail(); return
                                     
                                 # 3. 물건을 찾는다(pick.png) 클릭
-                                if not click_img("qq/pick.png", "물건을 찾는다", th=0.75, timeout=4.0, jx=13, jy=3, d_min=0.3, d_max=0.45): 
+                                if not click_img("qq/pick.png", "물건을 찾는다", th=0.75, timeout=4.0, oy=-2, jx=13, jy=3, d_min=0.3, d_max=0.45): 
                                     handle_wh_fail(); return
                                 time.sleep(1.0) # 창고 열림 넉넉히 대기
 
@@ -18068,6 +18070,7 @@ def sync_gui_vars():
 
             buy_qty_val = int(safe_float(gui_vars[k]["buy_qty"], 5000.0))
             buy_count_val = int(safe_float(gui_vars[k]["buy_count"], 3.0))
+            sell_qty_val = int(safe_float(gui_vars[k]["sell_qty"], 50.0)) # 🚀 신규: 판매(인출) 수량 오타 필터링 추가
             
             # 👇👇👇 [2단계 신규 추가] 창고 출고 수량 오타 필터링 파싱 👇👇👇
             pick_arrow_val = int(safe_float(gui_vars[k]["pick_arrow"], 5000.0))
@@ -18185,6 +18188,7 @@ def sync_gui_vars():
                 "buy_qty": buy_qty_val,
                 "buy_count": buy_count_val,
                 "sell_item": gui_vars[k]["sell_item"].get(),
+                "sell_qty": sell_qty_val, # 🚀 신규: 실시간 뇌 메모리에 저장!
                 
                 "pick_arrow": pick_arrow_val,
                 "pick_teleport": pick_tele_val,
@@ -19028,12 +19032,16 @@ for i, pc in enumerate(MINI_PCS):
     tk.Entry(buy_frame, textvariable=vars_dict["buy_count"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
     tk.Label(buy_frame, text="회", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=1)
 
-    # [판매 라인] (추후 확장용)
+    # [판매 라인] (창고 인출 및 상점 판매)
     sell_frame = tk.Frame(supply_frame, bg=BG_PANEL)
     sell_frame.pack(side="top", fill="x", padx=5, pady=4)
     tk.Label(sell_frame, text="[판매]", bg=BG_PANEL, fg="#EF5350", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=2)
-    ttk.Combobox(sell_frame, textvariable=vars_dict["sell_item"], values=["(추후 추가)"], state="readonly", width=12, font=("맑은 고딕", 8)).pack(side="left", padx=2)
-    tk.Label(sell_frame, text="(※ 판매 기능은 추후 확장)", bg=BG_PANEL, fg="#9E9E9E", font=("맑은 고딕", 8)).pack(side="left", padx=5)
+    # 🚀 드롭메뉴에 3가지 항목(촐기, 강촐, 지혜) 추가
+    ttk.Combobox(sell_frame, textvariable=vars_dict["sell_item"], values=["촐기", "강촐", "지혜"], state="readonly", width=8, font=("맑은 고딕", 8)).pack(side="left", padx=2)
+    # 🚀 수량 입력칸 추가
+    tk.Label(sell_frame, text="찾을수량:", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=1)
+    tk.Entry(sell_frame, textvariable=vars_dict["sell_qty"], width=6, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
+    tk.Label(sell_frame, text="개", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=1)
 
     # 👇👇👇 [교체] 하이네 상점 구매 및 창고 쟁이기 (3연속 구매 + 전량 보관 랜덤 타건 적용 + 전체 딜레이 30% 축소!) 👇👇👇
     def run_auto_buy(target_key=key):
@@ -19436,16 +19444,375 @@ for i, pc in enumerate(MINI_PCS):
     # 👆👆👆 [교체 완료] 👆👆👆
 
     def run_auto_sell(target_key=key):
+        if not picos.get(target_key): 
+            print(f"❌ [{target_key}] 피코 연결 안됨!")
+            return
+            
         global active_manual_target
         if active_manual_target == target_key:
             toggle_manual(None)
             import time
-            time.sleep(0.2)
+            time.sleep(0.15) 
+            
         if target_key in ai_states and ai_states[target_key].get("is_hunt_active", False):
+            print(f"🔄 [{target_key}] 자동 사냥이 켜져 있어 판매 작업을 위해 사냥을 잠시 멈춥니다.")
             toggle_individual_hunt(target_key)
             import time
-            time.sleep(0.3)
-        print(f"\n💰 [{target_key}] 물건 판매 시작 신호! (현재 준비중)")
+            time.sleep(0.2) 
+            
+        # GUI에서 설정한 판매 아이템 및 인출 수량 파싱
+        try: sell_qty = int(gui_vars[target_key]["sell_qty"].get())
+        except: sell_qty = 50
+        
+        sell_item_name = gui_vars[target_key]["sell_item"].get()
+        sell_img_map = {
+            "촐기": "qq/sell/cholgi.png",
+            "강촐": "qq/sell/gangchol.png",
+            "지혜": "qq/sell/jihye.png"
+        }
+        sell_item_img = sell_img_map.get(sell_item_name, "qq/sell/cholgi.png")
+
+        print(f"\n💰 [{target_key}] 자동 판매 매크로 시작! (대상: {sell_item_name} / 1회 인출: {sell_qty}개)")
+        print(f"💡 [종료 조건] 창고에 더 이상 팔 '{sell_item_name}'이(가) 없으면 자동으로 매크로가 종료됩니다.")
+        
+        with pico_queues[target_key].mutex: pico_queues[target_key].queue.clear()
+        
+        if target_key in ai_states:
+            ai_states[target_key]["abort_macro"] = False
+
+        def sell_macro_thread():
+            import cv2, numpy as np, os, mss, math, random
+            import time as builtin_time 
+            
+            p_serial = picos[target_key]
+            p_lock = pico_locks[target_key]
+            roi = CAPTURE_ROIS.get(target_key)
+            if not roi: 
+                print("❌ ROI 정보가 없습니다. 창 정렬을 먼저 해주세요.")
+                return
+
+            class ManualAbort(BaseException): pass
+            
+            def check_abort():
+                # 수동 제어 모드이거나 사냥이 다시 켜졌을 때 즉각 폭파
+                if active_manual_target == target_key or ai_states.get(target_key, {}).get("is_hunt_active", False):
+                    raise ManualAbort()
+                
+            class SafeTime:
+                @staticmethod
+                def sleep(duration):
+                    end_t = builtin_time.time() + duration
+                    while builtin_time.time() < end_t:
+                        check_abort()
+                        builtin_time.sleep(0.02)
+                @staticmethod
+                def time():
+                    check_abort()
+                    return builtin_time.time()
+                    
+            time = SafeTime() 
+
+            def get_screen():
+                with mss.mss() as sct:
+                    img = np.array(sct.grab(roi))
+                    return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+
+            def find_image_with_mask(screen_bgr, template_path, threshold=0.82, is_npc=False, ui_only=False): 
+                if not os.path.exists(template_path): return None
+                
+                h_scr, w_scr = screen_bgr.shape[:2]
+                if ui_only:
+                    # 🚀 좌측 창고/인벤/기억창 UI 영역만 타이트하게 스캔
+                    search_area = screen_bgr[0:min(400, h_scr), 0:min(290, w_scr)]
+                elif is_npc:
+                    search_area = screen_bgr[0:min(480, h_scr), 0:w_scr]
+                else:
+                    search_area = screen_bgr
+                
+                with open(template_path, "rb") as f:
+                    bytes_data = bytearray(f.read())
+                np_arr = np.asarray(bytes_data, dtype=np.uint8)
+                tmpl_bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
+                if tmpl_bgra is None: return None
+                
+                if len(tmpl_bgra.shape) == 3 and tmpl_bgra.shape[2] == 4:
+                    tmpl_bgr = tmpl_bgra[:, :, :3]
+                    tmpl_alpha = tmpl_bgra[:, :, 3]
+                    mask_3c = cv2.merge([tmpl_alpha, tmpl_alpha, tmpl_alpha])
+                    res = cv2.matchTemplate(search_area, tmpl_bgr, cv2.TM_CCORR_NORMED, mask=mask_3c)
+                else:
+                    tmpl_bgr = tmpl_bgra[:, :, :3] if len(tmpl_bgra.shape) == 3 else tmpl_bgra
+                    res = cv2.matchTemplate(search_area, tmpl_bgr, cv2.TM_CCOEFF_NORMED)
+                    
+                min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+                if max_val >= threshold:
+                    h, w = tmpl_bgr.shape[:2]
+                    return (max_loc[0] + w // 2, max_loc[1] + h // 2)
+                return None
+
+            def click_pos(tx, ty, jitter_x=0, jitter_y=0, delay_min=0.21, delay_max=0.35, double=False):
+                cur_x, cur_y = ai_states.get(target_key, {}).get("cursor_pos", [400, 300])
+                
+                jx = int(round(random.gauss(0, jitter_x / 2.0))) if jitter_x > 0 else 0
+                jy = int(round(random.gauss(0, jitter_y / 2.0))) if jitter_y > 0 else 0
+                
+                final_tx = max(5, min(795, tx + jx))
+                final_ty = max(5, min(595, ty + jy))
+                
+                dist = math.hypot(final_tx - cur_x, final_ty - cur_y)
+                dur = apply_human_variance(0.08 + 0.04 * math.log2((dist / 20.0) + 1.0)) * 0.91 
+                
+                deltas = generate_human_deltas(final_tx - cur_x, final_ty - cur_y, duration=dur, behavior="PATROL", key=target_key)
+                if deltas: send_macro_buffer(p_serial, p_lock, deltas, target_key)
+                
+                time.sleep(dur + g_val(0.10, 0.21)) 
+                
+                send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
+                time.sleep(g_val(0.05, 0.08))       
+                send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
+                
+                if double:
+                    time.sleep(g_val(0.04, 0.08))
+                    send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
+                    time.sleep(g_val(0.05, 0.08))
+                    send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
+                    
+                time.sleep(g_val(delay_min, delay_max)) 
+                if target_key in ai_states: ai_states[target_key]["cursor_pos"] = [final_tx, final_ty]
+                return final_tx, final_ty
+
+            def input_number(num_str):
+                for char in str(num_str):
+                    kcode = ord(char) 
+                    send_keyboard_key(p_serial, p_lock, kcode, 1, is_manual=True)
+                    time.sleep(g_val(0.04, 0.07)) 
+                    send_keyboard_key(p_serial, p_lock, kcode, 0, is_manual=True)
+                    time.sleep(g_val(0.05, 0.10)) 
+
+            def spam_random_low_number():
+                # 1~5 사이의 숫자를 4~5회 연타하여 최대 수량 확보
+                hit_count = random.randint(4, 5) 
+                print(f"▶ [최대 수량 입력] 1~5 숫자 무작위로 {hit_count}회 광클합니다!")
+                for i in range(hit_count):
+                    target_digit = str(random.choice([1, 2, 3, 4, 5]))
+                    kcode = ord(target_digit) 
+                    send_keyboard_key(p_serial, p_lock, kcode, 1, is_manual=True)
+                    
+                    if i == 0 or i == hit_count - 1: hold_time = g_val(0.02, 0.04) 
+                    else: hold_time = g_val(0.01, 0.02) 
+                        
+                    time.sleep(hold_time)
+                    send_keyboard_key(p_serial, p_lock, kcode, 0, is_manual=True)
+                    
+                    if i == 0: sleep_time = g_val(0.05, 0.08) 
+                    elif i == hit_count - 1: sleep_time = g_val(0.10, 0.17) 
+                    else: sleep_time = g_val(0.02, 0.05) 
+                        
+                    time.sleep(sleep_time)
+
+            def wait_and_click_image(img_name, desc, threshold=0.80, timeout=3.0, offset_y=0, jitter_x=0, jitter_y=0, d_min=0.21, d_max=0.35, is_npc=False, ui_only=False, double=False): 
+                start_t = time.time()
+                while time.time() - start_t < timeout:
+                    pos = find_image_with_mask(get_screen(), img_name, threshold, is_npc=is_npc, ui_only=ui_only)
+                    if pos:
+                        reaction_t = g_val(0.17, 0.28) 
+                        print(f"✅ {desc} 발견! ({reaction_t:.2f}초 인지 후 이동)")
+                        time.sleep(reaction_t)
+                        return click_pos(pos[0], pos[1] + offset_y, jitter_x=jitter_x, jitter_y=jitter_y, delay_min=d_min, delay_max=d_max, double=double)
+                    time.sleep(0.03) 
+                print(f"❌ {desc} 인식 실패! ('{img_name}' 누끼 확인 요망)")
+                return None
+
+            try:
+                screen = get_screen()
+                last_pos = ai_states.get(target_key, {}).get("cursor_pos", [400, 300])
+                real_cursor = find_cursor_pos(screen, last_pos=last_pos, allow_full_scan=True)
+                if real_cursor and target_key in ai_states:
+                    ai_states[target_key]["cursor_pos"] = list(real_cursor)
+                
+                cycle = 0
+                while True: # 🚀 무한 판매 루프 시작
+                    cycle += 1
+                    print(f"\n==========================================")
+                    print(f"🔄 [무한 판매 루프 {cycle}회차] 창고 ➔ 상점 사이클 시작!")
+                    print(f"==========================================")
+
+                    # ========================================================
+                    # 1. 창고 이동 및 물건 찾기 (F1 -> F9 -> 하킴 -> pick.png)
+                    # ========================================================
+                    print("▶ 1. F1 -> F9 (두루마리) 창고 텔레포트")
+                    send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+                    time.sleep(g_val(0.17, 0.28))
+                    send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
+                    time.sleep(g_val(0.42, 0.63))
+                    
+                    if not wait_and_click_image("qq/menu_heine_wh.png", "[창고지기] 메뉴", timeout=3.0, jitter_x=12, jitter_y=2, ui_only=True): 
+                        print("⚠️ 두루마리 메뉴 클릭 실패. 재시도합니다.")
+                        send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.03); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
+                        continue 
+
+                    tele_wait = g_val(1.26, 1.61)
+                    print(f"▶ 2. 창고 텔레포트 대기 ({tele_wait:.1f}초)...")
+                    time.sleep(tele_wait)
+
+                    print("▶ 3. 하킴 NPC 조준 및 대화 걸기")
+                    if not wait_and_click_image("qq/npc_hakim.png", "하킴 NPC", offset_y=35, jitter_x=2, jitter_y=2, is_npc=True): 
+                        print("⚠️ NPC 빗나감! 처음부터 다시 텔레포트 합니다.")
+                        continue
+                        
+                    print("▶ 4. 물건을 찾는다(Pick) 확인")
+                    if not wait_and_click_image("qq/pick.png", "물건 찾기 버튼", threshold=0.75, timeout=3.0, offset_y=-2, jitter_x=13, jitter_y=3):
+                        print("⚠️ [창고창 팝업 실패] 하킴 클릭 삑사리! ESC 누르고 텔레포트부터 재시도합니다.")
+                        send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.03); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True) 
+                        time.sleep(g_val(0.35, 0.56))
+                        continue
+
+                    time.sleep(g_val(0.4, 0.6)) # 창고 UI 완전히 열릴 때까지 넉넉히 대기
+
+                    print(f"▶ 5. 창고에서 '{sell_item_name}' 탐색 (좌측 창고 구역 스크롤)")
+                    target_item_pos = None
+                    stuck_scrolls = 0
+                    last_scroll_img = None
+                    
+                    for scroll_idx in range(50): 
+                        # 🚀 [형님 오더 적용] ui_only=True 설정으로 오직 '좌측 UI'만 타이트하게 스캔!
+                        target_item_pos = find_image_with_mask(get_screen(), sell_item_img, threshold=0.92, ui_only=True)
+                        if target_item_pos: 
+                            print(f"✅ {scroll_idx}번 스크롤 후 '{sell_item_name}' 1차 포착! 스크롤 관성 안정화 0.5초 대기...")
+                            time.sleep(0.5) # 💡 형님 오더: 스크롤이 완전히 멈출 때까지 0.5초 대기
+                            
+                            # 🚀 [더블 체크 엔진] 멈춘 상태의 최신 화면으로 한 번 더 스캔하여 팩트 좌표 갱신!
+                            real_pos = find_image_with_mask(get_screen(), sell_item_img, threshold=0.92, ui_only=True)
+                            if real_pos:
+                                target_item_pos = real_pos # 💡 새 좌표로 덮어쓰기
+                                print(f"✅ 최종 좌표({target_item_pos[0]}, {target_item_pos[1]}) 확정! 마우스를 던집니다.")
+                                break
+                            else:
+                                print("⚠️ 스크롤 관성으로 타겟이 빗나갔습니다. 휠 탐색을 속행합니다.")
+                                continue # 💡 관성 때문에 시야에서 사라졌다면 브레이크 걸지 않고 다음 턴으로 넘김
+                        
+                        # 바닥 도달 팩트 체크 (좌측 창고 UI 구역)
+                        screen_chk = get_screen()
+                        if screen_chk is not None:
+                            h_scr, w_scr = screen_chk.shape[:2]
+                            c_x, c_y = 150, int(h_scr * 0.4) # 💡 기준점을 확실하게 좌측(150)으로 이동
+                            
+                            chk_x1, chk_y1 = max(0, int(c_x) - 50), max(0, int(c_y) - 15)
+                            chk_x2, chk_y2 = min(w_scr, int(c_x) + 50), min(h_scr, int(c_y) + 15)
+                            
+                            if chk_x2 > chk_x1 and chk_y2 > chk_y1:
+                                curr_scroll_img = cv2.cvtColor(screen_chk[chk_y1:chk_y2, chk_x1:chk_x2], cv2.COLOR_BGR2GRAY)
+                                if last_scroll_img is not None and last_scroll_img.shape == curr_scroll_img.shape:
+                                    diff = cv2.absdiff(last_scroll_img, curr_scroll_img)
+                                    _, thresh = cv2.threshold(diff, 10, 255, cv2.THRESH_BINARY)
+                                    if cv2.countNonZero(thresh) < 5: stuck_scrolls += 1
+                                    else: stuck_scrolls = 0
+                                last_scroll_img = curr_scroll_img
+                                
+                            if stuck_scrolls >= random.randint(5, 6):
+                                print(f"🛑 [스크롤 끝] 커서 반경 픽셀 변화 없음. 창고 바닥 도달 확정.")
+                                break
+
+                        # 💡 스크롤을 굴리기 전 마우스를 확실하게 "좌측 창고 UI (X:150)" 에 주차합니다!
+                        cur_x, cur_y = ai_states.get(target_key, {}).get("cursor_pos", [400, 300])
+                        safe_x, safe_y = 150, int(h_scr * 0.4)
+                        if cur_x > 290: # 만약 우측 인벤으로 커서가 넘어갔다면 좌측으로 땡겨옴!
+                            dx, dy = safe_x - cur_x, safe_y - cur_y
+                            dur = apply_human_variance(0.12 + 0.04 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0))
+                            deltas = generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=target_key)
+                            if deltas: send_macro_buffer(p_serial, p_lock, deltas, target_key)
+                            if target_key in ai_states: ai_states[target_key]["cursor_pos"] = [safe_x, safe_y]
+                            time.sleep(dur + 0.05)
+
+                        scroll_amount = -1 * int(round(g_val(7, 10)))
+                        send_mouse_scroll(p_serial, p_lock, scroll_amount)
+                        time.sleep(g_val(0.08, 0.13)) 
+                        
+                    if not target_item_pos: 
+                        # 👑 [종료 조건 발동] 더 이상 팔 물건이 없으면 루프를 완전 탈출합니다!
+                        print(f"🎉 [자동 판매 종료] 창고에 더 이상 팔 '{sell_item_name}'이(가) 없습니다. 작업을 무사히 마쳤습니다!")
+                        send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.03); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
+                        return 
+                        
+                    print(f"▶ 6. {sell_item_name} 클릭 및 수량 입력 ({sell_qty}개)")
+                    click_pos(target_item_pos[0], target_item_pos[1], jitter_x=12, jitter_y=3, delay_min=0.10, delay_max=0.17)
+                    time.sleep(g_val(0.10, 0.17))
+                    input_number(sell_qty) 
+                    time.sleep(g_val(0.17, 0.24))
+                    
+                    print("▶ 7. O.K. 버튼 클릭")
+                    # O.K 버튼은 좌측 UI에 있으므로 ui_only=True 적용
+                    if not wait_and_click_image("qq/ok.png", "O.K. 버튼", threshold=0.75, jitter_x=3, jitter_y=2, ui_only=True): 
+                        print("⚠️ O.K. 클릭 실패. 처음부터 재시도합니다.")
+                        send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.03); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
+                        continue
+                    time.sleep(g_val(0.6, 0.9))
+
+                    # ========================================================
+                    # 2. 상점 이동 (F3 -> F10 축순)
+                    # ========================================================
+                    print("▶ 8. F3 -> F10 (축순) 상점 텔레포트")
+                    send_keyboard_key(p_serial, p_lock, 196, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 196, 0, is_manual=True)
+                    time.sleep(g_val(0.17, 0.28))
+                    send_keyboard_key(p_serial, p_lock, 203, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 203, 0, is_manual=True)
+                    time.sleep(g_val(0.5, 0.7))
+
+                    # 💡 기억 리스트 더블클릭 (ui_only=True로 좌측 UI 고정 탐색)
+                    if not wait_and_click_image("qq/balsim_1.png", "상점 북마크(balsim_1)", threshold=0.80, timeout=4.0, jitter_x=0, jitter_y=0, ui_only=True, double=True):
+                        print("⚠️ 상점 북마크 클릭 실패. 재시도합니다.")
+                        send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.03); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
+                        continue
+
+                    print(f"▶ 9. 상점 텔레포트 대기 ({tele_wait:.1f}초)...")
+                    time.sleep(tele_wait + g_val(0.5, 1.0)) # 로딩 화면 대기
+
+                    # ========================================================
+                    # 3. 상점 NPC 대화 및 매각
+                    # ========================================================
+                    print("▶ 10. 상점 NPC(balsim.png) 조준 및 대화 걸기")
+                    # 💡 NPC는 화면 중앙 필드에 있으므로 ui_only=False(전체화면), is_npc=True(하단채팅 제외) 적용
+                    if not wait_and_click_image("qq/balsim.png", "상점 NPC", offset_y=30, jitter_x=2, jitter_y=5, is_npc=True): 
+                        print("⚠️ NPC 클릭 빗나감! 창고부터 다시 시작합니다.")
+                        continue
+
+                    print("▶ 11. Sell 버튼 클릭")
+                    if not wait_and_click_image("qq/sell.png", "Sell 버튼", threshold=0.75, timeout=3.0, jitter_x=3, jitter_y=2):
+                        print("⚠️ Sell 버튼 클릭 실패. ESC 누르고 재시도합니다.")
+                        send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.03); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True) 
+                        continue
+
+                    print(f"▶ 12. 판매 목록에서 '{sell_item_name}' 클릭")
+                    # 판매창에서 아이템 찾기 (화면 중앙쯤 뜰 수 있으므로 ui_only=False 적용)
+                    if not wait_and_click_image(sell_item_img, f"판매할 {sell_item_name}", threshold=0.80, timeout=3.0, jitter_x=5, jitter_y=2, ui_only=False):
+                        print(f"⚠️ 판매창에 '{sell_item_name}'이(가) 안 보입니다. ESC 누르고 재시도합니다.")
+                        send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.03); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True) 
+                        continue
+
+                    print("▶ 13. 최대 수량 입력 (1~5 랜덤 연타)")
+                    time.sleep(g_val(0.10, 0.17))
+                    spam_random_low_number()
+                    time.sleep(g_val(0.17, 0.24))
+
+                    print("▶ 14. Sell2(최종 판매) 버튼 클릭")
+                    if not wait_and_click_image("qq/sell2.png", "최종 판매 버튼", threshold=0.75, timeout=3.0, jitter_x=3, jitter_y=2):
+                        print("⚠️ 최종 판매 버튼 클릭 실패. ESC 누르고 재시도합니다.")
+                        send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.03); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True) 
+                        continue
+
+                    print(f"🎉 [{cycle}회차] '{sell_item_name}' 매각 성공! 다시 창고로 이동하여 무한 반복합니다.")
+                    time.sleep(g_val(0.5, 0.8))
+
+            except ManualAbort:
+                print(f"\n🛑 [{target_key}] 수동 모드(`) 개입 또는 사냥 시작을 감지하여 진행 중인 판매 루프를 즉시 멈춥니다.")
+                with pico_queues[target_key].mutex: pico_queues[target_key].queue.clear()
+
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"❌ 자동 판매 중 에러 발생: {e}")
+
+        import threading
+        threading.Thread(target=sell_macro_thread, daemon=True).start()
 
     btn_frame2 = tk.Frame(supply_frame, bg=BG_PANEL)
     btn_frame2.pack(side="top", fill="x", padx=5, pady=(4, 6))
