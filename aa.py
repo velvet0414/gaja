@@ -2481,7 +2481,6 @@ def pico_echo_manager_thread():
 threading.Thread(target=pico_echo_manager_thread, daemon=True).start()
 # ==============================================================================
 
-# 🚀 [수술 1] 돌바닥 배경 억까 방어(오차율 완화) + 풀스캔 가동 터미널 보고 기능 추가!
 def find_cursor_pos(img_bgr, last_pos=None, check_circle=False, allow_full_scan=True):
     targets = []
     if cursor_color is not None and cursor_mask is not None: targets.append((cursor_color, cursor_mask, 5, 5)) 
@@ -2514,13 +2513,18 @@ def find_cursor_pos(img_bgr, last_pos=None, check_circle=False, allow_full_scan=
     if check_circle and img_circle is not None and img_circle_mask is not None: targets.append((img_circle, img_circle_mask, 12, 12))
         
     if not targets: return None
-    h, w = img_bgr.shape[:2]; search_w = w - 30
+    h, w = img_bgr.shape[:2]
+    
+    # 🚀 [형님 테스트용 임시 해방 1] 우측 끝 30픽셀 가위질 원상 복구! (search_w = w)
+    search_w = w 
 
     # 👇👇👇 [오인식 무한루프 원천 차단 수술] 👇👇👇
     # 하단 채팅창(Y>430)에 있는 텍스트나 UI 요소를 커서로 착각하는 것을 막기 위해 영구 블랙아웃(먹물) 칠하기!
     # (우측 인벤토리나 퀵슬롯은 정상적으로 볼 수 있도록 X좌표 0~550 까지만 가립니다)
     safe_bgr = img_bgr.copy()
-    cv2.rectangle(safe_bgr, (0, 430), (550, h), (0, 0, 0), -1) 
+    
+    # 🚀 [형님 테스트용 임시 해방 2] 하단 채팅창 먹물 칠하기 주석 처리! 화면 100% 스캔!
+    # cv2.rectangle(safe_bgr, (0, 430), (550, h), (0, 0, 0), -1) 
     # 👆👆👆 ========================================== 👆👆👆
     
     if last_pos:
@@ -4973,16 +4977,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                 if DEBUG_MODE and debug_img is not None:
                     cv2.rectangle(debug_img, (0, 0), (MINIMAP_W, MINIMAP_H), (0, 255, 0), 1)
 
-                    # 👇👇👇 [신규: 파이썬이 보는 미니맵 흑백 변환 팩트 실시간 렌더링] 👇👇👇
-                    dng_name_debug = settings.get("dungeon_name", "")
-                    if ("오땅" in dng_name_debug or "event" in dng_name_debug.lower()) and minimap_processed is not None:
-                        ph, pw = minimap_processed.shape[:2]
-                        if MINIMAP_W + pw <= w: # 우측 짤림 방어
-                            proc_bgr = cv2.cvtColor(minimap_processed, cv2.COLOR_GRAY2BGR)
-                            debug_img[0:ph, MINIMAP_W:MINIMAP_W+pw] = proc_bgr
-                            cv2.rectangle(debug_img, (MINIMAP_W, 0), (MINIMAP_W+pw, ph), (255, 255, 0), 1)
-                            cv2.putText(debug_img, "AI MINIMAP", (MINIMAP_W + 3, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 0), 1)
-                    # 👆👆👆 =========================================================
+                    # 👇👇👇 원상 복구: 미니맵 테두리(초록선)만 남기고 흑백 미니맵 시각화 완전 삭제 👇👇👇
+                    cv2.rectangle(debug_img, (0, 0), (MINIMAP_W, MINIMAP_H), (0, 255, 0), 1)
 
                     if state.get("dungeon_map_pos"):
                         mx, my = state["dungeon_map_pos"]
@@ -5015,21 +5011,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             x2_map, y2_map = min(fw_map, cx_map + crop_size), min(fh_map, cy_map + crop_size)
 
                             if x2_map > x1_map and y2_map > y1_map:
-                                
-                                # 👇👇👇 [오땅/이벤트 전체 맵 흑백 변환 실시간 시각화] 👇👇👇
-                                dng_name_ray = settings.get("dungeon_name", "")
-                                if "오땅" in dng_name_ray or "event" in dng_name_ray.lower():
-                                    # 🚀 [파일 세이브 연동 완료]
-                                    thresh_val_dbg = int(settings.get("oak_thresh", 127))
-                                    
-                                    raw_crop = pc_map_gray[y1_map:y2_map, x1_map:x2_map]
-                                    # 👑 매칭 엔진과 완벽히 동일하게 THRESH_BINARY 적용!
-                                    _, map_debug_thresh = cv2.threshold(raw_crop, thresh_val_dbg, 255, cv2.THRESH_BINARY)
-                                    raycast_vis = cv2.cvtColor(map_debug_thresh, cv2.COLOR_GRAY2BGR)
-                                else:
-                                    raycast_vis = cv2.cvtColor(pc_map_gray[y1_map:y2_map, x1_map:x2_map], cv2.COLOR_GRAY2BGR)
-                                # 👆👆👆 ==============================================================
-
+                                raycast_vis = cv2.cvtColor(pc_map_gray[y1_map:y2_map, x1_map:x2_map], cv2.COLOR_GRAY2BGR)
                                 vis_cx, vis_cy = cx_map - x1_map, cy_map - y1_map
                                 cv2.circle(raycast_vis, (vis_cx, vis_cy), 5, (0, 255, 255), -1) 
 
@@ -5056,11 +5038,10 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         if target_pt:
                                             cv2.putText(enlarged_vis, f"TARGET: {int(target_pt[0])}, {int(target_pt[1])}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 1)
 
-                                    # 👇👇👇 [X-RAY 모드 및 현재 감도 렌더링] 👇👇👇
-                                    if "오땅" in dng_name_ray or "event" in dng_name_ray.lower():
-                                        # 🚀 [파일 세이브 연동 완료]
-                                        cur_th = int(settings.get("oak_thresh", 127))
-                                        cv2.putText(enlarged_vis, f"[OAK X-RAY: THRESH {cur_th}]", (10, 380), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                                    if target_pt:
+                                            cv2.putText(enlarged_vis, f"TARGET: {int(target_pt[0])}, {int(target_pt[1])}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 1)
+
+                                    # (오땅 X-RAY 감도 텍스트 렌더링 코드 완전 삭제)
 
                                     raycast_debug_queues[key].put_nowait(enlarged_vis)
                                 except Exception: pass
@@ -7228,13 +7209,15 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     if manual_buff_done: break # 🚧 수동 버프 감지 시 루프 탈출
 
                                     # -------------------------------------------------------------
-                                    # 8. 첫 방(ha1~10.png) 3초 타임아웃 검증 & 실패 처리 로직 (버프 아이콘 스캔)
+                                    # 8. 첫 방(haste1st.png & ha1~10.png 투트랙) 3초 타임아웃 검증 & 실패 처리 로직
                                     # -------------------------------------------------------------
                                     first_buff_received = False
                                     
-                                    # 🚀 [CPU 최적화] 루프 돌기 전 ha1.png ~ ha10.png 10장을 메모리에 미리 장전 (디스크 I/O 렉 방지)
+                                    # 🚀 [CPU 최적화] 루프 돌기 전 1트랙(채팅창), 2트랙(아이콘) 이미지를 메모리에 미리 장전!
                                     ha_imgs = [f"qq/ha{i}.png" for i in range(1, 11)]
-                                    for img_path in ha_imgs:
+                                    preload_imgs = ["qq/haste1st.png"] + ha_imgs
+                                    
+                                    for img_path in preload_imgs:
                                         import os
                                         if img_path not in loaded_models:
                                             if os.path.exists(img_path):
@@ -7261,34 +7244,56 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         if scr is not None:
                                             h_s, w_s = scr.shape[:2]
                                             
-                                            # 🚀 [수술] 채팅창 대신 사냥 시 사용하는 우측 상단 '버프 아이콘 영역(60x350)'으로 시야 변경!
-                                            if w_s >= 60 and h_s >= 350:
-                                                buff_roi_x1 = max(0, w_s - 60)
-                                                buff_roi_y1 = 0
-                                                buff_roi_x2 = w_s
-                                                buff_roi_y2 = min(h_s, 350)
+                                            # 👇👇👇 [1트랙: 채팅창 haste1st.png 스캔 (82% 일치율)] 👇👇👇
+                                            if w_s >= 600 and h_s >= 490: # 채팅창 ROI 확보
+                                                chat_roi = scr[490:h_s, 125:600]
+                                                tmpl_chat = loaded_models.get("qq/haste1st.png")
                                                 
-                                                buff_roi = scr[buff_roi_y1:buff_roi_y2, buff_roi_x1:buff_roi_x2]
-                                                
-                                                # 🚀 ha1 ~ ha10 이미지 무차별 폭격 스캔!
-                                                for img_path in ha_imgs:
-                                                    tmpl = loaded_models.get(img_path)
-                                                    
-                                                    if tmpl and tmpl["color"] is not None:
-                                                        try:
-                                                            if tmpl["mask"] is not None:
-                                                                res = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl["mask"]]*3))
-                                                            else:
-                                                                res = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCOEFF_NORMED)
-                                                                
-                                                            _, max_val, _, _ = cv2.minMaxLoc(res)
+                                                if tmpl_chat and tmpl_chat["color"] is not None:
+                                                    try:
+                                                        if tmpl_chat["mask"] is not None:
+                                                            res_chat = cv2.matchTemplate(chat_roi, tmpl_chat["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl_chat["mask"]]*3))
+                                                        else:
+                                                            res_chat = cv2.matchTemplate(chat_roi, tmpl_chat["color"], cv2.TM_CCOEFF_NORMED)
                                                             
-                                                            # 💡 아이콘 특성상 투명도나 배경 겹침을 고려해 80% 일치하면 통과!
-                                                            if max_val >= 0.80:
-                                                                first_buff_received = True
-                                                                dprint(key, f"🔎 [첫 방 감지] 우측 상단에서 '{img_path}' 아이콘 팩트 체크 완료! (일치율: {max_val*100:.1f}%)")
-                                                                break # ha1~10 스캔 루프 탈출
-                                                        except Exception: pass
+                                                        _, max_val_chat, _, _ = cv2.minMaxLoc(res_chat)
+                                                        
+                                                        # 👑 형님 오더: 매칭률 82% 
+                                                        if max_val_chat >= 0.85:
+                                                            first_buff_received = True
+                                                            dprint(key, f"🔎 [첫 방 감지 - 1트랙] 하단 채팅창에서 'haste1st.png' 확인! (일치율: {max_val_chat*100:.1f}%)")
+                                                    except Exception: pass
+                                            
+                                            # 1트랙에서 찾았다면 2트랙은 패스!
+                                            if not first_buff_received:
+                                                # 👇👇👇 [2트랙: 우측 상단 ha1~10.png 스캔 (기존 방식 100% 보존)] 👇👇👇
+                                                if w_s >= 60 and h_s >= 350:
+                                                    buff_roi_x1 = max(0, w_s - 60)
+                                                    buff_roi_y1 = 0
+                                                    buff_roi_x2 = w_s
+                                                    buff_roi_y2 = min(h_s, 350)
+                                                    
+                                                    buff_roi = scr[buff_roi_y1:buff_roi_y2, buff_roi_x1:buff_roi_x2]
+                                                    
+                                                    # 🚀 ha1 ~ ha10 이미지 무차별 폭격 스캔!
+                                                    for img_path in ha_imgs:
+                                                        tmpl = loaded_models.get(img_path)
+                                                        
+                                                        if tmpl and tmpl["color"] is not None:
+                                                            try:
+                                                                if tmpl["mask"] is not None:
+                                                                    res = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl["mask"]]*3))
+                                                                else:
+                                                                    res = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCOEFF_NORMED)
+                                                                    
+                                                                _, max_val, _, _ = cv2.minMaxLoc(res)
+                                                                
+                                                                # 💡 아이콘 특성상 투명도나 배경 겹침을 고려해 80% 일치하면 통과!
+                                                                if max_val >= 0.80:
+                                                                    first_buff_received = True
+                                                                    dprint(key, f"🔎 [첫 방 감지 - 2트랙] 우측 상단에서 '{img_path}' 아이콘 팩트 체크 완료! (일치율: {max_val*100:.1f}%)")
+                                                                    break # ha1~10 스캔 루프 탈출
+                                                            except Exception: pass
                                             
                                             # 템플릿 매칭 성공 시 3초 대기 루프도 즉시 탈출!
                                             if first_buff_received:
