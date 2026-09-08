@@ -9614,14 +9614,26 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                 if ret_cond in ["헤이없음", "두가지다"]:
                     fsm_for_haste = str(state.get("target_fsm", ""))
                     
-                    # 👑 [형님 오더 완벽 적용: 마을 정비 중에도 어떤 상태든 상시 감시!]
-                    # 단, 버프를 받으러 가서 이미 대기하고 있는 상태이거나, 귀환/사망/셧다운 딜레이 중일 때만 감지 정지!
-                    is_safe_fsm = not (fsm_for_haste in ["TOWN_MAINT_BUFF", "TOWN_MAINT_CHOLGI_STEAL"] or 
-                                       fsm_for_haste.startswith("DEATH_RESTART_") or
-                                       fsm_for_haste in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"])
+                    # 👇👇👇 [오땅 제외 일반 사냥터 마을 정비 중 감시 해제 (aa1.py 롤백)] 👇👇👇
+                    dng_name_haste_check = settings.get("dungeon_name", "")
+                    if "오땅" in dng_name_haste_check or "event" in dng_name_haste_check.lower():
+                        # 🦇 오땅/이벤트: 마을 정비 중에도 2시간 타이머 체크를 위해 상시 감시 (버프/강촐 수령 중만 예외)
+                        is_safe_fsm = not (fsm_for_haste in ["TOWN_MAINT_BUFF", "TOWN_MAINT_CHOLGI_STEAL"] or 
+                                           fsm_for_haste.startswith("DEATH_RESTART_") or
+                                           fsm_for_haste in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"])
+                    else:
+                        # 🌲 일반 사냥터: aa1.py 원본 롤백! 마을 정비(TOWN_MAINT) 중엔 감시 완전 중단 및 타이머 백지화!
+                        is_safe_fsm = not (fsm_for_haste.startswith("TOWN_MAINT") or 
+                                           fsm_for_haste.startswith("DEATH_RESTART_") or
+                                           fsm_for_haste in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"])
+                    # 👆👆👆 =========================================================================
 
                     if is_safe_fsm:
                         is_ui_blocking = fsm_for_haste.startswith("INV_CLEAN") or fsm_for_haste.startswith("WEAPON_REPAIR") or fsm_for_haste.startswith("HK_HEAL_") or curr_time <= state.get("inv_close_grace_time", 0)
+                        
+                        # 🚨🚨 [치명적 핑퐁 무한루프 파괴!] 🚨🚨
+                        # 과거의 '귀환(True)' 찌꺼기가 남아 스캔 없이 무지성 귀환하는 것을 막기 위해, 매 프레임 스위치를 초기화합니다!
+                        force_haste_return = False 
 
                         if is_ui_blocking:
                             if state.get("haste_empty_start", 0) > 0:
@@ -9631,9 +9643,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 state["next_haste_scan"] = curr_time + 0.3
                                 
                                 dng_name_haste = settings.get("dungeon_name", "")
-                                force_haste_return = False
                                 
-                                # 🚨🚨🚨 [치명적 뻗음 에러 원인 해결!] 제가 누락시켰던 5줄의 팩트 변수를 부활시켰습니다!!! 🚨🚨🚨
+                                # 🚨🚨 [치명적 뻗음 에러 원인 해결!] 팩트 변수를 부활시켰습니다!!! 🚨🚨
                                 last_haste = state.get("last_haste_time", 0.0)
                                 time_since_buff = curr_time - last_haste
                                 is_real_buff = state.get("is_real_buff_received", False)
@@ -9668,7 +9679,6 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                             
                                             OAK_HASTE_THRESHOLD = 0.80
                                             
-
                                             if max_val_haste >= OAK_HASTE_THRESHOLD: 
                                                 is_detected_missing = True
                                                 missing_reason = f"채팅창 텍스트 감지({max_val_haste*100:.1f}%)"
@@ -9766,10 +9776,10 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     if "타임아웃" in missing_reason:
                                         force_haste_return = True # 2시간 타임아웃은 팩트체크 없이 빼박 귀환!
                                     else:
-                                        # 👇👇👇 [5분 방어막 수술] 1200.0(20분)을 300.0(5분)으로 단축! 👇👇👇
-                                        if is_real_buff and time_since_real_buff < 300.0:
+                                        # 👇👇👇 [20분 방어막 원본 복구] 300.0(5분)을 1200.0(20분)으로 원복! 👇👇👇
+                                        if is_real_buff and time_since_real_buff < 1200.0:
                                             if curr_time > state.get("last_chat_dbg_log2", 0):
-                                                dprint(key, f"🛡️ [5분 오감지 방어막] {missing_reason} 발생! 그러나 찐 버프 수령 후 {time_since_real_buff/60:.1f}분 밖에 안 지남! 과거 잔상/오인식으로 팩트 체크하고 무시합니다!")
+                                                dprint(key, f"🛡️ [20분 오감지 방어막] {missing_reason} 발생! 그러나 찐 버프 수령 후 {time_since_real_buff/60:.1f}분 밖에 안 지남! 과거 잔상/오인식으로 팩트 체크하고 무시합니다!")
                                                 state["last_chat_dbg_log2"] = curr_time + 5.0
                                             # 무한 발작을 막기 위해 찌꺼기 타이머 리셋
                                             state["haste_empty_start"] = 0
