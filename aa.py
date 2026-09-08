@@ -9655,11 +9655,12 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 is_detected_missing = False
                                 missing_reason = ""
                                 
-                                # 👇👇👇 [오땅 전용: 채팅창(haste_x.png) + 2시간 타임아웃] 👇👇👇
+                                # 👇👇👇 [오땅 전용: 1.채팅창 + 2.아이콘(2분) + 3.타임아웃(2시간) 쓰리트랙 엔진!] 👇👇👇
                                 if "오땅" in dng_name_haste:
                                     CHAT_X1, CHAT_X2 = 125, 600
                                     CHAT_Y1, CHAT_Y2 = 490, h
                                     
+                                    # [1순위] 채팅창 텍스트 감지 (가장 빠름)
                                     if w >= CHAT_X2 and h >= CHAT_Y2 and globals().get("img_haste_x") is not None:
                                         chat_roi = img_bgr[CHAT_Y1:CHAT_Y2, CHAT_X1:CHAT_X2]
                                         try:
@@ -9669,7 +9670,6 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                             gray_roi = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
                                             gray_tmpl = cv2.cvtColor(img_h_x, cv2.COLOR_BGR2GRAY)
                                             
-                                            # 👑 [순정 복구] 마스크 투명도 연산을 완벽히 보존한 기존 방식으로 롤백!
                                             if img_h_x_m is not None:
                                                 res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCORR_NORMED, mask=img_h_x_m)
                                             else:
@@ -9683,7 +9683,85 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                 is_detected_missing = True
                                                 missing_reason = f"채팅창 텍스트 감지({max_val_haste*100:.1f}%)"
                                         except: pass
+
+                                    # [2순위] 우측 상단 아이콘 2분(120초) 감시 (신규 투트랙 추가!)
+                                    if not is_detected_missing:
+                                        haste_found = False
                                         
+                                        # 강촐 방어막
+                                        is_gangchol_active = state.get("used_gangchol", False) and time_since_real_buff < 1800.0
+                                        
+                                        if is_gangchol_active:
+                                            haste_found = True
+                                            if curr_time > state.get("last_chat_dbg_log3", 0):
+                                                dprint(key, f"🛡️ [강촐 방어막] 오땅 모드: 강촐 복용 상태입니다. 아이콘 스캔 30분 면제! 남은시간: {1800.0 - time_since_real_buff:.0f}초")
+                                                state["last_chat_dbg_log3"] = curr_time + 5.0
+                                        else:
+                                            if w >= 60 and h >= 350:
+                                                buff_roi_x1 = max(0, w - 60)
+                                                buff_roi_y1 = 0
+                                                buff_roi_x2 = w
+                                                buff_roi_y2 = min(h, 350)
+                                                buff_roi = img_bgr[buff_roi_y1:buff_roi_y2, buff_roi_x1:buff_roi_x2]
+                                                
+                                                import os
+                                                ha_dir = "qq/ha"
+                                                if os.path.exists(ha_dir):
+                                                    for f_name in os.listdir(ha_dir):
+                                                        if f_name.lower().endswith((".png", ".jpg")):
+                                                            img_path = f"{ha_dir}/{f_name}"
+                                                            if img_path not in loaded_models:
+                                                                try:
+                                                                    bgra = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+                                                                    if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4:
+                                                                        loaded_models[img_path] = {"color": bgra[:,:,:3], "mask": bgra[:,:,3]}
+                                                                    else:
+                                                                        color = cv2.imread(img_path, cv2.IMREAD_COLOR)
+                                                                        loaded_models[img_path] = {"color": color, "mask": None} if color is not None else None
+                                                                except: loaded_models[img_path] = None
+                                                                    
+                                                            tmpl = loaded_models.get(img_path)
+                                                            if tmpl and tmpl["color"] is not None:
+                                                                try:
+                                                                    if tmpl["mask"] is not None: res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl["mask"]]*3))
+                                                                    else: res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCOEFF_NORMED)
+                                                                    _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
+                                                                    if max_val_haste >= (settings.get("haste_match_rate", 92.0) / 100.0):
+                                                                        haste_found = True
+                                                                        break
+                                                                except: pass
+                                                        if haste_found: break
+
+                                                if not haste_found and globals().get("img_haste") is not None:
+                                                    try:
+                                                        if globals().get("img_haste_mask") is not None: res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste_mask")]*3))
+                                                        else: res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCOEFF_NORMED)
+                                                        _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
+                                                        if max_val_haste >= (settings.get("haste_match_rate", 92.0) / 100.0): haste_found = True
+                                                    except: pass
+                                                    
+                                                if not haste_found and globals().get("img_haste2") is not None:
+                                                    try:
+                                                        if globals().get("img_haste2_mask") is not None: res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste2_mask")]*3))
+                                                        else: res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCOEFF_NORMED)
+                                                        _, max_val_haste2, _, _ = cv2.minMaxLoc(res_haste2)
+                                                        if max_val_haste2 >= (settings.get("haste_match_rate", 92.0) / 100.0): haste_found = True
+                                                    except: pass
+                                                    
+                                        if haste_found:
+                                            state["haste_empty_start"] = 0 
+                                            state["haste_visible_start"] = curr_time
+                                        else:
+                                            state["haste_visible_start"] = 0 
+                                            if state.get("haste_empty_start", 0) == 0:
+                                                state["haste_empty_start"] = curr_time 
+                                                
+                                        # 🚀 오땅은 2분(120.0초) 증발 시 오링 판정!
+                                        if state.get("haste_empty_start", 0) > 0 and curr_time - state["haste_empty_start"] >= 120.0:
+                                            is_detected_missing = True
+                                            missing_reason = "우측 아이콘 2분 증발 (오땅 투트랙)"
+                                        
+                                    # [3순위] 2시간 타임아웃
                                     if not is_detected_missing:
                                         if last_haste == 0.0:
                                             is_detected_missing = True
@@ -9703,7 +9781,6 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                     is_detected_missing = True
                                                     missing_reason = "2시간 타임아웃"
                                             # 👆👆👆 =========================================================================
-                                        
                                 # 👇👇👇 [일반 던전: 기존 우측 상단 아이콘 40초 증발 감시 엔진] 👇👇👇
                                 else:
                                     haste_found = False
@@ -10056,8 +10133,13 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
 
                 # 👇👇👇 [오땅/일반 맵별 헤이스트 스캔 영역 실시간 렌더링] 👇👇👇
                 dng_name_debug_haste = settings.get("dungeon_name", "")
+                
+                # 🏃 공통: 우측 상단 아이콘 스캔 영역 (오땅도 이제 스캔하므로 공통으로 그림)
+                cv2.rectangle(debug_img, (max(0, w-60), 0), (w, min(h, 350)), (0, 255, 255), 1)
+                cv2.putText(debug_img, "HASTE", (max(0, w-50), 345), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                
                 if "오땅" in dng_name_debug_haste:
-                    # 🏃 [오땅 모드] 하단 채팅창 스캔 영역 파란색 테두리 표시 (좌표 수정 가능)
+                    # 🏃 [오땅 모드] 하단 채팅창 스캔 영역
                     CHAT_X1, CHAT_X2 = 125, 600
                     CHAT_Y1, CHAT_Y2 = 490, h
                     cv2.rectangle(debug_img, (CHAT_X1, CHAT_Y1), (CHAT_X2, CHAT_Y2), (255, 100, 100), 2)
@@ -10067,11 +10149,13 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     time_passed = curr_time - state.get("last_haste_time", curr_time)
                     if time_passed > 7100.0: 
                         cv2.putText(debug_img, f"TIMEOUT: {7200.0 - time_passed:.1f}s", (CHAT_X1 + 5, CHAT_Y1 + 35), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 2)
+                        
+                    # 🚨 오땅 아이콘 2분(120초) 증발 카운트다운 실시간 렌더링
+                    if state.get("haste_empty_start", 0) > 0 and curr_time - state.get("haste_empty_start", 0) < 130.0:
+                        missing_sec = curr_time - state["haste_empty_start"]
+                        if missing_sec >= 120.0: missing_sec = 120.0 
+                        cv2.putText(debug_img, f"HASTE_MISS: {missing_sec:.1f}s / 120.0s", (max(0, w-180), 360), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
                 else:
-                    # 🏃 [일반 모드] 우측 상단 아이콘 스캔 영역 노란색 테두리 표시 (기존)
-                    cv2.rectangle(debug_img, (max(0, w-60), 0), (w, min(h, 350)), (0, 255, 255), 1)
-                    cv2.putText(debug_img, "HASTE", (max(0, w-50), 345), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-                    
                     # 🚨 일반 모드일 때만 40초 증발 카운트다운 실시간 렌더링
                     if state.get("haste_empty_start", 0) > 0 and curr_time - state.get("haste_empty_start", 0) < 100.0:
                         missing_sec = curr_time - state["haste_empty_start"]
@@ -19055,11 +19139,11 @@ for i, pc in enumerate(MINI_PCS):
             class ManualAbort(BaseException): pass
             
             def check_abort():
-                # 🚨 수동 제어(`)를 켰거나 사냥(▶)/일시정지 버튼을 누르면 예외를 뿜어내어 즉시 강제 종료!
-                if active_manual_target == key or not ai_states.get(key, {}).get("is_hunt_active", False) or ai_states.get(key, {}).get("is_paused", False):
+                if active_manual_target == target_key or ai_states.get(target_key, {}).get("is_hunt_active", False):
                     raise ManualAbort()
-                # 💀 [추가] 정비 중 사망 시 정비 스레드 즉시 폭파!
-                if str(ai_states.get(key, {}).get("target_fsm", "")).startswith("DEATH_RESTART") or ai_states.get(key, {}).get("death_detect_start", 0) > 0:
+                
+                # 💀 정비 중 사망 시 스레드 즉시 폭파 (target_key로 수정 완료)
+                if str(ai_states.get(target_key, {}).get("target_fsm", "")).startswith("DEATH_RESTART") or ai_states.get(target_key, {}).get("death_detect_start", 0) > 0:
                     raise ManualAbort()
                 
             class SafeTime:
