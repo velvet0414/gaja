@@ -9195,14 +9195,9 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             last_haste = state.get("last_haste_time", 0)
                             haste_elapsed = curr_time - last_haste
                             
-                            # 👇👇👇 [신규 엔진: 강촐 여부 및 사냥터별 버프 리필 주기 차등 적용] 👇👇👇
+                            # 👇👇👇 [신규 엔진: 사냥터별 버프 리필 주기 차등 적용] 👇👇👇
                             dng_name_for_buff = settings.get("dungeon_name", "")
-                            is_potion_haste = state.get("used_gangchol", False)
-                            
-                            if is_potion_haste:
-                                buff_threshold = 1680.0 # 🚀 강촐은 28분 (28 * 60초)
-                                threshold_str = "28분(강촐)"
-                            elif "수던" in dng_name_for_buff or "heine" in dng_name_for_buff.lower():
+                            if "수던" in dng_name_for_buff or "heine" in dng_name_for_buff.lower():
                                 buff_threshold = 2400.0 # 🚀 수던: 40분 (40 * 60초)
                                 threshold_str = "40분(수던)"
                             else:
@@ -9703,77 +9698,68 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 else:
                                     haste_found = False
                                     
-                                    # 👑 [강촐 방어막] 강촐은 30분 동안 아이콘 스캔 프리패스 (초록물약이므로 헤이 안뜸)
-                                    is_gangchol_active = state.get("used_gangchol", False) and time_since_real_buff < 1800.0
-                                    
-                                    if is_gangchol_active:
-                                        haste_found = True
-                                        if curr_time > state.get("last_chat_dbg_log3", 0):
-                                            dprint(key, f"🛡️ [강촐 방어막] 강촐 복용 상태입니다. 아이콘 스캔 30분 면제! 남은시간: {1800.0 - time_since_real_buff:.0f}초")
-                                            state["last_chat_dbg_log3"] = curr_time + 5.0
-                                    else:
-                                        if w >= 60 and h >= 350:
-                                            buff_roi_x1 = max(0, w - 60)
-                                            buff_roi_y1 = 0
-                                            buff_roi_x2 = w
-                                            buff_roi_y2 = min(h, 350)
-                                            buff_roi = img_bgr[buff_roi_y1:buff_roi_y2, buff_roi_x1:buff_roi_x2]
-                                            
-                                            import os
-                                            ha_dir = "qq/ha"
-                                            if os.path.exists(ha_dir):
-                                                for f_name in os.listdir(ha_dir):
-                                                    if f_name.lower().endswith((".png", ".jpg")):
-                                                        img_path = f"{ha_dir}/{f_name}"
-                                                        if img_path not in loaded_models:
-                                                            try:
-                                                                bgra = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
-                                                                if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4:
-                                                                    loaded_models[img_path] = {"color": bgra[:,:,:3], "mask": bgra[:,:,3]}
-                                                                else:
-                                                                    color = cv2.imread(img_path, cv2.IMREAD_COLOR)
-                                                                    loaded_models[img_path] = {"color": color, "mask": None} if color is not None else None
-                                                            except: loaded_models[img_path] = None
-                                                                
-                                                        tmpl = loaded_models.get(img_path)
-                                                        if tmpl and tmpl["color"] is not None:
-                                                            try:
-                                                                if tmpl["mask"] is not None: res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl["mask"]]*3))
-                                                                else: res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCOEFF_NORMED)
-                                                                _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
-                                                                if max_val_haste >= (settings.get("haste_match_rate", 92.0) / 100.0):
-                                                                    haste_found = True
-                                                                    break
-                                                            except: pass
-                                                    if haste_found: break
+                                    if w >= 60 and h >= 350:
+                                        buff_roi_x1 = max(0, w - 60)
+                                        buff_roi_y1 = 0
+                                        buff_roi_x2 = w
+                                        buff_roi_y2 = min(h, 350)
+                                        buff_roi = img_bgr[buff_roi_y1:buff_roi_y2, buff_roi_x1:buff_roi_x2]
+                                        
+                                        import os
+                                        ha_dir = "qq/ha"
+                                        if os.path.exists(ha_dir):
+                                            for f_name in os.listdir(ha_dir):
+                                                if f_name.lower().endswith((".png", ".jpg")):
+                                                    img_path = f"{ha_dir}/{f_name}"
+                                                    if img_path not in loaded_models:
+                                                        try:
+                                                            bgra = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+                                                            if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4:
+                                                                loaded_models[img_path] = {"color": bgra[:,:,:3], "mask": bgra[:,:,3]}
+                                                            else:
+                                                                color = cv2.imread(img_path, cv2.IMREAD_COLOR)
+                                                                loaded_models[img_path] = {"color": color, "mask": None} if color is not None else None
+                                                        except: loaded_models[img_path] = None
+                                                            
+                                                    tmpl = loaded_models.get(img_path)
+                                                    if tmpl and tmpl["color"] is not None:
+                                                        try:
+                                                            if tmpl["mask"] is not None: res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl["mask"]]*3))
+                                                            else: res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCOEFF_NORMED)
+                                                            _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
+                                                            if max_val_haste >= (settings.get("haste_match_rate", 92.0) / 100.0):
+                                                                haste_found = True
+                                                                break
+                                                        except: pass
+                                                if haste_found: break
 
-                                            if not haste_found and globals().get("img_haste") is not None:
-                                                try:
-                                                    if globals().get("img_haste_mask") is not None: res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste_mask")]*3))
-                                                    else: res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCOEFF_NORMED)
-                                                    _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
-                                                    if max_val_haste >= (settings.get("haste_match_rate", 92.0) / 100.0): haste_found = True
-                                                except: pass
+                                        if not haste_found and globals().get("img_haste") is not None:
+                                            try:
+                                                if globals().get("img_haste_mask") is not None: res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste_mask")]*3))
+                                                else: res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCOEFF_NORMED)
+                                                _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
+                                                if max_val_haste >= (settings.get("haste_match_rate", 92.0) / 100.0): haste_found = True
+                                            except: pass
+                                            
+                                        if not haste_found and globals().get("img_haste2") is not None:
+                                            try:
+                                                if globals().get("img_haste2_mask") is not None: res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste2_mask")]*3))
+                                                else: res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCOEFF_NORMED)
+                                                _, max_val_haste2, _, _ = cv2.minMaxLoc(res_haste2)
+                                                if max_val_haste2 >= (settings.get("haste_match_rate", 92.0) / 100.0): haste_found = True
+                                            except: pass
                                                 
-                                            if not haste_found and globals().get("img_haste2") is not None:
-                                                try:
-                                                    if globals().get("img_haste2_mask") is not None: res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste2_mask")]*3))
-                                                    else: res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCOEFF_NORMED)
-                                                    _, max_val_haste2, _, _ = cv2.minMaxLoc(res_haste2)
-                                                    if max_val_haste2 >= (settings.get("haste_match_rate", 92.0) / 100.0): haste_found = True
-                                                except: pass
-                                                    
-                                        if haste_found:
-                                            state["haste_empty_start"] = 0 
-                                            state["haste_visible_start"] = curr_time
-                                        else:
-                                            state["haste_visible_start"] = 0 
-                                            if state.get("haste_empty_start", 0) == 0:
-                                                state["haste_empty_start"] = curr_time 
-                                                
-                                        if state.get("haste_empty_start", 0) > 0 and curr_time - state["haste_empty_start"] >= 40.0:
-                                            is_detected_missing = True
-                                            missing_reason = "우측 아이콘 40초 증발"
+                                    if haste_found:
+                                        state["haste_empty_start"] = 0 
+                                        state["haste_visible_start"] = curr_time
+                                    else:
+                                        state["haste_visible_start"] = 0 
+                                        if state.get("haste_empty_start", 0) == 0:
+                                            state["haste_empty_start"] = curr_time 
+                                            
+                                    if state.get("haste_empty_start", 0) > 0 and curr_time - state["haste_empty_start"] >= 40.0:
+                                        is_detected_missing = True
+                                        missing_reason = "우측 아이콘 40초 증발"
 
                                 # 👑 [형님 마스터피스: 진짜 버프 vs 가짜 버프 팩트 체크 엔진!]
                                 if is_detected_missing:
