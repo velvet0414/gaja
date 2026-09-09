@@ -333,7 +333,8 @@ def local_ipc_broadcaster_thread(my_key):
                     # 🚨 [신규 추가: 특수부대 헬프 전술 통신망]
                     "is_help_req": st.get("help_requester", False),
                     "help_req_pos": st.get("dungeon_map_pos") if st.get("help_requester", False) else None,
-                    "helping_who": st.get("helping_who", None)
+                    "helping_who": st.get("helping_who", None),
+                    "claimed_base_node": st.get("claimed_base_node", None)
                 }
                 
                 data = json.dumps(payload).encode('utf-8')
@@ -447,7 +448,19 @@ DUNGEON_ASSETS = {
     "오땅-가을": {"map": "oak.png", "graph": "oak.json", "model": "oak.pt"},
     "오땅-겨울": {"map": "oak.png", "graph": "oak.json", "model": "oak.pt"},
 
-    # 👇👇👇 [신규 셋팅] 수던 2층, 3층 및 분할 맵(1~16) 전부 heine3.json 하나로 완벽 통합! 👇👇👇
+    # 👇👇👇 [순서 변경] 수던 1구역을 2층, 3층보다 위로 끌어올렸습니다! 👇👇👇
+    "수던1-1": {"map": "heine1.png", "graph": "heines1.json", "model": "heine.pt"},
+    "수던1-2": {"map": "heine1.png", "graph": "heines2.json", "model": "heine.pt"},
+    "수던1-3": {"map": "heine1.png", "graph": "heines3.json", "model": "heine.pt"},
+    "수던1-4": {"map": "heine1.png", "graph": "heines4.json", "model": "heine.pt"},
+    "수던1-5": {"map": "heine1.png", "graph": "heines5.json", "model": "heine.pt"},
+    "수던1-6": {"map": "heine1.png", "graph": "heines6.json", "model": "heine.pt"},
+    "수던1-7": {"map": "heine1.png", "graph": "heines7.json", "model": "heine.pt"},
+    "수던1-8": {"map": "heine1.png", "graph": "heines8.json", "model": "heine.pt"},
+    "수던1-9": {"map": "heine1.png", "graph": "heines9.json", "model": "heine.pt"},
+    "수던1-10": {"map": "heine1.png", "graph": "heines10.json", "model": "heine.pt"},
+
+    # 👇👇👇 [기존 셋팅] 수던 2층, 3층 및 분할 맵(1~16) 👇👇👇
     "수던2층": {"map": "heine2.png", "graph": "heine2.json", "model": "heine.pt"},
     "수던3층": {"map": "heine3.png", "graph": "heine3.json", "model": "heine.pt"},   
     "수던3-1": {"map": "heine3.png", "graph": "heine3.json", "model": "heine.pt"},
@@ -462,23 +475,10 @@ DUNGEON_ASSETS = {
     "수던3-10": {"map": "heine3.png", "graph": "heine3.json", "model": "heine.pt"},
     "수던3-11": {"map": "heine3.png", "graph": "heine3.json", "model": "heine.pt"},
     "수던3-12": {"map": "heine3.png", "graph": "heine3.json", "model": "heine.pt"},
-    "수던3-13": {"map": "heine3.png", "graph": "heine3.json", "model": "heine.pt"}, # 🚀 추가됨
-    "수던3-14": {"map": "heine3.png", "graph": "heine3.json", "model": "heine.pt"}, # 🚀 추가됨
-    "수던3-15": {"map": "heine3.png", "graph": "heine3.json", "model": "heine.pt"}, # 🚀 추가됨
-    "수던3-16": {"map": "heine3.png", "graph": "heine3.json", "model": "heine.pt"}, # 🚀 콤마(,) 잊지마십쇼!
-    
-    # 👇👇👇 [신규 셋팅] 파티 고정식 전용 독립 그래프 (수던 1-1 ~ 1-10) 👇👇👇
-    "수던1-1": {"map": "heine1.png", "graph": "heines1.json", "model": "heine.pt"},
-    "수던1-2": {"map": "heine1.png", "graph": "heines2.json", "model": "heine.pt"},
-    "수던1-3": {"map": "heine1.png", "graph": "heines3.json", "model": "heine.pt"},
-    "수던1-4": {"map": "heine1.png", "graph": "heines4.json", "model": "heine.pt"},
-    "수던1-5": {"map": "heine1.png", "graph": "heines5.json", "model": "heine.pt"},
-    "수던1-6": {"map": "heine1.png", "graph": "heines6.json", "model": "heine.pt"},
-    "수던1-7": {"map": "heine1.png", "graph": "heines7.json", "model": "heine.pt"},
-    "수던1-8": {"map": "heine1.png", "graph": "heines8.json", "model": "heine.pt"},
-    "수던1-9": {"map": "heine1.png", "graph": "heines9.json", "model": "heine.pt"},
-    "수던1-10": {"map": "heine1.png", "graph": "heines10.json", "model": "heine.pt"}
-    # 👆👆👆 ========================================================= 👆👆👆
+    "수던3-13": {"map": "heine3.png", "graph": "heine3.json", "model": "heine.pt"}, 
+    "수던3-14": {"map": "heine3.png", "graph": "heine3.json", "model": "heine.pt"}, 
+    "수던3-15": {"map": "heine3.png", "graph": "heine3.json", "model": "heine.pt"}, 
+    "수던3-16": {"map": "heine3.png", "graph": "heine3.json", "model": "heine.pt"}
 }
 
 # 💡 이미 로드된 자원을 재활용하기 위한 메모리 창고
@@ -3493,8 +3493,35 @@ def pico_worker_thread(key):
 
             elif action == "DRAG_ATTACK":
                 # 🚨 [단축키 빠짐 완벽 수술 (하드웨어 락)] 
-                # 파이썬 뇌가 미처 통제하지 못하고 큐에 들어온 공격 명령이라도,
-                # 현재 커서 Y좌표가 440(단축키 구역)을 넘었다면 물리적 마우스 클릭(DOWN)을 절대 인가하지 않고 취소시킴!
+                if key in ai_states and ai_states[key]["cursor_pos"][1] > 430:
+                    dprint(key, "🛡️ [하드웨어 방어막] 커서가 단축키 구역에 있습니다! 스킬 빠짐 방지를 위해 드래그를 취소합니다.")
+                    if key in ai_states:
+                        ai_states[key]["is_attacking"] = False
+                        ai_states[key]["target_fsm"] = "IDLE"
+                    continue
+
+                is_chain_kill = cmd.get("is_chain_kill", False) 
+                
+                # 🚀 [형님 기획: 고정파티 딜러 전용 Shift 발동 엔진!]
+                is_fixed_dealer = current_settings.get(key, {}).get("use_party_fixed", False) and not current_settings.get(key, {}).get("is_puller", False)
+                
+                if not is_chain_kill and random.random() < 0.03:
+                    extra_clicks = random.randint(1, 2)
+                    for _ in range(extra_clicks): send_mouse_click(p_serial, p_lock, 1, 1); h_sleep(0.04, 0.09); send_mouse_click(p_serial, p_lock, 1, 0); h_sleep(0.12, 0.20)
+                
+                if key in ai_states:
+                    ai_states[key]["arrow_image"] = None 
+                    ai_states[key]["arrow_fire_count"] = 0
+                    ai_states[key]["arrow_is_firing"] = False
+                    ai_states[key]["has_fired_arrow"] = False
+
+                # 👑 [쉬프트 강제 홀드 로직] 칼 표시 확인 ➔ 쉬프트 누름 ➔ 0.02~0.04초 딜레이 ➔ 마우스 클릭!
+                if is_fixed_dealer:
+                    send_keyboard_key(p_serial, p_lock, 129, 1) # Shift 누름
+                    h_sleep(0.02, 0.04)
+                    
+                # 1. 몹 잡고 꾹 누르기
+                send_mouse_click(p_serial, p_lock, 1, 1)
                 if key in ai_states and ai_states[key]["cursor_pos"][1] > 430:
                     dprint(key, "🛡️ [하드웨어 방어막] 커서가 단축키 구역에 있습니다! 스킬 빠짐 방지를 위해 드래그를 취소합니다.")
                     if key in ai_states:
@@ -3613,7 +3640,10 @@ def pico_worker_thread(key):
                         break
 
                 send_super_packet_buffer(p_serial, p_lock, super_payload, key)
-
+                
+                # 👑 [쉬프트 강제 해제] 드래그가 끝난 후 Shift 완벽하게 떼기
+                if is_fixed_dealer:
+                    send_keyboard_key(p_serial, p_lock, 129, 0) # Shift 뗌
 
                 if key in ai_states:
                     ai_states[key]["cursor_pos"][0] += (actual_drag_dx - total_dx)
@@ -9922,8 +9952,11 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                 else:
                     active_pk_threshold = base_pk_threshold  # 평상시(대기, 이동 등): GUI 설정값 그대로 (예: 15%)
                 
+                # 🚀 [파티 고정식 수술] 고정 파티 모드일 때는 PK 피격(순간 데미지) 회피를 아예 무시합니다!
+                is_fixed_party_pk_bypass = settings.get("use_party_fixed", False)
+                
                 # 🚀 단 1프레임이라도 조건 달성 시 모든 큐 폭파하고 즉각 텔레포트 발사!
-                if hp > 0.0 and raw_hp_diff >= active_pk_threshold and curr_time > state.get("hp_danger_cd", 0):
+                if hp > 0.0 and raw_hp_diff >= active_pk_threshold and curr_time > state.get("hp_danger_cd", 0) and not is_fixed_party_pk_bypass:
                     
                     # 💡 [핵심 조건] 화면에 유저가 있을 때만 발동! (전투 중은 위에서 999%로 컷트됨)
                     if is_user_around:
@@ -11724,90 +11757,76 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     is_fighting_for_exp = state.get("target_fsm") in active_combat_fsms or state.get("is_attacking", False) or state.get("arrow_is_firing", False)
                     
                     if is_fighting_for_exp and exp_did_change:
+                        # 🚀 [형님 마스터피스: G몹 스틸 방어, 0.5초 다굴, 2초 안대, 제동 딜레이 모조리 소각!]
+                        # 경험치 오르면 묻지도 따지지도 않고 G몹 명찰 찢은 뒤 즉시 조준(TARGET_AIMING)으로 쾌속 토스!
                         
-                        # 👇👇👇 [수정: 수던 G몹 전용 경험치 스틸 방어 엔진 (심플 버전)] 👇👇👇
-                        is_sudeon = "수던" in settings.get("dungeon_name", "")
-                        is_curr_g = state.get("current_is_g_mob", False)
-                        ignore_kill = False
+                        state["last_exp_time"] = curr_time 
+                        state["last_real_kill_time"] = curr_time 
                         
-                        # 💡 사냥터가 수던이고, 내가 치고 있는 몹이 G클래스(5번)일 때만 발동!
-                        if is_sudeon and is_curr_g:
-                            # 💡 직전 1초 이내에 은화살 픽셀이 변동(사격 중)했다면, 
-                            # 내 G몹이 아니라 겹사 유저가 다른 몹을 잡아서 오른 경험치로 간주!
-                            if role == "ARCHER" and (curr_time - state.get("last_arrow_change_time", 0) <= 1.0):
-                                ignore_kill = True
-                                dprint(key, "🛡️ [G몹 경험치 방어] 경험치가 올랐으나 1초 내 사격 기록이 있습니다. 타 유저 킬로 간주하고 점사 유지!")
-                        # 👆👆👆 ========================================================= 👆👆👆
-
-                        if not ignore_kill:
-                            state["last_exp_time"] = curr_time 
-                            state["last_real_kill_time"] = curr_time 
+                        state["abort_macro"] = True
+                        
+                        # 🚀 블랙리스트 백지화
+                        state["abandoned_item_map_list"] = []
+                        state["abandoned_item_screen_list"] = []
+                        state["hard_ban_item_map_list"] = [] 
+                        
+                        clear_movements_only(pico_queues[key])
+                        state["global_loot_ban_time"] = 0
+                        
+                        # 💀 [형님 오더 적용] 시체 마스킹 완전 소각! 시야 100% 해방!
+                        state["corpse_blind_expire"] = 0.0
+                        
+                        if state.get("sweep_active", False):
+                            pico_queues[key].put({"action": "SWEEP_STOP"})
+                            state["sweep_active"] = False
                             
-                            # 🚀 [다굴 방어 플래그] 몹 사망 시 꼬리표 부착! (루팅/회피 후 사냥 복귀 시 0.3초 근접 스캔 발동용)
-                            state["need_close_combat_scan"] = True
+                        # 👇👇👇 [핵심 수술: BRAKE_WAIT 생략! IDLE 생략! 즉각 스나이퍼 조준 모드 진입!] 👇👇👇
+                        state["target_fsm"] = "TARGET_AIMING"
+                        state["aiming_start_time"] = curr_time 
+                        state["aiming_limit"] = g_val(1.5, 2.1)
+                        state["hover_retry_count"] = 0
+                        
+                        state["yolo_blind_active"] = False
+                        state["yolo_blind_expire"] = 0
+                        
+                        state["cooldown"] = curr_time + 0.05 
+                        state["is_pulling"] = False
+                        state["is_attacking"] = False
+                        state["has_fired_arrow"] = False
+                        state["arrow_is_firing"] = False
+                        state["arrow_image"] = None
+                        state["is_motion_target"] = False
+                        state["locked_by_blind"] = False
+                        
+                        # 👑 [형님의 완벽한 0순위 재조준 엔진] 
+                        state["current_is_g_mob"] = False
+                        
+                        dprint(key, f"💀 [몹 사망/스틸] 경험치 상승! 시체 마스킹 없이 0.01초 만에 즉각 재조준(TARGET_AIMING) 돌입!")
+                        pico_queues[key].put({"action": "SWEEP_STOP"})
+                        state["sweep_active"] = False
                             
-                            # 🚀 [허공 드래그 파괴] 드래그 공격과 동시에 죽었을 경우, 진행 중인 헛방 드래그를 즉시 캔슬!
-                            state["abort_macro"] = True
-                            
-                            # 🚀 [블랙리스트 백지화] 몹 죽여서 길 뚫렸으니 밴 명단 완벽 초기화!
-                            state["abandoned_item_map_list"] = []
-                            state["abandoned_item_screen_list"] = []
-                            state["hard_ban_item_map_list"] = [] 
-                            state["global_loot_ban_time"] = 0 
-                            
-                            clear_movements_only(pico_queues[key])
-                            state["global_loot_ban_time"] = 0
-                            
-                            # 💀 [시체 잔상 마스킹 부활] 경험치 획득 순간의 '바라보던 방향(각도)'을 기억하고 2초 타이머 장전!
-                            scan_cy = char_screen_cy - 20 # 🚀 [수술 1] 모션 감지 센서 기준(Y-20)으로 통일!
-                            dead_dx = cur_x - char_screen_cx
-                            dead_dy = cur_y - scan_cy
-                            if math.hypot(dead_dx, dead_dy) > 10:
-                                # 🚀 [각도 찌그러짐 수술] Y축 원근비(0.85)를 역산하여 대각선 찌그러짐 완벽 복구!
-                                raw_angle = math.atan2(dead_dy / 0.85, dead_dx)
-                            else:
-                                raw_angle = current_facing_angle if current_facing_angle is not None else state.get("dungeon_angle", 0.0)
-                                
-                            # 🚀 [스냅 적용] 8각 모션 레이더의 타겟 구역과 100% 일치하도록 45도(pi/4) 단위로 강제 고정!
-                            state["corpse_blind_angle"] = round(raw_angle / (math.pi / 4)) * (math.pi / 4)
-                            state["corpse_blind_expire"] = curr_time + 2.0
-                            
-                            # 👇👇👇 [신규: 사냥 우선 모드 0.3초 대기 스킵] 👇👇👇
-                            if settings.get("hunt_first", False):
-                                state["target_fsm"] = "IDLE"
-                                state["yolo_blind_active"] = False
-                                state["yolo_blind_expire"] = 0
-                                
-                                if state.get("sweep_active", False):
-                                    pico_queues[key].put({"action": "SWEEP_STOP"})
-                                    state["sweep_active"] = False
-                                    
-                                state["cooldown"] = curr_time + 0.05 
-                                state["is_pulling"] = False; state["is_attacking"] = False; state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
-                                state["is_motion_target"] = False; state["locked_by_blind"] = False
-                                dprint(key, f"💀 [몹 사망] 경험치 획득! [사냥 우선] 대기 없이 즉각 다음 타겟을 찾습니다.")
-                            else:
-                                # 🚀 [형님의 절대 규칙 1] 체인킬 완전 삭제! 즉시 "0.3초 템 드랍 대기 모드"로 토스!
-                                state["target_fsm"] = "LOOT_SCAN_WAIT"
-                                state["loot_wait_start"] = curr_time
-                                state["loot_global_timeout"] = curr_time + 10.0 # 10초 제한시간 타이머 가동
-                                
-                                # 👑 [스마트 안대] 템 떨어지는 0.3초 동안 욜로 새치기 락온 방지
-                                state["yolo_blind_active"] = True
-                                state["yolo_blind_expire"] = curr_time + 10.0 # 넉넉히 연장 (IDLE 복귀 시 풀림)
-                                
-                                # 🚀 [전투 중 2셀 줍기 해제] 몹이 죽었으므로 누르고 있던 전투용 F4를 즉시 떼고 루팅 로직에 온전히 맡깁니다!
-                                if state.get("sweep_active", False):
-                                    pico_queues[key].put({"action": "SWEEP_STOP"})
-                                    state["sweep_active"] = False
-                                    dprint(key, "🛑 [전투 종료] 몹 사망 확인! 누르고 있던 전투용 줍기(F4)를 해제합니다.")
-                                    
-                                state["cooldown"] = curr_time + 0.05 
-                                state["is_pulling"] = False; state["is_attacking"] = False; state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
-                                state["is_motion_target"] = False; state["locked_by_blind"] = False
-                                
-                                dprint(key, f"💀 [몹 사망] 경험치 획득! 전투 종료 및 0.3초간 바닥 템 드랍을 대기합니다.")
-                            # 👆👆👆 ============================================================== 👆👆👆
+                        # 👇👇👇 [핵심 수술: BRAKE_WAIT 생략! IDLE 생략! 즉각 스나이퍼 조준 모드 진입!] 👇👇👇
+                        state["target_fsm"] = "TARGET_AIMING"
+                        state["aiming_start_time"] = curr_time 
+                        state["aiming_limit"] = g_val(1.5, 2.1)
+                        state["hover_retry_count"] = 0
+                        
+                        state["yolo_blind_active"] = False
+                        state["yolo_blind_expire"] = 0
+                        
+                        state["cooldown"] = curr_time + 0.05 
+                        state["is_pulling"] = False
+                        state["is_attacking"] = False
+                        state["has_fired_arrow"] = False
+                        state["arrow_is_firing"] = False
+                        state["arrow_image"] = None
+                        state["is_motion_target"] = False
+                        state["locked_by_blind"] = False
+                        
+                        # 👑 [형님의 완벽한 0순위 재조준 엔진] 
+                        state["current_is_g_mob"] = False
+                        
+                        dprint(key, f"💀 [몹 사망/스틸] 경험치 상승! G몹 락온 해제 후 0.01초 만에 즉각 재조준(TARGET_AIMING) 돌입!")
                             
                     state["next_exp_check"] = curr_time + 0.06
 
@@ -11884,23 +11903,26 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         state["current_is_g_mob"] = False # 🚀 추가!
 
 
-            # =================================================================
-            # 🚀 [다굴 방어 0.5초 모드 발동 체크]
-            # =================================================================
-            active_fsms_for_aim = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_LOCKED", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD"]
-            is_fighting_now = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or state.get("target_fsm") in active_fsms_for_aim
-            # 👑 [형님 오더 2] PARTY_WAIT 상태일 때도 즉각 타겟팅(다굴 스캔) 허용!
-            allow_aiming_now = state.get("target_fsm") in ["TARGET_AIMING", "HOVER_RETRY_WAIT", "IDLE", "PARTY_WAIT"]
-            
-            if allow_aiming_now and not is_fighting_now:
-                if not state.get("was_aiming_ready", False):
-                    state["was_aiming_ready"] = True
-                    # 방금 몹을 죽인 이력(꼬리표)이 남아 있다면 0.5초 다굴 방어 모드 즉시 가동!
-                    if state.pop("need_close_combat_scan", False):
-                        state["close_combat_timer"] = curr_time + 0.5
-                        dprint(key, "⚔️ [다굴 방어] 다음 타겟 탐색 시작! 0.5초간 70px 근접 욜로 + 모션 센서를 가동합니다.")
-            else:
-                state["was_aiming_ready"] = False
+                # =================================================================
+                # 🚀 [다굴 방어 0.5초 모드 발동 체크]
+                # =================================================================
+                active_fsms_for_aim = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_LOCKED", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD"]
+                is_fighting_now = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or state.get("target_fsm") in active_fsms_for_aim
+                # 👑 [형님 오더 2] PARTY_WAIT 상태일 때도 즉각 타겟팅(다굴 스캔) 허용!
+                allow_aiming_now = state.get("target_fsm") in ["TARGET_AIMING", "HOVER_RETRY_WAIT", "IDLE", "PARTY_WAIT"]
+                
+                # 👇👇👇 [신규: 15% 완전 엠탐 중에는 모션 센서 반격도 차단!] 👇👇👇
+                is_blind_mptam_now = state.get("mptam_blind_active", False)
+                
+                if allow_aiming_now and not is_fighting_now and not is_blind_mptam_now:
+                    if not state.get("was_aiming_ready", False):
+                        state["was_aiming_ready"] = True
+                        # 방금 몹을 죽인 이력(꼬리표)이 남아 있다면 0.5초 다굴 방어 모드 즉시 가동!
+                        if state.pop("need_close_combat_scan", False):
+                            state["close_combat_timer"] = curr_time + 0.5
+                            dprint(key, "⚔️ [다굴 방어] 다음 타겟 탐색 시작! 0.5초간 70px 근접 욜로 + 모션 센서를 가동합니다.")
+                else:
+                    state["was_aiming_ready"] = False
 
             # 👑 [유령 모드 해제] AI 로직 통과 후, 센서와 화면을 그리기 위해 원래 상태를 복구합니다!
             if is_manual_mode or is_paused_mode:
@@ -12122,12 +12144,46 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             dng_name_chk = settings.get("dungeon_name", "")
                             is_sudeon_or_party = ("수던" in dng_name_chk or "heine" in dng_name_chk.lower() or settings.get("use_party_hunt", False))
                             
-                            # 👇👇👇 [신규: 존 이탈 시 시야 축소] 👇👇👇
-                            if state.get("is_out_of_zone", False):
-                                yolo_radius = 150 # 내 존 밖으로 밀려났을 땐 눈앞 150px 몹만 치면서 복귀함
+                            # ⚙️ [타원 사거리 조절 장치] 여기서 숫자를 바꿔서 맘대로 조절하십쇼!
+                            FIXED_ELLIPSE_RX = 350 # 좌우 반경 (기본 350)
+                            FIXED_ELLIPSE_RY = 250 # 상하 반경 (기본 250)
+
+                            is_fixed_party = settings.get("use_party_fixed", False)
+                            is_fixed_dealer = is_fixed_party and not settings.get("is_puller", False)
+                            is_fixed_arrived = is_fixed_party and state.get("arrived_at_base", False)
+                            
+                            # 🚀 [딜러 13px 방어막 계산]
+                            dist_to_base = 999.0
+                            if is_fixed_dealer and state.get("dungeon_map_pos") and pc_graph and pc_graph.get("nodes"):
+                                my_claimed = state.get("claimed_base_node") or state.get("current_target_node")
+                                if my_claimed and my_claimed in pc_graph["nodes"]:
+                                    bn_data = pc_graph["nodes"][my_claimed]
+                                    bx = bn_data.get("x", 0) if isinstance(bn_data, dict) else bn_data[0]
+                                    by = bn_data.get("y", 0) if isinstance(bn_data, dict) else bn_data[1]
+                                    dist_to_base = math.hypot(state["dungeon_map_pos"][0] - bx, state["dungeon_map_pos"][1] - by)
+
+                            # 💡 딜러가 13픽셀 이내라면 시야(YOLO) 타원 무한 해방! (풀러는 도착 시에만 해방)
+                            is_yolo_free = is_fixed_arrived or (is_fixed_dealer and dist_to_base <= 13.0)
+
+                            # 👇👇👇 [맹점 수술: 엠탐 중일 때는 타원 사거리 강제 무효화!] 👇👇👇
+                            if is_fixed_party and state.get("is_mptam_mode", False):
+                                is_yolo_free = False
                             # 👆👆👆 =========================================
+
+                            if is_fixed_party and not is_yolo_free:
+                                yolo_radius = 100 # 13픽셀 밖으로 튕겨나갔거나 최초 집결 전 시야 100 제한
+                            elif state.get("is_out_of_zone", False):
+                                yolo_radius = 150 # 내 존 밖으로 밀려났을 땐 눈앞 150px 몹만 치면서 복귀함
                             elif state.get("is_mptam_mode", False):
-                                yolo_radius = 200
+                                # 👇👇👇 [신규: 파티 고정식 완전/반엠탐 시야 동적 제어] 👇👇👇
+                                if is_fixed_party:
+                                    if state.get("mptam_blind_active", False):
+                                        yolo_radius = 0 # 15% 이하: 완전 엠탐 (맹인)
+                                    else:
+                                        yolo_radius = 150 # 25% 이상: 반엠탐 (150px)
+                                else:
+                                    yolo_radius = 200
+                                # 👆👆👆 ==============================================
                             elif is_close_combat:
                                 # 🚀 [형님 오더 완벽 반영] 수던/파티 모드면 다굴 방어 스캔을 150px로 넉넉하게 확장! 아니면 순정 70px!
                                 yolo_radius = 150 if is_sudeon_or_party else 70 
@@ -12136,9 +12192,22 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 yolo_radius = 9999
                             
                             for m in temp_mobs:
-                                # 💡 YOLO는 8각 교집합 검사 없이 깔끔하게 거리(원형 반경)로만 거릅니다!
-                                if math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy) <= yolo_radius:
-                                    reachable_mobs.append(m)
+                                # 🚀 [신규 엔진] 고정파티가 사거리 해방 상태(13픽셀 이내)일 때 (다굴 방어 모드 제외)
+                                if is_yolo_free and not is_close_combat:
+                                    dx = m.x - char_screen_cx
+                                    dy = m.foot_y - char_screen_cy
+                                    
+                                    # 🚨 타원 하단이 활동반경을 넘어가더라도 몹이 UI 제한선을 넘으면 강제 컷!
+                                    if m.foot_y > int(h * 0.68):
+                                        continue
+                                        
+                                    # 수학적 타원 방정식 검사: (x^2 / a^2) + (y^2 / b^2) <= 1
+                                    if (dx**2) / (FIXED_ELLIPSE_RX**2) + (dy**2) / (FIXED_ELLIPSE_RY**2) <= 1.0:
+                                        reachable_mobs.append(m)
+                                else:
+                                    # 기존 원형 사거리 검사
+                                    if math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy) <= yolo_radius:
+                                        reachable_mobs.append(m)
                                     
                             temp_mobs = reachable_mobs
 
@@ -12262,6 +12331,17 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                 cv2.rectangle(debug_img, (740, 0), (w, h), (0, 0, 150), 1)           # 우측 끝 740픽셀
                 cv2.rectangle(debug_img, (0, int(h * 0.68)), (w, h), (0, 0, 150), 1) # 하단 UI 구역
                 cv2.putText(debug_img, "BLIND ZONE", (45, int(h * 0.68) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 150), 1)
+
+                # 👇👇👇 [신규 추가: 고정 파티 타원형 사거리 디버그 표시] 👇👇👇
+                if settings.get("use_party_fixed", False):  # 🚀 도착 전이라도 체크만 하면 무조건 보이게 수정!
+                    # 위와 동일한 조절 변수 (수정 시 여기도 같이 변경)
+                    DBG_ELLIPSE_RX = 350
+                    DBG_ELLIPSE_RY = 250
+                    
+                    # 핑크색 타원 그리기
+                    cv2.ellipse(debug_img, (char_screen_cx, char_screen_cy), (DBG_ELLIPSE_RX, DBG_ELLIPSE_RY), 0, 0, 360, (255, 105, 180), 1, cv2.LINE_AA)
+                    cv2.putText(debug_img, f"FIXED RANGE ({DBG_ELLIPSE_RX}x{DBG_ELLIPSE_RY})", (char_screen_cx - 80, char_screen_cy - DBG_ELLIPSE_RY - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 105, 180), 1)
+                # 👆👆👆 =========================================================
 
                 # 👇 [다굴 방어 모드 디버그 표시] 
                 if curr_time < state.get("close_combat_timer", 0):
@@ -12442,6 +12522,10 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
 
                     # 👇👇👇 [신규: 존 이탈 시 회색몹 쳐다보지도 않고 사냥터 복귀] 👇👇👇
                     if state.get("is_out_of_zone", False):
+                        is_allowed_hidden_track = False
+                    # 👆👆👆 ========================================================
+                    # 👇👇👇 [신규: 파티 고정식은 절대 회색몹 추적 금지!] 👇👇👇
+                    if settings.get("use_party_fixed", False):
                         is_allowed_hidden_track = False
                     # 👆👆👆 ========================================================
 
@@ -13786,6 +13870,9 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     
                     # (여기에 있던 변수 선언 두 줄은 위로 뺐으므로 지워주세요!)
                     
+                    # 🚀 변수 선언을 맨 위로 올려서 if-elif 기차가 끊어지지 않게 수술!
+                    is_fixed_dealer_loot = settings.get("use_party_fixed", False) and not settings.get("is_puller", False)
+
                     if len(close_mobs) >= 99: 
                         if fsm_current.startswith("LOOT"):
                             dprint(key, "🚨 [루팅 강제 중단] 다굴 교전 중! 아이템 포기하고 생존에 집중합니다.")
@@ -13796,18 +13883,27 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             state["cooldown"] = curr_time 
                         raw_item_boxes = []
 
+                    # 👇👇👇 [신규: 딜러 경험치 획득 후 2초간 바닥 템 투명(안대) 처리] 👇👇👇
+                    elif is_fixed_dealer_loot and (curr_time - state.get("last_exp_time", 0) <= 2.0):
+                        raw_item_boxes = []
+                        if state.get("sweep_active", False):
+                            pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
+                    # 👆👆👆 ==============================================================
+                    
                     # 👇👇👇 [여기서부터 핵심 수술: 3초 가리개(안대) 팩트 체크 추가!] 👇👇👇
-                    # 🚀 [핑퐁 지옥 완벽 수술] 회피 완전 실패 후 3초 글로벌 밴 적용 중일 때는 바닥 템을 강제로 못 본 척(투명) 처리!
                     elif curr_time < state.get("global_loot_ban_time", 0):
                         raw_item_boxes = []
                         if state.get("sweep_active", False):
                             pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
                     # 👆👆👆 ============================================================== 👆👆👆
                         
-                    elif state.get("is_mptam_mode", False) and not is_recent_kill: # 🚀 엠탐 중 바닥템 투명 취급 (단, 10초 내 자기가 죽인 템은 예외!)
-                        raw_item_boxes = []
-                        if state.get("sweep_active", False):
-                            pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
+                    elif state.get("is_mptam_mode", False):
+                        # 👇👇👇 [신규: 파티 고정식 엠탐 중에는 1셀이든 자기가 죽였든 모든 루팅(F4) 원천 차단!] 👇👇👇
+                        if settings.get("use_party_fixed", False) or not is_recent_kill:
+                            raw_item_boxes = []
+                            if state.get("sweep_active", False):
+                                pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
+                        # 👆👆👆 ==============================================================
                             
                     # 🚨 [스캔 강제 차단] 방금 진짜 킬 낸 게 아니라면(10초 지남), 전투/조준 중이어도 바닥 스캔을 칼같이 차단!
                     elif not is_actively_looting and not is_recent_kill:
@@ -13875,6 +13971,14 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 b['ignore_reason'] = "HUNT_FIRST(>1cell)"
                                 ignored_boxes.append(b)
                                 continue
+                        # 👆👆👆 ======================================================== 👆👆👆
+                        # 👇👇👇 [신규 딜러 전용 룰: 고정 딜러는 1셀 밖의 템 절대 무시 (움직임 원천 금지)] 👇👇👇
+                        dist_to_b = math.hypot(ix - char_screen_cx, (iy + 15 - char_screen_cy) / 0.50)
+                        is_fixed_dealer_loot = settings.get("use_party_fixed", False) and not settings.get("is_puller", False)
+                        if is_fixed_dealer_loot and dist_to_b >= 57.0:
+                            b['ignore_reason'] = "DEALER_1CELL_ONLY"
+                            ignored_boxes.append(b)
+                            continue
                         # 👆👆👆 ======================================================== 👆👆👆
 
                         # =======================================================
@@ -14188,8 +14292,10 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 elif true_pixel_dist < 57:
                                     dprint(key, "💎 [상황 1] 1셀 내 드랍. 제자리 F4 획득 + 주변 모션 사냥 동시 개시!")
                                     state["target_fsm"] = "LOOTING_1CELL"
-                                    state["loot_pick_timeout"] = curr_time + 10.0
-                                    state["loot_motion_scan_timer"] = 0 
+                                    # 🚀 [형님 기획] 고정 딜러는 1셀 줍기 타임아웃을 3초로 칼같이 제한! (일반은 10초)
+                                    loot_limit_1cell = 3.0 if (settings.get("use_party_fixed", False) and not settings.get("is_puller", False)) else 10.0
+                                    state["loot_pick_timeout"] = curr_time + loot_limit_1cell
+                                    state["loot_motion_scan_timer"] = 0
                                 elif true_pixel_dist < 113:
                                     # 👇👇👇 [신규 엔진: 파티 모드 시 2셀 주차 스킵 및 3셀 강제 편입!] 👇👇👇
                                     if settings.get("use_party_hunt", False):
@@ -14588,7 +14694,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 if current_dist <  57:
                                     dprint(key, f"💎 [2셀 루팅 팩트체크] 1칸 전진 제동 완료! (남은 거리: {current_dist:.1f}px) 1셀 획득(F4) 구역으로 합류!")
                                     state["target_fsm"] = "LOOTING_1CELL" 
-                                    state["loot_pick_timeout"] = curr_time + 10.0 
+                                    loot_limit_1cell = 3.0 if (settings.get("use_party_fixed", False) and not settings.get("is_puller", False)) else 10.0
+                                    state["loot_pick_timeout"] = curr_time + loot_limit_1cell 
                                     state["loot_motion_scan_timer"] = curr_time + 0.5 
                                     state["cooldown"] = curr_time + 0.05
                                     
@@ -14835,7 +14942,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             if current_dist < 57:
                                 dprint(key, "🎯 [3셀 접근] 1셀 이내로 접근 성공! 정밀 1셀 줍기 상태로 전환합니다.")
                                 state["target_fsm"] = "LOOTING_1CELL"
-                                state["loot_pick_timeout"] = curr_time + 10.0
+                                loot_limit_1cell = 3.0 if (settings.get("use_party_fixed", False) and not settings.get("is_puller", False)) else 10.0
+                                state["loot_pick_timeout"] = curr_time + loot_limit_1cell
                                 state["loot_motion_scan_timer"] = curr_time + 0.5
                                 state["cooldown"] = curr_time + 0.05
                             elif current_dist < state.get("loot_start_dist", 9999.0) - 4.0:
@@ -16626,9 +16734,12 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         continue
                                         
                                     if stuck_duration > 5.0:
-                                        if stuck_duration > 15.0:
+                                        # 👇👇👇 [파티 고정식 수술] 딜러는 15초 갇힘 텔레포트 면제! 오직 풀러/일반 사냥만 적용 👇👇👇
+                                        is_fixed_dealer_stuck = settings.get("use_party_fixed", False) and not settings.get("is_puller", False)
+                                        
+                                        if stuck_duration > 15.0 and not is_fixed_dealer_stuck:
                                             state["dungeon_global_path"] = []
-                                            with pico_queues[key].mutex: pico_queues[key].queue.clear() 
+                                            with pico_queues[key].mutex: pico_queues[key].queue.clear()
                                             if state.get("sweep_active", False):
                                                 pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
                                                 
@@ -16718,7 +16829,38 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     general_special_nodes = []
                                     buff_spot_nodes = [] # 🌟 [신규] 버프 장소만 따로 담아둘 바구니
                                     
+                                    # 👇👇👇 [신규 추가: 고정 파티 딜러/풀러 명단 바구니] 👇👇👇
+                                    fixed_dealers = []
+                                    puller_routes = {}
+                                    puller_bases = {}
+                                    # 👆👆👆 =========================================
+                                    
                                     for nid, ndata in nodes_dict.items():
+                                        if isinstance(ndata, dict):
+                                            node_zone = str(ndata.get("zone", "")).strip()
+                                            is_sp = ndata.get("is_special", False) or ndata.get("special", False)
+                                            is_buff = ndata.get("is_buff_spot", False) # 🌟 버프 명찰 확인
+                                            
+                                            if str(is_sp).lower() == "true": is_sp = True
+                                            if str(is_buff).lower() == "true": is_buff = True
+                                            
+                                            # 👇👇👇 [신규 추가: 1, 2-n, 2-Base 꼬리표 자동 분류기] 👇👇👇
+                                            if node_zone == "1":
+                                                fixed_dealers.append(str(nid))
+                                            elif "-Base" in node_zone:
+                                                try:
+                                                    r_num = int(node_zone.split("-")[0])
+                                                    puller_bases[r_num] = str(nid)
+                                                except: pass
+                                            elif "-" in node_zone and "수던" not in node_zone:
+                                                try:
+                                                    r_num, step_num = map(int, node_zone.split("-"))
+                                                    if r_num not in puller_routes: puller_routes[r_num] = {}
+                                                    puller_routes[r_num][step_num] = str(nid)
+                                                except: pass
+                                            # 👆👆👆 ==============================================
+                                            
+                                            # 1순위: 콤마(,)로 구분된 구역 이름 리스트로 변환 후 GUI 사냥터와 일치하는지 검사
                                         if isinstance(ndata, dict):
                                             node_zone = str(ndata.get("zone", "")).strip()
                                             is_sp = ndata.get("is_special", False) or ndata.get("special", False)
@@ -16761,6 +16903,11 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         for nid, ndata in nodes_dict.items():
                                             if isinstance(ndata, dict) and not ndata.get("is_portal", False):
                                                 special_nodes_list.append(str(nid))
+                                                
+                                    # 🚀 수집한 딜러/풀러 노드 데이터를 그래프 뇌에 영구 각인!
+                                    pc_graph["fixed_dealers"] = fixed_dealers
+                                    pc_graph["puller_routes"] = puller_routes
+                                    pc_graph["puller_bases"] = puller_bases
                                     # 👆👆👆 [필터링 엔진 종료] 👆👆👆
 
                                 if special_nodes_list:
@@ -16781,9 +16928,164 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 # ========================================================
                                 # 🗺️ [1단계] 경로 생성부 (PATH GENERATION)
                                 # ========================================================
+                                is_fixed_party = settings.get("use_party_fixed", False)
+                                is_puller = settings.get("is_puller", False)
+
                                 if state.get("is_rendezvous_mode", False):
                                     pass # 🚀 이산가족 상봉 중일 때는 아래의 맵 목적지 갱신을 싹 스킵하고 랑데부 노드를 그대로 유지합니다!
                                     
+                                # 👇👇👇 [신규 엔진: 트랙 F (고정 파티 전용 로직)] 👇👇👇
+                                elif is_fixed_party and (pc_graph.get("fixed_dealers") or pc_graph.get("puller_routes")):
+                                    goal_node = None
+                                    dealers = pc_graph.get("fixed_dealers", [])
+                                    
+                                    # 👑 1. 자리 찜하기 (파티 통신 기반 분배)
+                                    claimed_nodes = set()
+                                    with party_lock:
+                                        for p_key, p_data in local_party_states.items():
+                                            if p_data.get("party_group") == my_team and curr_time - p_data.get("recv_time", 0) < 3.0:
+                                                c_node = p_data.get("claimed_base_node")
+                                                if c_node: claimed_nodes.add(str(c_node))
+                                                
+                                    my_claimed = state.get("claimed_base_node")
+                                    best_dealer_node = None
+                                    
+                                    # 내가 찜한 자리가 있으면 최우선, 없으면 남은 빈자리 탐색 (없으면 합석!)
+                                    if my_claimed and my_claimed in dealers:
+                                        best_dealer_node = my_claimed
+                                    elif dealers:
+                                        available_dealers = [dn for dn in dealers if str(dn) not in claimed_nodes]
+                                        target_dealers = available_dealers if available_dealers else dealers
+                                        
+                                        min_d = float('inf')
+                                        for dn in target_dealers:
+                                            d_node = pc_graph["nodes"].get(dn)
+                                            if d_node:
+                                                nx = d_node.get("x", 0) if isinstance(d_node, dict) else d_node[0]
+                                                ny = d_node.get("y", 0) if isinstance(d_node, dict) else d_node[1]
+                                                dist = (nx - char_map_pos[0])**2 + (ny - char_map_pos[1])**2
+                                                if dist < min_d: 
+                                                    min_d = dist; best_dealer_node = dn
+                                                
+                                        if best_dealer_node:
+                                            state["claimed_base_node"] = str(best_dealer_node)
+                                            
+                                    # 🏃‍♂️ 2. 공통 진입 로직 (1번 노드 집결 전)
+                                    if not state.get("arrived_at_base", False):
+                                        if best_dealer_node:
+                                            goal_node = best_dealer_node
+                                            state["current_target_node"] = goal_node
+                                            
+                                            bn_data = pc_graph["nodes"][goal_node]
+                                            bx = bn_data.get("x", 0) if isinstance(bn_data, dict) else bn_data[0]
+                                            by = bn_data.get("y", 0) if isinstance(bn_data, dict) else bn_data[1]
+                                            
+                                            # 6.0 픽셀 이내 도착 확인
+                                            if math.hypot(char_map_pos[0] - bx, char_map_pos[1] - by) <= 6.0:
+                                                state["arrived_at_base"] = True
+                                                state["dungeon_global_path"] = []
+                                                dprint(key, f"🎉 [집결 완료] 1번 노드 도착 (오차 6픽셀 이내)! 시야(YOLO) 해방 및 역할 개시!")
+                                                goal_node = None
+                                    else:
+                                        # 🎯 3. 집결 완료 후 역할 분기
+                                        if not is_puller:
+                                            # 🚨 6픽셀 밖으로 밀려나면 즉시 이탈 선언!
+                                                if dist_to_base > 6.0:
+                                                    state["arrived_at_base"] = False
+                                                    goal_node = best_dealer_node
+                                                    state["current_target_node"] = goal_node
+                                                    
+                                                    # 👇👇👇 [신규 13픽셀 방어막 분기 로그] 👇👇👇
+                                                    if dist_to_base <= 13.0:
+                                                        if curr_time - state.get("log_fixed_dealer_tether", 0) > 5.0:
+                                                            dprint(key, f"⚠️ [진지 정렬] 중심에서 {dist_to_base:.1f}px (13px 이내). 몹 우선 타격하며 천천히 복귀합니다.")
+                                                            state["log_fixed_dealer_tether"] = curr_time
+                                                    else:
+                                                        if curr_time - state.get("log_fixed_dealer_out", 0) > 5.0:
+                                                            dprint(key, f"🚨 [진지 이탈] {dist_to_base:.1f}px (13px 초과)! 시야를 100px로 좁히고 즉시 진지로 복귀합니다!")
+                                                            state["log_fixed_dealer_out"] = curr_time
+                                                    # 👆👆👆 =========================================
+                                                else:
+                                                    if curr_time - state.get("log_fixed_dealer", 0) > 10.0:
+                                                        dprint(key, f"🎯 [고정 딜러] 베이스캠프 안착 완료! 사거리 내 몹만 요격합니다.")
+                                                        state["log_fixed_dealer"] = curr_time
+                                        else:
+                                            # [풀러 순찰 로직]
+                                            routes = pc_graph.get("puller_routes", {})
+                                            bases = pc_graph.get("puller_bases", {})
+                                            
+                                            if routes:
+                                                if "puller_route" not in state or state["puller_route"] not in routes:
+                                                    state["puller_route"] = min(routes.keys())
+                                                    state["puller_step"] = 1
+                                                    state["puller_state"] = "PATROL"
+                                                    
+                                                curr_r = state["puller_route"]
+                                                curr_s = state["puller_step"]
+                                                p_state = state["puller_state"]
+                                                
+                                                if p_state == "PATROL":
+                                                    if curr_s in routes[curr_r]:
+                                                        goal_node = routes[curr_r][curr_s]
+                                                        if curr_time - state.get("log_puller_patrol", 0) > 5.0:
+                                                            dprint(key, f"🏃‍♂️ [풀러 순찰] {curr_r}번 경로의 {curr_s}번째 지점(노드 {goal_node})으로 이동!")
+                                                            state["log_puller_patrol"] = curr_time
+                                                    else:
+                                                        dprint(key, f"🚩 [순찰 완료] {curr_r}번 경로 끝! 베이스캠프({curr_r}-Base)로 회군합니다!")
+                                                        state["puller_state"] = "RETURNING"
+                                                        if curr_r in bases: goal_node = bases[curr_r]
+                                                        
+                                                elif p_state == "RETURNING":
+                                                    if curr_r in bases:
+                                                        goal_node = bases[curr_r]
+                                                        if curr_time - state.get("log_puller_return", 0) > 5.0:
+                                                            dprint(key, f"🔙 [풀러 회군] 몹을 끌고 {curr_r}-Base로 복귀 중입니다!")
+                                                            state["log_puller_return"] = curr_time
+                                                    else:
+                                                        next_r_list = [r for r in sorted(routes.keys()) if r > curr_r]
+                                                        state["puller_route"] = next_r_list[0] if next_r_list else min(routes.keys())
+                                                        state["puller_step"] = 1
+                                                        state["puller_state"] = "PATROL"
+
+                                        # 풀러도 1번 노드처럼 도착 전 시야 100 유지를 위해 상태 동기화
+                                        if goal_node:
+                                            state["current_target_node"] = goal_node
+
+                                    # A* 길찾기 발사 (목표가 있을 때만)
+                                    if goal_node and (not global_path or curr_time - state.get("dungeon_path_time", 0) > 300.0):
+                                        new_path = calculate_graph_astar_path(pc_graph, char_map_pos, goal_node, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
+                                        if new_path:
+                                            state["dungeon_global_path"] = new_path
+                                            state["dungeon_path_time"] = curr_time
+                                            global_path = new_path
+                                            state["astar_fail_count"] = 0 
+                                        else:
+                                            state["dungeon_global_path"] = []
+                                            state["dungeon_path_time"] = curr_time - 295.0
+                                            state["current_target_node"] = None
+                                            if state["astar_fail_count"] >= 5:
+                                                state["astar_fail_count"] = 0
+                                                with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                                                if state.get("sweep_active", False):
+                                                    pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
+                                                    
+                                                # 👇👇👇 [신규 수술: 5아웃 시 풀러는 텔레포트, 딜러는 제자리 존버] 👇👇👇
+                                                if is_puller:
+                                                    dprint(key, "🚨 [풀러 경로 5아웃] 사방이 막혔습니다. 풀러 강제 텔레포트 발동!")
+                                                    pico_queues[key].put({"action": "TELEPORT"})
+                                                    state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
+                                                    state["teleport_start_mp"] = mp
+                                                    if h >= 200 and w >= 200: state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY)
+                                                    else: state["tele_snapshot"] = None
+                                                    state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
+                                                    state["tele_retry_cnt"] = 0
+                                                    state["is_pulling"] = False
+                                                else:
+                                                    dprint(key, "🛡️ [딜러 경로 5아웃] 복귀 경로 막힘! 텔레포트 타지 않고 길이 열릴 때까지 제자리 대기합니다.")
+                                                # 👆👆👆 ========================================================= 
+                                                    
+                                                state["cooldown"] = curr_time + 1.0
+
                                 elif is_special_map:
                                     # ----------------------------------------------------
                                     # 🌟 트랙 A (스페셜 맵 전용 싹쓸이 로직)
@@ -17131,7 +17433,62 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
 
                                     if is_arrived:
                                         state["dungeon_global_path"] = []
-                                        if is_precise_tracking:
+                                        
+                                        # 👇👇👇 [신규 추가: 고정 파티 도착 팩트 체크] 👇👇👇
+                                        if is_fixed_party:
+                                            if not is_puller:
+                                                pass # 딜러 6픽셀 팩트 체크 및 수호는 위에서 지속 처리함
+                                            else:
+                                                p_state = state.get("puller_state", "PATROL")
+                                                curr_r = state.get("puller_route", 2)
+                                                curr_s = state.get("puller_step", 1)
+                                                
+                                                if p_state == "PATROL":
+                                                    dprint(key, f"🏁 [풀러 도착] {curr_r}-{curr_s} 지점 도착. 곧바로 다음 지점으로 전진!")
+                                                    state["puller_step"] += 1
+                                                    state["arrived_at_base"] = False # 순찰 중엔 시야 100 유지
+                                                elif p_state == "RETURNING":
+                                                    routes = pc_graph.get("puller_routes", {})
+                                                    next_r_list = [r for r in sorted(routes.keys()) if r > curr_r]
+                                                    next_r = next_r_list[0] if next_r_list else min(routes.keys())
+                                                    
+                                                    dprint(key, f"🎉 [풀러 회군 완료] {curr_r}-Base 복귀! 2.5초 대기 후 다음 {next_r}번 코스 출격!")
+                                                    state["puller_route"] = next_r
+                                                    state["puller_step"] = 1
+                                                    state["puller_state"] = "PATROL"
+                                                    state["cooldown"] = curr_time + 2.5
+                                        # 👆👆👆 ========================================= 👆👆👆
+                                            if not state.get("arrived_at_base", False):
+                                                if dist_to_final <= 6.0:
+                                                    state["arrived_at_base"] = True
+                                                    dprint(key, "🎉 [집결 완료] 1번 노드(집결지) 6픽셀 이내 도착 확인!")
+                                            elif not is_puller:
+                                                dprint(key, "🎯 [고정 딜러] 베이스캠프 안착 완료! 말뚝딜을 준비합니다.")
+                                                state["current_target_node"] = None
+                                            else:
+                                                p_state = state.get("puller_state", "PATROL")
+                                                curr_r = state.get("puller_route", 2)
+                                                curr_s = state.get("puller_step", 1)
+                                                
+                                                if p_state == "PATROL":
+                                                    dprint(key, f"🏁 [풀러 도착] {curr_r}-{curr_s} 지점 도착. 멈추지 않고 곧바로 다음 순찰 지점으로 전진합니다!")
+                                                    state["puller_step"] += 1
+                                                elif p_state == "RETURNING":
+                                                    # 베이스캠프 무사 귀환 완료! 다음 경로(3번, 4번..)로 스위칭
+                                                    routes = pc_graph.get("puller_routes", {})
+                                                    next_r_list = [r for r in sorted(routes.keys()) if r > curr_r]
+                                                    next_r = next_r_list[0] if next_r_list else min(routes.keys())
+                                                    
+                                                    dprint(key, f"🎉 [풀러 회군 완료] {curr_r}-Base 도착 완료! 대열을 정비하고 다음 {next_r}번 코스 순찰을 준비합니다.")
+                                                    state["puller_route"] = next_r
+                                                    state["puller_step"] = 1
+                                                    state["puller_state"] = "PATROL"
+                                                    
+                                                    # 🚀 딜러들이 끌고 온 몹을 때려잡을 시간을 벌어주기 위해 2.5초간 대기!
+                                                    state["cooldown"] = curr_time + 2.5
+                                        # 👆👆👆 ========================================= 👆👆👆
+                                        
+                                        elif is_precise_tracking:
                                             if curr_time - state.get("log_precise_arr", 0) > 3.0:
                                                 dprint(key, "🎯 [정밀 네비] 타겟 목적지 타일에 완벽히 도달했습니다! 추적 꼬리표 해제.")
                                                 state["log_precise_arr"] = curr_time
@@ -17366,6 +17723,25 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     state["dungeon_global_path"] = []
                     state["target_fsm"] = "IDLE"
 
+                # 👇👇👇 [신규: 파티 고정식 완전엠탐(15%) / 반엠탐(25%) 스위치 제어] 👇👇👇
+                if settings.get("use_party_fixed", False) and state.get("is_mptam_mode", False):
+                    if mp <= 15.0:
+                        if not state.get("mptam_blind_active", False):
+                            dprint(key, f"🚨 [완전 엠탐 진입] MP 15% 이하({mp:.1f}%)! 즉시 공격을 멈추고 시야를 가립니다(맹인)!")
+                            state["mptam_blind_active"] = True
+                            state["abort_macro"] = True
+                            clear_movements_only(pico_queues[key])
+                            state["target_fsm"] = "IDLE"
+                            state["is_attacking"] = False
+                            state["arrow_is_firing"] = False
+                    elif mp >= 25.0:
+                        if state.get("mptam_blind_active", False):
+                            dprint(key, f"🦅 [반엠탐 진입] MP 25% 이상({mp:.1f}%)! 시야를 150px로 개방하고 바디+사냥을 병행합니다!")
+                            state["mptam_blind_active"] = False
+                else:
+                    state["mptam_blind_active"] = False
+                # 👆👆👆 =========================================================================
+
                 # 🚀 [엠탐 마나 고갈 시 1차 판단]
                 # 👑 [형님 오더 방어막] 도망자/지원군 모드일 때는 엠탐 스위치 강제 차단! (길에서 서서 죽는 뻘짓 방지)
                 is_help_busy = state.get("help_requester", False) or state.get("helping_who") is not None
@@ -17381,9 +17757,24 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     # 파티 모드이고 설정이 켜져 있으며, 교전 중 MP가 설정값 이하일 때 강제 텔레포트 허용!
                     force_party_tele = is_party_hunt and party_mptam_tele_use and mp <= party_mptam_tele_pct and is_currently_fighting
                     
+                    # 파티 모드이고 설정이 켜져 있으며, 교전 중 MP가 설정값 이하일 때 강제 텔레포트 허용!
+                    force_party_tele = is_party_hunt and party_mptam_tele_use and mp <= party_mptam_tele_pct and is_currently_fighting
+                    
+                    # 👇👇👇 [신규: 파티 고정식 엠탐 텔레포트 원천 차단] 👇👇👇
+                    if settings.get("use_party_fixed", False):
+                        force_party_tele = False
+                    # 👆👆👆 ========================================
+
                     # 👑 파티 모드이거나, 솔플인데 텔사냥이 꺼져있다면 텔레포트 금지! (단, 강제 텔레포트 조건 달성 시 예외 통과)
                     if (is_party_hunt and not force_party_tele) or (not is_party_hunt and not tele_hunt_enabled):
-                        if is_currently_fighting or (mobs and len(mobs) >= 2) or state.get("sweep_active", False):
+                        # 👇👇👇 [신규: 파티 고정식 쾌속 엠탐 진입] 👇👇👇
+                        if settings.get("use_party_fixed", False):
+                            if not state.get("is_mptam_mode", False):
+                                dprint(key, f"💤 [고정파티 엠탐] 설정 수치({mptam_start_mp}%) 도달! 하던 행동(전투)을 유지한 채 엠탐 모드에 즉각 돌입!")
+                                state["is_mptam_mode"] = True
+                                state["pending_mptam"] = False
+                        # 👆👆👆 =================================
+                        elif is_currently_fighting or (mobs and len(mobs) >= 2) or state.get("sweep_active", False):
                             if not state.get("pending_mptam", False):
                                 dprint(key, f"⏳ [엠탐 예약] 마나가 고갈되었습니다! 텔레포트 금지 모드이므로 현재 치고 있는 몹까지만 잡고 엠탐에 돌입합니다.")
                                 state["pending_mptam"] = True
@@ -17541,9 +17932,26 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         is_busy = False 
                         state["body_to_mind_active"] = True # 강제 바디 활성화
                     else:
-                        # 👑 [형님 오더 1] PARTY_WAIT(파티 대기) 중일 때도 몹만 없으면 바디(F7)를 쓸 수 있게 족쇄 해제!
-                        is_busy = bool(mobs) or is_looting or state.get("target_fsm") not in ["IDLE", "PATROL", "PARTY_WAIT"] or state.get("is_pulling", False) or is_buffing or survival_action_taken
+                        # 👇👇👇 [신규: 딜러는 평상시에 바디를 '꾹 누르기' 모드로 전환! 단, 3초 루팅 중엔 바디 금지!] 👇👇👇
+                        is_fixed_dealer_body = settings.get("use_party_fixed", False) and not settings.get("is_puller", False)
+                        if is_fixed_dealer_body:
+                            fsm_body_chk = str(state.get("target_fsm", ""))
+                            
+                            if state.get("is_mptam_mode", False):
+                                is_busy = False 
+                            else:
+                                # 🚀 [형님 기획] 1셀 줍기(3초) 중에는 바디 시도를 아예 막아버려서 오직 F4만 꾹 누르게 만듦!
+                                if fsm_body_chk in ["LOOTING_1CELL", "LOOT_SCAN_WAIT"]:
+                                    is_busy = True # 루팅 중엔 딴짓(바디) 절대 금지!
+                                else:
+                                    is_busy = bool(mobs) or (is_looting or fsm_body_chk not in ["IDLE", "PATROL", "PARTY_WAIT"]) or state.get("is_pulling", False) or is_buffing or survival_action_taken
+                            # 👆===================================================================
+                        else:
+                            # 👑 [형님 오더 1] PARTY_WAIT(파티 대기) 중일 때도 몹만 없으면 바디(F7)를 쓸 수 있게 족쇄 해제!
+                            is_busy = bool(mobs) or is_looting or state.get("target_fsm") not in ["IDLE", "PATROL", "PARTY_WAIT"] or state.get("is_pulling", False) or is_buffing or survival_action_taken
+                            
                         if role == "ARCHER" and state.get("arrow_is_firing", False): is_busy = True
+                        # 👆👆👆 ========================================================================= 👆👆👆
                         
                     is_close_combat_scanning = curr_time < state.get("close_combat_timer", 0)
                     is_exp_safe_for_body = (curr_time - state.get("last_exp_time", 0) > 1.0)
@@ -17555,15 +17963,43 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     can_use_body = state.get("body_to_mind_active", False) and not is_busy and not need_heal and not is_critical_hp and not is_poisoned and not is_close_combat_scanning and is_exp_safe_for_body and not is_body_blocked
                     # 👆👆👆 =========================================
                     
-                    if state.get("body_held", False):
-                        if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0)
-                        state["body_held"] = False
-                        
-                    if can_use_body and curr_time >= state.get("body_cd", 0):
-                        pico_queues[key].put({"action": "BODY_TO_MIND"})
-                        state["last_body_time"] = curr_time 
-                        state["body_cd"] = curr_time + g_time(0.8, 1.2, key)
-                        state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
+                    # 👇👇👇 [사냥터 엠탐 꾹 누르기 & 이동 중 단타 스위칭 엔진 적용!] 👇👇👇
+                    is_fixed_dealer_hold_body = settings.get("use_party_fixed", False) and not settings.get("is_puller", False) and state.get("target_fsm") in ["IDLE", "PARTY_WAIT"] and state.get("loot_state") == "IDLE" and not bool(mobs)
+                    is_hold_body_mode = state.get("is_mptam_mode", False) or is_fixed_dealer_hold_body
+
+                    if is_hold_body_mode:
+                        # 1. 사냥터 제자리 엠탐 모드 또는 고정 딜러의 몹 없는 평상시 대기 상태일 때는 꾹(Hold) 누르기!
+                        if can_use_body:
+                            if not state.get("body_held", False):
+                                if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 1) # KEY DOWN
+                                state["body_held"] = True
+                                state["last_body_time"] = curr_time # 피격 계산용 시간 갱신
+                                if not state.get("is_mptam_mode", False):
+                                    dprint(key, "🔋 [딜러 무한 바디] 주변에 몹/템이 없습니다! 엠탐 모드가 아니어도 바디(F7)를 꾹 누르고 대기합니다.")
+                        else:
+                            released_key = False
+                            if state.get("body_held", False):
+                                if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0) # KEY UP
+                                state["body_held"] = False
+                                released_key = True
+                                if not state.get("is_mptam_mode", False):
+                                    dprint(key, "🛑 [딜러 무한 바디 해제] 몹 발견 또는 액션 시작! 누르고 있던 바디(F7)를 뗍니다.")
+                                
+                            if released_key:
+                                state["cooldown"] = curr_time + 0.05
+                    else:
+                        # 2. 이동 중이거나 일반 사냥(전투 대기) 중일 때는 기존처럼 단타(Tap) 유지!
+                        if state.get("body_held", False):
+                            if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0)
+                            state["body_held"] = False
+                            
+                        if can_use_body and curr_time >= state.get("body_cd", 0):
+                            # 🚀 [형님 오더: F4 뗐다 누르기 핑퐁 완전 삭제!]
+                            # 루팅 중일 때는 위쪽 is_busy=True 로직에 의해 아예 이 코드로 안 넘어오므로 F4 방해/경합이 일어나지 않습니다!
+                            pico_queues[key].put({"action": "BODY_TO_MIND"})
+                            state["last_body_time"] = curr_time 
+                            state["body_cd"] = curr_time + g_time(0.8, 1.2, key)
+                            state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
             else:
                 # 🚨 [수술 완료] 진짜 사냥 종료/정지/사망 등일 때만 바디를 해제하도록 밖으로 뺌!
                 if state.get("body_held", False):
@@ -18253,7 +18689,8 @@ def toggle_individual_hunt(key):
         state["is_attacking"] = False; state["attack_cmd_time"] = 0.0; state["has_fired_arrow"] = False; state["humanize_cd"] = 0.0
         
         # 🚀 [형님 오더 적용] 자동 사냥(▶) 버튼을 누를 때만 무조건 F1 힐 아이콘 검사부터 시작하도록 강제 주입!
-        state["is_pulling"] = False; state["target_fsm"] = "F1_INIT_VERIFY"; state["f1_retry_cnt"] = 0; state["last_cursor_found_time"] = time.time() 
+        state["arrived_at_base"] = False # 🚀 매크로 시작 시 집결 상태 무조건 초기화
+        state["is_pulling"] = False; state["target_fsm"] = "F1_INIT_VERIFY"; state["f1_retry_cnt"] = 0; state["last_cursor_found_time"] = time.time()
         
         state["body_to_mind_active"] = False; state["body_cd"] = 0.0
         state["need_anchor_update"] = True; state["last_anchor_pos"] = None; state["anchor_lost_time"] = 0.0; state["anchor_image"] = None
