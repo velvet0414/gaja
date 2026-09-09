@@ -465,7 +465,20 @@ DUNGEON_ASSETS = {
     "수던3-13": {"map": "heine3.png", "graph": "heine3.json", "model": "heine.pt"}, # 🚀 추가됨
     "수던3-14": {"map": "heine3.png", "graph": "heine3.json", "model": "heine.pt"}, # 🚀 추가됨
     "수던3-15": {"map": "heine3.png", "graph": "heine3.json", "model": "heine.pt"}, # 🚀 추가됨
-    "수던3-16": {"map": "heine3.png", "graph": "heine3.json", "model": "heine.pt"}  # 🚀 추가됨
+    "수던3-16": {"map": "heine3.png", "graph": "heine3.json", "model": "heine.pt"}, # 🚀 콤마(,) 잊지마십쇼!
+    
+    # 👇👇👇 [신규 셋팅] 파티 고정식 전용 독립 그래프 (수던 1-1 ~ 1-10) 👇👇👇
+    "수던1-1": {"map": "heine1.png", "graph": "heines1.json", "model": "heine.pt"},
+    "수던1-2": {"map": "heine1.png", "graph": "heines2.json", "model": "heine.pt"},
+    "수던1-3": {"map": "heine1.png", "graph": "heines3.json", "model": "heine.pt"},
+    "수던1-4": {"map": "heine1.png", "graph": "heines4.json", "model": "heine.pt"},
+    "수던1-5": {"map": "heine1.png", "graph": "heines5.json", "model": "heine.pt"},
+    "수던1-6": {"map": "heine1.png", "graph": "heines6.json", "model": "heine.pt"},
+    "수던1-7": {"map": "heine1.png", "graph": "heines7.json", "model": "heine.pt"},
+    "수던1-8": {"map": "heine1.png", "graph": "heines8.json", "model": "heine.pt"},
+    "수던1-9": {"map": "heine1.png", "graph": "heines9.json", "model": "heine.pt"},
+    "수던1-10": {"map": "heine1.png", "graph": "heines10.json", "model": "heine.pt"}
+    # 👆👆👆 ========================================================= 👆👆👆
 }
 
 # 💡 이미 로드된 자원을 재활용하기 위한 메모리 창고
@@ -1668,6 +1681,8 @@ def _save_settings_internal(): # 💡 들여쓰기 보호 마법
                 
                 # 👇👇👇 [파티 탭 변수 파일 저장] 👇👇👇
                 "use_party_hunt": v["use_party_hunt"].get(),
+                "use_party_fixed": v["use_party_fixed"].get(), # 🚀 [신규 영구저장] 파티 고정식
+                "is_puller": v["is_puller"].get(),             # 🚀 [신규 영구저장] 풀러
                 "is_party_inviter": v["is_party_inviter"].get(),
                 "party_group": v["party_group"].get(),
                 "party_dungeon_name": v["party_dungeon_name"].get(),
@@ -2088,6 +2103,8 @@ for pc in MINI_PCS:
         
         # 👇👇👇 [신규 파티 전용 변수 신설 (기본값 해제)] 👇👇👇
         "use_party_hunt": tk.BooleanVar(value=pc_set.get("use_party_hunt", False)),
+        "use_party_fixed": tk.BooleanVar(value=pc_set.get("use_party_fixed", False)), # 🚀 [신규 추가] 파티 고정식
+        "is_puller": tk.BooleanVar(value=pc_set.get("is_puller", False)),             # 🚀 [신규 추가] 풀러
         "is_party_inviter": tk.BooleanVar(value=pc_set.get("is_party_inviter", False)),
         "party_group": tk.StringVar(value=pc_set.get("party_group", "선택안함")),
         "party_dungeon_name": tk.StringVar(value=pc_set.get("party_dungeon_name", "수던3-1")), 
@@ -2256,13 +2273,15 @@ for pc in MINI_PCS:
         "last_mob_time": 0.0, 
         "miss_count": 0,
         
-        # ==========================================================
-        # 🧠 [터미네이터 V2 전투/루팅 뇌 메모리 확장]
+        # 👑 [터미네이터 V2 전투/루팅 뇌 메모리 확장]
         # ==========================================================
         "pre_target_data": None,        # 뼈대 D: 전투 중 몰래 찍어둔 다음 타겟 (좌표 및 모션 여부 기억)
         "exp_drop_wait_timer": 0.0,      # 뼈대 E: 몹 사망 후 비동기 드랍 대기 알람시계
-        "is_real_buff_received": False, # 👑 [신규] 매크로 켰을 때는 가짜 시간으로 간주하여 팩트체크 무력화!
-        "real_buff_time": 0.0           # 👑 [신규] 진짜로 버프를 받은 팩트 시간
+        
+        # 👇👇👇 [형님 오더 완벽 적용] 2시간 풀충전 팩트 강제 주입! 👇👇👇
+        "is_real_buff_received": True,  # 🚀 매크로 켤 때 무조건 2시간 풀충전(찐버프)으로 각인!
+        "real_buff_time": now_t         # 🚀 억까 방지용 20분 방어막 즉시 가동!
+        # 👆👆👆 ==================================================== 👆👆👆
     }
 
 def init_hardware_picos():
@@ -18130,6 +18149,8 @@ def sync_gui_vars():
                 
                 # 🚀 [파티 탭 공통 변수]
                 "use_party_hunt": is_party,
+                "use_party_fixed": gui_vars[k]["use_party_fixed"].get(), # 🚀 [신규 배선] AI가 실시간으로 읽는 값
+                "is_puller": gui_vars[k]["is_puller"].get(),             # 🚀 [신규 배선] AI가 실시간으로 읽는 값
                 "is_party_inviter": gui_vars[k]["is_party_inviter"].get(),
                 "party_group": gui_vars[k]["party_group"].get(),
                 "party_dungeon_name": gui_vars[k]["party_dungeon_name"].get(),
@@ -18809,8 +18830,10 @@ for i, pc in enumerate(MINI_PCS):
     # ====================================================
     party_top_frame = tk.Frame(tab_party, bg=BG_PANEL)
     party_top_frame.pack(side="top", fill="x", pady=(8, 4), padx=2)
-    # 🚀 [텍스트 간소화 및 나란히 배치]
-    tk.Checkbutton(party_top_frame, text="파티사냥 가동", variable=vars_dict["use_party_hunt"], bg=BG_PANEL, fg="#B2FF59", selectcolor="#3E3E42", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0, 10))
+    # 🚀 [텍스트 간소화 및 나란히 배치 (파티 이동식/고정식/풀러 추가)]
+    tk.Checkbutton(party_top_frame, text="파티 이동식", variable=vars_dict["use_party_hunt"], bg=BG_PANEL, fg="#B2FF59", selectcolor="#3E3E42", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0, 5))
+    tk.Checkbutton(party_top_frame, text="파티 고정식", variable=vars_dict["use_party_fixed"], bg=BG_PANEL, fg="#B2FF59", selectcolor="#3E3E42", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0, 5))
+    tk.Checkbutton(party_top_frame, text="풀러", variable=vars_dict["is_puller"], bg=BG_PANEL, fg="#FF9800", selectcolor="#3E3E42", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0, 10))
     tk.Checkbutton(party_top_frame, text="파티리더", variable=vars_dict["is_party_inviter"], bg=BG_PANEL, fg="#FFB300", selectcolor="#3E3E42", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=0)
 
     party_mid_frame = tk.Frame(tab_party, bg=BG_PANEL)
