@@ -9688,27 +9688,34 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     
                                     # [1순위] 채팅창 텍스트 감지 (가장 빠름)
                                     if w >= CHAT_X2 and h >= CHAT_Y2 and globals().get("img_haste_x") is not None:
-                                        chat_roi = img_bgr[CHAT_Y1:CHAT_Y2, CHAT_X1:CHAT_X2]
-                                        try:
-                                            img_h_x = globals().get("img_haste_x")
-                                            img_h_x_m = globals().get("img_haste_x_mask")
+                                        # 👇👇👇 [오땅 채팅창 10초 잔상 필터 & 텅 빈 채팅창 억까 완벽 파괴!] 👇👇👇
+                                        if curr_time - state.get("hunt_start_time", curr_time) > 10.0:
+                                            chat_roi = img_bgr[CHAT_Y1:CHAT_Y2, CHAT_X1:CHAT_X2]
+                                            gray_check = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
+                                            _, bright_text = cv2.threshold(gray_check, 100, 255, cv2.THRESH_BINARY)
                                             
-                                            gray_roi = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
-                                            gray_tmpl = cv2.cvtColor(img_h_x, cv2.COLOR_BGR2GRAY)
-                                            
-                                            if img_h_x_m is not None:
-                                                res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCORR_NORMED, mask=img_h_x_m)
-                                            else:
-                                                res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCOEFF_NORMED)
-                                                
-                                            _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
-                                            
-                                            OAK_HASTE_THRESHOLD = 0.80
-                                            
-                                            if max_val_haste >= OAK_HASTE_THRESHOLD: 
-                                                is_detected_missing = True
-                                                missing_reason = f"채팅창 텍스트 감지({max_val_haste*100:.1f}%)"
-                                        except: pass
+                                            if cv2.countNonZero(bright_text) > 20: 
+                                                try:
+                                                    img_h_x = globals().get("img_haste_x")
+                                                    img_h_x_m = globals().get("img_haste_x_mask")
+                                                    
+                                                    gray_roi = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
+                                                    gray_tmpl = cv2.cvtColor(img_h_x, cv2.COLOR_BGR2GRAY)
+                                                    
+                                                    if img_h_x_m is not None:
+                                                        res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCORR_NORMED, mask=img_h_x_m)
+                                                    else:
+                                                        res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCOEFF_NORMED)
+                                                        
+                                                    _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
+                                                    
+                                                    OAK_HASTE_THRESHOLD = 0.80
+                                                    
+                                                    if max_val_haste >= OAK_HASTE_THRESHOLD: 
+                                                        is_detected_missing = True
+                                                        missing_reason = f"채팅창 텍스트 감지({max_val_haste*100:.1f}%)"
+                                                except: pass
+                                        # 👆👆👆 ========================================================== 👆👆👆
 
                                     # 🚀 [형님 오더 적용] 우측 상단 아이콘 2분 감시(투트랙) 전면 삭제! 오땅은 오직 채팅창만 봅니다!
 
@@ -9820,32 +9827,22 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         is_detected_missing = True
                                         missing_reason = "우측 아이콘 40초 증발"
 
-                                # 👑 [형님 마스터피스: 진짜 버프 vs 가짜 버프 팩트 체크 엔진!]
+                                # 👑 [형님 마스터피스: 20분 방어막 완전 소각 & 팩트 즉시 귀환 엔진!]
                                 if is_detected_missing:
-                                    if "타임아웃" in missing_reason:
-                                        force_haste_return = True # 2시간 타임아웃은 팩트체크 없이 빼박 귀환!
+                                    # 🚨 일반 사냥터의 20분 억지 방어막 완전 삭제! 
+                                    # 아이콘 증발, 타임아웃, 채팅창 텍스트 등 감지 시 조건 없이 즉각 귀환!
+                                    state["last_haste_time"] = 0.0 # 뇌 장부 알람시계 강제 0으로 포맷
+                                    state["used_gangchol"] = False
+                                    state["is_real_buff_received"] = False
+                                    
+                                    if fsm_for_haste.startswith("TOWN_MAINT"):
+                                        # 👑 오땅처럼 마을에서도 예외로 감시 중일 때
+                                        if curr_time > state.get("last_chat_dbg_log3", 0):
+                                            dprint(key, f"🚨 [마을 내 헤이 증발] 정비 중 헤이 풀림 확정! 정비 완료 후 버프장소로 가도록 장부 리셋. ({missing_reason})")
+                                            state["last_chat_dbg_log3"] = curr_time + 10.0
                                     else:
-                                        # 👇👇👇 [20분 방어막 원본 복구] 300.0(5분)을 1200.0(20분)으로 원복! 👇👇👇
-                                        if is_real_buff and time_since_real_buff < 1200.0:
-                                            if curr_time > state.get("last_chat_dbg_log2", 0):
-                                                dprint(key, f"🛡️ [20분 오감지 방어막] {missing_reason} 발생! 그러나 찐 버프 수령 후 {time_since_real_buff/60:.1f}분 밖에 안 지남! 과거 잔상/오인식으로 팩트 체크하고 무시합니다!")
-                                                state["last_chat_dbg_log2"] = curr_time + 5.0
-                                            # 무한 발작을 막기 위해 찌꺼기 타이머 리셋
-                                            state["haste_empty_start"] = 0
-                                        else:
-                                            # 매크로를 껐다 켜서 시간만 갱신됐거나(가짜 버프), 20분이 지났다면 찐 증발 확정!
-                                            state["last_haste_time"] = 0.0 # 뇌 장부 알람시계 강제 0으로 포맷
-                                            state["used_gangchol"] = False
-                                            state["is_real_buff_received"] = False
-                                            
-                                            if fsm_for_haste.startswith("TOWN_MAINT"):
-                                                # 👑 이미 마을 정비 중이라면? 창고 정리 멈추지 않음!
-                                                if curr_time > state.get("last_chat_dbg_log3", 0):
-                                                    dprint(key, "🚨 [마을 내 헤이 증발] 정비 중 헤이 풀림 확정! 정비 완료 후 버프장소로 가도록 장부 리셋.")
-                                                    state["last_chat_dbg_log3"] = curr_time + 10.0
-                                            else:
-                                                force_haste_return = True
-                                                dprint(key, f"🚨 [헤이 증발 확정] {missing_reason}! (실제 버프수령: {is_real_buff}, 경과: {time_since_real_buff/60:.1f}분). 즉각 귀환 발동!")
+                                        force_haste_return = True
+                                        dprint(key, f"🚨 [헤이 증발 확정] {missing_reason}! 쉴드 없이 즉각 귀환 발동!")
                                         
                         # 🚀 [최종 귀환 발동 / 마을 스위칭 처리]
                         if locals().get("force_haste_return", False):
@@ -18250,6 +18247,7 @@ def toggle_individual_hunt(key):
     
     if state["is_hunt_active"]:
         state["is_paused"] = False; state["loot_state"] = "IDLE"
+        state["hunt_start_time"] = time.time() # 🚀 [치명적 누락 복구] 사냥 시작 시간 각인! (과거 채팅 잔상 필터링용)
         state["arrow_image"] = None; state["arrow_is_firing"] = False; state["last_arrow_change_time"] = 0.0
         state["exp_image"] = None; state["last_exp_time"] = time.time()
         state["is_attacking"] = False; state["attack_cmd_time"] = 0.0; state["has_fired_arrow"] = False; state["humanize_cd"] = 0.0
