@@ -4704,13 +4704,13 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
             is_party_on = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
             active_dungeon = settings.get("party_dungeon_name", "heine3-1") if is_party_on else settings.get("dungeon_name", "기란 1층")
             
-            # 👇👇👇 [오입장 버그 완벽 수술 1: 임시 오버라이드 뇌 장착] 👇👇👇
-            if state.get("override_dungeon_name"):
-                active_dungeon = state["override_dungeon_name"]
-            # 👆👆👆 =======================================================
+            # 👇👇👇 [에러 완벽 치료: state 선언 전이므로 ai_states[key]로 다이렉트 접근!] 👇👇👇
+            if ai_states[key].get("override_dungeon_name"):
+                active_dungeon = ai_states[key]["override_dungeon_name"]
+            # 👆👆👆 ========================================================================
             
             # 🚀 [추가] 파티 모드일 때는 AI 뇌의 사냥터 이름도 파티 사냥터로 강제 동기화!
-            if is_party_on and not state.get("override_dungeon_name"): # 💡 임시 지도 사용 중엔 덮어쓰기 금지!
+            if is_party_on and not ai_states[key].get("override_dungeon_name"): # 💡 임시 지도 사용 중엔 덮어쓰기 금지!
                 settings["dungeon_name"] = active_dungeon
                 
             pc_assets = get_pc_assets(active_dungeon)
@@ -13779,7 +13779,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             else:
                                 dprint(key, f"🪄 [버프 시전] {b_info['name']} 스킬 발사! 현장 MP 검증 대기 중...")
                                 state["target_fsm"] = "BUFFING_MP_CHECK"
-                                state["buff_mp_timeout"] = curr_time + 1.2 # 💡 마나 필터 지연시간 감안 1.2초 넉넉하게 대기!
+                                state["buff_mp_timeout"] = curr_time + 1.4 # 💡 마나 필터 지연시간 감안 1.2초 넉넉하게 대기!
                                 state["cooldown"] = curr_time + 0.1
                                 
                     # 💡 [실시간 마나 검증 엔진] 1.2초를 멍때리지 않고 매 프레임 실시간으로 엠피가 깎이는지 감시!
