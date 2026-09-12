@@ -18921,6 +18921,12 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                             state["portal_blind_mode"] = True 
                                             state["target_fsm"] = "PARTY_RETREAT_NAV"
                                             state["retreat_reason"] = "리더 팟바람 선진입"
+                                            
+                                            # 👇👇👇 [형님 기획: 리더 선진입 시에도 목적지를 버프존으로 강제 덮어쓰기!] 👇👇👇
+                                            if pc_graph and pc_graph.get("buff_spot_nodes"):
+                                                state["designated_base_node"] = str(pc_graph["buff_spot_nodes"][0])
+                                            # 👆👆👆 =========================================================================
+
                                             state["cooldown"] = curr_time + 0.1
                             else:
                                 # 버프 시간이 남았고 딱지도 없으면 호출 확실히 끄기
@@ -18971,12 +18977,23 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 state["party_buff_status"] = "EXCLUDED"
                             else:
                                 if state.get("party_buff_status", "IDLE") not in ["MOVING", "ARRIVED"]:
-                                    # 👇👇👇 [신규 수술 5-1: 리더 호출 시 도망/헬프 모드 즉각 취소!] 👇👇👇
-                                    if state.get("help_requester", False) or state.get("helping_who") is not None:
+                                    # 👇👇👇 [신규 수술 5-1: 리더 호출 시 도망/헬프 모드 즉각 취소 및 버프존 강제 고정!] 👇👇👇
+                                    is_doing_help = state.get("help_requester", False) or state.get("helping_who") is not None
+                                    if is_doing_help:
                                         dprint(key, "🚨 [최우선 소집령] 팟바람 호출 수신! 진행 중이던 헬프/도주 모드를 강제 취소하고 리더에게 집결합니다!")
                                         state["help_requester"] = False
                                         state["helping_who"] = None
+                                        
+                                        # 🚀 [형님 기획: 동선 꼬임 방지] 목적지를 맵의 버프존으로 완벽하게 덮어씌움!
+                                        if pc_graph and pc_graph.get("buff_spot_nodes"):
+                                            state["designated_base_node"] = str(pc_graph["buff_spot_nodes"][0])
+                                            
+                                        # FSM 강제 전환 (아래의 safe_fsms 블록을 스킵하더라도 여기서 강제로 방향을 틀어줌)
+                                        state["target_fsm"] = "PARTY_RETREAT_NAV"
+                                        state["retreat_reason"] = "팟바람 수령 집합"
+                                        state["portal_blind_mode"] = True
                                     # 👆👆👆 ==========================================================
+                                    
                                     if state.get("is_mptam_mode", False):
                                         dprint(key, "👑 [엠탐 중 소집령] 버프존에서 엠탐 중이므로 즉각 대기열에 합류합니다.")
                                         state["party_buff_status"] = "ARRIVED"
@@ -19073,7 +19090,13 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         if not retreat_reason:
                             if is_leader and state.get("req_party_buff", False):
                                 retreat_reason = "팟바람 시전 집합"
-                                if dynamic_base_node: state["designated_base_node"] = dynamic_base_node
+                                # 🚀 [형님 기획: 고정 버프존 복원 엔진!] 
+                                # 주변 사냥 노드(dynamic_base_node) 무시하고, 무조건 맵에 찍어둔 버프 전용 노드로 강제 집합!
+                                if pc_graph and pc_graph.get("buff_spot_nodes"):
+                                    state["designated_base_node"] = str(pc_graph["buff_spot_nodes"][0])
+                                    dprint(key, f"🚩 [안전 버프존 고정] 리더가 전용 버프 노드(ID:{state['designated_base_node']})를 집결지로 선포했습니다!")
+                                elif dynamic_base_node: # 버프 노드가 없는 맵 백업
+                                    state["designated_base_node"] = dynamic_base_node
                             elif not is_leader and state.get("party_buff_call", False):
                                 retreat_reason = "팟바람 수령 집합"
                                 state["party_buff_call"] = False
