@@ -5599,6 +5599,13 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     
                     # 🚀 [전술 1] 동반 엠탐 (전우가 쉬면 무조건 곁으로 가서 같이 쉰다!)
                     is_p_mptam = partner_data.get("is_mptam", False) or p_fsm == "MPTAM"
+
+                    # 👇👇👇 [버그 1 완벽 수술!] 파트너가 엠탐을 종료하거나 사라지면 내 꼬리표도 즉각 파기! 👇👇👇
+                    if not is_p_mptam:
+                        if state.get("moving_to_mptam_partner", False):
+                            dprint(key, "🛑 [엠탐 합류 취소] 파트너가 엠탐을 종료했거나 사라졌습니다. 합류 이동을 취소합니다.")
+                            state["moving_to_mptam_partner"] = False
+                    # 👆👆👆 =====================================================================
                     
                     if is_p_mptam and not is_m_out_of_zone and p_pos and curr_map_pos:
                         if my_fsm not in ["TOWN_MAINT", "EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] and not my_fsm.startswith("DEATH") and not my_fsm.startswith("PARTY_"):
