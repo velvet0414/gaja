@@ -3943,7 +3943,7 @@ def get_hp_mp_percent(img_bgr, roi_width, roi_height, y_start, y_end):
             
             if direction == "ltr": 
                 for x in range(length - 1):
-                    if col_sums[x] >= 3 and col_sums[x+1] >= 5:
+                    if col_sums[x] >= 3 and col_sums[x+1] >= 6:
                         return ((length - x) / length) * 100.0
                 return 0.0
             elif direction == "rtl":
@@ -5554,16 +5554,24 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     # 내가 현재 소대장일 때
                     if curr_leader == key:
                         # 💡 몹을 다 잡고 길찾기(IDLE/PATROL) 직전에만 교대 평가하여 전투 중 핑퐁 방지!
-                        if state.get("target_fsm") in ["IDLE", "PATROL"] and mp <= p_mp - 10.0:
+                        if state.get("target_fsm") in ["IDLE", "PATROL"] and mp <= p_mp - 30.0:
                             dprint(key, f"🔄 [소대장 교대] MP 부족({mp:.1f}% vs 파트너 {p_mp:.1f}%). 선두를 파트너({p_key})에게 위임합니다!")
                             state["squad_leader"] = p_key
                             
                     # 파트너가 현재 소대장일 때
                     else:
                         # 💡 파트너의 통신 상태가 IDLE일 때 똑같은 기준으로 평가하여 내가 인수!
-                        if p_fsm == "IDLE" and p_mp <= mp - 10.0:
+                        if p_fsm == "IDLE" and p_mp <= mp - 30.0:
                             dprint(key, f"🔄 [소대장 인수] 파트너 MP 부족({p_mp:.1f}% vs 내 MP {mp:.1f}%). 내가 선두로 나섭니다!")
                             state["squad_leader"] = key
+                            
+                            # 🚀 [추가] 선두를 인수받을 때, 기존 선두가 가려던 목적지를 이어받아 자연스럽게 경로 유지!
+                            if partner_data.get("hidden_node"):
+                                state["hidden_track_node"] = partner_data.get("hidden_node")
+                                state["dungeon_global_path"] = []
+                            elif partner_data.get("target_node"):
+                                state["current_target_node"] = partner_data.get("target_node")
+                                state["dungeon_global_path"] = []
                             
                     is_vanguard = (state["squad_leader"] == key)
                 
@@ -5752,10 +5760,10 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 p_is_combat = p_fsm in ["COMBAT", "LOOTING"]
 
                                 # 🚀 [형님 오더: 이탈 감지와 합류 완료의 비대칭 스마트 텐션!]
-                                # 1. 평상시에는 30.0px까지 넓게 사냥하게 풀어줍니다.
+                                # 1. 평상시에는 20.0px까지 넓게 사냥하게 풀어줍니다.
                                 # 2. 한 번 합류 모드(is_assisting)가 켜지면, 확실하게 6.0px까지 찰싹 붙을 때까지 해제하지 않습니다!
                                 
-                                is_tension_broken = dist_to_partner > 30.0
+                                is_tension_broken = dist_to_partner > 20.0
                                 if state.get("is_assisting", False) and dist_to_partner > 6.0:
                                     is_tension_broken = True
 
@@ -5775,8 +5783,22 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                 # 👇👇👇 [맹점 수술 1: A* 연산 폭주 및 스쿼트 방어막!] 👇👇👇
                                                 # 파트너가 무빙 사냥을 하더라도 1초에 1번만 목적지를 갱신하여 렉을 방지합니다.
                                                 if curr_time - state.get("last_assist_repath_time", 0) > 1.0:
-                                                    state["current_target_node"] = str(p_nearest)
-                                                    state["dungeon_global_path"] = []
+                                                    
+                                                    # 🚀 [추가 방어막] 이미 목적지(p_nearest) 근처를 향해 가고 있다면 굳이 경로를 지우지 않음!
+                                                    should_repath = True
+                                                    if state.get("dungeon_global_path") and pc_graph and pc_graph.get("nodes") and str(p_nearest) in pc_graph["nodes"]:
+                                                        n_data = pc_graph["nodes"][str(p_nearest)]
+                                                        nx = n_data.get("x", 0) if isinstance(n_data, dict) else n_data[0]
+                                                        ny = n_data.get("y", 0) if isinstance(n_data, dict) else n_data[1]
+                                                        # 가고 있던 경로의 최종 목적지와 새 목적지 사이의 거리가 50px(약 1.5셀) 이내면 무시!
+                                                        end_px, end_py = state["dungeon_global_path"][-1]
+                                                        if math.hypot(end_px - nx, end_py - ny) < 50.0:
+                                                            should_repath = False
+                                                            
+                                                    if should_repath:
+                                                        state["current_target_node"] = str(p_nearest)
+                                                        state["dungeon_global_path"] = []
+                                                    
                                                     state["last_assist_repath_time"] = curr_time
                                                 # 👆👆👆 ==================================================
                                                 
@@ -5791,11 +5813,16 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                             pass 
                                         else:
                                             if curr_time - state.get("party_log_timer", 0) > 10.0:
-                                                dprint(key, f"🤝 [스마트 랑데부] 거리가 멀어졌습니다({dist_to_partner:.1f}px). 중간에 위치한 안전 구역으로 합류합니다.")
+                                                dprint(key, f"🤝 [스마트 랑데부] 거리가 멀어졌습니다({dist_to_partner:.1f}px). 선두 위치와 가장 가까운 안전 구역으로 합류합니다.")
                                                 state["party_log_timer"] = curr_time
                                                 
-                                            mid_x = (curr_map_pos[0] + p_pos[0]) / 2.0
-                                            mid_y = (curr_map_pos[1] + p_pos[1]) / 2.0
+                                            # 🚀 역주행 방지! 중간 지점이 아니라 '선두(리더)'의 위치를 기준으로 안전 구역을 탐색합니다.
+                                            if is_vanguard:
+                                                mid_x = curr_map_pos[0]
+                                                mid_y = curr_map_pos[1]
+                                            else:
+                                                mid_x = p_pos[0]
+                                                mid_y = p_pos[1]
                                             
                                             if pc_graph and pc_graph.get("nodes"):
                                                 active_base_zone = active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon
@@ -5878,7 +5905,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     p_hidden = partner_data.get("hidden_node")
                                     old_node = state.get("current_target_node")
                                     
-                                    if curr_time - state.get("last_partner_node_change", 0) > 2.0:
+                                    # 🚀 [동기화 지연 축소] 고무줄 렉을 줄이기 위해 선두의 목적지 갱신 주기를 2.0초 -> 0.5초로 쾌속 적용!
+                                    if curr_time - state.get("last_partner_node_change", 0) > 0.5:
                                         if p_hidden:
                                             if str(state.get("hidden_track_node")) != str(p_hidden):
                                                 state["hidden_track_node"] = p_hidden
@@ -14532,13 +14560,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
 
                         dist_to_b = math.hypot(ix - char_screen_cx, (iy + 15 - char_screen_cy) / 0.50)
                         
-                        # 👑 [수술: 파티 이동식 무제한 줍기 1셀 절대 강제!] 
-                        # 파티 이동식 모드는 10초 제한 없이 무제한으로 템을 보지만, 1셀(57px) 밖의 템은 무조건 무시!
-                        if is_party_moving_loot:
-                            if dist_to_b >= 57.0:
-                                b['ignore_reason'] = "PARTY_MOVE_1CELL_ONLY"
-                                ignored_boxes.append(b)
-                                continue
+                        # 👑 [수술 완수: 파티 이동식 1셀 제한 족쇄 완전 삭제!] 
+                        # 🚀 [원상 복구] 파티 이동식도 기존 사냥터와 동일하게 1셀 제한 없이 멀리 있는 모든 템(2~3셀, A* 우회 등)을 정상적으로 스캔하도록 삭제했습니다!
 
                         if settings.get("hunt_first", False) and mobs:
                             if dist_to_b >= 57.0:
@@ -14867,7 +14890,15 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 # 👇👇👇 [추가된 부분] A* 우회 꼬리표가 달려있으면 다이렉트 접근 금지! 👇👇👇
                                 if best_box.get('astar_path'):
                                     if state.get("is_gangbang", False):
-                                        dprint(key, "🚨 [다굴 상황] 코너 우회(A*) 템 발견! 다굴 중이므로 루팅을 포기하고 사냥 복귀!")
+                                        dprint(key, "🚨 [다굴 상황 데드락 방지] 코너 우회(A*) 템 포착! 10초간 해당 템을 밴(Ban) 처리하고 사냥(전투)에 집중합니다!")
+                                        
+                                        # 🚀 [맹점 2 수술 완료: 다굴 시 무한 핑퐁 파괴 및 10초 밴 추가]
+                                        if char_map_pos:
+                                            ban_mx = char_map_pos[0] + (best_box['x'] - char_screen_cx) * DUNGEON_SCALE_X
+                                            ban_my = char_map_pos[1] + (best_box['y'] + 15 - char_screen_cy) * DUNGEON_SCALE_Y
+                                            # 💡 하드 밴 리스트는 기본적으로 20초간 유지되므로, curr_time - 10.0 을 넣으면 정확히 10초 뒤에 밴이 풀립니다!
+                                            state.setdefault("hard_ban_item_map_list", []).append((ban_mx, ban_my, curr_time - 10.0, "ASTAR_G_BANG_10s"))
+                                            
                                         state["target_fsm"] = "IDLE"
                                         state["has_tried_2cell_brake"] = False
                                         state["yolo_blind_active"] = False
@@ -17184,8 +17215,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                 # 🗺️ 4. 던전 길찾기 및 네비게이션 엔진 (파티 어시스트 통합)
                 # ========================================================
                 target_fsm_nav = state.get("target_fsm")
-                # 🚀 [목줄 복원 수술 1] 통합 대기 상태도 네비게이션 권한 허용!
-                allow_nav_fsm = target_fsm_nav in ["IDLE", "PARTY_WAIT", "PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY"]
+                # 🚀 [목줄 복원 수술 1] 통합 대기 및 진형 대기 상태도 네비게이션 권한 허용!
+                allow_nav_fsm = target_fsm_nav in ["IDLE", "PARTY_WAIT", "PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY", "SQUAD_WAIT"]
                 
                 # 👇👇👇 [핵심 수술: 도망갈 때(FLEE/RETREAT)는 화면에 몹이 있어도 길찾기 엔진 가동!] 👇👇👇
                 is_fleeing_state = target_fsm_nav in ["PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV"]
@@ -18041,19 +18072,27 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                 if not is_doing_action:
                                                     action_taken = True
                                                     
-                                        # 👇👇👇 [신규 추가: 버프존 복귀 시 A* 길찾기 즉시 발사!] 👇👇👇
-                                        if not action_taken and goal_node and not state.get("dungeon_global_path"):
-                                            new_path = calculate_graph_astar_path(pc_graph, char_map_pos, goal_node, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
-                                            if new_path:
-                                                state["dungeon_global_path"] = new_path
-                                                state["dungeon_path_time"] = curr_time
-                                                state["astar_fail_count"] = 0 
-                                            else:
-                                                state["astar_fail_count"] = state.get("astar_fail_count", 0) + 1
-                                            action_taken = True
+                                        # 👇👇👇 [기존 코드 삭제를 위해 공란으로 둠] 👇👇👇
+                                        pass
                                         # 👆👆👆 =========================================
-# 👆👆👆 [여기까지 덮어쓰기] 👆👆👆
                                             
+                                # 👇👇👇 [치명적 네비게이션 마비 완벽 수술!] 👇👇👇
+                                # -1순위(구출) 또는 -0.5순위(전투지원/엠탐)로 goal_node가 셋팅되었다면,
+                                # 하위 로직(0순위)을 건너뛰게 되면서 A* 경로를 그리는 코드가 아예 실행되지 않았습니다!
+                                # 경로가 없으니 캐릭터가 '난수 배회(랜덤 워킹)'를 하다가 벽에 부딪혀 비비기만 했던 것입니다.
+                                if not action_taken and goal_node and not state.get("dungeon_global_path"):
+                                    new_path = calculate_graph_astar_path(pc_graph, char_map_pos, goal_node, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
+                                    if new_path:
+                                        state["dungeon_global_path"] = new_path
+                                        state["dungeon_path_time"] = curr_time
+                                        global_path = new_path # 💡 이번 프레임에서 지체 없이 걷도록 로컬 변수 갱신!
+                                        state["astar_fail_count"] = 0 
+                                        dprint(key, f"✅ [A* 긴급 개척] 타겟(노드:{goal_node})을 향해 {len(new_path)}정거장 경로를 즉각 생성했습니다!")
+                                    else:
+                                        state["astar_fail_count"] = state.get("astar_fail_count", 0) + 1
+                                    action_taken = True
+                                # 👆👆👆 ============================================================== 👆👆👆
+
                                 if not action_taken and state.get("is_rendezvous_mode", False):
                                     pass # 이산가족 상봉 중일 때는 아래의 맵 목적지 갱신을 싹 스킵하고 랑데부 노드를 그대로 유지합니다!
                                     
@@ -18289,13 +18328,37 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                             
                                             # 내가 선두(Vanguard)일 때만 목적지가 없으면 새로 뽑습니다.
                                             if i_am_vanguard and (goal_node is None or str(goal_node) not in tour_nodes):
-                                                unvisited = state.get("unvisited_nodes", [])
-                                                unvisited = [str(sn) for sn in unvisited if str(sn) in tour_nodes]
-                                                if not unvisited:
-                                                    unvisited = list(tour_nodes)
-                                                    last_sn = str(state.get("dungeon_last_special", ""))
-                                                    if len(unvisited) > 1 and last_sn in unvisited:
-                                                        unvisited.remove(last_sn)
+                                                
+                                                # 👇👇👇 [신규 엔진: 선두(Leader) 전열 정비 대기] 👇👇👇
+                                                partner_dist_for_wait = 0.0
+                                                if settings.get("use_party_hunt", False) and my_team != "선택안함":
+                                                    with party_lock:
+                                                        for p_key, p_data in local_party_states.items():
+                                                            if p_data.get("party_group") == my_team and p_key != key and curr_time - p_data.get("recv_time", 0) < 3.0:
+                                                                p_pos_w = p_data.get("map_pos")
+                                                                if p_pos_w and char_map_pos:
+                                                                    partner_dist_for_wait = math.hypot(char_map_pos[0] - p_pos_w[0], char_map_pos[1] - p_pos_w[1])
+                                                                break
+                                                                
+                                                # 파트너가 8픽셀(약 1.5칸) 밖에 있다면 새 목적지를 잡지 않고 닻을 내림!
+                                                if settings.get("use_party_hunt", False) and partner_dist_for_wait > 8.0:
+                                                    if state.get("target_fsm") != "SQUAD_WAIT":
+                                                        dprint(key, f"🛑 [전열 정비] 정거장 도착! 파트너가 {partner_dist_for_wait:.1f}px 뒤에 있습니다. 완전 합류(8px 이내) 시까지 진군을 멈추고 제자리 사주경계!")
+                                                        state["target_fsm"] = "SQUAD_WAIT"
+                                                    goal_node = None
+                                                    state["cooldown"] = curr_time + 0.1
+                                                else:
+                                                    if state.get("target_fsm") == "SQUAD_WAIT":
+                                                        dprint(key, "✅ [진형 정비 완료] 파트너 안착 확인! 새로운 꿀자리를 개척하여 진군합니다.")
+                                                        state["target_fsm"] = "IDLE"
+                                                        
+                                                    unvisited = state.get("unvisited_nodes", [])
+                                                    unvisited = [str(sn) for sn in unvisited if str(sn) in tour_nodes]
+                                                    if not unvisited:
+                                                        unvisited = list(tour_nodes)
+                                                        last_sn = str(state.get("dungeon_last_special", ""))
+                                                        if len(unvisited) > 1 and last_sn in unvisited:
+                                                            unvisited.remove(last_sn)
                                                 
                                                 best_node = None
                                                 min_dist = float('inf')
