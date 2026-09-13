@@ -5772,78 +5772,88 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         if pc_graph and pc_graph.get("nodes"):
                                             p_nearest = find_nearest_visible_node(pc_graph, target_assist_pos, pc_map_gray_los)
                                             if p_nearest and str(state.get("current_target_node")) != str(p_nearest):
-                                                state["current_target_node"] = str(p_nearest)
-                                                state["dungeon_global_path"] = []
+                                                # 👇👇👇 [맹점 수술 1: A* 연산 폭주 및 스쿼트 방어막!] 👇👇👇
+                                                # 파트너가 무빙 사냥을 하더라도 1초에 1번만 목적지를 갱신하여 렉을 방지합니다.
+                                                if curr_time - state.get("last_assist_repath_time", 0) > 1.0:
+                                                    state["current_target_node"] = str(p_nearest)
+                                                    state["dungeon_global_path"] = []
+                                                    state["last_assist_repath_time"] = curr_time
+                                                # 👆👆👆 ==================================================
                                                 
                                         state["is_assisting"] = True
                                         
                                     # 🚀 [전술 5] 둘 다 비전투 상태인데 거리가 멀 때 (중간 지점 랑데부!)
                                     elif not p_is_combat and not i_am_combat and my_fsm in ["IDLE", "PATROL"]:
-                                        if curr_time - state.get("party_log_timer", 0) > 10.0:
-                                            dprint(key, f"🤝 [스마트 랑데부] 거리가 멀어졌습니다({dist_to_partner:.1f}px). 중간에 위치한 안전 구역으로 합류합니다.")
-                                            state["party_log_timer"] = curr_time
-                                            
-                                        mid_x = (curr_map_pos[0] + p_pos[0]) / 2.0
-                                        mid_y = (curr_map_pos[1] + p_pos[1]) / 2.0
-                                        
-                                        if pc_graph and pc_graph.get("nodes"):
-                                            # 🚨 [형님 지적 완벽 수술!]
-                                            # 수학적 중간 지점이 까만 벽(장애물) 속일 경우, 시야 검사(LOS)에 막혀 
-                                            # 에이스타가 뻗어버리는 비비기/장님 현상을 원천 차단합니다!
-                                            # 중간 지점에서 가장 가까우면서도 '내 사냥 구역(Zone)'에 속한 팩트 노드를 타겟으로 삼습니다!
-                                            active_base_zone = active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon
-                                            best_mid_node = None
-                                            min_d = float('inf')
-                                            
-                                            for nid, ndata in pc_graph["nodes"].items():
-                                                if isinstance(ndata, dict):
-                                                    nx = ndata.get("x", 0)
-                                                    ny = ndata.get("y", 0)
-                                                    
-                                                    # 내 구역인지 판별 (버프존이거나, Zone 이름이 일치하는 곳)
-                                                    node_zone = str(ndata.get("zone", "")).strip()
-                                                    is_buff = ndata.get("is_buff_spot", False)
-                                                    if str(is_buff).lower() == "true": is_buff = True
-                                                    
-                                                    is_my_zone = False
-                                                    if is_buff:
-                                                        is_my_zone = True
-                                                    elif node_zone:
-                                                        zone_list = [z.strip() for z in node_zone.split(",")]
-                                                        for z in zone_list:
-                                                            z_base = z.rsplit("-", 1)[0] if "-" in z else z
-                                                            if active_base_zone == z_base:
-                                                                is_my_zone = True
-                                                                break
-                                                    else:
-                                                        # 구형 맵(zone 이름표 없음) 호환용 백업
-                                                        is_sp = ndata.get("is_special", False) or ndata.get("special", False)
-                                                        if str(is_sp).lower() == "true": is_sp = True
-                                                        if is_sp: is_my_zone = True
-                                                        else: is_my_zone = True # 일반맵은 다 허용
-                                                            
-                                                    if is_my_zone:
-                                                        d = (nx - mid_x)**2 + (ny - mid_y)**2
-                                                        if d < min_d:
-                                                            min_d = d
-                                                            best_mid_node = str(nid)
-                                                            
-                                            # 필터링된 노드가 없다면 기존처럼 아무 노드나 가장 가까운 곳을 선택 (안전 백업)
-                                            if not best_mid_node:
-                                                fallback_node = find_nearest_visible_node(pc_graph, (mid_x, mid_y), pc_map_gray_los)
-                                                best_mid_node = str(fallback_node) if fallback_node else None
+                                        # 👇👇👇 [맹점 수술 2: 핑퐁(요요) 교차 현상 완벽 방어막!] 👇👇👇
+                                        # 이미 내가 지원 가던 중(is_assisting)이었다면, 파트너가 방금 몹을 죽여서 비전투가 되었더라도
+                                        # 굳이 중간 지점(랑데부)으로 목적지를 비틀지 않고, 파트너가 있던 곳으로 밀고 나갑니다!
+                                        if state.get("is_assisting", False):
+                                            pass 
+                                        else:
+                                            if curr_time - state.get("party_log_timer", 0) > 10.0:
+                                                dprint(key, f"🤝 [스마트 랑데부] 거리가 멀어졌습니다({dist_to_partner:.1f}px). 중간에 위치한 안전 구역으로 합류합니다.")
+                                                state["party_log_timer"] = curr_time
                                                 
-                                            if best_mid_node and curr_time - state.get("last_midpoint_change", 0) > 2.0:
-                                                if str(state.get("current_target_node")) != best_mid_node:
-                                                    state["current_target_node"] = best_mid_node
-                                                    state["dungeon_global_path"] = [] # A* 재계산 유도
-                                                    state["last_midpoint_change"] = curr_time
+                                            mid_x = (curr_map_pos[0] + p_pos[0]) / 2.0
+                                            mid_y = (curr_map_pos[1] + p_pos[1]) / 2.0
+                                            
+                                            if pc_graph and pc_graph.get("nodes"):
+                                                active_base_zone = active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon
+                                                best_mid_node = None
+                                                min_d = float('inf')
+                                                
+                                                for nid, ndata in pc_graph["nodes"].items():
+                                                    if isinstance(ndata, dict):
+                                                        nx = ndata.get("x", 0)
+                                                        ny = ndata.get("y", 0)
+                                                        
+                                                        # 내 구역인지 판별 (버프존이거나, Zone 이름이 일치하는 곳)
+                                                        node_zone = str(ndata.get("zone", "")).strip()
+                                                        is_buff = ndata.get("is_buff_spot", False)
+                                                        if str(is_buff).lower() == "true": is_buff = True
+                                                        
+                                                        is_my_zone = False
+                                                        if is_buff:
+                                                            is_my_zone = True
+                                                        elif node_zone:
+                                                            zone_list = [z.strip() for z in node_zone.split(",")]
+                                                            for z in zone_list:
+                                                                z_base = z.rsplit("-", 1)[0] if "-" in z else z
+                                                                if active_base_zone == z_base:
+                                                                    is_my_zone = True
+                                                                    break
+                                                        else:
+                                                            # 구형 맵(zone 이름표 없음) 호환용 백업
+                                                            is_sp = ndata.get("is_special", False) or ndata.get("special", False)
+                                                            if str(is_sp).lower() == "true": is_sp = True
+                                                            if is_sp: is_my_zone = True
+                                                            else: is_my_zone = True # 일반맵은 다 허용
+                                                                
+                                                        if is_my_zone:
+                                                            d = (nx - mid_x)**2 + (ny - mid_y)**2
+                                                            if d < min_d:
+                                                                min_d = d
+                                                                best_mid_node = str(nid)
+                                                                
+                                                # 필터링된 노드가 없다면 기존처럼 아무 노드나 가장 가까운 곳을 선택 (안전 백업)
+                                                if not best_mid_node:
+                                                    fallback_node = find_nearest_visible_node(pc_graph, (mid_x, mid_y), pc_map_gray_los)
+                                                    best_mid_node = str(fallback_node) if fallback_node else None
                                                     
-                                        state["is_assisting"] = True # 💡 [버그 수정] 랑데부 중일 때도 꼬리표 부착!
+                                                if best_mid_node and curr_time - state.get("last_midpoint_change", 0) > 2.0:
+                                                    if str(state.get("current_target_node")) != best_mid_node:
+                                                        state["current_target_node"] = best_mid_node
+                                                        state["dungeon_global_path"] = [] # A* 재계산 유도
+                                                        state["last_midpoint_change"] = curr_time
+                                                        
+                                            state["is_assisting"] = True # 💡 랑데부 중일 때도 꼬리표 부착!
 
                                     else:
-                                        # 교전 중이거나 템을 줍고 있을 땐 하던 일을 마저 하도록 둠
-                                        state["is_assisting"] = False
+                                        # 👇👇👇 [맹점 수술 3: 기억 상실(Amnesia) 완벽 치료!] 👇👇👇
+                                        # 내가 전투 중이거나 템을 주울 땐 하던 일을 마저 하도록 냅둡니다.
+                                        # 단, 'is_assisting = False'로 강제 해제해버리면 전투가 끝난 뒤 합류를 잊어버리므로,
+                                        # 꼬리표를 그대로 유지하여 전투/루팅이 끝나면 다시 파트너를 찾아가게 만듭니다!
+                                        pass # 💡 기존의 state["is_assisting"] = False 코드를 지우고 pass 로 대체!
                                 else:
                                     # 🎯 [형님 오더 완벽 적용: 30px ~ 6px 구간 스마트 유지 엔진 (Hysteresis)]
                                     if state.get("is_assisting", False):
