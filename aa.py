@@ -14631,9 +14631,9 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 b['ignore_reason'] = "IN_BUFF_ZONE"
                                 ignored_boxes.append(b)
                                 
-                            # 👇 [형님 오더: 엠탐 중 루팅 반경을 120px -> 60px(정확히 1셀)로 극강 타이트하게 조임!]
-                            elif state.get("is_mptam_mode", False) and math.hypot(ix - char_screen_cx, iy + 15 - char_screen_cy) > 60.0:
-                                b['ignore_reason'] = "MPTAM_FAR(>1cell)"
+                            # 👇👇👇 [형님 오더: 파티 이동식일 때만 엠탐 중 1셀(60px) 줍기. 그 외 솔플/고정식은 120px 유지!] 👇👇👇
+                            elif state.get("is_mptam_mode", False) and math.hypot(ix - char_screen_cx, iy + 15 - char_screen_cy) > (60.0 if settings.get("use_party_hunt", False) else 120.0):
+                                b['ignore_reason'] = "MPTAM_FAR(>1cell)" if settings.get("use_party_hunt", False) else "MPTAM_FAR(>120px)"
                                 ignored_boxes.append(b)
 
                             # 👇👇👇 [수술 완료: 존 이탈 시에만 100px 이내 템 스쳐 줍기 허용!] 👇👇👇
