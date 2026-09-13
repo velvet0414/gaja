@@ -19229,6 +19229,14 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         # 🚑 [초간단 벌떼(Swarm) 헬프 & 지원군 출동 엔진]
                         # =====================================================================
                         if not retreat_reason:
+                            # 👇👇👇 [치명적 뻗음 에러 완벽 수술] 헬프 엔진 가동 전 파티망 데이터를 먼저 수집하여 my_party_members 변수를 생성해줍니다! 👇👇👇
+                            my_party_members = []
+                            with party_lock:
+                                for p_key, p_data in local_party_states.items():
+                                    if p_data.get("party_group") == my_team_group and p_key != key and curr_time - p_data.get("recv_time", 0) < 3.0:
+                                        my_party_members.append(p_data)
+                            # 👆👆👆 =========================================================================================
+
                             # -------------------------------------------------------------
                             # 🏃‍♂️ 1. 도망자 (Requester) 로직: 위기 감지 및 10초 자동 해제
                             # -------------------------------------------------------------
