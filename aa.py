@@ -12697,58 +12697,57 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     dist_to_base = math.hypot(state["dungeon_map_pos"][0] - bx, state["dungeon_map_pos"][1] - by)
 
                             # 💡 파티 모드 해방 스위치: 이동식은 상시 해방하되, 버프존 도착 시엔 15.0px 이내일 때만 해방!
-                                    fsm_for_yolo = str(state.get("target_fsm", ""))
-                                    is_buff_retreat = fsm_for_yolo == "PARTY_RETREAT_NAV" and "팟바람" in state.get("retreat_reason", "")
-                                    
-                                    if is_party_hunt_active:
-                                        # 🚀 [시야 풀 해방] 도망자/헬퍼, 팟바람 등은 목줄 상관없이 무조건 시야 100% 개방!
-                                        if state.get("help_requester", False) or state.get("helping_who") is not None or is_buff_retreat:
-                                            is_yolo_free = True
-                                        else:
-                                            is_yolo_free = (dist_to_base <= 15.0) if is_party_wait else True
-                                    elif is_fixed_party:
-                                        is_yolo_free = is_fixed_arrived or (is_fixed_dealer and dist_to_base <= 15.0) or is_buff_retreat or state.get("helping_who") is not None or state.get("help_requester", False)
+                            fsm_for_yolo = str(state.get("target_fsm", ""))
+                            is_buff_retreat = fsm_for_yolo == "PARTY_RETREAT_NAV" and "팟바람" in state.get("retreat_reason", "")
+                            
+                            if is_party_hunt_active:
+                                # 🚀 [시야 풀 해방] 도망자/헬퍼, 팟바람 등은 목줄 상관없이 무조건 시야 100% 개방!
+                                if state.get("help_requester", False) or state.get("helping_who") is not None or is_buff_retreat:
+                                    is_yolo_free = True
+                                else:
+                                    is_yolo_free = (dist_to_base <= 15.0) if is_party_wait else True
+                            elif is_fixed_party:
+                                is_yolo_free = is_fixed_arrived or (is_fixed_dealer and dist_to_base <= 15.0) or is_buff_retreat or state.get("helping_who") is not None or state.get("help_requester", False)
+                            else:
+                                is_yolo_free = False
+
+                            # 🚨 특수 상태(존 이탈, 엠탐)일 때는 타원 해방 무효화! (단, 파트너 합류 중일 땐 예외!)
+                            if state.get("is_out_of_zone", False) or state.get("is_mptam_mode", False):
+                                if not state.get("is_assisting", False) and not state.get("moving_to_mptam_partner", False):
+                                    is_yolo_free = False
+
+                            if state.get("is_mptam_mode", False) or state.get("mptam_extend_95", False) or state.get("mptam_standby_guard", False) or fsm_for_yolo == "PARTY_ACTIVE_STANDBY":
+                                if is_fixed_party: 
+                                    yolo_radius = 0 if state.get("mptam_blind_active", False) else 150 
+                                elif is_party_hunt_active: 
+                                    partner_mp_yolo = 100.0
+                                    with party_lock:
+                                        for p_k, p_d in local_party_states.items():
+                                            if p_d.get("party_group") == my_team_group and p_k != key:
+                                                if curr_time - p_d.get("recv_time", 0) < 3.0:
+                                                    partner_mp_yolo = p_d.get("mp", 100.0)
+                                                break
+                                    min_mp_for_yolo = min(mp, partner_mp_yolo)
+                                    if min_mp_for_yolo < 50.0:
+                                        yolo_radius = 100 
                                     else:
-                                        is_yolo_free = False
-
-                                    # 🚨 특수 상태(존 이탈, 엠탐)일 때는 타원 해방 무효화! (단, 파트너 합류 중일 땐 예외!)
-                                    if state.get("is_out_of_zone", False) or state.get("is_mptam_mode", False):
-                                        if not state.get("is_assisting", False) and not state.get("moving_to_mptam_partner", False):
-                                            is_yolo_free = False
-
-                                    if state.get("is_mptam_mode", False) or state.get("mptam_extend_95", False) or state.get("mptam_standby_guard", False) or fsm_for_yolo == "PARTY_ACTIVE_STANDBY":
-                                        if is_fixed_party: 
-                                            yolo_radius = 0 if state.get("mptam_blind_active", False) else 150 
-                                        elif is_party_hunt_active: 
-                                            # 🚨 [수술: 엠탐/대기 중 파티 이동식 50% 스마트 시야 통제!]
-                                            partner_mp_yolo = 100.0
-                                            with party_lock:
-                                                for p_k, p_d in local_party_states.items():
-                                                    if p_d.get("party_group") == my_team_group and p_k != key:
-                                                        if curr_time - p_d.get("recv_time", 0) < 3.0:
-                                                            partner_mp_yolo = p_d.get("mp", 100.0)
-                                                        break
-                                            min_mp_for_yolo = min(mp, partner_mp_yolo)
-                                            if min_mp_for_yolo < 50.0:
-                                                yolo_radius = 100 
-                                            else:
-                                                yolo_radius = 9999 
-                                        else: 
-                                            yolo_radius = 200 
-                                    # 👇👇👇 [치명적 버그 수술 2: 헬프/합류 시 욜로 시야 9999px 최우선 개방!] 👇👇👇
-                                    elif is_buff_retreat or state.get("help_requester", False) or state.get("helping_who") is not None or state.get("is_assisting", False) or state.get("moving_to_mptam_partner", False):
                                         yolo_radius = 9999 
-                                    elif state.get("is_out_of_zone", False):
-                                        yolo_radius = 250 # 🚀 존 이탈 중 길막 방지를 위해 100 -> 250 확장!
-                                    elif fsm_for_yolo == "PARTY_WAIT" and not is_yolo_free:
-                                        yolo_radius = 200 
-                                    elif is_any_party and not is_yolo_free:
-                                        yolo_radius = 250 # 🚀 파티 이동 중 맹인 비비기 방지 100 -> 250 확장!
-                                    # 👆👆👆 =========================================================================
-                                    elif is_close_combat:
-                                        yolo_radius = 150 if is_sudeon_or_party else 70 
-                                    else:
-                                        yolo_radius = 9999
+                                else: 
+                                    yolo_radius = 200 
+                            # 👇👇👇 [치명적 버그 수술 2: 헬프/합류 시 욜로 시야 9999px 최우선 개방!] 👇👇👇
+                            elif is_buff_retreat or state.get("help_requester", False) or state.get("helping_who") is not None or state.get("is_assisting", False) or state.get("moving_to_mptam_partner", False):
+                                yolo_radius = 9999 
+                            elif state.get("is_out_of_zone", False):
+                                yolo_radius = 250 # 🚀 존 이탈 중 길막 방지를 위해 100 -> 250 확장!
+                            elif fsm_for_yolo == "PARTY_WAIT" and not is_yolo_free:
+                                yolo_radius = 200 
+                            elif is_any_party and not is_yolo_free:
+                                yolo_radius = 250 # 🚀 파티 이동 중 맹인 비비기 방지 100 -> 250 확장!
+                            # 👆👆👆 =========================================================================
+                            elif is_close_combat:
+                                yolo_radius = 150 if is_sudeon_or_party else 70 
+                            else:
+                                yolo_radius = 9999
                             
                             for m in temp_mobs:
                                 # 🚀 [형님 기획: 모든 파티 모드 상시 타원형 절대 사거리 적용!]
