@@ -3946,6 +3946,11 @@ def get_hp_mp_percent(img_bgr, roi_width, roi_height, y_start, y_end):
                     if col_sums[x] >= 3 and col_sums[x+1] >= 5:
                         return ((length - x) / length) * 100.0
                 return 0.0
+            elif direction == "rtl":
+                for x in range(length - 1, 0, -1):
+                    if col_sums[x] >= 2 and col_sums[x-1] >= 2:
+                        return ((x + 1) / length) * 100.0
+                return 0.0
 
         hp_pct = get_gauge_percent(mask_hp, direction="ltr")
         mp_pct = get_gauge_percent(mask_mp, direction="rtl")
