@@ -14560,8 +14560,14 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
 
                         dist_to_b = math.hypot(ix - char_screen_cx, (iy + 15 - char_screen_cy) / 0.50)
                         
-                        # 👑 [수술 완수: 파티 이동식 1셀 제한 족쇄 완전 삭제!] 
-                        # 🚀 [원상 복구] 파티 이동식도 기존 사냥터와 동일하게 1셀 제한 없이 멀리 있는 모든 템(2~3셀, A* 우회 등)을 정상적으로 스캔하도록 삭제했습니다!
+                        # 👑 [형님 오더 완벽 적용: 파티 이동식 150px 스마트 루팅 반경 제한!] 
+                        # 바닥 스캔은 무제한으로 유지하되, 파티 진형이 너무 찢어지지 않도록
+                        # 캐릭터 발밑 반경 150픽셀(약 3칸) 이내로 들어온 아이템만 줍기를 시도합니다!
+                        if is_party_moving_loot:
+                            if dist_to_b > 150.0:
+                                b['ignore_reason'] = f"PARTY_OUT_150px({dist_to_b:.1f})"
+                                ignored_boxes.append(b)
+                                continue
 
                         if settings.get("hunt_first", False) and mobs:
                             if dist_to_b >= 57.0:
@@ -18329,7 +18335,6 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                             # 내가 선두(Vanguard)일 때만 목적지가 없으면 새로 뽑습니다.
                                             if i_am_vanguard and (goal_node is None or str(goal_node) not in tour_nodes):
                                                 
-                                                # 👇👇👇 [신규 엔진: 선두(Leader) 전열 정비 대기] 👇👇👇
                                                 partner_dist_for_wait = 0.0
                                                 if settings.get("use_party_hunt", False) and my_team != "선택안함":
                                                     with party_lock:
@@ -18352,7 +18357,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                         dprint(key, "✅ [진형 정비 완료] 파트너 안착 확인! 새로운 꿀자리를 개척하여 진군합니다.")
                                                         state["target_fsm"] = "IDLE"
                                                         
-                                                    # 🚨 [UnboundLocalError 완벽 치료] 기존 로직이 SQUAD_WAIT 상태일 땐 아예 실행되지 않도록 완전히 분리했습니다!
+                                                    # 🚨 [UnboundLocalError 완벽 치료]
                                                     unvisited = state.get("unvisited_nodes", [])
                                                     unvisited = [str(sn) for sn in unvisited if str(sn) in tour_nodes]
                                                     if not unvisited:
@@ -18382,13 +18387,13 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                     visited_cnt = total_cnt - len(unvisited)
                                                     dprint(key, f"🌟 [스페셜 노드 순회] 가장 가까운 꿀자리(ID:{goal_node}) 타겟팅! (달성률: {visited_cnt}/{total_cnt}곳)")
 
-                                        # 🚀 스페셜 맵: 맹인 모드 상태 넘겨주기
                                         # 👇👇👇 [치명적 텔포 스팸 완벽 수술!] 👇👇👇
                                         # 전열 정비(SQUAD_WAIT) 중이라서 고의로 멈춘 거라면 A* 실패 카운트를 올리지 않고 턴을 스킵합니다!
                                         if state.get("target_fsm") == "SQUAD_WAIT":
                                             state["astar_fail_count"] = 0
                                             action_taken = True
                                         else:
+                                            # 🚀 스페셜 맵: 맹인 모드 상태 넘겨주기
                                             new_path = calculate_graph_astar_path(pc_graph, char_map_pos, goal_node, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
                                             if new_path:
                                                 state["dungeon_global_path"] = new_path
@@ -18406,82 +18411,76 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                 if state["astar_fail_count"] >= 5:
                                                     state["astar_fail_count"] = 0
                                                     with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                                                    # (이 코드는 원래 있는 코드입니다)
                                                     if state.get("sweep_active", False):
                                                         pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
-
-                                                    # 👇👇👇 [여기서부터 3군데 모두 복사해서 끼워 넣기!] 👇👇👇
-                                                # 🚀 [범퍼카 방어] 버프존 복귀 중 13.0px 이내에서 5아웃 발생 시, 합석(주차) 인정!
-                                                is_base_returning = state.get("target_fsm") in ["PARTY_RETREAT_NAV", "PARTY_WAIT", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY"] and not state.get("is_rendezvous_mode", False)
-                                                if is_base_returning and goal_node:
-                                                    gn_data = pc_graph["nodes"].get(str(goal_node)) if pc_graph and pc_graph.get("nodes") else None
-                                                    if gn_data and char_map_pos:
-                                                        gx = gn_data.get("x", 0) if isinstance(gn_data, dict) else gn_data[0]
-                                                        gy = gn_data.get("y", 0) if isinstance(gn_data, dict) else gn_data[1]
-                                                        dist_to_goal = math.hypot(char_map_pos[0] - gx, char_map_pos[1] - gy)
-                                                        
-                                                        # 🚀 [벽 너머 합석 억까 방지 5] 길막으로 합석(도착) 인정할 때도 벽 너머면 인정 불가!
-                                                        has_los_stuck = True
-                                                        if pc_map_gray_los is not None and char_map_pos:
-                                                            has_los_stuck = check_line_of_sight(pc_map_gray_los, char_map_pos, (gx, gy), margin_steps=1)
+    
+                                                    is_base_returning = state.get("target_fsm") in ["PARTY_RETREAT_NAV", "PARTY_WAIT", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY"] and not state.get("is_rendezvous_mode", False)
+                                                    if is_base_returning and goal_node:
+                                                        gn_data = pc_graph["nodes"].get(str(goal_node)) if pc_graph and pc_graph.get("nodes") else None
+                                                        if gn_data and char_map_pos:
+                                                            gx = gn_data.get("x", 0) if isinstance(gn_data, dict) else gn_data[0]
+                                                            gy = gn_data.get("y", 0) if isinstance(gn_data, dict) else gn_data[1]
+                                                            dist_to_goal = math.hypot(char_map_pos[0] - gx, char_map_pos[1] - gy)
                                                             
-                                                        if dist_to_goal <= 13.0 and has_los_stuck:
-                                                            # 👇👇👇 [핵심: 어떤 사유든 13.0px 이내 주차 인정 시 무조건 통합 상태로 편입!] 👇👇👇
-                                                            dprint(key, f"🚧 [범퍼카 방어] 목적지 13.0px 이내({dist_to_goal:.1f}px) 길막 5아웃! 합석으로 인정하여 후속 조치를 진행합니다.")
-                                                            retreat_r_stuck = state.get("retreat_reason", "")
-                                                            
-                                                            state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
-                                                            state["is_active_standby"] = True 
-                                                            state["standby_reason"] = retreat_r_stuck
-                                                            state["portal_blind_mode"] = False
-                                                            state["pending_mptam"] = False
-                                                            state["yolo_blind_active"] = False # 🚀 눈가림 강제 해제
-                                                            
-                                                            # 엠탐 사유라면 엠탐 모드 ON!
-                                                            if "MP" in retreat_r_stuck or "고갈" in retreat_r_stuck:
-                                                                state["is_mptam_mode"] = True
+                                                            has_los_stuck = True
+                                                            if pc_map_gray_los is not None and char_map_pos:
+                                                                has_los_stuck = check_line_of_sight(pc_map_gray_los, char_map_pos, (gx, gy), margin_steps=1)
                                                                 
-                                                            if retreat_r_stuck == "리더 팟바람 선진입" or retreat_r_stuck == "팟바람 시전 집합":
-                                                                if state.get("pb_wait_start", 0) == 0: state["pb_wait_start"] = curr_time
-                                                                state["req_party_buff"] = True
-                                                                state["party_buff_req_time"] = curr_time
-                                                                state["missed_party_buff"] = False 
-                                                                dprint(key, "👑 [팟바람 호출] 13.0px 길막 주차 인정! 파티원 집결을 호출합니다.")
-                                                            elif retreat_r_stuck == "팟바람 수령 집합":
-                                                                state["party_buff_status"] = "ARRIVED" 
+                                                            if dist_to_goal <= 13.0 and has_los_stuck:
+                                                                dprint(key, f"🚧 [범퍼카 방어] 목적지 13.0px 이내({dist_to_goal:.1f}px) 길막 5아웃! 합석으로 인정하여 후속 조치를 진행합니다.")
+                                                                retreat_r_stuck = state.get("retreat_reason", "")
                                                                 
-                                                            state["is_pulling"] = False
-                                                            state["cooldown"] = curr_time + 0.5
-                                                            continue # 💡 여기서 비상 텔레포트(F11) 코드로 안 넘어가게 강제 차단!
-
-                                                # 👇👇👇 [특수 던전 텔포 방지 및 강제 귀환 엔진 등...] 👇👇👇
-                                                dng_stuck_name2 = settings.get("dungeon_name", "")
-                                                if "event" in dng_stuck_name2 or "오땅" in dng_stuck_name2:
-                                                    dprint(key, "🚨 [경로 개척 5아웃] 5연속 길찾기 실패! 특수 던전이므로 F9 일반 귀환 후 재진입합니다!")
-                                                    state["target_fsm"] = "TOWN_MAINT_NORMAL_RETURN"
-                                                    state["event_skip_maint"] = True 
-                                                else:
-                                                    dprint(key, "🚨 [경로 개척 5아웃] 사방이 꽉 막혔습니다. 강제 텔레포트 발동!")
-                                                    pico_queues[key].put({"action": "TELEPORT"})
-                                                    state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
-                                                    state["teleport_start_mp"] = mp; state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
-                                                    state["tele_retry_cnt"] = 0
-                                                state["is_pulling"] = False; state["cooldown"] = curr_time + 1.0
-                                                continue
-                                                # 👆👆👆 ============================================================== 👆👆👆
-                                            elif state["astar_fail_count"] >= 3:
-                                                # 💡 3~4회 실패 시: 제자리에 가만히 있지 않고 억지로 몸을 비틀어서(비집기) 갇힌 곳을 뚫어봄!
-                                                dprint(key, "🚧 [길찾기 지연] 길이 막혔습니다. 무작위 방향으로 비집기를 시도합니다.")
-                                                best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1, 1)
-                                                move_dist = g_val(150.0, 200.0)
-                                                tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
-                                                ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
-                                                
-                                                pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
-                                                state["pico_arrived"] = False
-                                                state["cursor_pos"], state["cooldown"] = [tx, ty], get_dynamic_cooldown(0.25, 0.45, key)
-                                                state["dungeon_angle"] = best_angle % (2*math.pi)
-                                                action_taken = True
+                                                                state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
+                                                                state["is_active_standby"] = True 
+                                                                state["standby_reason"] = retreat_r_stuck
+                                                                state["portal_blind_mode"] = False
+                                                                state["pending_mptam"] = False
+                                                                state["yolo_blind_active"] = False 
+                                                                
+                                                                if "MP" in retreat_r_stuck or "고갈" in retreat_r_stuck:
+                                                                    state["is_mptam_mode"] = True
+                                                                    
+                                                                if retreat_r_stuck == "리더 팟바람 선진입" or retreat_r_stuck == "팟바람 시전 집합":
+                                                                    if state.get("pb_wait_start", 0) == 0: state["pb_wait_start"] = curr_time
+                                                                    state["req_party_buff"] = True
+                                                                    state["party_buff_req_time"] = curr_time
+                                                                    state["missed_party_buff"] = False 
+                                                                    dprint(key, "👑 [팟바람 호출] 13.0px 길막 주차 인정! 파티원 집결을 호출합니다.")
+                                                                elif retreat_r_stuck == "팟바람 수령 집합":
+                                                                    state["party_buff_status"] = "ARRIVED" 
+                                                                    
+                                                                state["is_pulling"] = False
+                                                                state["cooldown"] = curr_time + 0.5
+                                                                continue 
+    
+                                                    dng_stuck_name2 = settings.get("dungeon_name", "")
+                                                    if "event" in dng_stuck_name2 or "오땅" in dng_stuck_name2:
+                                                        dprint(key, "🚨 [경로 개척 5아웃] 5연속 길찾기 실패! 특수 던전이므로 F9 일반 귀환 후 재진입합니다!")
+                                                        state["target_fsm"] = "TOWN_MAINT_NORMAL_RETURN"
+                                                        state["event_skip_maint"] = True 
+                                                    else:
+                                                        dprint(key, "🚨 [경로 개척 5아웃] 사방이 꽉 막혔습니다. 강제 텔레포트 발동!")
+                                                        pico_queues[key].put({"action": "TELEPORT"})
+                                                        state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
+                                                        state["teleport_start_mp"] = mp
+                                                        state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
+                                                        state["tele_retry_cnt"] = 0
+                                                    state["is_pulling"] = False
+                                                    state["cooldown"] = curr_time + 1.0
+                                                    continue
+                                                elif state["astar_fail_count"] >= 3:
+                                                    dprint(key, "🚧 [길찾기 지연] 길이 막혔습니다. 무작위 방향으로 비집기를 시도합니다.")
+                                                    best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1, 1)
+                                                    move_dist = g_val(150.0, 200.0)
+                                                    tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
+                                                    ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
+                                                    
+                                                    pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
+                                                    state["pico_arrived"] = False
+                                                    state["cursor_pos"] = [tx, ty]
+                                                    state["cooldown"] = get_dynamic_cooldown(0.25, 0.45, key)
+                                                    state["dungeon_angle"] = best_angle % (2*math.pi)
+                                                    action_taken = True
 
                                                 state["astar_fail_count"] = 0
                                                 with pico_queues[key].mutex: pico_queues[key].queue.clear()
