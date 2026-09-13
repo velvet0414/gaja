@@ -18352,11 +18352,14 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                                     partner_dist_for_wait = math.hypot(char_map_pos[0] - p_pos_w[0], char_map_pos[1] - p_pos_w[1])
                                                                 break
                                                                 
-                                                # 파트너가 8픽셀(약 1.5칸) 밖에 있다면 새 목적지를 잡지 않고 닻을 내림!
                                                 if settings.get("use_party_hunt", False) and partner_dist_for_wait > 8.0:
                                                     if state.get("target_fsm") != "SQUAD_WAIT":
-                                                        dprint(key, f"🛑 [전열 정비] 정거장 도착! 파트너가 {partner_dist_for_wait:.1f}px 뒤에 있습니다. 완전 합류(8px 이내) 시까지 진군을 멈추고 제자리 사주경계!")
+                                                        dprint(key, f"🛑 [전열 정비] 파트너가 맵 기준 {partner_dist_for_wait:.1f}px(화면 밖)에 있습니다. 가시권 진입 시까지 대기!")
                                                         state["target_fsm"] = "SQUAD_WAIT"
+                                                        state["log_squad_wait"] = curr_time
+                                                    elif curr_time - state.get("log_squad_wait", 0) > 5.0:
+                                                        dprint(key, f"🛑 [전열 정비] 파트너 대기 중... (현재 거리: {partner_dist_for_wait:.1f}px)")
+                                                        state["log_squad_wait"] = curr_time
                                                     goal_node = None
                                                     state["cooldown"] = curr_time + 0.1
                                                 else:
