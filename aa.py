@@ -1585,7 +1585,7 @@ KEY_ANTIDOTE = KEY_F10
 KEY_HEAL     = KEY_F6
 KEY_POTION   = KEY_F5
 # 🚀 [수술 완료] HP는 위로 1px 늘리고 아래로 2px 잘라냄. MP는 기존(485, 495) 순정 유지!
-HP_Y_START, HP_Y_END = 484, 493
+HP_Y_START, HP_Y_END = 485, 491
 MP_Y_START, MP_Y_END = 485, 495
 HP_X1, HP_X2 = 175, 350
 MP_X1, MP_X2 = 416, 585
@@ -3943,7 +3943,8 @@ def get_hp_mp_percent(img_bgr, roi_width, roi_height, y_start, y_end):
             
             if direction == "ltr": 
                 for x in range(length - 1):
-                    if col_sums[x] >= 3 and col_sums[x+1] >= 5:
+                    # 🚨 [형님 테스트] 아랫부분을 2픽셀 잘랐으니 조건을 4로 내려서 100% 고정 버그를 테스트합니다!
+                    if col_sums[x] >= 3 and col_sums[x+1] >= 4:
                         return ((length - x) / length) * 100.0
                 return 0.0
             elif direction == "rtl":
@@ -3960,7 +3961,8 @@ def get_hp_mp_percent(img_bgr, roi_width, roi_height, y_start, y_end):
         col_sums_stone = np.sum(mask_stone_closed > 0, axis=0)
         is_cursed = False
         for x in range(len(col_sums_stone) - 1):
-            if col_sums_stone[x] >= 3 and col_sums_stone[x+1] >= 5:
+            # 🚨 하단 테두리를 2픽셀 잘랐으므로 커스 확정 조건도 동일하게 4로 맞춥니다.
+            if col_sums_stone[x] >= 3 and col_sums_stone[x+1] >= 4:
                 is_cursed = True
                 break
                 
@@ -5935,10 +5937,11 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                     state["last_partner_node_change"] = curr_time
                     else:
                         state["party_is_vanguard"] = True
-                        if state.get("target_fsm") == "SQUAD_WAIT":
-                            state["target_fsm"] = "IDLE"
-                            state["squad_wait_start"] = 0
-                            state["cooldown"] = curr_time + 0.1
+                        # 🚀 [도배 및 발작 수술] SQUAD_WAIT 상태를 여기서 매 프레임 강제로 IDLE로 풀지 않도록 주석 처리!
+                        # if state.get("target_fsm") == "SQUAD_WAIT":
+                        #     state["target_fsm"] = "IDLE"
+                        #     state["squad_wait_start"] = 0
+                        #     state["cooldown"] = curr_time + 0.1
                             
                         if curr_time - state.get("party_log_timer", 0) > 10.0:
                             if not is_me_hunting or not is_partner_hunting:
@@ -14628,8 +14631,9 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 b['ignore_reason'] = "IN_BUFF_ZONE"
                                 ignored_boxes.append(b)
                                 
-                            elif state.get("is_mptam_mode", False) and math.hypot(ix - char_screen_cx, iy + 15 - char_screen_cy) > 120.0:
-                                b['ignore_reason'] = "MPTAM_FAR(>120px)"
+                            # 👇 [형님 오더: 엠탐 중 루팅 반경을 120px -> 60px(정확히 1셀)로 극강 타이트하게 조임!]
+                            elif state.get("is_mptam_mode", False) and math.hypot(ix - char_screen_cx, iy + 15 - char_screen_cy) > 60.0:
+                                b['ignore_reason'] = "MPTAM_FAR(>1cell)"
                                 ignored_boxes.append(b)
 
                             # 👇👇👇 [수술 완료: 존 이탈 시에만 100px 이내 템 스쳐 줍기 허용!] 👇👇👇
@@ -17707,8 +17711,10 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     
                                     # 👇👇👇 [맹점 수술: 네비게이션 길막 판정에서도 고정 딜러 주차 중엔 면제!] 👇👇👇
                                     is_fixed_dealer_parked = settings.get("use_party_fixed", False) and not settings.get("is_puller", False) and state.get("arrived_at_base", False)
+                                    is_squad_waiting = state.get("target_fsm") == "SQUAD_WAIT"
                                     
-                                    if stuck_duration > stuck_wait and not state.get("sandbag_tried_in_stuck", False) and not is_fsm_busy and curr_time >= state.get("cooldown", 0) and not is_fixed_dealer_parked:
+                                    # 🚀 [대기 중 비집기 면제] 파트너 대기 중일 때는 길막 3초 45도 회피도 완전 면제!
+                                    if stuck_duration > stuck_wait and not state.get("sandbag_tried_in_stuck", False) and not is_fsm_busy and curr_time >= state.get("cooldown", 0) and not is_fixed_dealer_parked and not is_squad_waiting:
                                         dprint(key, f"🚨 [네비게이션 길막] 갇힘 확정! 3초간 바디를 멈추고 45도 회피 기동 발동!")
                                         
                                         # 👇👇👇 [수술 완료: 피코 명령 삭제, 뇌에 3초 밴 즉각 주입!] 👇👇👇
@@ -17741,7 +17747,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         # 👇👇👇 [파티 고정식 수술] 딜러는 15초 갇힘 텔레포트 면제! 오직 풀러/일반 사냥만 적용 👇👇👇
                                         is_fixed_dealer_stuck = settings.get("use_party_fixed", False) and not settings.get("is_puller", False)
                                         
-                                        if stuck_duration > 15.0 and not is_fixed_dealer_stuck:
+                                        # 🚀 [텔포 발작 수술] 대기(SQUAD_WAIT) 중일 때는 15초 텔포 발작을 완벽히 면제!
+                                        if stuck_duration > 15.0 and not is_fixed_dealer_stuck and not is_squad_waiting:
                                             state["dungeon_global_path"] = []
                                             with pico_queues[key].mutex: pico_queues[key].queue.clear()
                                             if state.get("sweep_active", False):
@@ -19659,7 +19666,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                 # 👑 [형님 오더 방어막] 도망자/지원군 모드일 때는 엠탐 스위치 강제 차단! (길에서 서서 죽는 뻘짓 방지)
                 is_help_busy = state.get("help_requester", False) or state.get("helping_who") is not None
                 
-                # 👇👇👇 [형님 오더: 파티 모드 솔플 엠탐 예약 로직 원천 차단 (비상 텔포만 생존)] 👇👇👇
+                # 👇👇👇 [수술 완료: 파티 모드 엠탐 먹통(데드락) 완벽 해결] 👇👇👇
                 is_party_hunt_now = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
                 party_mptam_tele_use = settings.get("party_mptam_tele_use", False)
                 party_mptam_tele_pct = settings.get("party_mptam_tele_pct", 12.0)
@@ -19669,11 +19676,19 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     active_combat_fsms_local_chk = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_LOCKED", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD", "TARGET_AIMING", "WAIT_FOR_STOP"]
                     is_currently_fighting_check = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or str(state.get("target_fsm", "")) in active_combat_fsms_local_chk
                     
-                    # 💡 비상 텔레포트 조건일 때만 진입 허용, 그 외의 엠탐 예약(pending_mptam) 로직은 전부 컷트!
-                    if party_mptam_tele_use and mp <= party_mptam_tele_pct and is_currently_fighting_check and not settings.get("use_party_fixed", False):
+                    if settings.get("use_party_fixed", False):
+                        # 💡 고정식 파티(말뚝딜)는 비상 텔레포트를 타지 않고 무조건 엠탐(대기) 모드에 돌입해야 하므로 허용!
                         allow_mptam_block = True
+                    elif is_currently_fighting_check:
+                        # 💡 파티 이동식 & 교전 중: 비상 텔레포트 조건일 때만 진입 허용, 일반 엠탐 예약(pending_mptam)은 차단!
+                        if party_mptam_tele_use and mp <= party_mptam_tele_pct:
+                            allow_mptam_block = True
+                        else:
+                            allow_mptam_block = False
                     else:
-                        allow_mptam_block = False
+                        # 💡 파티 이동식 & 비전투 상태: 정상적인 제자리 엠탐 진입 무조건 허용!
+                        allow_mptam_block = True
+                # 👆👆👆 ============================================================== 👆👆👆
 
                 # 👇👇👇 [수정: 형님 추론 적중! 버프 시전 중 마나 고갈로 인한 귀환 발작 완벽 방지!] 👇👇👇
                 # 🚀 [파트너 엠탐 합류 보장] 파트너가 엠탐 중이라 파트너에게 다가가는 중일 때는 내 마나가 떨어져도 중간에 주저앉지 않도록 moving_to_mptam_partner 조건 추가!
