@@ -5662,13 +5662,79 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             # 🚀 [전술 2] 픽셀 목줄 폐기! Zone(사냥터 구역) 기반 이탈 판정!
                             if is_p_out_of_zone or is_m_out_of_zone:
                                 state["party_is_vanguard"] = True 
+                                
+                                # 👇👇👇 [치명적 샌드백 핑퐁 버그 완벽 수술 1] 👇👇👇
+                                # 존 이탈로 각자도생할 때, 파트너 추적(A*) 꼬리표를 완벽히 찢어버려 무한 비비기를 막습니다!
+                                state["is_assisting"] = False
+                                state["moving_to_mptam_partner"] = False
+                                
+                                # 👑 [형님 오더: 0순위 존 복귀 엔진 발동!]
+                                # 내가 존(Zone)을 이탈했다면, 목적지를 지우는 게 아니라 '가장 가까운 내 구역(Zone) 노드'로 즉각 타겟팅합니다!
+                                if is_m_out_of_zone and curr_map_pos and pc_graph and pc_graph.get("nodes"):
+                                    active_base_zone = active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon
+                                    best_zone_node = None
+                                    min_d = float('inf')
+                                    
+                                    for nid, ndata in pc_graph["nodes"].items():
+                                        if isinstance(ndata, dict):
+                                            nx = ndata.get("x", 0) if isinstance(ndata, dict) else ndata[0]
+                                            ny = ndata.get("y", 0) if isinstance(ndata, dict) else ndata[1]
+                                            
+                                            node_zone = str(ndata.get("zone", "")).strip()
+                                            is_buff = ndata.get("is_buff_spot", False)
+                                            if str(is_buff).lower() == "true": is_buff = True
+                                            
+                                            is_my_zone = False
+                                            if is_buff:
+                                                is_my_zone = True
+                                            elif node_zone:
+                                                zone_list = [z.strip() for z in node_zone.split(",")]
+                                                for z in zone_list:
+                                                    z_base = z.rsplit("-", 1)[0] if "-" in z else z
+                                                    if active_base_zone == z_base:
+                                                        is_my_zone = True
+                                                        break
+                                            else: # 구형 맵 호환
+                                                is_sp = ndata.get("is_special", False) or ndata.get("special", False)
+                                                if str(is_sp).lower() == "true": is_sp = True
+                                                if is_sp: is_my_zone = True
+                                                else: is_my_zone = True 
+                                                    
+                                            if is_my_zone:
+                                                d = (nx - curr_map_pos[0])**2 + (ny - curr_map_pos[1])**2
+                                                if d < min_d:
+                                                    # 🚀 시야 검사(LOS) 추가 (벽 너머 가짜 노드 방지)
+                                                    if pc_map_gray_los is not None:
+                                                        if not check_line_of_sight(pc_map_gray_los, curr_map_pos, (nx, ny), margin_steps=1):
+                                                            continue
+                                                    min_d = d
+                                                    best_zone_node = str(nid)
+                                                    
+                                    if best_zone_node:
+                                        if str(state.get("current_target_node")) != best_zone_node:
+                                            state["current_target_node"] = best_zone_node
+                                            state["dungeon_global_path"] = [] 
+                                            if curr_time - state.get("zone_return_log_time", 0) > 5.0:
+                                                dprint(key, f"🚨 [0순위 존 복귀] 구역 이탈 확정! 파트너 합류(페어링)를 무시하고 가장 가까운 Zone 내부로 다이렉트 복귀합니다!")
+                                                state["zone_return_log_time"] = curr_time
+                                    else:
+                                        state["current_target_node"] = None
+                                else:
+                                    state["current_target_node"] = None
+                                # 👆👆👆 =========================================================
+                                
                                 if state.get("target_fsm") == "SQUAD_WAIT":
                                     state["target_fsm"] = "IDLE"
                                     state["squad_wait_start"] = 0
                                     state["cooldown"] = curr_time + 0.1
                                     
                                 if curr_time - state.get("party_log_timer", 0) > 10.0:
-                                    dprint(key, f"✂️ [구역 분리] 파티가 사냥터(Zone)를 벗어났습니다. 텐션을 끊고 각자도생합니다!")
+                                    if is_m_out_of_zone and is_p_out_of_zone:
+                                        dprint(key, f"✂️ [동반 이탈] 둘 다 Zone을 벗어났습니다. 각자 0순위로 Zone에 먼저 복귀합니다!")
+                                    elif is_m_out_of_zone:
+                                        dprint(key, f"✂️ [구역 이탈] 내가 사냥터(Zone)를 벗어났습니다. 텐션을 끊고 즉각 복귀합니다!")
+                                    else:
+                                        dprint(key, f"✂️ [구역 분리] 파트너가 사냥터(Zone)를 벗어났습니다. 텐션을 끊고 각자도생합니다!")
                                     state["party_log_timer"] = curr_time
                             else:
                                 # 👑 [전술 3] 영구 페어링 복구 엔진! 같은 Zone에 있다면 무조건 다시 묶는다!
@@ -5714,18 +5780,63 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     # 🚀 [전술 5] 둘 다 비전투 상태인데 거리가 멀 때 (중간 지점 랑데부!)
                                     elif not p_is_combat and not i_am_combat and my_fsm in ["IDLE", "PATROL"]:
                                         if curr_time - state.get("party_log_timer", 0) > 10.0:
-                                            dprint(key, f"🤝 [중간 랑데부] 둘 다 비전투 상태로 멀어짐({dist_to_partner:.1f}px). 중간 지점으로 이동하여 합류합니다.")
+                                            dprint(key, f"🤝 [스마트 랑데부] 거리가 멀어졌습니다({dist_to_partner:.1f}px). 중간에 위치한 안전 구역으로 합류합니다.")
                                             state["party_log_timer"] = curr_time
                                             
                                         mid_x = (curr_map_pos[0] + p_pos[0]) / 2.0
                                         mid_y = (curr_map_pos[1] + p_pos[1]) / 2.0
                                         
                                         if pc_graph and pc_graph.get("nodes"):
-                                            mid_nearest = find_nearest_visible_node(pc_graph, (mid_x, mid_y), pc_map_gray_los)
-                                            if mid_nearest and curr_time - state.get("last_midpoint_change", 0) > 2.0:
-                                                if str(state.get("current_target_node")) != str(mid_nearest):
-                                                    state["current_target_node"] = str(mid_nearest)
-                                                    state["dungeon_global_path"] = []
+                                            # 🚨 [형님 지적 완벽 수술!]
+                                            # 수학적 중간 지점이 까만 벽(장애물) 속일 경우, 시야 검사(LOS)에 막혀 
+                                            # 에이스타가 뻗어버리는 비비기/장님 현상을 원천 차단합니다!
+                                            # 중간 지점에서 가장 가까우면서도 '내 사냥 구역(Zone)'에 속한 팩트 노드를 타겟으로 삼습니다!
+                                            active_base_zone = active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon
+                                            best_mid_node = None
+                                            min_d = float('inf')
+                                            
+                                            for nid, ndata in pc_graph["nodes"].items():
+                                                if isinstance(ndata, dict):
+                                                    nx = ndata.get("x", 0)
+                                                    ny = ndata.get("y", 0)
+                                                    
+                                                    # 내 구역인지 판별 (버프존이거나, Zone 이름이 일치하는 곳)
+                                                    node_zone = str(ndata.get("zone", "")).strip()
+                                                    is_buff = ndata.get("is_buff_spot", False)
+                                                    if str(is_buff).lower() == "true": is_buff = True
+                                                    
+                                                    is_my_zone = False
+                                                    if is_buff:
+                                                        is_my_zone = True
+                                                    elif node_zone:
+                                                        zone_list = [z.strip() for z in node_zone.split(",")]
+                                                        for z in zone_list:
+                                                            z_base = z.rsplit("-", 1)[0] if "-" in z else z
+                                                            if active_base_zone == z_base:
+                                                                is_my_zone = True
+                                                                break
+                                                    else:
+                                                        # 구형 맵(zone 이름표 없음) 호환용 백업
+                                                        is_sp = ndata.get("is_special", False) or ndata.get("special", False)
+                                                        if str(is_sp).lower() == "true": is_sp = True
+                                                        if is_sp: is_my_zone = True
+                                                        else: is_my_zone = True # 일반맵은 다 허용
+                                                            
+                                                    if is_my_zone:
+                                                        d = (nx - mid_x)**2 + (ny - mid_y)**2
+                                                        if d < min_d:
+                                                            min_d = d
+                                                            best_mid_node = str(nid)
+                                                            
+                                            # 필터링된 노드가 없다면 기존처럼 아무 노드나 가장 가까운 곳을 선택 (안전 백업)
+                                            if not best_mid_node:
+                                                fallback_node = find_nearest_visible_node(pc_graph, (mid_x, mid_y), pc_map_gray_los)
+                                                best_mid_node = str(fallback_node) if fallback_node else None
+                                                
+                                            if best_mid_node and curr_time - state.get("last_midpoint_change", 0) > 2.0:
+                                                if str(state.get("current_target_node")) != best_mid_node:
+                                                    state["current_target_node"] = best_mid_node
+                                                    state["dungeon_global_path"] = [] # A* 재계산 유도
                                                     state["last_midpoint_change"] = curr_time
                                                     
                                         state["is_assisting"] = True # 💡 [버그 수정] 랑데부 중일 때도 꼬리표 부착!
@@ -12600,9 +12711,10 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     else:
                                         is_yolo_free = False
 
-                                    # 🚨 특수 상태(존 이탈, 엠탐)일 때는 타원 해방 무효화! (팟바람, 헬프 제외)
+                                    # 🚨 특수 상태(존 이탈, 엠탐)일 때는 타원 해방 무효화! (단, 파트너 합류 중일 땐 예외!)
                                     if state.get("is_out_of_zone", False) or state.get("is_mptam_mode", False):
-                                        is_yolo_free = False
+                                        if not state.get("is_assisting", False) and not state.get("moving_to_mptam_partner", False):
+                                            is_yolo_free = False
 
                                     if state.get("is_mptam_mode", False) or state.get("mptam_extend_95", False) or state.get("mptam_standby_guard", False) or fsm_for_yolo == "PARTY_ACTIVE_STANDBY":
                                         if is_fixed_party: 
@@ -12617,22 +12729,22 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                             partner_mp_yolo = p_d.get("mp", 100.0)
                                                         break
                                             min_mp_for_yolo = min(mp, partner_mp_yolo)
-                                            # 💡 둘 중 한 명이라도 50% 미만이면 시야 100px 락다운! 둘 다 50% 이상이면 풀 개방!
                                             if min_mp_for_yolo < 50.0:
                                                 yolo_radius = 100 
                                             else:
                                                 yolo_radius = 9999 
                                         else: 
                                             yolo_radius = 200 
-                                    elif state.get("is_out_of_zone", False):
-                                        yolo_radius = 100
-                                    # 🚀 헬프/도주/팟바람은 무조건 시야 9999px 풀 개방!
-                                    elif is_buff_retreat or state.get("help_requester", False) or state.get("helping_who") is not None:
+                                    # 👇👇👇 [치명적 버그 수술 2: 헬프/합류 시 욜로 시야 9999px 최우선 개방!] 👇👇👇
+                                    elif is_buff_retreat or state.get("help_requester", False) or state.get("helping_who") is not None or state.get("is_assisting", False) or state.get("moving_to_mptam_partner", False):
                                         yolo_radius = 9999 
+                                    elif state.get("is_out_of_zone", False):
+                                        yolo_radius = 250 # 🚀 존 이탈 중 길막 방지를 위해 100 -> 250 확장!
                                     elif fsm_for_yolo == "PARTY_WAIT" and not is_yolo_free:
-                                        yolo_radius = 100 
+                                        yolo_radius = 200 
                                     elif is_any_party and not is_yolo_free:
-                                        yolo_radius = 100 
+                                        yolo_radius = 250 # 🚀 파티 이동 중 맹인 비비기 방지 100 -> 250 확장!
+                                    # 👆👆👆 =========================================================================
                                     elif is_close_combat:
                                         yolo_radius = 150 if is_sudeon_or_party else 70 
                                     else:
