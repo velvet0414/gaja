@@ -269,8 +269,8 @@ def local_ipc_broadcaster_thread(my_key):
                 # 🚀 [회피 기동 오인식 수술] MOTION_EVADING은 단순 마찰이므로 SURVIVAL(위기) 타전에서 완전 제외!
                 elif "EMERGENCY" in raw_fsm or st.get("perc_pk", 0) > 0: party_state = "SURVIVAL"
                 elif "MOTION_EVADING" in raw_fsm or raw_fsm.startswith("PARTY_"): party_state = "TACTIC"
-                # 🚀 [엠탐 동기화 타전] 엠탐 연장 중일 때도 명확하게 MPTAM으로 타전!
-                elif st.get("is_mptam_mode", False) or st.get("mptam_extend_95", False): party_state = "MPTAM"
+                # 🚀 [엠탐 동기화 타전] 엠탐 연장 중이거나 엠탐 합류 이동 중일 때도 명확하게 MPTAM으로 타전!
+                elif st.get("is_mptam_mode", False) or st.get("mptam_extend_95", False) or st.get("moving_to_mptam_partner", False): party_state = "MPTAM"
                 elif raw_fsm.startswith("PARTY_"): party_state = "TACTIC"
                 elif st.get("is_attacking", False) or st.get("arrow_is_firing", False) or raw_fsm in ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "MOTION_SNAP_CHECK_SWORD", "TARGET_AIMING", "HEINE_GMOB_VERIFY"]: party_state = "COMBAT"
                 elif raw_fsm.startswith("LOOT") or st.get("sweep_active", False): party_state = "LOOTING"
@@ -16049,8 +16049,9 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             state["party_buff_status"] = "IDLE"
                             state["is_mptam_mode"] = False
                             state["mptam_extend_95"] = False 
+                            state["mptam_standby_guard"] = False # 🚀 [망부석 파괴 2] 엠탐이 완전히 끝나면 호위 꼬리표도 떼어내어 하반신 마비(망부석)를 풀어줍니다!
                             state["is_active_standby"] = False 
-                            state["designated_base_node"] = None 
+                            state["designated_base_node"] = None
                             
                             state["help_requester"] = False
                             state["helping_who"] = None
@@ -17768,7 +17769,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         dprint(key, f"💡 [맵 스위치] 스페셜 노드 없음! ➔ [트랙 B] 일반 순정 로직 가동")
                                     state["map_mode_log_time"] = curr_time
 
-                                        # ========================================================
+                                # ========================================================
                                 # 🗺️ [1단계] 경로 생성부 (PATH GENERATION)
                                 # ========================================================
                                 is_fixed_party = settings.get("use_party_fixed", False)
@@ -17789,6 +17790,16 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                 if curr_time - state.get("log_run_help", 0) > 5.0:
                                                     dprint(key, f"🏃‍♂️ [구출 기동] 사냥(IDLE) 유지! 도망자의 위치(노드:{goal_node})로 A* 목적지를 강제 덮어씁니다!")
                                                     state["log_run_help"] = curr_time
+
+                                # 👑 [-0.5순위: 파트너 동반 엠탐 및 전투 합류 강제 하이재킹]
+                                if not goal_node and (state.get("moving_to_mptam_partner", False) or state.get("is_assisting", False)):
+                                    partner_node = state.get("current_target_node")
+                                    if partner_node and pc_graph and pc_graph.get("nodes") and str(partner_node) in pc_graph["nodes"]:
+                                        goal_node = str(partner_node)
+                                        if curr_time - state.get("log_run_partner_hijack", 0) > 5.0:
+                                            reason_str = "동반 엠탐" if state.get("moving_to_mptam_partner", False) else "전투 지원"
+                                            dprint(key, f"🏃‍♂️ [파트너 {reason_str} 기동] 일반 순항을 무시하고 파트너의 위치(노드:{goal_node})로 강제 돌격합니다!")
+                                            state["log_run_partner_hijack"] = curr_time
 
                                 # 👑 [0순위: 버프존 긴급 복귀 및 주차 유지 네비게이션]
                                 is_retreating = state.get("target_fsm") in ["PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV"]
@@ -19424,6 +19435,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         dprint(key, "💤 [예약 엠탐 돌입] 교전/루팅이 끝났습니다! 제자리 엠탐을 가동합니다.")
                         state["pending_mptam"] = False
                         state["is_mptam_mode"] = True
+                        state["moving_to_mptam_partner"] = False # 🚀 [좀비 버그 파괴]
                         clear_movements_only(pico_queues[key])
                         state["dungeon_global_path"] = []
                         
@@ -19515,10 +19527,11 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 state["pending_mptam"] = True
                             continue
                         else:
-                            # 🚨 [수술: 다이렉트 엠탐 엔진] 파트너 기다리지 않고 즉각 제자리 엠탐!
+                            # 🚨 [수술: 다이렉트 엠탐 엔진] 파트너 기다리지 않고 내가 직접 제자리 엠탐을 개시합니다.
                             dprint(key, f"💤 [엠탐 돌입] 교전 종료 상태! 파트너 기다리지 않고 내가 직접 제자리 엠탐을 개시합니다.")
                             state["is_mptam_mode"] = True
                             state["pending_mptam"] = False
+                            state["moving_to_mptam_partner"] = False # 🚀 [좀비 버그 파괴]
                             clear_movements_only(pico_queues[key])
                             if state.get("sweep_active", False):
                                 pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
@@ -19570,7 +19583,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             state["dungeon_global_path"] = []
                             state["target_fsm"] = "IDLE"
 
-                elif state.get("is_mptam_mode", False):
+                elif state.get("is_mptam_mode", False) or state.get("mptam_standby_guard", False): # 🚀 [망부석 수술] 95% 호위 모드 중에도 파트너 상태를 계속 감시하도록 락 해제!
                     # 💡 헬프콜 자동 종료 (10초 경과 시 타전 중단)
                     if state.get("help_requester", False) and curr_time - state.get("help_start_time", 0) > 10.0:
                         state["help_requester"] = False
@@ -19690,6 +19703,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             state["is_mptam_mode"] = False
                             state["mptam_extend_95"] = False
                             state["mptam_standby_guard"] = False
+                            state["moving_to_mptam_partner"] = False # 🚀 [좀비 버그 파괴]
             else:
                 if not use_mptam:
                     state["is_mptam_mode"] = False
