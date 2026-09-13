@@ -3925,6 +3925,19 @@ def get_hp_mp_percent(img_bgr, roi_width, roi_height, y_start, y_end):
         # 🚀 형님의 황금 수치: 커스(회색 HP) 마스크
         mask_stone = cv2.inRange(hp_roi, (0, 0, 55), (180, 60, 87))
         
+        # 🚨 [가짜 벽 완벽 파괴 수술 1: 테두리 노이즈]
+        # HP 바 위아래의 어두운 테두리(약 4픽셀)가 커스 색상과 완벽히 일치하여 항상 4픽셀 노이즈가 깔려있었습니다. 
+        # (이래서 수치를 4로 내리면 피가 100%로 굳어버렸던 것입니다!)
+        mask_stone[0:2, :] = 0  # 상단 테두리 2픽셀 강제 지우기
+        mask_stone[7:9, :] = 0  # 하단 테두리 2픽셀 강제 지우기
+        
+        # 🚨 [가짜 벽 완벽 파괴 수술 2: 39.4% 텍스트 그림자]
+        # 테두리를 지워도 중앙의 체력 숫자 그림자가 세로로 서 있어서 멈춤을 유발합니다.
+        # 글씨 그림자는 세로로는 길어도 가로 두께는 얇은(1~2px) 특징을 이용해, 
+        # 가로 3픽셀짜리 지우개(OPEN)로 진짜 피(두꺼움)만 남기고 글씨 찌꺼기를 싹 도려냅니다!
+        kernel_clean = np.ones((1, 3), np.uint8)
+        mask_stone = cv2.morphologyEx(mask_stone, cv2.MORPH_OPEN, kernel_clean)
+        
         mask_hp_temp = cv2.bitwise_or(mask_hp_red, mask_poison)
         mask_hp = cv2.bitwise_or(mask_hp_temp, mask_stone)
 
@@ -3932,6 +3945,8 @@ def get_hp_mp_percent(img_bgr, roi_width, roi_height, y_start, y_end):
 
         kernel_hp = np.ones((5, 1), np.uint8)
         mask_hp = cv2.morphologyEx(mask_hp, cv2.MORPH_CLOSE, kernel_hp)
+        
+        # 커스 감지용(is_cursed) 변수에도 깨끗해진 마스크 적용
         mask_stone_closed = cv2.morphologyEx(mask_stone, cv2.MORPH_CLOSE, kernel_hp)
         
         kernel_mp = np.ones((5, 5), np.uint8)
@@ -3943,13 +3958,11 @@ def get_hp_mp_percent(img_bgr, roi_width, roi_height, y_start, y_end):
             
             if direction == "ltr": 
                 for x in range(length - 1):
-                    if col_sums[x] >= 3 and col_sums[x+1] >= 6:
+                    # 👑 [형님 오리지널 수치 롤백] 
+                    # 억까 노이즈를 물리적으로 완벽히 제거했으므로, 
+                    # 피가 1~2% 남아서 선이 얇아졌을 때도 칼같이 텔을 타도록 2픽셀 조건으로 원상 복구합니다!
+                    if col_sums[x] >= 2 and col_sums[x+1] >= 2:
                         return ((length - x) / length) * 100.0
-                return 0.0
-            elif direction == "rtl":
-                for x in range(length - 1, 0, -1):
-                    if col_sums[x] >= 2 and col_sums[x-1] >= 2:
-                        return ((x + 1) / length) * 100.0
                 return 0.0
 
         hp_pct = get_gauge_percent(mask_hp, direction="ltr")
@@ -18352,6 +18365,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                         dprint(key, "✅ [진형 정비 완료] 파트너 안착 확인! 새로운 꿀자리를 개척하여 진군합니다.")
                                                         state["target_fsm"] = "IDLE"
                                                         
+                                                    # 🚨 [UnboundLocalError 완벽 치료] 기존 로직이 SQUAD_WAIT 상태일 땐 아예 실행되지 않도록 완전히 분리했습니다!
                                                     unvisited = state.get("unvisited_nodes", [])
                                                     unvisited = [str(sn) for sn in unvisited if str(sn) in tour_nodes]
                                                     if not unvisited:
@@ -18360,26 +18374,26 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                         if len(unvisited) > 1 and last_sn in unvisited:
                                                             unvisited.remove(last_sn)
                                                 
-                                                best_node = None
-                                                min_dist = float('inf')
-                                                for sn in unvisited:
-                                                    sn_data = pc_graph.get("nodes", {}).get(sn) or pc_graph.get("nodes", {}).get(int(sn)) if sn.isdigit() else None
-                                                    if sn_data:
-                                                        nx = sn_data.get("x", 0) if isinstance(sn_data, dict) else sn_data[0]
-                                                        ny = sn_data.get("y", 0) if isinstance(sn_data, dict) else sn_data[1]
-                                                        dist = (nx - char_map_pos[0])**2 + (ny - char_map_pos[1])**2
-                                                        if dist < min_dist:
-                                                            min_dist = dist
-                                                            best_node = sn
-                                                
-                                                goal_node = best_node if best_node else unvisited[0]
-                                                unvisited.remove(goal_node)
-                                                state["unvisited_nodes"] = unvisited
-                                                state["current_target_node"] = goal_node 
-                                                
-                                                total_cnt = len(tour_nodes)
-                                                visited_cnt = total_cnt - len(unvisited)
-                                                dprint(key, f"🌟 [스페셜 노드 순회] 가장 가까운 꿀자리(ID:{goal_node}) 타겟팅! (달성률: {visited_cnt}/{total_cnt}곳)")
+                                                    best_node = None
+                                                    min_dist = float('inf')
+                                                    for sn in unvisited:
+                                                        sn_data = pc_graph.get("nodes", {}).get(sn) or pc_graph.get("nodes", {}).get(int(sn)) if sn.isdigit() else None
+                                                        if sn_data:
+                                                            nx = sn_data.get("x", 0) if isinstance(sn_data, dict) else sn_data[0]
+                                                            ny = sn_data.get("y", 0) if isinstance(sn_data, dict) else sn_data[1]
+                                                            dist = (nx - char_map_pos[0])**2 + (ny - char_map_pos[1])**2
+                                                            if dist < min_dist:
+                                                                min_dist = dist
+                                                                best_node = sn
+                                                    
+                                                    goal_node = best_node if best_node else unvisited[0]
+                                                    unvisited.remove(goal_node)
+                                                    state["unvisited_nodes"] = unvisited
+                                                    state["current_target_node"] = goal_node 
+                                                    
+                                                    total_cnt = len(tour_nodes)
+                                                    visited_cnt = total_cnt - len(unvisited)
+                                                    dprint(key, f"🌟 [스페셜 노드 순회] 가장 가까운 꿀자리(ID:{goal_node}) 타겟팅! (달성률: {visited_cnt}/{total_cnt}곳)")
 
                                         # 🚀 스페셜 맵: 맹인 모드 상태 넘겨주기
                                         new_path = calculate_graph_astar_path(pc_graph, char_map_pos, goal_node, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
