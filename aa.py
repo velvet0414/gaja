@@ -18383,28 +18383,34 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                     dprint(key, f"🌟 [스페셜 노드 순회] 가장 가까운 꿀자리(ID:{goal_node}) 타겟팅! (달성률: {visited_cnt}/{total_cnt}곳)")
 
                                         # 🚀 스페셜 맵: 맹인 모드 상태 넘겨주기
-                                        new_path = calculate_graph_astar_path(pc_graph, char_map_pos, goal_node, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
-                                        if new_path:
-                                            state["dungeon_global_path"] = new_path
-                                            state["dungeon_path_time"] = curr_time
-                                            global_path = new_path
-                                            state["astar_fail_count"] = 0 
+                                        # 👇👇👇 [치명적 텔포 스팸 완벽 수술!] 👇👇👇
+                                        # 전열 정비(SQUAD_WAIT) 중이라서 고의로 멈춘 거라면 A* 실패 카운트를 올리지 않고 턴을 스킵합니다!
+                                        if state.get("target_fsm") == "SQUAD_WAIT":
+                                            state["astar_fail_count"] = 0
+                                            action_taken = True
                                         else:
-                                            state["dungeon_global_path"] = []
-                                            state["dungeon_path_time"] = curr_time - 295.0
-                                            state["current_target_node"] = None
-                                            
-                                            state["astar_fail_count"] = state.get("astar_fail_count", 0) + 1
-                                            dprint(key, f"⚠️ [그래프 A*] 도달 불가! 타겟 전환. (누적 실패: {state['astar_fail_count']}/5)")
-                                            
-                                            if state["astar_fail_count"] >= 5:
-                                                state["astar_fail_count"] = 0
-                                                with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                                                # (이 코드는 원래 있는 코드입니다)
-                                                if state.get("sweep_active", False):
-                                                    pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
+                                            new_path = calculate_graph_astar_path(pc_graph, char_map_pos, goal_node, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
+                                            if new_path:
+                                                state["dungeon_global_path"] = new_path
+                                                state["dungeon_path_time"] = curr_time
+                                                global_path = new_path
+                                                state["astar_fail_count"] = 0 
+                                            else:
+                                                state["dungeon_global_path"] = []
+                                                state["dungeon_path_time"] = curr_time - 295.0
+                                                state["current_target_node"] = None
+                                                
+                                                state["astar_fail_count"] = state.get("astar_fail_count", 0) + 1
+                                                dprint(key, f"⚠️ [그래프 A*] 도달 불가! 타겟 전환. (누적 실패: {state['astar_fail_count']}/5)")
+                                                
+                                                if state["astar_fail_count"] >= 5:
+                                                    state["astar_fail_count"] = 0
+                                                    with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                                                    # (이 코드는 원래 있는 코드입니다)
+                                                    if state.get("sweep_active", False):
+                                                        pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
 
-                                                # 👇👇👇 [여기서부터 3군데 모두 복사해서 끼워 넣기!] 👇👇👇
+                                                    # 👇👇👇 [여기서부터 3군데 모두 복사해서 끼워 넣기!] 👇👇👇
                                                 # 🚀 [범퍼카 방어] 버프존 복귀 중 13.0px 이내에서 5아웃 발생 시, 합석(주차) 인정!
                                                 is_base_returning = state.get("target_fsm") in ["PARTY_RETREAT_NAV", "PARTY_WAIT", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY"] and not state.get("is_rendezvous_mode", False)
                                                 if is_base_returning and goal_node:
