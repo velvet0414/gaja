@@ -21685,6 +21685,10 @@ for i, pc in enumerate(MINI_PCS):
     tk.Entry(p_mptam_frame, textvariable=vars_dict["party_mptam_stop_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
     tk.Label(p_mptam_frame, text="% 종료", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left")
     
+    tk.Label(p_mptam_frame, text=" |", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(2, 0))
+    tk.Checkbutton(p_mptam_frame, text="비상텔:", variable=vars_dict["party_mptam_tele_use"], bg=BG_PANEL, fg="#EF5350", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
+    tk.Entry(p_mptam_frame, textvariable=vars_dict["party_mptam_tele_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
+    tk.Label(p_mptam_frame, text="%↓(전투)", bg=BG_PANEL, fg="#EF5350", font=("맑은 고딕", 8)).pack(side="left", padx=0)
     # 👇👇👇 [신규 추가: 파티 헬프콜 UI 프레임 추가] 👇👇👇
     p_help_frame = tk.Frame(tab_party, bg=BG_PANEL)
     p_help_frame.pack(side="top", fill="x", padx=2, pady=(0, 2))
