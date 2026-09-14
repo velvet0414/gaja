@@ -18810,17 +18810,30 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                             continue # 💡 여기서 비상 텔레포트(F11) 코드로 안 넘어가게 강제 차단!
 
                                                 # 👇👇👇 [특수 던전 텔포 방지 및 강제 귀환 엔진 등...] 👇👇👇
-                                                    dng_stuck_name3 = settings.get("dungeon_name", "")
-                                                    if "event" in dng_stuck_name3 or "오땅" in dng_stuck_name3:
-                                                        dprint(key, "🚨 [경로 개척 5아웃] 5연속 길찾기 실패! 특수 던전이므로 F9 일반 귀환 후 재진입합니다!")
+                                                    dng_stuck_name4 = settings.get("dungeon_name", "")
+                                                    if "event" in dng_stuck_name4 or "오땅" in dng_stuck_name4:
+                                                        dprint(key, "🚨 [경로 개척 5아웃] 5연속 픽셀 길찾기 실패! 특수 던전이므로 F9 일반 귀환 후 재진입합니다!")
                                                         state["target_fsm"] = "TOWN_MAINT_NORMAL_RETURN"
                                                         state["event_skip_maint"] = True 
+                                                    # 👇👇👇 [파티 텔포 파괴 & 단절 구역 무작위 탈출 엔진 추가] 👇👇👇
+                                                    elif settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
+                                                        dprint(key, "🚨 [경로 개척 5아웃] 사방이 막혔습니다! 파티 모드이므로 텔포 대신 무작위 방향으로 크게 우회(비집기)하여 탈출합니다!")
+                                                        best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1.5, 1.5)
+                                                        move_dist = g_val(150.0, 200.0)
+                                                        tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
+                                                        ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
+                                                        pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
+                                                        state["pico_arrived"] = False
+                                                        state["cursor_pos"] = [tx, ty]
+                                                        state["dungeon_angle"] = best_angle % (2*math.pi)
+                                                        state["target_fsm"] = "IDLE"
+                                                    # 👆👆👆 =========================================================================
                                                     else:
                                                         dprint(key, "🚨 [경로 개척 5아웃] 사방이 꽉 막혔습니다. 강제 텔레포트 발동!")
                                                         pico_queues[key].put({"action": "TELEPORT"})
                                                         state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
-                                                        state["teleport_start_mp"] = mp; state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
-                                                        state["tele_retry_cnt"] = 0
+                                                        state["teleport_start_mp"] = mp
+                                                        state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
                                                     state["is_pulling"] = False; state["cooldown"] = curr_time + 1.0
                                                     continue
                                                     # 👆👆👆 ============================================================== 👆👆👆
@@ -18964,9 +18977,45 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     # 👆👆👆 =========================================
                                     
                                     if min_dist_pure > limit_dist:
-                                        dprint(key, f"🚨 [네비게이션] 거리 한계 초과({min_dist_pure:.1f}px)! 경로 파기.")
-                                        state["dungeon_global_path"] = []
-                                        continue
+                                        # 👇👇👇 [신규 엔진: 노드 공백지대(오프로드) 바보 현상 완벽 치료!] 👇👇👇
+                                        dprint(key, f"🚨 [오프로드 고립] 노드망과 너무 멉니다({min_dist_pure:.1f}px > {limit_dist}px)! 무한 경로 파기 버그를 막고 노드망으로 강제 복귀합니다.")
+                                        
+                                        target_nx, target_ny = global_path[0]
+                                        rescue_dist = math.hypot(target_nx - cx, target_ny - cy)
+                                        
+                                        if rescue_dist > 0:
+                                            # 첫 번째 노란선(노드)을 향해 다이렉트로 마우스를 던져 노드망으로 복귀 유도!
+                                            rx, ry = (target_nx - cx) / rescue_dist, (target_ny - cy) / rescue_dist
+                                            
+                                            # 너무 멀면 벽에 비빌 수 있으므로 한 번에 최대 80픽셀(약 2칸)씩만 스마트하게 전진!
+                                            move_dist = min(rescue_dist, 80.0) 
+                                            
+                                            rescue_tx = cx + rx * move_dist
+                                            rescue_ty = cy + ry * move_dist
+                                            
+                                            # 맵 좌표를 화면 픽셀로 완벽 역산
+                                            scr_dx = (rescue_tx - cx) / DUNGEON_SCALE_X
+                                            scr_dy = (rescue_ty - cy) / DUNGEON_SCALE_Y
+                                            
+                                            tx = int(max(10, min(740, char_screen_cx + scr_dx)))
+                                            ty = int(max(5, min(int(h * 0.68), char_screen_cy + scr_dy)))
+                                            
+                                            # 미니맵 구역 튕겨내기 방어
+                                            if tx < 165 and ty < 150:
+                                                if (165 - tx) < (150 - ty): tx = 165
+                                                else: ty = 150
+                                                
+                                            pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
+                                            state["pico_arrived"] = False
+                                            state["cursor_pos"] = [tx, ty]
+                                            state["cooldown"] = get_dynamic_cooldown(0.3, 0.5, key)
+                                            state["dungeon_angle"] = math.atan2(scr_dy, scr_dx)
+                                            action_taken = True
+                                            continue # 💡 핵심: 경로(global_path)를 파기하지 않고 턴을 넘겨서 계속 걸어가게 만듦!
+                                        else:
+                                            state["dungeon_global_path"] = []
+                                            continue
+                                        # 👆👆👆 =========================================================================
                                         
                                     min_dist_los = float('inf')
                                     closest_idx = 0
