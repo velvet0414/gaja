@@ -5017,8 +5017,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 # 💡 기존 비상 텔레포트 억제: 
                                 # 맹인 모드(portal_blind_mode)가 아닐 때만 기존의 16.5px 텔레포트 정상 작동
                                 # -------------------------------------------------------------
-                                # 👇👇👇 [수정 1] 파티 모드일 때는 포탈 텔레포트 발동 거리를 8.0픽셀로 바싹 좁힙니다! 👇👇👇
-                                portal_limit = 8.0 if settings.get("use_party_hunt", False) else 16.5
+                                # 👇👇👇 [수술 완료: 파티 모드 시 포탈 텔레포트 발작 완벽 차단!] 👇👇👇
+                                portal_limit = 16.5 # 파티 모드는 밑에서 아예 꺼버리므로 거리는 순정(16.5) 유지
                                 near_portal = (min_portal_dist < portal_limit)
                                 if near_portal and not state.get("portal_blind_mode", False):
                                     if state.get("target_fsm") not in ["EMERGENCY_TELEPORT_VERIFY", "PORTAL_ESCAPE_WALK"] and curr_time > state.get("portal_tele_cd", 0):
@@ -5027,9 +5027,9 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         dng_name_tele_chk = settings.get("dungeon_name", "")
                                         if "event" in dng_name_tele_chk or "오땅" in dng_name_tele_chk: tele_hunt_enabled = False
                                         
-                                        # 👇👇👇 [수정 2] 파티 모드일 때는 포탈 16.5px 접근 시 무조건 텔레포트를 타게 강제 켬! 👇👇👇
-                                        if settings.get("use_party_hunt", False): 
-                                            tele_hunt_enabled = True
+                                        # 👑 [형님 오더 적용] 파티 모드(이동식/고정식)일 때는 포탈 비상 텔레포트를 절대 타지 않음!
+                                        if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
+                                            tele_hunt_enabled = False
                                         
                                         # 🚀 텔사냥 ON일 때만 텔레포트 발동! OFF일 때는 조용히 무시하고 맹인 모드(15px)까지 당당하게 걷게 둡니다!
                                         if tele_hunt_enabled:
@@ -10688,8 +10688,45 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         
                         # 👇👇👇 [에러 치료 완료] settings에서 직접 던전 이름을 꺼내옵니다!
                         dng_map_fail = settings.get("dungeon_name", "")
+                        is_party_mode_map_fail = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
+                        
                         if "event" in dng_map_fail or "오땅" in dng_map_fail:
                             state["dungeon_map_fail_start"] = curr_time # 타이머 지속 갱신 (특수 던전은 텔포 안 탐)
+                            
+                        # 👇👇👇 [신규 엔진: 파티 모드 미니맵 증발 시 텔포 차단 및 무작위 배회 복구] 👇👇👇
+                        elif is_party_mode_map_fail:
+                            dprint(key, "🚨 [파티 미니맵 증발 방어] 10초 연속 위치 상실! 파티 모드이므로 텔레포트를 억제하고 무작위 배회를 시도하여 시야를 복구합니다.")
+                            with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                            if state.get("sweep_active", False):
+                                pico_queues[key].put({"action": "SWEEP_STOP"})
+                                state["sweep_active"] = False
+                                
+                            char_screen_cx, char_screen_cy = 400, 245
+                            cur_x, cur_y = state.get("cursor_pos", [400, 300])
+                            
+                            # 🚀 형님표 안티-스턱(비집기) 로직 100% 이식! (랜덤 8방향 투척)
+                            best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1.5, 1.5)
+                            move_dist = g_val(150.0, 200.0)
+                            tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
+                            ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
+                            
+                            pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
+                            state["pico_arrived"] = False
+                            state["cursor_pos"] = [tx, ty]
+                            state["dungeon_angle"] = best_angle % (2*math.pi)
+                            
+                            # 💡 텔포를 안 탔으니 FSM은 IDLE로 빼서 사냥과 맵 매칭을 계속 이어가게 만듦!
+                            state["target_fsm"] = "IDLE"
+                            state["dungeon_global_path"] = []
+                            state["is_pulling"] = False
+                            state["minimap_toggled"] = False
+                            
+                            # 👑 [디테일 수술] 타이머를 '현재 시간 - 5초'로 맞춰서, 다음엔 10초를 풀로 기다리지 않고 5초마다 쾌속 재시도하게 세팅!
+                            state["dungeon_map_fail_start"] = curr_time - 5.0 
+                            state["cooldown"] = get_dynamic_cooldown(0.3, 0.6, key)
+                            continue
+                        # 👆👆👆 =========================================================================
+
                         else:
                             dprint(key, "🚨 [미니맵 증발] 10초 연속 내 위치를 잃었습니다. 텔레포트 탈출!")
                             with pico_queues[key].mutex: pico_queues[key].queue.clear()
