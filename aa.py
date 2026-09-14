@@ -5688,56 +5688,106 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 # 내가 존(Zone)을 이탈했다면, 목적지를 지우는 게 아니라 '가장 가까운 내 구역(Zone) 노드'로 즉각 타겟팅합니다!
                                 if is_m_out_of_zone and curr_map_pos and pc_graph and pc_graph.get("nodes"):
                                     active_base_zone = active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon
-                                    best_zone_node = None
-                                    min_d = float('inf')
                                     
-                                    for nid, ndata in pc_graph["nodes"].items():
-                                        if isinstance(ndata, dict):
-                                            nx = ndata.get("x", 0) if isinstance(ndata, dict) else ndata[0]
-                                            ny = ndata.get("y", 0) if isinstance(ndata, dict) else ndata[1]
-                                            
-                                            node_zone = str(ndata.get("zone", "")).strip()
-                                            is_buff = ndata.get("is_buff_spot", False)
-                                            if str(is_buff).lower() == "true": is_buff = True
-                                            
-                                            is_my_zone = False
-                                            if is_buff:
-                                                is_my_zone = True
-                                            elif node_zone:
-                                                zone_list = [z.strip() for z in node_zone.split(",")]
-                                                for z in zone_list:
-                                                    z_base = z.rsplit("-", 1)[0] if "-" in z else z
-                                                    if active_base_zone == z_base:
-                                                        is_my_zone = True
+                                    # 🚨 [치명적 핑퐁 버그 수술 1] 
+                                    # 이미 내가 존(Zone) 내부의 유효한 노드를 향해 걷고 있다면, 
+                                    # 다른 노드가 조금 더 가까워졌다고 매 프레임 목적지를 갱신(경로 폭파)하지 못하게 꽉 붙잡습니다!
+                                    curr_target_str = str(state.get("current_target_node", ""))
+                                    is_curr_target_valid_zone = False
+                                    
+                                    if curr_target_str and curr_target_str in pc_graph["nodes"]:
+                                        c_data = pc_graph["nodes"][curr_target_str]
+                                        if str(c_data.get("is_buff_spot", False)).lower() == "true":
+                                            is_curr_target_valid_zone = True
+                                        else:
+                                            c_zone = str(c_data.get("zone", "")).strip()
+                                            if c_zone:
+                                                for z in [z.strip() for z in c_zone.split(",")]:
+                                                    if active_base_zone == (z.rsplit("-", 1)[0] if "-" in z else z):
+                                                        is_curr_target_valid_zone = True
                                                         break
-                                            else: # 구형 맵 호환
-                                                is_sp = ndata.get("is_special", False) or ndata.get("special", False)
-                                                if str(is_sp).lower() == "true": is_sp = True
-                                                if is_sp: is_my_zone = True
-                                                else: is_my_zone = True 
+                                            else:
+                                                c_sp = c_data.get("is_special", False) or c_data.get("special", False)
+                                                if str(c_sp).lower() == "true": is_curr_target_valid_zone = True
+                                                else: is_curr_target_valid_zone = True
+
+                                    # 💡 현재 목적지가 내 구역(Zone)이 아니거나 목적지가 없을 때만 새로운 복귀 노드 색출!
+                                    if not is_curr_target_valid_zone:
+                                        best_zone_node_los = None
+                                        best_zone_node_any = None
+                                        min_d_los = float('inf')
+                                        min_d_any = float('inf')
+                                        
+                                        for nid, ndata in pc_graph["nodes"].items():
+                                            if isinstance(ndata, dict):
+                                                nx = ndata.get("x", 0) if isinstance(ndata, dict) else ndata[0]
+                                                ny = ndata.get("y", 0) if isinstance(ndata, dict) else ndata[1]
+                                                
+                                                node_zone = str(ndata.get("zone", "")).strip()
+                                                is_buff = ndata.get("is_buff_spot", False)
+                                                if str(is_buff).lower() == "true": is_buff = True
+                                                
+                                                is_my_zone = False
+                                                if is_buff:
+                                                    is_my_zone = True
+                                                elif node_zone:
+                                                    zone_list = [z.strip() for z in node_zone.split(",")]
+                                                    for z in zone_list:
+                                                        z_base = z.rsplit("-", 1)[0] if "-" in z else z
+                                                        if active_base_zone == z_base:
+                                                            is_my_zone = True
+                                                            break
+                                                else: # 구형 맵 호환
+                                                    is_sp = ndata.get("is_special", False) or ndata.get("special", False)
+                                                    if str(is_sp).lower() == "true": is_sp = True
+                                                    if is_sp: is_my_zone = True
+                                                    else: is_my_zone = True 
+                                                        
+                                                if is_my_zone:
+                                                    d = (nx - curr_map_pos[0])**2 + (ny - curr_map_pos[1])**2
                                                     
-                                            if is_my_zone:
-                                                d = (nx - curr_map_pos[0])**2 + (ny - curr_map_pos[1])**2
-                                                if d < min_d:
-                                                    # 🚀 시야 검사(LOS) 추가 (벽 너머 가짜 노드 방지)
+                                                    # 1. 시야 무관 가장 가까운 팩트 노드 저장 (최후의 보루)
+                                                    if d < min_d_any:
+                                                        min_d_any = d
+                                                        best_zone_node_any = str(nid)
+                                                        
+                                                    # 2. 얇은 벽 투시(LOS) 검사를 통과한 진짜 꿀자리 노드 저장
+                                                    has_los = True
                                                     if pc_map_gray_los is not None:
-                                                        if not check_line_of_sight(pc_map_gray_los, curr_map_pos, (nx, ny), margin_steps=1):
-                                                            continue
-                                                    min_d = d
-                                                    best_zone_node = str(nid)
+                                                        has_los = check_line_of_sight(pc_map_gray_los, curr_map_pos, (nx, ny), margin_steps=1)
+                                                        
+                                                    if has_los and d < min_d_los:
+                                                        min_d_los = d
+                                                        best_zone_node_los = str(nid)
+                                                        
+                                        # 🚨 [핵심] 시야가 다 막혀서 정상 노드를 하나도 못 찾았다면, 
+                                        # 시야 불문 제일 가까운 노드로 강제 지정하여 A*가 우회로를 그리게 만듦!
+                                        best_zone_node = best_zone_node_los if best_zone_node_los else best_zone_node_any
+                                        
+                                        if best_zone_node:
+                                            if str(state.get("current_target_node")) != best_zone_node:
+                                                state["current_target_node"] = best_zone_node
+                                                state["dungeon_global_path"] = [] 
+                                                
+                                                # 🚨 [행동 마비 수술 3] 무조건 IDLE로 밀어버려서 네비게이션(A*)이 즉각 출발하게 만듭니다.
+                                                if state.get("target_fsm") not in ["IDLE", "PARTY_WAIT"]:
+                                                    state["target_fsm"] = "IDLE"
                                                     
-                                    if best_zone_node:
-                                        if str(state.get("current_target_node")) != best_zone_node:
-                                            state["current_target_node"] = best_zone_node
-                                            state["dungeon_global_path"] = [] 
-                                            if curr_time - state.get("zone_return_log_time", 0) > 5.0:
-                                                dprint(key, f"🚨 [0순위 존 복귀] 구역 이탈 확정! 파트너 합류(페어링)를 무시하고 가장 가까운 Zone 내부로 다이렉트 복귀합니다!")
-                                                state["zone_return_log_time"] = curr_time
-                                    else:
-                                        state["current_target_node"] = None
+                                                # 🚀 [맹인 A* 투사] 즉각 A* 경로를 그려서 뇌에 꽂아버립니다. (포탈 패널티 무시)
+                                                new_path = calculate_graph_astar_path(pc_graph, curr_map_pos, best_zone_node, pc_map_gray, set(), is_blind=True)
+                                                if new_path:
+                                                    state["dungeon_global_path"] = new_path
+                                                    state["dungeon_path_time"] = curr_time
+                                                    state["astar_fail_count"] = 0
+                                                    
+                                                if curr_time - state.get("zone_return_log_time", 0) > 5.0:
+                                                    dprint(key, f"🚨 [0순위 존 복귀] 구역 이탈 확정! 파트너 합류를 무시하고 가장 가까운 Zone(ID:{best_zone_node}) 내부로 즉시 A* 복귀합니다!")
+                                                    state["zone_return_log_time"] = curr_time
+                                        else:
+                                            state["current_target_node"] = None
                                 else:
-                                    state["current_target_node"] = None
-                                # 👆👆👆 =========================================================
+                                    if not state.get("is_out_of_zone", False):
+                                        state["current_target_node"] = None
                                 
                                 if state.get("target_fsm") == "SQUAD_WAIT":
                                     state["target_fsm"] = "IDLE"
@@ -17767,9 +17817,10 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                             if state.get("sweep_active", False):
                                                 pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
                                                 
-                                            # 👇👇👇 [신규 수술: 특수 던전(오땅/이벤트) 갇힘 귀환 엔진] 👇👇👇
+                                            # 👇👇👇 [신규 수술: 특수 던전 및 파티 이동식 갇힘 귀환/텔포 엔진 수정] 👇👇👇
                                             dng_stuck_esc = settings.get("dungeon_name", "")
                                             is_special_esc = "event" in dng_stuck_esc or "오땅" in dng_stuck_esc
+                                            is_party_moving_stuck = settings.get("use_party_hunt", False)
                                             
                                             if is_special_esc:
                                                 dprint(key, "🚧 [특수 던전 갇힘] 15초 이상 끼임! 텔레포트 불가 지역이므로 F9 일반 귀환으로 대피합니다!")
@@ -17777,6 +17828,23 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                 state["event_skip_maint"] = True # 정비 스킵하고 엠탐 후 바로 재진입 유도
                                                 state["is_pulling"] = False
                                                 state["cooldown"] = curr_time + 0.1
+                                            elif is_party_moving_stuck:
+                                                # 👑 [형님 오더 완벽 적용] 파티 이동식 모드일 때는 15초 갇힘 텔레포트를 영구 면제하고 무작위 비집기 발동 후 IDLE 복귀!
+                                                dprint(key, "🚧 [파티 이동식 갇힘] 15초 이상 끼임 감지! 파티가 찢어지는 것을 막기 위해 텔포 대신 무작위 회피 기동을 시도합니다.")
+                                                best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1, 1)
+                                                move_dist = g_val(150.0, 200.0)
+                                                tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
+                                                ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
+                                                
+                                                pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
+                                                state["pico_arrived"] = False
+                                                state["cursor_pos"] = [tx, ty]
+                                                state["dungeon_angle"] = best_angle % (2*math.pi)
+                                                
+                                                # 💡 무작위 방향으로 한 번 뛴 다음 다시 IDLE(사냥)로 부드럽게 넘겨줍니다!
+                                                state["target_fsm"] = "IDLE"
+                                                state["is_pulling"] = False
+                                                state["cooldown"] = get_dynamic_cooldown(0.25, 0.45, key)
                                             else:
                                                 dprint(key, "🚧 [네비게이션] 15초 이상 심각한 갇힘 감지! 최후 수단 텔레포트 발동!")
                                                 pico_queues[key].put({"action": "TELEPORT"})
@@ -18426,7 +18494,11 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                             goal_node = state.get("current_target_node")
                                             
                                             # 내가 선두(Vanguard)일 때만 목적지가 없으면 새로 뽑습니다.
-                                            if i_am_vanguard and (goal_node is None or str(goal_node) not in tour_nodes):
+                                            # 👇👇👇 [신규 맹점 수술 4: 파티 모드 목적지 강탈 완벽 방어막!] 👇👇👇
+                                            # 존(Zone)을 이탈해서 복귀 중일 때는 복귀 노드가 순회 노드(tour_nodes)에 없더라도 절대 덮어쓰지 않고 목적지를 지켜냅니다!
+                                            is_zone_returning = state.get("is_out_of_zone", False)
+                                            if i_am_vanguard and (goal_node is None or (str(goal_node) not in tour_nodes and not is_zone_returning)):
+                                            # 👆👆👆 ============================================================== 👆👆👆
                                                 
                                                 partner_dist_for_wait = 0.0
                                                 if settings.get("use_party_hunt", False) and my_team != "선택안함":
@@ -18438,7 +18510,12 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                                     partner_dist_for_wait = math.hypot(char_map_pos[0] - p_pos_w[0], char_map_pos[1] - p_pos_w[1])
                                                                 break
                                                                 
-                                                if settings.get("use_party_hunt", False) and partner_dist_for_wait > 8.0:
+                                                # 👇👇👇 [수술 5: Zone 이탈 시 망부석(SQUAD_WAIT) 원천 차단!] 👇👇👇
+                                                is_waiting_needed = settings.get("use_party_hunt", False) and partner_dist_for_wait > 8.0
+                                                if is_zone_returning:
+                                                    is_waiting_needed = False # 🚨 이탈 시에는 파트너를 기다리지 않고 내 위치 복귀(A*)를 최우선으로 강행합니다!
+                                                    
+                                                if is_waiting_needed:
                                                     if state.get("target_fsm") != "SQUAD_WAIT":
                                                         dprint(key, f"🛑 [전열 정비] 파트너가 맵 기준 {partner_dist_for_wait:.1f}px(화면 밖)에 있습니다. 가시권 진입 시까지 대기!")
                                                         state["target_fsm"] = "SQUAD_WAIT"
@@ -18450,8 +18527,9 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                     state["cooldown"] = curr_time + 0.1
                                                 else:
                                                     if state.get("target_fsm") == "SQUAD_WAIT":
-                                                        dprint(key, "✅ [진형 정비 완료] 파트너 안착 확인! 새로운 꿀자리를 개척하여 진군합니다.")
+                                                        dprint(key, "✅ [진형 정비 완료 / 복귀 강행] 파트너 확인 완료 또는 존 복귀 상태! 진군합니다.")
                                                         state["target_fsm"] = "IDLE"
+                                                # 👆👆👆 ========================================================================= 👆👆👆
                                                         
                                                     # 🚨 [UnboundLocalError 완벽 치료]
                                                     unvisited = state.get("unvisited_nodes", [])
@@ -18551,9 +18629,15 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
     
                                                     dng_stuck_name2 = settings.get("dungeon_name", "")
                                                     if "event" in dng_stuck_name2 or "오땅" in dng_stuck_name2:
-                                                        dprint(key, "🚨 [경로 개척 5아웃] 5연속 길찾기 실패! 특수 던전이므로 F9 일반 귀환 후 재진입합니다!")
+                                                        dprint(key, "🚨 [경로 개척 5아웃] 특수 던전이므로 F9 일반 귀환 후 재진입합니다!")
                                                         state["target_fsm"] = "TOWN_MAINT_NORMAL_RETURN"
                                                         state["event_skip_maint"] = True 
+                                                    # 👇👇👇 [파티 텔포 파괴] 파티 모드일 때는 텔레포트를 억제하고 IDLE로 전환하여 길을 다시 찾게 만듦! 👇👇👇
+                                                    elif settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
+                                                        dprint(key, "🚨 [경로 개척 5아웃] 사방이 막혔지만 파티 모드이므로 텔레포트를 억제하고 IDLE로 전환하여 길뚫기를 속행합니다!")
+                                                        state["target_fsm"] = "IDLE"
+                                                        state["cooldown"] = curr_time + 0.5
+                                                    # 👆👆👆 =========================================================================
                                                     else:
                                                         dprint(key, "🚨 [경로 개척 5아웃] 사방이 꽉 막혔습니다. 강제 텔레포트 발동!")
                                                         pico_queues[key].put({"action": "TELEPORT"})
@@ -18833,12 +18917,19 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         if d < min_dist_pure: min_dist_pure = d
 
                                     is_fresh_path = (curr_time - state.get("dungeon_path_time", 0) < 2.0)
-                                    limit_dist = 150 if (is_special_map and is_fresh_path) else 30
+                                    
+                                    # 👇👇👇 [경로 폭파 완벽 수술] 👇👇👇
+                                    # 존을 이탈하여 복귀 중일 때는 거리가 아무리 멀어도 경로를 파기하지 않고 뚝심 있게 걸어갑니다!
+                                    if state.get("is_out_of_zone", False):
+                                        limit_dist = 9999.0
+                                    else:
+                                        limit_dist = 150 if (is_special_map and is_fresh_path) else 30
+                                    # 👆👆👆 =========================================
                                     
                                     if min_dist_pure > limit_dist:
                                         dprint(key, f"🚨 [네비게이션] 거리 한계 초과({min_dist_pure:.1f}px)! 경로 파기.")
                                         state["dungeon_global_path"] = []
-                                        continue 
+                                        continue
                                         
                                     min_dist_los = float('inf')
                                     closest_idx = 0
