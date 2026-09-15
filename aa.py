@@ -18801,62 +18801,66 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         # 풀러도 1번 노드처럼 도착 전 시야 100 유지를 위해 상태 동기화
                                         if goal_node:
                                             state["current_target_node"] = goal_node
-
-                                        else:
-                                            state["dungeon_global_path"] = []
-                                            state["dungeon_path_time"] = curr_time - 295.0
-                                            state["current_target_node"] = None
-                                            
-                                            state["astar_fail_count"] = state.get("astar_fail_count", 0) + 1
-                                            dprint(key, f"⚠️ [목표 A*] 도달 불가! 재탐색 시도. (누적 실패: {state['astar_fail_count']}/5)")
-                                            
-                                            if state["astar_fail_count"] >= 5:
+                                            # 👇👇👇 [치명적 A* 증발 버그 완벽 수술 1: 누락된 엔진 복구!] 👇👇👇
+                                            new_path = calculate_graph_astar_path(pc_graph, char_map_pos, goal_node, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
+                                            if new_path:
+                                                state["dungeon_global_path"] = new_path
+                                                state["dungeon_path_time"] = curr_time
+                                                global_path = new_path
                                                 state["astar_fail_count"] = 0
-                                                with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                                                if state.get("sweep_active", False):
-                                                    pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
-                                                    
-                                                # 👇👇👇 [순서 역전 완벽 치료: 파티 모드를 1순위로 올림!] 👇👇👇
-                                                if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
-                                                    dprint(key, "🚨 [경로 5아웃] 사방이 막혔습니다! 파티 모드이므로 텔포 대신 무작위 회피 기동!")
-                                                    best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1.5, 1.5)
+                                            else:
+                                                state["dungeon_global_path"] = []
+                                                state["dungeon_path_time"] = curr_time - 295.0
+                                                state["current_target_node"] = None
+                                                
+                                                state["astar_fail_count"] = state.get("astar_fail_count", 0) + 1
+                                                dprint(key, f"⚠️ [목표 A*] 도달 불가! 재탐색 시도. (누적 실패: {state['astar_fail_count']}/5)")
+                                                
+                                                if state["astar_fail_count"] >= 5:
+                                                    state["astar_fail_count"] = 0
+                                                    with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                                                    if state.get("sweep_active", False):
+                                                        pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
+                                                        
+                                                    if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
+                                                        dprint(key, "🚨 [경로 5아웃] 사방이 막혔습니다! 파티 모드이므로 텔포 대신 무작위 회피 기동!")
+                                                        best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1.5, 1.5)
+                                                        move_dist = g_val(150.0, 200.0)
+                                                        tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
+                                                        ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
+                                                        pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
+                                                        state["pico_arrived"] = False
+                                                        state["cursor_pos"] = [tx, ty]
+                                                        state["dungeon_angle"] = best_angle % (2*math.pi)
+                                                        state["target_fsm"] = "IDLE"
+                                                        state["cooldown"] = curr_time + 0.5
+                                                    elif is_puller:
+                                                        dprint(key, "🚨 [솔플 풀러 5아웃] 사방이 막혔습니다. 풀러 강제 텔레포트 발동!")
+                                                        pico_queues[key].put({"action": "TELEPORT"})
+                                                        state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
+                                                        state["teleport_start_mp"] = mp
+                                                        if h >= 200 and w >= 200: state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY)
+                                                        else: state["tele_snapshot"] = None
+                                                        state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
+                                                        state["tele_retry_cnt"] = 0
+                                                        state["is_pulling"] = False
+                                                        state["cooldown"] = curr_time + 1.0
+                                                    else:
+                                                        dprint(key, "🛡️ [솔플 딜러 5아웃] 복귀 경로 막힘! 즉시 전투(IDLE)로 전환하여 주변을 치웁니다.")
+                                                        state["target_fsm"] = "IDLE"
+                                                        state["cooldown"] = curr_time + 0.1
+                                                elif state["astar_fail_count"] >= 3:
+                                                    dprint(key, "🚧 [길찾기 지연] 길이 막혔습니다. 무작위 방향으로 비집기를 시도합니다.")
+                                                    best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1, 1)
                                                     move_dist = g_val(150.0, 200.0)
                                                     tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
                                                     ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
+                                                    
                                                     pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
                                                     state["pico_arrived"] = False
-                                                    state["cursor_pos"] = [tx, ty]
+                                                    state["cursor_pos"], state["cooldown"] = [tx, ty], get_dynamic_cooldown(0.25, 0.45, key)
                                                     state["dungeon_angle"] = best_angle % (2*math.pi)
-                                                    state["target_fsm"] = "IDLE"
-                                                    state["cooldown"] = curr_time + 0.5
-                                                elif is_puller:
-                                                    dprint(key, "🚨 [솔플 풀러 5아웃] 사방이 막혔습니다. 풀러 강제 텔레포트 발동!")
-                                                    pico_queues[key].put({"action": "TELEPORT"})
-                                                    state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
-                                                    state["teleport_start_mp"] = mp
-                                                    if h >= 200 and w >= 200: state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY)
-                                                    else: state["tele_snapshot"] = None
-                                                    state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
-                                                    state["tele_retry_cnt"] = 0
-                                                    state["is_pulling"] = False
-                                                    state["cooldown"] = curr_time + 1.0
-                                                else:
-                                                    dprint(key, "🛡️ [솔플 딜러 5아웃] 복귀 경로 막힘! 즉시 전투(IDLE)로 전환하여 주변을 치웁니다.")
-                                                    state["target_fsm"] = "IDLE"
-                                                    state["cooldown"] = curr_time + 0.1
-                                                # 👆👆👆 =========================================================
-                                            elif state["astar_fail_count"] >= 3:
-                                                dprint(key, "🚧 [길찾기 지연] 길이 막혔습니다. 무작위 방향으로 비집기를 시도합니다.")
-                                                best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1, 1)
-                                                move_dist = g_val(150.0, 200.0)
-                                                tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
-                                                ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
-                                                
-                                                pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
-                                                state["pico_arrived"] = False
-                                                state["cursor_pos"], state["cooldown"] = [tx, ty], get_dynamic_cooldown(0.25, 0.45, key)
-                                                state["dungeon_angle"] = best_angle % (2*math.pi)
-                                                action_taken = True
+                                                    action_taken = True
 
                                 elif not action_taken and not goal_node and is_special_map:
                                     # ----------------------------------------------------
@@ -18964,6 +18968,15 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                             state["astar_fail_count"] = 0
                                             action_taken = True
                                         else:
+                                            # 👇👇👇 [치명적 A* 증발 버그 완벽 수술 2: 누락된 엔진 복구!] 👇👇👇
+                                            new_path = calculate_graph_astar_path(pc_graph, char_map_pos, goal_node, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
+                                            if new_path:
+                                                state["dungeon_global_path"] = new_path
+                                                state["dungeon_path_time"] = curr_time
+                                                global_path = new_path
+                                                state["astar_fail_count"] = 0
+                                                dprint(key, f"✅ [그래프 A*] 타겟(노드:{goal_node})을 향해 {len(new_path)}정거장 경로 개척 성공!")
+                                            else:
                                                 state["dungeon_global_path"] = []
                                                 state["dungeon_path_time"] = curr_time - 295.0
                                                 state["current_target_node"] = None
