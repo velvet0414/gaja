@@ -680,7 +680,8 @@ def _get_pc_assets_internal(dungeon_name): # 💡 기존 코드 들여쓰기 100
                         "sub_centers": sub_centers, 
                         "anchor_x": anchor_x, 
                         "anchor_y": anchor_y,
-                        "special_nodes": data.get("special_nodes", []) # 🚨 [치명적 흑막 수술 2] 스페셜 리스트 통째로 뇌에 이식!
+                        "special_nodes": data.get("special_nodes", []), # 🚨 [치명적 흑막 수술 2] 스페셜 리스트 통째로 뇌에 이식!
+                        "dungeon_name": dungeon_name # 🚀 [신규 수술] 길찾기 엔진(A*)에서 수던을 판별할 수 있게 사냥터 이름 주입!
                     }
             except Exception: pass
             
@@ -1405,7 +1406,15 @@ def calculate_graph_astar_path(graph, start_pos, goal_node_id, map_gray, blocked
             # 👇👇👇 [아웃-코스 시야 확보 엔진] 6시/9시 절벽 기피 ➔ 3시/12시 벽으로 밀착 유도 👇👇👇
             wall_penalty = 1.2 
             
-            if map_gray is not None:
+            # 🚀 [형님 오더 완벽 적용] 그래프 딕셔너리에 각인된 사냥터 이름으로 수던 여부 판단!
+            dng_name_astar = graph.get("dungeon_name", "") if graph else ""
+            is_sudeon_astar = "수던" in dng_name_astar or "heine" in dng_name_astar.lower()
+            
+            if is_sudeon_astar:
+                wall_penalty = 1.0 # 💡 수던일 때는 벽 밀착 꼼수를 끄고 정직한 최단 거리(1.0)로 걷게 합니다!
+            
+            # 🚀 [수던 예외 처리] 수던이 아닐 때만 절벽 기피 및 위쪽 벽 밀착 패널티를 적용합니다.
+            if map_gray is not None and not is_sudeon_astar:
                 h_map, w_map = map_gray.shape[:2]
                 
                 check_y_south = int(ny + 3)
@@ -3168,12 +3177,13 @@ def send_keyboard_key(p_serial, p_lock, keycode, state, is_manual=False): # 🚀
         if last_state == state:
             if state == 1:
                 # 🛡️ [자가 치유 엔진] 파이썬은 눌려있다고 착각하는데 실제론 안 눌려있는 '디싱크' 씹힘 상태!
-                # 안티치트에게 중복 DOWN 로그를 남기지 않기 위해, 비밀리에 UP(0) 신호를 먼저 보내어 
-                # "정상적으로 뗐다가 다시 누르는" 완벽한 물리적 패턴을 창조하여 해결합니다!
                 try: p_serial.write(bytearray([0xAE, 1, keycode, 0xFE]))
                 except: pass
             else:
-                return # 중복 UP(0) 신호는 그냥 쿨하게 무시 (로그 안 남음)
+                # 👇👇👇 [수술 1: 수동 모드/강제 해제 시엔 중복 무시하고 다이렉트 발송!] 👇👇👇
+                if not is_manual:
+                    return # 중복 UP(0) 신호는 일반 사냥일 때만 무시
+                # 👆👆👆 =========================================================================
                 
         hw_key_states[sid][keycode] = state
 
@@ -3267,12 +3277,20 @@ def pico_worker_thread(key):
             # 👑 [안전핀 발동] 하드웨어 큐 소각(0xFF)과 속도 감응형 ABS 브레이크를 '단일 캡슐'로 융합 전송! (0ms 갭리스)
             if action == "FORCE_RELEASE":
                 # 🚀 [쉬프트/컨트롤 홀딩 버그 완벽 수술] 
-                # 큐가 폭파될 때, 파이썬의 안티치트 뇌피셜 장부를 무시하고 피코(하드웨어)에 다이렉트로 UP(0xAE) 신호를 꽂아버립니다!
                 with p_lock:
                     try: 
                         p_serial.write(bytearray([0xAE, 1, 129, 0xFE])) # 129: Shift 강제 해제
                         p_serial.write(bytearray([0xAE, 1, 128, 0xFE])) # 128: Ctrl 강제 해제
+                        # 👇👇👇 [수술 2: 큐 폭파 시 꾹 누르던 바디(F7)와 줍기(F4)도 무조건 하드웨어 강제 해제!] 👇👇👇
+                        p_serial.write(bytearray([0xAE, 1, 197, 0xFE])) # 197: F4 강제 해제
+                        p_serial.write(bytearray([0xAE, 1, 200, 0xFE])) # 200: F7 강제 해제
+                        # 👆👆👆 ==============================================================
                     except: pass
+                    
+                # 👇👇👇 [파이썬 뇌 동기화] 꼬리표도 즉각 리셋! 👇👇👇
+                if key in ai_states:
+                    ai_states[key]["body_held"] = False
+                # 👆👆👆 ======================================
                     
                 skid_dx = ai_states[key].get("skid_dx", 0)
                 skid_dy = ai_states[key].get("skid_dy", 0)
@@ -4612,6 +4630,11 @@ def clear_movements_only(q_obj):
     if target_key and target_key in ai_states:
         ai_states[target_key]["cursor_pos"][0] -= refund_dx
         ai_states[target_key]["cursor_pos"][1] -= refund_dy
+        
+        # 👇👇👇 [자체검수 패치] 큐가 폭파될 정도의 인터럽트(생존 등)라면 묻따 줍기 타이머도 폭파! 👇👇👇
+        ai_states[target_key]["party_blind_sweep_start"] = 0.0
+        ai_states[target_key]["party_blind_sweep_end"] = 0.0
+        # 👆👆👆 =========================================================================
 
 # ==============================================================================
 # 🚀 [무기 손상 패치 1] 기존 칼 감지 함수(check_attack_cursor)를 가로채어 손상된 검도 인식!
@@ -4995,7 +5018,15 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                             state["has_fired_arrow"] = False
                                             state["is_pulling"] = False
                                             state["hidden_track_node"] = None
-                                            state["target_fsm"] = "IDLE"
+                                            
+                                            # 👇👇👇 [치명적 버그 완벽 수술: 정비 중 FSM 포맷 원천 차단!] 👇👇👇
+                                            curr_fsm_portal = str(state.get("target_fsm", ""))
+                                            is_safe_from_portal_fsm = state.get("town_thread_running", False) or curr_fsm_portal.startswith("TOWN_MAINT") or curr_fsm_portal.startswith("DEATH") or curr_fsm_portal.startswith("F1_INIT") or curr_fsm_portal in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV"]
+                                            
+                                            # 🚨 마을 정비(사냥터 진입 스레드) 중일 때는 뇌를 IDLE로 강제 덮어쓰지 않고 진입 로직을 보장합니다!
+                                            if not is_safe_from_portal_fsm:
+                                                state["target_fsm"] = "IDLE"
+                                            # 👆👆👆 ========================================================= 👆👆👆
                                             
                                             # 💡 진행 중이던 전투/루팅 큐 폭파
                                             clear_movements_only(pico_queues[key])
@@ -5005,33 +5036,53 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                 
                                             state["cooldown"] = curr_time + 0.15
 
-                                    # 🚀 [형님 기획 2] 40픽셀 이상 멀어졌다면 눈을 다시 켬! (50.0 -> 40.0 원복)
+                                    # 🚀 [형님 기획 2] 40픽셀 이상 멀어졌다면 눈을 다시 켬! 
                                     elif state.get("portal_blind_mode", False) and min_portal_dist >= 40.0:
-                                        dprint(key, "✅ [포탈 이탈 성공] 포탈과 50px 이상 멀어졌습니다! YOLO 눈을 다시 뜨고 사냥을 개시합니다.")
+                                        dprint(key, "✅ [포탈 이탈 성공] 포탈과 40px 이상 멀어졌습니다! YOLO 눈을 다시 뜨고 사냥을 개시합니다.")
                                         state["portal_blind_mode"] = False
                                         state["cooldown"] = curr_time + 0.1
                                 else:
                                     state["portal_blind_mode"] = False
 
                                 # -------------------------------------------------------------
-                                # 💡 기존 비상 텔레포트 억제: 
-                                # 맹인 모드(portal_blind_mode)가 아닐 때만 기존의 16.5px 텔레포트 정상 작동
+                                # 💡 기존 비상 텔레포트 억제 및 파티 모드 5px 텔레포트 엔진!
                                 # -------------------------------------------------------------
-                                # 👇👇👇 [수술 완료: 파티 모드 시 포탈 텔레포트 발작 완벽 차단!] 👇👇👇
-                                portal_limit = 16.5 # 파티 모드는 밑에서 아예 꺼버리므로 거리는 순정(16.5) 유지
+                                # 👇👇👇 [수술 완료: 파티 모드 포탈 접근 거리 5px로 완화 및 텔포 복구!] 👇👇👇
+                                is_party_tele_mode = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
+                                
+                                # 🚀 [형님 오더 완벽 적용] 솔플은 16.5px 유지, 파티 모드는 5.0px로 확 줄임!
+                                portal_limit = 5.0 if is_party_tele_mode else 16.5 
                                 near_portal = (min_portal_dist < portal_limit)
-                                if near_portal and not state.get("portal_blind_mode", False):
+                                
+                                # 🚨 [맹점 수술] 파티 모드(5px)일 때는 이미 15px에서 맹인 모드가 켜진 상태이므로, 맹인 모드 제약을 뚫고 무조건 텔을 타게 예외 처리!
+                                can_trigger_portal_tele = near_portal if is_party_tele_mode else (near_portal and not state.get("portal_blind_mode", False))
+                                
+                                # =================================================================
+                                # 🛡️ [수던/사냥터 진입 직후 포탈 텔레포트 엇박자 완벽 방어막 (10초 무적)]
+                                # =================================================================
+                                fsm_for_portal = str(state.get("target_fsm", ""))
+                                
+                                # 👑 [형님 오더 완벽 수술] 글자(FSM)에 의존하지 않고, 정비 스레드가 켜져있으면 무조건 무적으로 덮어씌움!
+                                is_safe_from_portal = state.get("town_thread_running", False) or fsm_for_portal.startswith("TOWN_MAINT") or fsm_for_portal.startswith("DEATH") or fsm_for_portal.startswith("F1_INIT") or fsm_for_portal in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"]
+                                
+                                if is_safe_from_portal:
+                                    # 정비 중(스레드 작동 중)이거나 진입 돌파 중일 때는 타이머를 계속 10초 뒤로 밀어내어 텔포를 절대 못 타게 멱살을 잡음!
+                                    state["portal_tele_grace_time"] = curr_time + 10.0
+                                    
+                                is_grace_period = curr_time < state.get("portal_tele_grace_time", 0)
+
+                                # 2. 무적 시간(10초)이 완벽히 끝난 후에야 비로소 포탈 비상 텔레포트를 허용!
+                                if can_trigger_portal_tele and not is_grace_period:
                                     if state.get("target_fsm") not in ["EMERGENCY_TELEPORT_VERIFY", "PORTAL_ESCAPE_WALK"] and curr_time > state.get("portal_tele_cd", 0):
                                         
                                         tele_hunt_enabled = settings.get("tele_hunt_use", False)
                                         dng_name_tele_chk = settings.get("dungeon_name", "")
                                         if "event" in dng_name_tele_chk or "오땅" in dng_name_tele_chk: tele_hunt_enabled = False
                                         
-                                        # 👑 [형님 오더 적용] 파티 모드(이동식/고정식)일 때는 포탈 비상 텔레포트를 절대 타지 않음!
-                                        if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
-                                            tele_hunt_enabled = False
+                                        # 👑 [형님 오더 적용] 파티 모드 포탈 텔레포트 강제 금지 로직 완전 소각!
+                                        # 이제 파티 모드라도 설정의 '텔사냥' 옵션을 정직하게 따르게 됩니다!
                                         
-                                        # 🚀 텔사냥 ON일 때만 텔레포트 발동! OFF일 때는 조용히 무시하고 맹인 모드(15px)까지 당당하게 걷게 둡니다!
+                                        # 🚀 텔사냥 ON일 때만 텔레포트 발동! OFF일 때는 조용히 무시하고 당당하게 걷게 둡니다!
                                         if tele_hunt_enabled:
                                             state["portal_tele_cd"] = curr_time + 1.0 
                                             clear_movements_only(pico_queues[key])
@@ -10319,14 +10370,15 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 is_detected_missing = False
                                 missing_reason = ""
                                 
-                                # 👇👇👇 [오땅 전용: 1.채팅창 + 2.타임아웃(2시간) 엔진!] 👇👇👇
-                                if "오땅" in dng_name_haste:
+                                is_oak_or_event = "오땅" in dng_name_haste or "event" in dng_name_haste.lower()
+                                is_sudeon = "수던" in dng_name_haste or "heine" in dng_name_haste.lower()
+
+                                # 👇👇👇 [1순위: 채팅창 텍스트 감지 - 오땅, 이벤트, 수던 공통 적용!] 👇👇👇
+                                if is_oak_or_event or is_sudeon:
                                     CHAT_X1, CHAT_X2 = 125, 600
                                     CHAT_Y1, CHAT_Y2 = 490, h
                                     
-                                    # [1순위] 채팅창 텍스트 감지 (가장 빠름)
                                     if w >= CHAT_X2 and h >= CHAT_Y2 and globals().get("img_haste_x") is not None:
-                                        # 👇👇👇 [오땅 채팅창 10초 잔상 필터 & 텅 빈 채팅창 억까 완벽 파괴!] 👇👇👇
                                         if curr_time - state.get("hunt_start_time", curr_time) > 10.0:
                                             chat_roi = img_bgr[CHAT_Y1:CHAT_Y2, CHAT_X1:CHAT_X2]
                                             gray_check = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
@@ -10351,55 +10403,12 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                     
                                                     if max_val_haste >= OAK_HASTE_THRESHOLD: 
                                                         is_detected_missing = True
-                                                        missing_reason = f"채팅창 텍스트 감지({max_val_haste*100:.1f}%)"
+                                                        missing_reason = f"채팅창 헤이풀림 감지({max_val_haste*100:.1f}%)"
                                                 except: pass
-                                        # 👆👆👆 ========================================================== 👆👆👆
+                                # 👆👆👆 ========================================================== 👆👆👆
 
-                                    # 🚀 [형님 오더 적용] 우측 상단 아이콘 2분 감시(투트랙) 전면 삭제! 오땅은 오직 채팅창만 봅니다!
-
-                                    # [2순위] 2시간 타임아웃
-                                    if not is_detected_missing:
-                                        if last_haste == 0.0:
-                                            is_detected_missing = True
-                                            missing_reason = "버프 기록 없음 (초기화됨)"
-                                        elif last_haste > 0.0:
-                                            # 👇👇👇 [핵심 수술: 시간 역행 버그 및 2시간 타임아웃 억까 완벽 파괴!] 👇👇👇
-                                            safe_time_since = max(0.0, time_since_buff)
-                                            
-                                            if safe_time_since >= 7200.0:
-                                                # 🚨 스레드 시간 꼬임 방어막! 방금 마을에서 팩트 체크를 하고 왔다면 2시간 오류를 강제 무시!
-                                                if state.get("is_real_buff_received", False) and safe_time_since > 8000.0:
-                                                    if curr_time > state.get("last_chat_dbg_log4", 0):
-                                                        dprint(key, f"🛡️ [타임아웃 버그 차단] 시간 연산 오류 감지({safe_time_since:.1f}초)! 타이머를 강제 정상화합니다.")
-                                                        state["last_chat_dbg_log4"] = curr_time + 10.0
-                                                    state["last_haste_time"] = curr_time # 💡 타이머 강제 리셋
-                                                else:
-                                                    is_detected_missing = True
-                                                    missing_reason = "2시간 타임아웃"
-                                            # 👆👆👆 =========================================================================
-                                        
-                                    # [3순위] 2시간 타임아웃
-                                    if not is_detected_missing:
-                                        if last_haste == 0.0:
-                                            is_detected_missing = True
-                                            missing_reason = "버프 기록 없음 (초기화됨)"
-                                        elif last_haste > 0.0:
-                                            # 👇👇👇 [핵심 수술: 시간 역행 버그 및 2시간 타임아웃 억까 완벽 파괴!] 👇👇👇
-                                            safe_time_since = max(0.0, time_since_buff)
-                                            
-                                            if safe_time_since >= 7200.0:
-                                                # 🚨 스레드 시간 꼬임 방어막! 방금 마을에서 팩트 체크를 하고 왔다면 2시간 오류를 강제 무시!
-                                                if state.get("is_real_buff_received", False) and safe_time_since > 8000.0:
-                                                    if curr_time > state.get("last_chat_dbg_log4", 0):
-                                                        dprint(key, f"🛡️ [타임아웃 버그 차단] 시간 연산 오류 감지({safe_time_since:.1f}초)! 타이머를 강제 정상화합니다.")
-                                                        state["last_chat_dbg_log4"] = curr_time + 10.0
-                                                    state["last_haste_time"] = curr_time # 💡 타이머 강제 리셋
-                                                else:
-                                                    is_detected_missing = True
-                                                    missing_reason = "2시간 타임아웃"
-                                            # 👆👆👆 =========================================================================
-                                # 👇👇👇 [일반 던전: 기존 우측 상단 아이콘 40초 증발 감시 엔진] 👇👇👇
-                                else:
+                                # 👇👇👇 [2순위: 우측 상단 아이콘 증발 감시 - 오땅/이벤트 제외 (수던 & 일반 사냥터 적용)] 👇👇👇
+                                if not is_detected_missing and not is_oak_or_event:
                                     haste_found = False
                                     
                                     if w >= 60 and h >= 350:
@@ -10461,9 +10470,31 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         if state.get("haste_empty_start", 0) == 0:
                                             state["haste_empty_start"] = curr_time 
                                             
-                                    if state.get("haste_empty_start", 0) > 0 and curr_time - state["haste_empty_start"] >= 40.0:
+                                    # 🚀 [형님 오더 적용] 수던은 120초, 그 외 사냥터는 40초 증발 시 귀환!
+                                    target_empty_time = 120.0 if is_sudeon else 40.0
+                                            
+                                    if state.get("haste_empty_start", 0) > 0 and curr_time - state["haste_empty_start"] >= target_empty_time:
                                         is_detected_missing = True
-                                        missing_reason = "우측 아이콘 40초 증발"
+                                        missing_reason = f"우측 아이콘 {int(target_empty_time)}초 증발"
+                                # 👆👆👆 ====================================================================
+
+                                # 👇👇👇 [3순위: 2시간 타임아웃 백업 엔진 - 모든 사냥터 공통] 👇👇👇
+                                if not is_detected_missing:
+                                    if last_haste == 0.0:
+                                        is_detected_missing = True
+                                        missing_reason = "버프 기록 없음 (초기화됨)"
+                                    elif last_haste > 0.0:
+                                        safe_time_since = max(0.0, time_since_buff)
+                                        if safe_time_since >= 7200.0:
+                                            if state.get("is_real_buff_received", False) and safe_time_since > 8000.0:
+                                                if curr_time > state.get("last_chat_dbg_log4", 0):
+                                                    dprint(key, f"🛡️ [타임아웃 버그 차단] 시간 연산 오류 감지({safe_time_since:.1f}초)! 타이머를 강제 정상화합니다.")
+                                                    state["last_chat_dbg_log4"] = curr_time + 10.0
+                                                state["last_haste_time"] = curr_time 
+                                            else:
+                                                is_detected_missing = True
+                                                missing_reason = "2시간 타임아웃"
+                                # 👆👆👆 ====================================================================
 
                                 # 👑 [형님 마스터피스: 20분 방어막 완전 소각 & 팩트 즉시 귀환 엔진!]
                                 if is_detected_missing:
@@ -10572,16 +10603,23 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         dprint(key, f"🚨 [PK 절대 회피] 억! 순간 데미지({raw_hp_diff:.1f}%)! 유저 확인됨. 즉각 대피 발사!")
                         
                         # 👇👇👇 [수정] 하던 행동 즉시 캔슬 및 큐 완전 폭파!
-                        state["abort_macro"] = True
-                        with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                        pico_queues[key].put({"action": "FORCE_RELEASE"})
-                        # 👆👆👆 ==============================================
-                        if str(state.get("target_fsm", "")).startswith("BUFFING"):
-                            pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
-                            state["buff_aborted"] = True
+                    state["abort_macro"] = True
+                    with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                    pico_queues[key].put({"action": "FORCE_RELEASE"})
+                    
+                    if str(state.get("target_fsm", "")).startswith("BUFFING"):
+                        pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
+                        
+                        # 👑 [무한 시전 발작 완벽 수술 2] 피격 때문에 끊겼더라도 타이머를 무조건 풀충전하여 핑퐁(재발동)을 막습니다!
+                        b_info_pk = state.get("current_buff")
+                        if b_info_pk and b_info_pk["name"] != "cure_fallback":
+                            state[f"buff_{b_info_pk['name']}_time"] = curr_time + b_info_pk['dur'] + g_val(-10, 10)
+                            save_buff_times(ai_states)
+                            
+                        state["buff_aborted"] = True
 
-                        if state.get("target_fsm", "").startswith("INV_CLEAN"):
-                            state["target_fsm"] = "IDLE"
+                    if state.get("target_fsm", "").startswith("INV_CLEAN"):
+                        state["target_fsm"] = "IDLE"
                         if state.get("sweep_active", False):
                             pico_queues[key].put({"action": "SWEEP_STOP"})
                             state["sweep_active"] = False
@@ -10779,31 +10817,35 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                 cv2.rectangle(debug_img, (max(0, w-180), 0), (w, min(h, 180)), (255, 0, 255), 1)
                 cv2.putText(debug_img, "DEATH_SCAN", (max(0, w-175), 55), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1)
 
-                # 👇👇👇 [오땅/일반 맵별 헤이스트 스캔 영역 실시간 렌더링] 👇👇👇
+                # 👇👇👇 [오땅/수던/일반 맵별 헤이스트 스캔 영역 실시간 렌더링] 👇👇👇
                 dng_name_debug_haste = settings.get("dungeon_name", "")
+                is_oak_event_dbg = "오땅" in dng_name_debug_haste or "event" in dng_name_debug_haste.lower()
+                is_sudeon_dbg = "수던" in dng_name_debug_haste or "heine" in dng_name_debug_haste.lower()
                 
-                if "오땅" in dng_name_debug_haste:
-                    # 🏃 [오땅 모드] 하단 채팅창 스캔 영역만 표시! (상단 아이콘 무시)
+                # 1. 채팅창 스캔 영역 (오땅, 이벤트, 수던 모두 표시)
+                if is_oak_event_dbg or is_sudeon_dbg:
                     CHAT_X1, CHAT_X2 = 125, 600
                     CHAT_Y1, CHAT_Y2 = 490, h
                     cv2.rectangle(debug_img, (CHAT_X1, CHAT_Y1), (CHAT_X2, CHAT_Y2), (255, 100, 100), 2)
-                    cv2.putText(debug_img, "OAK_HASTE_CHAT_SCAN", (CHAT_X1 + 5, CHAT_Y1 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 100, 100), 2)
+                    cv2.putText(debug_img, "HASTE_CHAT_SCAN", (CHAT_X1 + 5, CHAT_Y1 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 100, 100), 2)
                     
-                    # 🚨 오땅 2시간 타임아웃 100초 전부터 카운트다운 표시
-                    time_passed = curr_time - state.get("last_haste_time", curr_time)
-                    if time_passed > 7100.0: 
-                        cv2.putText(debug_img, f"TIMEOUT: {7200.0 - time_passed:.1f}s", (CHAT_X1 + 5, CHAT_Y1 + 35), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 2)
-                        
-                else:
-                    # 🏃 일반 사냥터: 우측 상단 아이콘 스캔 영역 표시
+                    if is_oak_event_dbg:
+                        # 🚨 오땅/이벤트 2시간 타임아웃 100초 전부터 카운트다운 표시
+                        time_passed = curr_time - state.get("last_haste_time", curr_time)
+                        if time_passed > 7100.0: 
+                            cv2.putText(debug_img, f"TIMEOUT: {7200.0 - time_passed:.1f}s", (CHAT_X1 + 5, CHAT_Y1 + 35), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 2)
+                
+                # 2. 우측 아이콘 스캔 영역 (수던, 일반 사냥터 모두 표시. 단, 오땅/이벤트는 제외)
+                if not is_oak_event_dbg:
                     cv2.rectangle(debug_img, (max(0, w-60), 0), (w, min(h, 350)), (0, 255, 255), 1)
-                    cv2.putText(debug_img, "HASTE", (max(0, w-50), 345), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                    cv2.putText(debug_img, "HASTE_ICON", (max(0, w-50), 345), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
                     
-                    # 🚨 일반 모드일 때만 40초 증발 카운트다운 실시간 렌더링
-                    if state.get("haste_empty_start", 0) > 0 and curr_time - state.get("haste_empty_start", 0) < 100.0:
+                    target_limit_time = 120.0 if is_sudeon_dbg else 40.0
+                    
+                    if state.get("haste_empty_start", 0) > 0 and curr_time - state.get("haste_empty_start", 0) < target_limit_time + 60.0:
                         missing_sec = curr_time - state["haste_empty_start"]
-                        if missing_sec >= 40.0: missing_sec = 40.0 
-                        cv2.putText(debug_img, f"HASTE_MISS: {missing_sec:.1f}s / 40.0s", (max(0, w-180), 360), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                        if missing_sec >= target_limit_time: missing_sec = target_limit_time 
+                        cv2.putText(debug_img, f"MISSING: {missing_sec:.1f}s / {int(target_limit_time)}s", (max(0, w-180), 360), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
                 # 👆👆👆 ============================================================== 👆👆👆
 
                 door_pos_debug = state.get("debug_door_pos")
@@ -11148,6 +11190,13 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     
                     if str(state.get("target_fsm", "")).startswith("BUFFING"):
                         pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
+                        
+                        # 👑 [무한 시전 발작 완벽 수술 2] 피격 때문에 끊겼더라도 타이머를 무조건 풀충전하여 핑퐁(재발동)을 막습니다!
+                        b_info_pk = state.get("current_buff")
+                        if b_info_pk and b_info_pk["name"] != "cure_fallback":
+                            state[f"buff_{b_info_pk['name']}_time"] = curr_time + b_info_pk['dur'] + g_val(-10, 10)
+                            save_buff_times(ai_states)
+                            
                         state["buff_aborted"] = True
 
                     if state.get("target_fsm", "").startswith("INV_CLEAN"):
@@ -12187,6 +12236,13 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     dprint(key, "🚨 [생존 최우선] 버프 시전 중 독(Poison) 감지! 즉시 버프를 내팽개치고 F1으로 강제 복귀합니다!")
                     with pico_queues[key].mutex: pico_queues[key].queue.clear()
                     pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
+                    
+                    # 👑 [무한 시전 발작 완벽 수술 1] 생존을 위해 끊겼더라도 타이머를 무조건 1800초 풀충전하여 10~20초 뒤 핑퐁(재발동)을 막습니다!
+                    b_info_poison = state.get("current_buff")
+                    if b_info_poison and b_info_poison["name"] != "cure_fallback":
+                        state[f"buff_{b_info_poison['name']}_time"] = curr_time + b_info_poison['dur'] + g_val(-10, 10)
+                        save_buff_times(ai_states)
+                    
                     state["target_fsm"] = "IDLE"
                     state["buff_aborted"] = True
                     state["cooldown"] = curr_time + 0.2
@@ -12447,6 +12503,10 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             state["locked_by_blind"] = False
                             state["current_is_g_mob"] = False 
                             
+                            # 👇👇👇 [자체검수 패치] 체인킬 발동 시 타이머 세탁 👇👇👇
+                            state["party_blind_sweep_start"] = 0.0
+                            state["party_blind_sweep_end"] = 0.0
+                            
                             state["cooldown"] = curr_time + 0.05 
                             
                             dprint(key, f"💀 [체인킬] 경험치 획득! 딜레이 및 시체마스킹 즉각 삭제 후 재조준(TARGET_AIMING) 돌입!")
@@ -12475,6 +12535,10 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             state["locked_by_blind"] = False
                             state["current_is_g_mob"] = False
                             
+                            # 👇👇👇 [자체검수 패치] 브레이크 모드 진입 시 타이머 세탁 👇👇👇
+                            state["party_blind_sweep_start"] = 0.0
+                            state["party_blind_sweep_end"] = 0.0
+                            
                             dprint(key, f"💀 [솔플 교전 종료] 몹 사망 확인. 2초간 시체를 가리고 브레이크(제동) 대기합니다.")
                         # 👆👆👆 ============================================================== 👆👆👆
                             
@@ -12497,7 +12561,38 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             state["combat_took_damage"] = True
                     # 👆👆👆 ================================================== 👆👆👆
 
-                    if state.get("arrow_is_firing", False): state["has_fired_arrow"] = True
+                    if state.get("arrow_is_firing", False): 
+                        if not state.get("has_fired_arrow", False):
+                            # 🚀 [자체검수 패치] 파티 모드이되, 풀러(Pulling)는 멈칫거림 방지를 위해 묻따 줍기 차단!
+                            is_party_f4_mode = (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)) and not settings.get("is_puller", False)
+                            
+                            if is_party_f4_mode:
+                                state["party_blind_sweep_start"] = curr_time + 0.1
+                                state["party_blind_sweep_end"] = 0.0
+                                dprint(key, "🏹 [파티 루팅] 묻따 줍기 장전! 0.1초 대기 후 F4 1~1.5초간 유지 시전!")
+                        state["has_fired_arrow"] = True
+
+                    # =====================================================================
+                    # 🛡️ [자체 검수 수술] 묻따 줍기(F4) 스레드 안전장치 가동!
+                    # =====================================================================
+                    if state.get("party_blind_sweep_start", 0) > 0 and curr_time >= state["party_blind_sweep_start"]:
+                        state["party_blind_sweep_start"] = 0.0
+                        # 🚨 [안전장치 1] 정상적으로 전투 중(COMBAT, 공격중)이고 생존기가 개입하지 않았을 때만 작동!
+                        is_valid_combat_for_f4 = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or str(state.get("target_fsm", "")) == "COMBAT"
+                        if is_valid_combat_for_f4 and pico_queues[key].empty() and not state.get("sweep_active", False):
+                            pico_queues[key].put({"action": "SWEEP_START"})
+                            state["sweep_active"] = True
+                            hold_time = g_val(1.0, 1.5)
+                            state["party_blind_sweep_end"] = curr_time + hold_time
+                            dprint(key, f"🧹 [파티 무지성 줍기] 전투 개시! F4를 {hold_time:.2f}초간 꾹 누릅니다.")
+                            
+                    elif state.get("party_blind_sweep_end", 0) > 0 and curr_time >= state["party_blind_sweep_end"]:
+                        state["party_blind_sweep_end"] = 0.0
+                        if state.get("sweep_active", False):
+                            pico_queues[key].put({"action": "SWEEP_STOP"})
+                            state["sweep_active"] = False
+                            dprint(key, "🧹 [파티 무지성 줍기] 1.5초 유지 시간 종료. F4를 뗍니다.")
+                    # =====================================================================
                     
                     # 👇👇👇 [신규 엔진: 파티 모드 첫 발 사격 한계 시간 1.2초 쾌속 단축!] 👇👇👇
                     is_party_mode_active = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
@@ -12857,7 +12952,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     partner_mp_yolo = 100.0
                                     with party_lock:
                                         for p_k, p_d in local_party_states.items():
-                                            if p_d.get("party_group") == my_team_group and p_k != key:
+                                            # 👇 [수정] dungeon_name 추가!
+                                            if p_d.get("party_group") == my_team_group and p_d.get("dungeon_name") == active_dungeon and p_k != key:
                                                 if curr_time - p_d.get("recv_time", 0) < 3.0:
                                                     partner_mp_yolo = p_d.get("mp", 100.0)
                                                 break
@@ -13354,6 +13450,11 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                 state["current_is_g_mob"] = False # 🚀 전투 종료 시 G몹 꼬리표 완전 초기화!
                 state["combat_enchant_failed"] = False # 🚀 [신규] 전투 비상 버프 실패 꼬리표 초기화!
                 state["is_combat_emergency_buff"] = False
+                
+                # 👇👇👇 [자체검수 패치] IDLE 전환 시 무지성 줍기 타이머 완벽 세탁! 👇👇👇
+                state["party_blind_sweep_start"] = 0.0
+                state["party_blind_sweep_end"] = 0.0
+                # 👆👆👆 ==========================================
             else:
                 is_fighting = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or state.get("target_fsm") in active_fsms
 
@@ -14395,6 +14496,13 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             state["sweep_active"] = False
                             dprint(key, "🛑 [버프 꼬임 방지] 버프 시전 전, 누르고 있던 F4(아이템 줍기)를 강제로 해제합니다!")
 
+                        # 👇👇👇 [수술 3: 형님 추론 적중! 버프 전 바디 강제 해제 및 뇌피셜 포맷!] 👇👇👇
+                        if state.get("body_held", False):
+                            if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], 200, 0, is_manual=True) # KEY_F7
+                            state["body_held"] = False
+                            dprint(key, "🛑 [버프 꼬임 방지] 버프 시전 전, 누르고 있던 바디(F7)를 완벽히 해제합니다!")
+                        # 👆👆👆 =========================================================================
+
                         # =================================================================
                         # 👑 [형님 마스터피스 1] 1회 1버프, 나머지 강제 3분 지연 엔진!
                         # =================================================================
@@ -14601,6 +14709,10 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             raw_item_boxes = []
                             if state.get("sweep_active", False):
                                 pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
+                        # 👇👇👇 [수술 완료: 누락된 else 스캔 구문 완벽 추가!] 👇👇👇
+                        else:
+                            raw_item_boxes = find_item_boxes(img_bgr)
+                        # 👆👆👆 =========================================
                             
                     # 🚨 [스캔 강제 차단] 방금 진짜 킬 낸 게 아니라면(10초 지남), 전투/조준 중이어도 바닥 스캔을 칼같이 차단!
                     elif not is_actively_looting and not is_recent_kill_for_scan:
@@ -14660,7 +14772,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         # 바닥 스캔은 무제한으로 유지하되, 파티 진형이 너무 찢어지지 않도록
                         # 캐릭터 발밑 반경 150픽셀(약 3칸) 이내로 들어온 아이템만 줍기를 시도합니다!
                         if is_party_moving_loot:
-                            if dist_to_b > 150.0:
+                            if dist_to_b > 250.0:
                                 b['ignore_reason'] = f"PARTY_OUT_150px({dist_to_b:.1f})"
                                 ignored_boxes.append(b)
                                 continue
@@ -18541,7 +18653,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                 if settings.get("use_party_hunt", False) and my_team != "선택안함":
                                                     with party_lock:
                                                         for p_key, p_data in local_party_states.items():
-                                                            if p_data.get("party_group") == my_team and p_key != key and curr_time - p_data.get("recv_time", 0) < 3.0:
+                                                            # 👇👇👇 [수정] p_data.get("dungeon_name") == active_dungeon 추가! 👇👇👇
+                                                            if p_data.get("party_group") == my_team and p_data.get("dungeon_name") == active_dungeon and p_key != key and curr_time - p_data.get("recv_time", 0) < 3.0:
                                                                 p_pos_w = p_data.get("map_pos")
                                                                 if p_pos_w and char_map_pos:
                                                                     partner_dist_for_wait = math.hypot(char_map_pos[0] - p_pos_w[0], char_map_pos[1] - p_pos_w[1])
@@ -19976,7 +20089,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
                         with party_lock:
                             for p_key, p_data in local_party_states.items():
-                                if p_data.get("party_group") == my_team and p_key != key:
+                                if p_data.get("party_group") == my_team and p_data.get("dungeon_name") == active_dungeon and p_key != key:
                                     if curr_time - p_data.get("recv_time", 0) < 3.0:
                                         if p_data.get("is_mptam", False) or str(p_data.get("party_state", "")) == "MPTAM":
                                             p_pos = p_data.get("map_pos")
@@ -20037,9 +20150,12 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         allow_mptam_block = True
                 # 👆👆👆 ============================================================== 👆👆👆
 
-                # 👇👇👇 [수정: 형님 추론 적중! 버프 시전 중 마나 고갈로 인한 귀환 발작 완벽 방지!] 👇👇👇
+                # 👇👇👇 [수정: 형님 추론 적중! 버프 시전 중 마나 고갈로 인한 엠탐 발작 완벽 방지!] 👇👇👇
                 # 🚀 [파트너 엠탐 합류 보장] 파트너가 엠탐 중이라 파트너에게 다가가는 중일 때는 내 마나가 떨어져도 중간에 주저앉지 않도록 moving_to_mptam_partner 조건 추가!
-                if not action_taken and use_mptam and not state.get("is_mptam_mode", False) and mp <= mptam_start_mp and not is_help_busy and allow_mptam_block and not is_safe_in_town and not state.get("moving_to_mptam_partner", False):
+                fsm_mptam_chk = str(state.get("target_fsm", ""))
+                
+                # 👑 [형님 추론 적중 1] 버프 시전 중(BUFFING)일 때는 마나가 엠탐 수치로 떨어지더라도 엠탐 로직이 새치기하여 뇌를 포맷하지 못하도록 완벽 차단!
+                if not action_taken and use_mptam and not state.get("is_mptam_mode", False) and mp <= mptam_start_mp and not is_help_busy and allow_mptam_block and not is_safe_in_town and not state.get("moving_to_mptam_partner", False) and not fsm_mptam_chk.startswith("BUFFING"):
                     active_combat_fsms_local = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_LOCKED", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD", "TARGET_AIMING", "WAIT_FOR_STOP"]
                     is_currently_fighting = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or str(state.get("target_fsm", "")) in active_combat_fsms_local
                     
@@ -20067,7 +20183,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         # 👆👆👆 =========================================================================
                             with party_lock:
                                 for p_key, p_data in local_party_states.items():
-                                    if p_data.get("party_group") == my_team and p_key != key:
+                                    if p_data.get("party_group") == my_team and p_data.get("dungeon_name") == active_dungeon and p_key != key:
                                         if curr_time - p_data.get("recv_time", 0) < 3.0:
                                             if p_data.get("is_mptam", False) or str(p_data.get("party_state", "")) == "MPTAM":
                                                 p_pos = p_data.get("map_pos")
@@ -20246,7 +20362,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     # 👆👆👆 =========================================================================
                         with party_lock:
                             for p_key, p_data in local_party_states.items():
-                                if p_data.get("party_group") == my_team and p_key != key:
+                                if p_data.get("party_group") == my_team and p_data.get("dungeon_name") == active_dungeon and p_key != key:
                                     if curr_time - p_data.get("recv_time", 0) < 3.0:
                                         p_fsm = str(p_data.get("party_state", ""))
                                         partner_mp_chk = p_data.get("mp", 100.0)
@@ -20337,11 +20453,11 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     need_heal = settings.get("heal_use") and hp <= settings.get("heal_percent", 70.0) and mp >= heal_mp_limit
                     
                     # 👇👇👇 [신규: 길막/회피로 인한 바디 3초 금지 타이머(방어막) 작동!] 👇👇👇
+                    # 👇👇👇 [수술 6: 수동 모드 바디 권한 압수 및 망부석 자가 치유 엔진!] 👇👇👇
                     is_body_blocked = curr_time <= state.get("body_block_time", 0)
-                    can_use_body = state.get("body_to_mind_active", False) and not is_busy and not need_heal and not is_critical_hp and not is_poisoned and not is_close_combat_scanning and is_exp_safe_for_body and not is_body_blocked
+                    can_use_body = state.get("body_to_mind_active", False) and not is_busy and not need_heal and not is_critical_hp and not is_poisoned and not is_close_combat_scanning and is_exp_safe_for_body and not is_body_blocked and not is_manual_mode
                     # 👆👆👆 =========================================
                     
-                    # 👇👇👇 [사냥터 엠탐 & 버프존 주차 시 바디 꾹 누르기 스위칭 엔진!] 👇👇👇
                     is_fixed_dealer_hold = settings.get("use_party_fixed", False) and not settings.get("is_puller", False) and state.get("target_fsm") in ["IDLE", "PARTY_WAIT"]
                     is_party_wait_hold = settings.get("use_party_hunt", False) and state.get("target_fsm") == "PARTY_WAIT"
                     
@@ -20349,18 +20465,26 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     is_hold_body_mode = state.get("is_mptam_mode", False) or is_parked_hold_body
 
                     if is_hold_body_mode:
-                        # 1. 사냥터 제자리 엠탐 모드 또는 고정 딜러의 몹 없는 평상시 대기 상태일 때는 꾹(Hold) 누르기!
                         if can_use_body:
                             if not state.get("body_held", False):
-                                if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 1) # KEY DOWN
-                                state["body_held"] = True
-                                state["last_body_time"] = curr_time # 피격 계산용 시간 갱신
-                                if not state.get("is_mptam_mode", False):
-                                    dprint(key, "🔋 [딜러 무한 바디] 주변에 몹/템이 없습니다! 엠탐 모드가 아니어도 바디(F7)를 꾹 누르고 대기합니다.")
+                                # 👑 [버프 씹힘 방어막] 하드웨어가 쉬고 있을 때만 바디 꾹 누르기 허용
+                                if not state.get("hw_busy", False) and pico_queues[key].empty():
+                                    if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], 200, 1) # KEY DOWN
+                                    state["body_held"] = True
+                                    state["last_body_time"] = curr_time 
+                                    state["body_refresh_timer"] = curr_time # 🚀 자가 치유 타이머 세팅
+                                    if not state.get("is_mptam_mode", False):
+                                        dprint(key, "🔋 [딜러 무한 바디] 주변에 몹/템이 없습니다! 바디(F7)를 꾹 누르고 대기합니다.")
+                            else:
+                                # 👑 [망부석 자가 치유 엔진] 혹시 게임 렉으로 첫 키가 씹혔다면? 3초마다 다시 꾹 눌러서 멍때림 파괴!
+                                if curr_time - state.get("body_refresh_timer", 0) > 3.0:
+                                    if not state.get("hw_busy", False) and pico_queues[key].empty():
+                                        if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], 200, 1) 
+                                        state["body_refresh_timer"] = curr_time
                         else:
                             released_key = False
                             if state.get("body_held", False):
-                                if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0) # KEY UP
+                                if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], 200, 0, is_manual=True) # KEY UP
                                 state["body_held"] = False
                                 released_key = True
                                 if not state.get("is_mptam_mode", False):
@@ -20369,14 +20493,11 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             if released_key:
                                 state["cooldown"] = curr_time + 0.05
                     else:
-                        # 2. 이동 중이거나 일반 사냥(전투 대기) 중일 때는 기존처럼 단타(Tap) 유지!
                         if state.get("body_held", False):
-                            if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0)
+                            if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], 200, 0, is_manual=True)
                             state["body_held"] = False
                             
                         if can_use_body and curr_time >= state.get("body_cd", 0):
-                            # 🚀 [형님 오더: F4 뗐다 누르기 핑퐁 완전 삭제!]
-                            # 루팅 중일 때는 위쪽 is_busy=True 로직에 의해 아예 이 코드로 안 넘어오므로 F4 방해/경합이 일어나지 않습니다!
                             pico_queues[key].put({"action": "BODY_TO_MIND"})
                             state["last_body_time"] = curr_time 
                             state["body_cd"] = curr_time + g_time(0.8, 1.2, key)
@@ -20490,7 +20611,6 @@ def toggle_manual(key):
             active_manual_target = None 
             
             if picos.get(old_key):
-                # 🚨 자물쇠 체결 후 0xFF 쏘기!
                 with pico_locks[old_key]:
                     try: picos[old_key].write(bytearray([0xFF])) 
                     except: pass
@@ -20499,31 +20619,28 @@ def toggle_manual(key):
                 manual_event_queue.put(('MOUSE', picos[old_key], pico_locks[old_key], 1, 0))
                 manual_event_queue.put(('MOUSE', picos[old_key], pico_locks[old_key], 2, 0))
                 manual_event_queue.put(('KEY', picos[old_key], pico_locks[old_key], 129, 0))
-                manual_event_queue.put(('KEY', picos[old_key], pico_locks[old_key], KEY_F4, 0))
+                manual_event_queue.put(('KEY', picos[old_key], pico_locks[old_key], 197, 0)) # F4
+                manual_event_queue.put(('KEY', picos[old_key], pico_locks[old_key], 200, 0)) # F7
                 manual_event_queue.put(('KEY', picos[old_key], pico_locks[old_key], KEY_F1, 0)) 
                 
             if old_key in ai_states: 
                 ai_states[old_key]["sweep_active"] = False
+                ai_states[old_key]["body_held"] = False
                 ai_states[old_key]["skid_dx"] = 0 
                 ai_states[old_key]["skid_dy"] = 0
                 
-            for k in list(pressed_keys.values()):  # 🚀 [수술 2] .values() 추가!
+            for k in list(pressed_keys.values()):  
                 manual_event_queue.put(('KEY', picos[old_key], pico_locks[old_key], k, 0))
             pressed_keys.clear() 
 
-            # 🚀 마우스 방어막 리셋
             with mouse_debounce_lock:
                 for t in mouse_release_timers.values(): t.cancel()
                 mouse_release_timers.clear()
                 manual_mouse_state[1] = False
                 manual_mouse_state[2] = False
-                manual_mouse_state[3] = False  # 👈 휠 클릭 초기화 추가!
+                manual_mouse_state[3] = False  
 
-            # UI 창 지우는 건 GUI 스레드가 시간 날 때 하라고 던져둠
             root.after(0, sync_overlay_ui, None)
-            
-            # 🚀 [스마트 방어막 1] 수동 모드(`)에서 나올 때 틀어진 창 자동 원상복구!
-            # (키보드 스레드 충돌 방지를 위해 GUI 메인 스레드에 정렬 작업을 위임합니다)
             root.after(10, arrange_windows)
         return
 
@@ -20539,26 +20656,28 @@ def toggle_manual(key):
             manual_event_queue.put(('MOUSE', picos[old_key], pico_locks[old_key], 1, 0))
             manual_event_queue.put(('MOUSE', picos[old_key], pico_locks[old_key], 2, 0))
             manual_event_queue.put(('KEY', picos[old_key], pico_locks[old_key], 129, 0))
-            for k in list(pressed_keys.values()):  # 🚀 [수술 2] .values() 추가!
+            manual_event_queue.put(('KEY', picos[old_key], pico_locks[old_key], 197, 0)) # F4
+            manual_event_queue.put(('KEY', picos[old_key], pico_locks[old_key], 200, 0)) # F7
+            for k in list(pressed_keys.values()): 
                 manual_event_queue.put(('KEY', picos[old_key], pico_locks[old_key], k, 0))
                 
             if old_key in ai_states:
                 ai_states[old_key]["skid_dx"] = 0 
                 ai_states[old_key]["skid_dy"] = 0
+                ai_states[old_key]["body_held"] = False
+                ai_states[old_key]["sweep_active"] = False
 
-    # 🚀 [수동 딜레이 0초 수술 2] Tkinter의 교통 체증을 기다리지 않고 통제권 즉시 강탈!
     active_manual_target = key
     sensor_raw_dx, sensor_raw_dy = 0, 0
     pressed_keys.clear()
     ignore_clicks = True 
 
-    # 🚀 마우스 방어막 리셋
     with mouse_debounce_lock:
         for t in mouse_release_timers.values(): t.cancel()
         mouse_release_timers.clear()
         manual_mouse_state[1] = False
         manual_mouse_state[2] = False
-        manual_mouse_state[3] = False  # 👈 휠 클릭 초기화 추가!
+        manual_mouse_state[3] = False 
 
     with pico_queues[key].mutex: pico_queues[key].queue.clear()
     
@@ -20567,12 +20686,15 @@ def toggle_manual(key):
             try: picos[key].write(bytearray([0xFF]))
             except: pass
         reset_hw_key_states(picos[key]) 
+        manual_event_queue.put(('KEY', picos[key], pico_locks[key], 197, 0)) # F4
+        manual_event_queue.put(('KEY', picos[key], pico_locks[key], 200, 0)) # F7
         
     if key in ai_states:
         ai_states[key]["skid_dx"] = 0
         ai_states[key]["skid_dy"] = 0
+        ai_states[key]["body_held"] = False
+        ai_states[key]["sweep_active"] = False
         
-    # 💡 UI 오버레이 창 생성은 GUI 스레드에 던져둠
     root.after(0, sync_overlay_ui, key)
 
 def manual_transmitter_thread():
@@ -21126,11 +21248,9 @@ def toggle_individual_hunt(key):
     else:
         with pico_queues[key].mutex: pico_queues[key].queue.clear()
         
-        # 🚀 [오입장 버그 수술 4: 수동 정지 시 오버라이드 리셋]
         if state.pop("override_dungeon_name", None):
             dprint(key, f"🔄 [목표 층수 복구] 사냥 중지됨. 오입장 상태를 해제하고 원래 사냥터로 복구합니다.")
             
-        # (구형 찌꺼기 변수 완벽 소각)
         state.pop("original_dungeon_name", None)
 
         state["skid_dx"] = 0
@@ -21139,6 +21259,12 @@ def toggle_individual_hunt(key):
         pico_queues[key].put({"action": "FORCE_RELEASE"})
         state["sweep_active"] = False
         
+        # 👇👇👇 [수술 5: 사냥 정지 시 뇌피셜 및 물리적 바디 완벽 해제!] 👇👇👇
+        if state.get("body_held", False):
+            if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], 200, 0, is_manual=True)
+            state["body_held"] = False
+        # 👆👆👆 ==============================================================
+
         # 🎒 [안전장치 1] 수동 정지 시 인벤토리가 열려있으면 무조건 닫기!
         if state.get("is_inv_open", False) and picos.get(key):
             send_keyboard_key(picos[key], pico_locks[key], 179, 1) # Tab 누르기
