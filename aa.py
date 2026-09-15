@@ -18816,19 +18816,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                 if state.get("sweep_active", False):
                                                     pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
                                                     
-                                                # 👇👇👇 [3번 수술 완료: 5아웃 시 딜러는 제자리 전투로 길뚫기] 👇👇👇
-                                                if is_puller:
-                                                    dprint(key, "🚨 [풀러 경로 5아웃] 사방이 막혔습니다. 풀러 강제 텔레포트 발동!")
-                                                    pico_queues[key].put({"action": "TELEPORT"})
-                                                    state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
-                                                    state["teleport_start_mp"] = mp
-                                                    if h >= 200 and w >= 200: state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY)
-                                                    else: state["tele_snapshot"] = None
-                                                    state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
-                                                    state["tele_retry_cnt"] = 0
-                                                    state["is_pulling"] = False
-                                                    state["cooldown"] = curr_time + 1.0
-                                                elif settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
+                                                # 👇👇👇 [순서 역전 완벽 치료: 파티 모드를 1순위로 올림!] 👇👇👇
+                                                if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
                                                     dprint(key, "🚨 [경로 5아웃] 사방이 막혔습니다! 파티 모드이므로 텔포 대신 무작위 회피 기동!")
                                                     best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1.5, 1.5)
                                                     move_dist = g_val(150.0, 200.0)
@@ -18839,8 +18828,20 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                     state["cursor_pos"] = [tx, ty]
                                                     state["dungeon_angle"] = best_angle % (2*math.pi)
                                                     state["target_fsm"] = "IDLE"
+                                                    state["cooldown"] = curr_time + 0.5
+                                                elif is_puller:
+                                                    dprint(key, "🚨 [솔플 풀러 5아웃] 사방이 막혔습니다. 풀러 강제 텔레포트 발동!")
+                                                    pico_queues[key].put({"action": "TELEPORT"})
+                                                    state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
+                                                    state["teleport_start_mp"] = mp
+                                                    if h >= 200 and w >= 200: state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY)
+                                                    else: state["tele_snapshot"] = None
+                                                    state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
+                                                    state["tele_retry_cnt"] = 0
+                                                    state["is_pulling"] = False
+                                                    state["cooldown"] = curr_time + 1.0
                                                 else:
-                                                    dprint(key, "🛡️ [딜러 경로 5아웃] 복귀 경로 막힘! 즉시 전투(IDLE)로 전환하여 주변을 치웁니다.")
+                                                    dprint(key, "🛡️ [솔플 딜러 5아웃] 복귀 경로 막힘! 즉시 전투(IDLE)로 전환하여 주변을 치웁니다.")
                                                     state["target_fsm"] = "IDLE"
                                                     state["cooldown"] = curr_time + 0.1
                                                 # 👆👆👆 =========================================================
