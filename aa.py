@@ -6358,6 +6358,10 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         dprint(key, "🔄 [귀환/사망 완료] 사냥 플래그 초기화 및 [마을 자동 정비]를 개시합니다!")
                         state["target_fsm"] = "TOWN_MAINT_START"
                         state["is_active_standby"] = False # 🔗 [오류 방어] 마을 도착 시 꼬리표 강제 세탁!
+                        state["help_requester"] = False
+                        state["helping_who"] = None
+                        # 👆👆👆 =========================================
+                        
                         state["town_thread_running"] = False # 창고 릴레이 스레드 방지턱
                         state["is_mptam_mode"] = False # 🚨 [수술 3] 사냥터 엠탐 꼬리표 완벽 세탁
                         state["is_attacking"] = False
@@ -9600,6 +9604,12 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 threading.Thread(target=maint_worker_thread, args=("NORMAL_RETURN_SCROLL",), daemon=True).start()
 
                         elif fsm_town == "TOWN_MAINT_START":
+                            # 👇👇👇 [무한 핑퐁 버그 완벽 수술 2] 👇👇👇
+                            # 혹시라도 다른 경로로 마을 정비에 진입했을 경우를 대비한 확인 사살!
+                            state["help_requester"] = False
+                            state["helping_who"] = None
+                            # 👆👆👆 =========================================
+
                             # 👇👇👇 [수술 3: 정비 진입 시 바디 완벽 해제 방어막] 👇👇👇
                             if state.get("body_held", False):
                                 if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0)
@@ -10452,117 +10462,125 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
 
                                 # 👇👇👇 [1순위: 채팅창 텍스트 감지 - 오땅, 이벤트, 수던 공통 적용!] 👇👇👇
                                 if is_oak_or_event or is_sudeon:
-                                    # 👑 [형님 기획: 20분 채팅창 오인식 방어막]
-                                    # 찐버프 수령 후 20분(1200초) 이내이고, 사망 초기화(last_haste=0)가 아니라면 채팅창 텍스트는 헛방으로 간주하고 무시합니다!
-                                    is_chat_shield_active = False
-                                    if last_haste > 0.0 and time_since_buff < 1200.0:
-                                        is_chat_shield_active = True
-                                        
-                                    if is_chat_shield_active:
-                                        if curr_time > state.get("chat_shield_log_time", 0):
-                                            dprint(key, f"🛡️ [채팅창 억까 방어막] 헤이 수령 후 {time_since_buff/60:.1f}분 경과 (20분 내). 하단 채팅창 검사를 안전하게 스킵합니다!")
-                                            state["chat_shield_log_time"] = curr_time + 60.0
-                                    else:
-                                        CHAT_X1, CHAT_X2 = 125, 600
-                                        CHAT_Y1, CHAT_Y2 = 490, h
-                                        
-                                        if w >= CHAT_X2 and h >= CHAT_Y2 and globals().get("img_haste_x") is not None:
-                                            if curr_time - state.get("hunt_start_time", curr_time) > 10.0:
-                                                chat_roi = img_bgr[CHAT_Y1:CHAT_Y2, CHAT_X1:CHAT_X2]
-                                                gray_check = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
-                                                _, bright_text = cv2.threshold(gray_check, 100, 255, cv2.THRESH_BINARY)
-                                                
-                                                if cv2.countNonZero(bright_text) > 20: 
-                                                    try:
-                                                        img_h_x = globals().get("img_haste_x")
-                                                        img_h_x_m = globals().get("img_haste_x_mask")
+                                    CHAT_X1, CHAT_X2 = 125, 600
+                                    CHAT_Y1, CHAT_Y2 = 490, h
+                                    
+                                    if w >= CHAT_X2 and h >= CHAT_Y2 and globals().get("img_haste_x") is not None:
+                                        if curr_time - state.get("hunt_start_time", curr_time) > 10.0:
+                                            chat_roi = img_bgr[CHAT_Y1:CHAT_Y2, CHAT_X1:CHAT_X2]
+                                            gray_check = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
+                                            _, bright_text = cv2.threshold(gray_check, 100, 255, cv2.THRESH_BINARY)
+                                            
+                                            if cv2.countNonZero(bright_text) > 20: 
+                                                try:
+                                                    img_h_x = globals().get("img_haste_x")
+                                                    img_h_x_m = globals().get("img_haste_x_mask")
+                                                    
+                                                    gray_roi = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
+                                                    gray_tmpl = cv2.cvtColor(img_h_x, cv2.COLOR_BGR2GRAY)
+                                                    
+                                                    if img_h_x_m is not None:
+                                                        res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCORR_NORMED, mask=img_h_x_m)
+                                                    else:
+                                                        res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCOEFF_NORMED)
                                                         
-                                                        gray_roi = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
-                                                        gray_tmpl = cv2.cvtColor(img_h_x, cv2.COLOR_BGR2GRAY)
-                                                        
-                                                        if img_h_x_m is not None:
-                                                            res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCORR_NORMED, mask=img_h_x_m)
-                                                        else:
-                                                            res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCOEFF_NORMED)
-                                                            
-                                                        _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
-                                                        
-                                                        OAK_HASTE_THRESHOLD = 0.80
-                                                        
-                                                        if max_val_haste >= OAK_HASTE_THRESHOLD: 
-                                                            is_detected_missing = True
-                                                            missing_reason = f"채팅창 헤이풀림 감지({max_val_haste*100:.1f}%)"
-                                                    except: pass
+                                                    _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
+                                                    
+                                                    OAK_HASTE_THRESHOLD = 0.80
+                                                    
+                                                    if max_val_haste >= OAK_HASTE_THRESHOLD: 
+                                                        is_detected_missing = True
+                                                        missing_reason = f"채팅창 헤이풀림 감지({max_val_haste*100:.1f}%)"
+                                                except: pass
                                 # 👆👆👆 ========================================================== 👆👆👆
 
-                                # 👇👇👇 [2순위: 우측 상단 아이콘 증발 감시 - 전 구역 강제 100% 감시!] 👇👇👇
-                                # 🚀 [형님 기획: 오땅/이벤트 족쇄 파괴] 채팅창이 20분 쉴드로 무시되더라도, 우측 아이콘은 무조건 검사하여 찐으로 떨어지면 귀환하게 만듭니다!
-                                if not is_detected_missing:
-                                    haste_found = False
+                                # 👇👇👇 [2순위: 우측 상단 아이콘 증발 감시 - 수던 2시간 스마트 스위치 탑재!] 👇👇👇
+                                if not is_detected_missing and not is_oak_or_event:
+                                    is_icon_check_needed = True
                                     
-                                    if w >= 60 and h >= 350:
-                                        buff_roi_x1 = max(0, w - 60)
-                                        buff_roi_y1 = 0
-                                        buff_roi_x2 = w
-                                        buff_roi_y2 = min(h, 350)
-                                        buff_roi = img_bgr[buff_roi_y1:buff_roi_y2, buff_roi_x1:buff_roi_x2]
-                                        
-                                        import os
-                                        ha_dir = "qq/ha"
-                                        if os.path.exists(ha_dir):
-                                            for f_name in os.listdir(ha_dir):
-                                                if f_name.lower().endswith((".png", ".jpg")):
-                                                    img_path = f"{ha_dir}/{f_name}"
-                                                    if img_path not in loaded_models:
-                                                        try:
-                                                            bgra = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
-                                                            if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4:
-                                                                loaded_models[img_path] = {"color": bgra[:,:,:3], "mask": bgra[:,:,3]}
-                                                            else:
-                                                                color = cv2.imread(img_path, cv2.IMREAD_COLOR)
-                                                                loaded_models[img_path] = {"color": color, "mask": None} if color is not None else None
-                                                        except: loaded_models[img_path] = None
-                                                            
-                                                    tmpl = loaded_models.get(img_path)
-                                                    if tmpl and tmpl["color"] is not None:
-                                                        try:
-                                                            if tmpl["mask"] is not None: res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl["mask"]]*3))
-                                                            else: res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCOEFF_NORMED)
-                                                            _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
-                                                            if max_val_haste >= (settings.get("haste_match_rate", 92.0) / 100.0):
-                                                                haste_found = True
-                                                                break
-                                                        except: pass
-                                                if haste_found: break
+                                    if is_sudeon:
+                                        # 👑 [형님 오더 완벽 수정] 수던은 2시간 이전에는 아이콘 검사(오감지 귀환) 절대 안 함! 
+                                        # 단, 버프 받은지 2시간(7200초)이 넘었고 사냥터에 있다면 무조건 2분 감시를 켬!
+                                        if time_since_buff >= 7200.0:
+                                            is_icon_check_needed = True
+                                            if curr_time > state.get("sudeon_icon_log_time", 0):
+                                                dprint(key, f"🚨 [수던 헤이 감시] 버프 후 2시간 경과! 사냥터 내 우측 상단 아이콘 팩트 체크를 상시 가동합니다.")
+                                                state["sudeon_icon_log_time"] = curr_time + 60.0
+                                        else:
+                                            is_icon_check_needed = False
 
-                                        if not haste_found and globals().get("img_haste") is not None:
-                                            try:
-                                                if globals().get("img_haste_mask") is not None: res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste_mask")]*3))
-                                                else: res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCOEFF_NORMED)
-                                                _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
-                                                if max_val_haste >= (settings.get("haste_match_rate", 92.0) / 100.0): haste_found = True
-                                            except: pass
+                                    # 🚨 [치명적 억까 방어막] 수던에서 아이콘 감시가 꺼져있을 때(2시간 이전)는 
+                                    # 120초 타이머가 억울하게 흘러가지 않도록 시간을 얼려버립니다(동결)!
+                                    if is_sudeon and not is_icon_check_needed:
+                                        if state.get("haste_empty_start", 0) > 0:
+                                            state["haste_empty_start"] += (curr_time - state.get("last_haste_loop_time", curr_time))
+
+                                    if is_icon_check_needed:
+                                        haste_found = False
+                                        
+                                        if w >= 60 and h >= 350:
+                                            buff_roi_x1 = max(0, w - 60)
+                                            buff_roi_y1 = 0
+                                            buff_roi_x2 = w
+                                            buff_roi_y2 = min(h, 350)
+                                            buff_roi = img_bgr[buff_roi_y1:buff_roi_y2, buff_roi_x1:buff_roi_x2]
                                             
-                                        if not haste_found and globals().get("img_haste2") is not None:
-                                            try:
-                                                if globals().get("img_haste2_mask") is not None: res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste2_mask")]*3))
-                                                else: res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCOEFF_NORMED)
-                                                _, max_val_haste2, _, _ = cv2.minMaxLoc(res_haste2)
-                                                if max_val_haste2 >= (settings.get("haste_match_rate", 92.0) / 100.0): haste_found = True
-                                            except: pass
+                                            import os
+                                            ha_dir = "qq/ha"
+                                            if os.path.exists(ha_dir):
+                                                for f_name in os.listdir(ha_dir):
+                                                    if f_name.lower().endswith((".png", ".jpg")):
+                                                        img_path = f"{ha_dir}/{f_name}"
+                                                        if img_path not in loaded_models:
+                                                            try:
+                                                                bgra = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+                                                                if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4:
+                                                                    loaded_models[img_path] = {"color": bgra[:,:,:3], "mask": bgra[:,:,3]}
+                                                                else:
+                                                                    color = cv2.imread(img_path, cv2.IMREAD_COLOR)
+                                                                    loaded_models[img_path] = {"color": color, "mask": None} if color is not None else None
+                                                            except: loaded_models[img_path] = None
+                                                                
+                                                        tmpl = loaded_models.get(img_path)
+                                                        if tmpl and tmpl["color"] is not None:
+                                                            try:
+                                                                if tmpl["mask"] is not None: res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl["mask"]]*3))
+                                                                else: res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCOEFF_NORMED)
+                                                                _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
+                                                                if max_val_haste >= (settings.get("haste_match_rate", 92.0) / 100.0):
+                                                                    haste_found = True
+                                                                    break
+                                                            except: pass
+                                                    if haste_found: break
+
+                                            if not haste_found and globals().get("img_haste") is not None:
+                                                try:
+                                                    if globals().get("img_haste_mask") is not None: res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste_mask")]*3))
+                                                    else: res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCOEFF_NORMED)
+                                                    _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
+                                                    if max_val_haste >= (settings.get("haste_match_rate", 92.0) / 100.0): haste_found = True
+                                                except: pass
                                                 
-                                    if haste_found:
-                                        state["haste_empty_start"] = 0 
-                                        state["haste_visible_start"] = curr_time
-                                    else:
-                                        state["haste_visible_start"] = 0 
-                                        if state.get("haste_empty_start", 0) == 0:
-                                            state["haste_empty_start"] = curr_time 
-                                            
+                                            if not haste_found and globals().get("img_haste2") is not None:
+                                                try:
+                                                    if globals().get("img_haste2_mask") is not None: res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste2_mask")]*3))
+                                                    else: res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCOEFF_NORMED)
+                                                    _, max_val_haste2, _, _ = cv2.minMaxLoc(res_haste2)
+                                                    if max_val_haste2 >= (settings.get("haste_match_rate", 92.0) / 100.0): haste_found = True
+                                                except: pass
+                                                    
+                                        if haste_found:
+                                            state["haste_empty_start"] = 0 
+                                            state["haste_visible_start"] = curr_time
+                                        else:
+                                            state["haste_visible_start"] = 0 
+                                            if state.get("haste_empty_start", 0) == 0:
+                                                state["haste_empty_start"] = curr_time 
+                                                
                                     # 🚀 [형님 오더 적용] 수던 및 오땅/이벤트는 120초(2분) 증발 시 귀환! 그 외 사냥터는 40초!
                                     target_empty_time = 120.0 if (is_sudeon or is_oak_or_event) else 40.0
                                             
-                                    if state.get("haste_empty_start", 0) > 0 and curr_time - state["haste_empty_start"] >= target_empty_time:
+                                    if state.get("haste_empty_start", 0) > 0 and curr_time - state.get("haste_empty_start", 0) >= target_empty_time:
                                         is_detected_missing = True
                                         missing_reason = f"우측 아이콘 {int(target_empty_time)}초 증발"
                                 # 👆👆👆 ====================================================================
@@ -10574,15 +10592,20 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         missing_reason = "버프 기록 없음 (초기화됨)"
                                     elif last_haste > 0.0:
                                         safe_time_since = max(0.0, time_since_buff)
-                                        if safe_time_since >= 7200.0:
-                                            if state.get("is_real_buff_received", False) and safe_time_since > 8000.0:
+                                        
+                                        # 🚀 [수던 예외 처리] 수던은 2시간이 지나면 '아이콘 2분 감지'에 맡겨야 하므로,
+                                        # 타임아웃을 7200초에서 터뜨리지 않고 2시간 5분(7500초)을 최후의 방어막으로 둡니다!
+                                        timeout_limit = 7500.0 if is_sudeon else 7200.0
+                                        
+                                        if safe_time_since >= timeout_limit:
+                                            if state.get("is_real_buff_received", False) and safe_time_since > (timeout_limit + 800.0):
                                                 if curr_time > state.get("last_chat_dbg_log4", 0):
                                                     dprint(key, f"🛡️ [타임아웃 버그 차단] 시간 연산 오류 감지({safe_time_since:.1f}초)! 타이머를 강제 정상화합니다.")
                                                     state["last_chat_dbg_log4"] = curr_time + 10.0
                                                 state["last_haste_time"] = curr_time 
                                             else:
                                                 is_detected_missing = True
-                                                missing_reason = "2시간 타임아웃"
+                                                missing_reason = f"{int(timeout_limit/3600)}시간 타임아웃"
                                 # 👆👆👆 ====================================================================
 
                                 # 👑 [형님 마스터피스: 20분 방어막 완전 소각 & 팩트 즉시 귀환 엔진!]
@@ -10929,17 +10952,31 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         if time_passed > 7100.0: 
                             cv2.putText(debug_img, f"TIMEOUT: {7200.0 - time_passed:.1f}s", (CHAT_X1 + 5, CHAT_Y1 + 35), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 2)
                 
-                # 2. 우측 아이콘 스캔 영역 (수던, 일반 사냥터 모두 표시. 단, 오땅/이벤트는 제외)
+                # 2. 우측 아이콘 스캔 영역 상태 표시 (오땅/이벤트 제외, 수던은 2시간 후 상시 감시)
+                show_icon_scan_dbg = False
                 if not is_oak_event_dbg:
+                    if is_sudeon_dbg:
+                        time_passed_dbg = curr_time - state.get("last_haste_time", curr_time)
+                        # 💡 수던에서는 2시간 경과시에만 아이콘 박스를 켬!
+                        if time_passed_dbg >= 7200.0:
+                            show_icon_scan_dbg = True
+                    else:
+                        show_icon_scan_dbg = True
+
+                if show_icon_scan_dbg:
                     cv2.rectangle(debug_img, (max(0, w-60), 0), (w, min(h, 350)), (0, 255, 255), 1)
-                    cv2.putText(debug_img, "HASTE_ICON", (max(0, w-50), 345), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                    title_str = "HASTE_ICON (2H_OVER)" if is_sudeon_dbg else "HASTE_ICON"
+                    cv2.putText(debug_img, title_str, (max(0, w-180 if is_sudeon_dbg else w-80), 345), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
                     
-                    target_limit_time = 120.0 if is_sudeon_dbg else 40.0
+                    target_limit_time = 120.0 if (is_sudeon_dbg or is_oak_event_dbg) else 40.0
                     
                     if state.get("haste_empty_start", 0) > 0 and curr_time - state.get("haste_empty_start", 0) < target_limit_time + 60.0:
                         missing_sec = curr_time - state["haste_empty_start"]
                         if missing_sec >= target_limit_time: missing_sec = target_limit_time 
                         cv2.putText(debug_img, f"MISSING: {missing_sec:.1f}s / {int(target_limit_time)}s", (max(0, w-180), 360), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                elif is_sudeon_dbg:
+                    # 2시간 이전에는 검사를 안 하고 있다는 것을 디버그 창에 회색으로 표시
+                    cv2.putText(debug_img, "ICON SCAN PAUSED (< 2H)", (max(0, w-210), 360), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 2)
                 # 👆👆👆 ============================================================== 👆👆👆
 
                 door_pos_debug = state.get("debug_door_pos")
@@ -18765,18 +18802,14 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         if goal_node:
                                             state["current_target_node"] = goal_node
 
-                                    # A* 길찾기 발사 (목표가 있을 때만)
-                                    if goal_node and (not global_path or curr_time - state.get("dungeon_path_time", 0) > 300.0):
-                                        new_path = calculate_graph_astar_path(pc_graph, char_map_pos, goal_node, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
-                                        if new_path:
-                                            state["dungeon_global_path"] = new_path
-                                            state["dungeon_path_time"] = curr_time
-                                            global_path = new_path
-                                            state["astar_fail_count"] = 0 
                                         else:
                                             state["dungeon_global_path"] = []
                                             state["dungeon_path_time"] = curr_time - 295.0
                                             state["current_target_node"] = None
+                                            
+                                            state["astar_fail_count"] = state.get("astar_fail_count", 0) + 1
+                                            dprint(key, f"⚠️ [목표 A*] 도달 불가! 재탐색 시도. (누적 실패: {state['astar_fail_count']}/5)")
+                                            
                                             if state["astar_fail_count"] >= 5:
                                                 state["astar_fail_count"] = 0
                                                 with pico_queues[key].mutex: pico_queues[key].queue.clear()
@@ -18795,11 +18828,34 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                     state["tele_retry_cnt"] = 0
                                                     state["is_pulling"] = False
                                                     state["cooldown"] = curr_time + 1.0
+                                                elif settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
+                                                    dprint(key, "🚨 [경로 5아웃] 사방이 막혔습니다! 파티 모드이므로 텔포 대신 무작위 회피 기동!")
+                                                    best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1.5, 1.5)
+                                                    move_dist = g_val(150.0, 200.0)
+                                                    tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
+                                                    ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
+                                                    pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
+                                                    state["pico_arrived"] = False
+                                                    state["cursor_pos"] = [tx, ty]
+                                                    state["dungeon_angle"] = best_angle % (2*math.pi)
+                                                    state["target_fsm"] = "IDLE"
                                                 else:
                                                     dprint(key, "🛡️ [딜러 경로 5아웃] 복귀 경로 막힘! 즉시 전투(IDLE)로 전환하여 주변을 치웁니다.")
                                                     state["target_fsm"] = "IDLE"
                                                     state["cooldown"] = curr_time + 0.1
                                                 # 👆👆👆 =========================================================
+                                            elif state["astar_fail_count"] >= 3:
+                                                dprint(key, "🚧 [길찾기 지연] 길이 막혔습니다. 무작위 방향으로 비집기를 시도합니다.")
+                                                best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1, 1)
+                                                move_dist = g_val(150.0, 200.0)
+                                                tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
+                                                ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
+                                                
+                                                pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
+                                                state["pico_arrived"] = False
+                                                state["cursor_pos"], state["cooldown"] = [tx, ty], get_dynamic_cooldown(0.25, 0.45, key)
+                                                state["dungeon_angle"] = best_angle % (2*math.pi)
+                                                action_taken = True
 
                                 elif not action_taken and not goal_node and is_special_map:
                                     # ----------------------------------------------------
@@ -18907,14 +18963,6 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                             state["astar_fail_count"] = 0
                                             action_taken = True
                                         else:
-                                            # 🚀 스페셜 맵: 맹인 모드 상태 넘겨주기
-                                            new_path = calculate_graph_astar_path(pc_graph, char_map_pos, goal_node, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
-                                            if new_path:
-                                                state["dungeon_global_path"] = new_path
-                                                state["dungeon_path_time"] = curr_time
-                                                global_path = new_path
-                                                state["astar_fail_count"] = 0 
-                                            else:
                                                 state["dungeon_global_path"] = []
                                                 state["dungeon_path_time"] = curr_time - 295.0
                                                 state["current_target_node"] = None
@@ -18927,7 +18975,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                     with pico_queues[key].mutex: pico_queues[key].queue.clear()
                                                     if state.get("sweep_active", False):
                                                         pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
-    
+
                                                     is_base_returning = state.get("target_fsm") in ["PARTY_RETREAT_NAV", "PARTY_WAIT", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY"] and not state.get("is_rendezvous_mode", False)
                                                     if is_base_returning and goal_node:
                                                         gn_data = pc_graph["nodes"].get(str(goal_node)) if pc_graph and pc_graph.get("nodes") else None
@@ -18962,32 +19010,40 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                                     dprint(key, "👑 [팟바람 호출] 13.0px 길막 주차 인정! 파티원 집결을 호출합니다.")
                                                                 elif retreat_r_stuck == "팟바람 수령 집합":
                                                                     state["party_buff_status"] = "ARRIVED" 
-                                                                    
+                                                                
                                                                 state["is_pulling"] = False
                                                                 state["cooldown"] = curr_time + 0.5
                                                                 continue 
-    
+
                                                     dng_stuck_name2 = settings.get("dungeon_name", "")
                                                     if "event" in dng_stuck_name2 or "오땅" in dng_stuck_name2:
                                                         dprint(key, "🚨 [경로 개척 5아웃] 특수 던전이므로 F9 일반 귀환 후 재진입합니다!")
                                                         state["target_fsm"] = "TOWN_MAINT_NORMAL_RETURN"
                                                         state["event_skip_maint"] = True 
-                                                    # 👇👇👇 [파티 텔포 파괴] 파티 모드일 때는 텔레포트를 억제하고 IDLE로 전환하여 길을 다시 찾게 만듦! 👇👇👇
                                                     elif settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
-                                                        dprint(key, "🚨 [경로 개척 5아웃] 사방이 막혔지만 파티 모드이므로 텔레포트를 억제하고 IDLE로 전환하여 길뚫기를 속행합니다!")
+                                                        dprint(key, "🚨 [경로 개척 5아웃] 사방이 막혔지만 파티 모드이므로 텔레포트를 억제하고 무작위 방향으로 크게 우회(비집기)하여 탈출합니다!")
+                                                        best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1.5, 1.5)
+                                                        move_dist = g_val(150.0, 200.0)
+                                                        tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
+                                                        ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
+                                                        pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
+                                                        state["pico_arrived"] = False
+                                                        state["cursor_pos"] = [tx, ty]
+                                                        state["dungeon_angle"] = best_angle % (2*math.pi)
                                                         state["target_fsm"] = "IDLE"
-                                                        state["cooldown"] = curr_time + 0.5
-                                                    # 👆👆👆 =========================================================================
                                                     else:
                                                         dprint(key, "🚨 [경로 개척 5아웃] 사방이 꽉 막혔습니다. 강제 텔레포트 발동!")
                                                         pico_queues[key].put({"action": "TELEPORT"})
                                                         state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
                                                         state["teleport_start_mp"] = mp
+                                                        if h >= 200 and w >= 200: state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY)
+                                                        else: state["tele_snapshot"] = None
                                                         state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
                                                         state["tele_retry_cnt"] = 0
                                                     state["is_pulling"] = False
                                                     state["cooldown"] = curr_time + 1.0
                                                     continue
+                                                    
                                                 elif state["astar_fail_count"] >= 3:
                                                     dprint(key, "🚧 [길찾기 지연] 길이 막혔습니다. 무작위 방향으로 비집기를 시도합니다.")
                                                     best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1, 1)
@@ -18997,8 +19053,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                     
                                                     pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
                                                     state["pico_arrived"] = False
-                                                    state["cursor_pos"] = [tx, ty]
-                                                    state["cooldown"] = get_dynamic_cooldown(0.25, 0.45, key)
+                                                    state["cursor_pos"], state["cooldown"] = [tx, ty], get_dynamic_cooldown(0.25, 0.45, key)
                                                     state["dungeon_angle"] = best_angle % (2*math.pi)
                                                     action_taken = True
 
@@ -19056,7 +19111,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                             else:
                                                 state["dungeon_global_path"] = []
                                                 state["dungeon_path_time"] = curr_time - 295.0
-                                                state["dungeon_corner_idx"] = (corner_idx + 1) % len(pc_graph["corners"])
+                                                state["dungeon_corner_idx"] = (state.get("dungeon_corner_idx", 0) + 1) % len(pc_graph["corners"])
                                                 
                                                 state["astar_fail_count"] = state.get("astar_fail_count", 0) + 1
                                                 dprint(key, f"⚠️ [그래프 A*] 도달 불가! 다른 목표로 전환합니다. (누적 실패: {state['astar_fail_count']}/5)")
@@ -19064,63 +19119,55 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                 if state["astar_fail_count"] >= 5:
                                                     state["astar_fail_count"] = 0
                                                     with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                                                    # (이 코드는 원래 있는 코드입니다)
-                                                if state.get("sweep_active", False):
-                                                    pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
+                                                    if state.get("sweep_active", False):
+                                                        pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
 
-                                                # 👇👇👇 [여기서부터 3군데 모두 복사해서 끼워 넣기!] 👇👇👇
-                                                # 🚀 [범퍼카 방어] 버프존 복귀 중 13.0px 이내에서 5아웃 발생 시, 합석(주차) 인정!
-                                                is_base_returning = state.get("target_fsm") in ["PARTY_RETREAT_NAV", "PARTY_WAIT", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY"] and not state.get("is_rendezvous_mode", False)
-                                                if is_base_returning and goal_node:
-                                                    gn_data = pc_graph["nodes"].get(str(goal_node)) if pc_graph and pc_graph.get("nodes") else None
-                                                    if gn_data and char_map_pos:
-                                                        gx = gn_data.get("x", 0) if isinstance(gn_data, dict) else gn_data[0]
-                                                        gy = gn_data.get("y", 0) if isinstance(gn_data, dict) else gn_data[1]
-                                                        dist_to_goal = math.hypot(char_map_pos[0] - gx, char_map_pos[1] - gy)
-                                                        
-                                                        # 🚀 [벽 너머 합석 억까 방지 5] 길막으로 합석(도착) 인정할 때도 벽 너머면 인정 불가!
-                                                        has_los_stuck = True
-                                                        if pc_map_gray_los is not None and char_map_pos:
-                                                            has_los_stuck = check_line_of_sight(pc_map_gray_los, char_map_pos, (gx, gy), margin_steps=1)
+                                                    is_base_returning = state.get("target_fsm") in ["PARTY_RETREAT_NAV", "PARTY_WAIT", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY"] and not state.get("is_rendezvous_mode", False)
+                                                    if is_base_returning and goal_node:
+                                                        gn_data = pc_graph["nodes"].get(str(goal_node)) if pc_graph and pc_graph.get("nodes") else None
+                                                        if gn_data and char_map_pos:
+                                                            gx = gn_data.get("x", 0) if isinstance(gn_data, dict) else gn_data[0]
+                                                            gy = gn_data.get("y", 0) if isinstance(gn_data, dict) else gn_data[1]
+                                                            dist_to_goal = math.hypot(char_map_pos[0] - gx, char_map_pos[1] - gy)
                                                             
-                                                        if dist_to_goal <= 13.0 and has_los_stuck:
-                                                            # 👇👇👇 [핵심: 어떤 사유든 13.0px 이내 주차 인정 시 무조건 통합 상태로 편입!] 👇👇👇
-                                                            dprint(key, f"🚧 [범퍼카 방어] 목적지 13.0px 이내({dist_to_goal:.1f}px) 길막 5아웃! 합석으로 인정하여 후속 조치를 진행합니다.")
-                                                            retreat_r_stuck = state.get("retreat_reason", "")
-                                                            
-                                                            state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
-                                                            state["is_active_standby"] = True 
-                                                            state["standby_reason"] = retreat_r_stuck
-                                                            state["portal_blind_mode"] = False
-                                                            state["pending_mptam"] = False
-                                                            state["yolo_blind_active"] = False # 🚀 눈가림 강제 해제
-                                                            
-                                                            # 엠탐 사유라면 엠탐 모드 ON!
-                                                            if "MP" in retreat_r_stuck or "고갈" in retreat_r_stuck:
-                                                                state["is_mptam_mode"] = True
+                                                            has_los_stuck = True
+                                                            if pc_map_gray_los is not None and char_map_pos:
+                                                                has_los_stuck = check_line_of_sight(pc_map_gray_los, char_map_pos, (gx, gy), margin_steps=1)
                                                                 
-                                                            if retreat_r_stuck == "리더 팟바람 선진입" or retreat_r_stuck == "팟바람 시전 집합":
-                                                                if state.get("pb_wait_start", 0) == 0: state["pb_wait_start"] = curr_time
-                                                                state["req_party_buff"] = True
-                                                                state["party_buff_req_time"] = curr_time
-                                                                state["missed_party_buff"] = False 
-                                                                dprint(key, "👑 [팟바람 호출] 13.0px 길막 주차 인정! 파티원 집결을 호출합니다.")
-                                                            elif retreat_r_stuck == "팟바람 수령 집합":
-                                                                state["party_buff_status"] = "ARRIVED" 
+                                                            if dist_to_goal <= 13.0 and has_los_stuck:
+                                                                dprint(key, f"🚧 [범퍼카 방어] 목적지 13.0px 이내({dist_to_goal:.1f}px) 길막 5아웃! 합석으로 인정하여 후속 조치를 진행합니다.")
+                                                                retreat_r_stuck = state.get("retreat_reason", "")
                                                                 
-                                                            state["is_pulling"] = False
-                                                            state["cooldown"] = curr_time + 0.5
-                                                            continue # 💡 여기서 비상 텔레포트(F11) 코드로 안 넘어가게 강제 차단!
+                                                                state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
+                                                                state["is_active_standby"] = True 
+                                                                state["standby_reason"] = retreat_r_stuck
+                                                                state["portal_blind_mode"] = False
+                                                                state["pending_mptam"] = False
+                                                                state["yolo_blind_active"] = False 
+                                                                
+                                                                if "MP" in retreat_r_stuck or "고갈" in retreat_r_stuck:
+                                                                    state["is_mptam_mode"] = True
+                                                                    
+                                                                if retreat_r_stuck == "리더 팟바람 선진입" or retreat_r_stuck == "팟바람 시전 집합":
+                                                                    if state.get("pb_wait_start", 0) == 0: state["pb_wait_start"] = curr_time
+                                                                    state["req_party_buff"] = True
+                                                                    state["party_buff_req_time"] = curr_time
+                                                                    state["missed_party_buff"] = False 
+                                                                    dprint(key, "👑 [팟바람 호출] 13.0px 길막 주차 인정! 파티원 집결을 호출합니다.")
+                                                                elif retreat_r_stuck == "팟바람 수령 집합":
+                                                                    state["party_buff_status"] = "ARRIVED" 
+                                                                
+                                                                state["is_pulling"] = False
+                                                                state["cooldown"] = curr_time + 0.5
+                                                                continue 
 
-                                                # 👇👇👇 [특수 던전 텔포 방지 및 강제 귀환 엔진 등...] 👇👇👇
                                                     dng_stuck_name4 = settings.get("dungeon_name", "")
                                                     if "event" in dng_stuck_name4 or "오땅" in dng_stuck_name4:
-                                                        dprint(key, "🚨 [경로 개척 5아웃] 5연속 픽셀 길찾기 실패! 특수 던전이므로 F9 일반 귀환 후 재진입합니다!")
+                                                        dprint(key, "🚨 [경로 개척 5아웃] 특수 던전이므로 F9 일반 귀환 후 재진입합니다!")
                                                         state["target_fsm"] = "TOWN_MAINT_NORMAL_RETURN"
                                                         state["event_skip_maint"] = True 
-                                                    # 👇👇👇 [파티 텔포 파괴 & 단절 구역 무작위 탈출 엔진 추가] 👇👇👇
                                                     elif settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
-                                                        dprint(key, "🚨 [경로 개척 5아웃] 사방이 막혔습니다! 파티 모드이므로 텔포 대신 무작위 방향으로 크게 우회(비집기)하여 탈출합니다!")
+                                                        dprint(key, "🚨 [경로 개척 5아웃] 사방이 막혔지만 파티 모드이므로 텔레포트를 억제하고 IDLE로 전환하여 길뚫기를 속행합니다!")
                                                         best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1.5, 1.5)
                                                         move_dist = g_val(150.0, 200.0)
                                                         tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
@@ -19130,16 +19177,19 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                         state["cursor_pos"] = [tx, ty]
                                                         state["dungeon_angle"] = best_angle % (2*math.pi)
                                                         state["target_fsm"] = "IDLE"
-                                                    # 👆👆👆 =========================================================================
                                                     else:
                                                         dprint(key, "🚨 [경로 개척 5아웃] 사방이 꽉 막혔습니다. 강제 텔레포트 발동!")
                                                         pico_queues[key].put({"action": "TELEPORT"})
                                                         state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
                                                         state["teleport_start_mp"] = mp
+                                                        if h >= 200 and w >= 200: state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY)
+                                                        else: state["tele_snapshot"] = None
                                                         state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
-                                                    state["is_pulling"] = False; state["cooldown"] = curr_time + 1.0
+                                                        state["tele_retry_cnt"] = 0
+                                                    state["is_pulling"] = False
+                                                    state["cooldown"] = curr_time + 1.0
                                                     continue
-                                                    # 👆👆👆 ============================================================== 👆👆👆
+                                                    
                                                 elif state["astar_fail_count"] >= 3:
                                                     dprint(key, "🚧 [길찾기 지연] 길이 막혔습니다. 무작위 방향으로 비집기를 시도합니다.")
                                                     best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1, 1)
@@ -19181,69 +19231,75 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                     if state["astar_fail_count"] >= 5:
                                                         state["astar_fail_count"] = 0
                                                         with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                                                        # (이 코드는 원래 있는 코드입니다)
                                                         if state.get("sweep_active", False):
                                                             pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
 
-                                                        # 👇👇👇 [여기서부터 3군데 모두 복사해서 끼워 넣기!] 👇👇👇
-                                                # 🚀 [범퍼카 방어] 버프존 복귀 중 13.0px 이내에서 5아웃 발생 시, 합석(주차) 인정!
-                                                is_base_returning = state.get("target_fsm") in ["PARTY_RETREAT_NAV", "PARTY_WAIT", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY"] and not state.get("is_rendezvous_mode", False)
-                                                if is_base_returning and goal_node:
-                                                    gn_data = pc_graph["nodes"].get(str(goal_node)) if pc_graph and pc_graph.get("nodes") else None
-                                                    if gn_data and char_map_pos:
-                                                        gx = gn_data.get("x", 0) if isinstance(gn_data, dict) else gn_data[0]
-                                                        gy = gn_data.get("y", 0) if isinstance(gn_data, dict) else gn_data[1]
-                                                        dist_to_goal = math.hypot(char_map_pos[0] - gx, char_map_pos[1] - gy)
-                                                        
-                                                        # 🚀 [벽 너머 합석 억까 방지 5] 길막으로 합석(도착) 인정할 때도 벽 너머면 인정 불가!
-                                                        has_los_stuck = True
-                                                        if pc_map_gray_los is not None and char_map_pos:
-                                                            has_los_stuck = check_line_of_sight(pc_map_gray_los, char_map_pos, (gx, gy), margin_steps=1)
-                                                            
-                                                        if dist_to_goal <= 13.0 and has_los_stuck:
-                                                            # 👇👇👇 [핵심: 어떤 사유든 13.0px 이내 주차 인정 시 무조건 통합 상태로 편입!] 👇👇👇
-                                                            dprint(key, f"🚧 [범퍼카 방어] 목적지 13.0px 이내({dist_to_goal:.1f}px) 길막 5아웃! 합석으로 인정하여 후속 조치를 진행합니다.")
-                                                            retreat_r_stuck = state.get("retreat_reason", "")
-                                                            
-                                                            state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
-                                                            state["is_active_standby"] = True 
-                                                            state["standby_reason"] = retreat_r_stuck
-                                                            state["portal_blind_mode"] = False
-                                                            state["pending_mptam"] = False
-                                                            state["yolo_blind_active"] = False # 🚀 눈가림 강제 해제
-                                                            
-                                                            # 엠탐 사유라면 엠탐 모드 ON!
-                                                            if "MP" in retreat_r_stuck or "고갈" in retreat_r_stuck:
-                                                                state["is_mptam_mode"] = True
+                                                        is_base_returning = state.get("target_fsm") in ["PARTY_RETREAT_NAV", "PARTY_WAIT", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY"] and not state.get("is_rendezvous_mode", False)
+                                                        if is_base_returning and goal_node:
+                                                            gn_data = pc_graph["nodes"].get(str(goal_node)) if pc_graph and pc_graph.get("nodes") else None
+                                                            if gn_data and char_map_pos:
+                                                                gx = gn_data.get("x", 0) if isinstance(gn_data, dict) else gn_data[0]
+                                                                gy = gn_data.get("y", 0) if isinstance(gn_data, dict) else gn_data[1]
+                                                                dist_to_goal = math.hypot(char_map_pos[0] - gx, char_map_pos[1] - gy)
                                                                 
-                                                            if retreat_r_stuck == "리더 팟바람 선진입" or retreat_r_stuck == "팟바람 시전 집합":
-                                                                if state.get("pb_wait_start", 0) == 0: state["pb_wait_start"] = curr_time
-                                                                state["req_party_buff"] = True
-                                                                state["party_buff_req_time"] = curr_time
-                                                                state["missed_party_buff"] = False 
-                                                                dprint(key, "👑 [팟바람 호출] 13.0px 길막 주차 인정! 파티원 집결을 호출합니다.")
-                                                            elif retreat_r_stuck == "팟바람 수령 집합":
-                                                                state["party_buff_status"] = "ARRIVED" 
-                                                                
-                                                            state["is_pulling"] = False
-                                                            state["cooldown"] = curr_time + 0.5
-                                                            continue # 💡 여기서 비상 텔레포트(F11) 코드로 안 넘어가게 강제 차단!
+                                                                has_los_stuck = True
+                                                                if pc_map_gray_los is not None and char_map_pos:
+                                                                    has_los_stuck = check_line_of_sight(pc_map_gray_los, char_map_pos, (gx, gy), margin_steps=1)
+                                                                    
+                                                                if dist_to_goal <= 13.0 and has_los_stuck:
+                                                                    dprint(key, f"🚧 [범퍼카 방어] 목적지 13.0px 이내({dist_to_goal:.1f}px) 길막 5아웃! 합석으로 인정하여 후속 조치를 진행합니다.")
+                                                                    retreat_r_stuck = state.get("retreat_reason", "")
+                                                                    
+                                                                    state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
+                                                                    state["is_active_standby"] = True 
+                                                                    state["standby_reason"] = retreat_r_stuck
+                                                                    state["portal_blind_mode"] = False
+                                                                    state["pending_mptam"] = False
+                                                                    state["yolo_blind_active"] = False 
+                                                                    
+                                                                    if "MP" in retreat_r_stuck or "고갈" in retreat_r_stuck:
+                                                                        state["is_mptam_mode"] = True
+                                                                        
+                                                                    if retreat_r_stuck == "리더 팟바람 선진입" or retreat_r_stuck == "팟바람 시전 집합":
+                                                                        if state.get("pb_wait_start", 0) == 0: state["pb_wait_start"] = curr_time
+                                                                        state["req_party_buff"] = True
+                                                                        state["party_buff_req_time"] = curr_time
+                                                                        state["missed_party_buff"] = False 
+                                                                        dprint(key, "👑 [팟바람 호출] 13.0px 길막 주차 인정! 파티원 집결을 호출합니다.")
+                                                                    elif retreat_r_stuck == "팟바람 수령 집합":
+                                                                        state["party_buff_status"] = "ARRIVED" 
+                                                                        
+                                                                    state["is_pulling"] = False
+                                                                    state["cooldown"] = curr_time + 0.5
+                                                                    continue 
 
-                                                # 👇👇👇 [특수 던전 텔포 방지 및 강제 귀환 엔진 등...] 👇👇👇
                                                         dng_stuck_name4 = settings.get("dungeon_name", "")
                                                         if "event" in dng_stuck_name4 or "오땅" in dng_stuck_name4:
                                                             dprint(key, "🚨 [경로 개척 5아웃] 5연속 픽셀 길찾기 실패! 특수 던전이므로 F9 일반 귀환 후 재진입합니다!")
                                                             state["target_fsm"] = "TOWN_MAINT_NORMAL_RETURN"
                                                             state["event_skip_maint"] = True 
+                                                        elif settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
+                                                            dprint(key, "🚨 [경로 개척 5아웃] 사방이 막혔지만 파티 모드이므로 텔레포트를 억제하고 IDLE로 전환하여 길뚫기를 속행합니다!")
+                                                            best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1.5, 1.5)
+                                                            move_dist = g_val(150.0, 200.0)
+                                                            tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
+                                                            ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
+                                                            pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
+                                                            state["pico_arrived"] = False
+                                                            state["cursor_pos"] = [tx, ty]
+                                                            state["dungeon_angle"] = best_angle % (2*math.pi)
+                                                            state["target_fsm"] = "IDLE"
                                                         else:
                                                             dprint(key, "🚨 [경로 개척 5아웃] 사방이 꽉 막혔습니다. 강제 텔레포트 발동!")
                                                             pico_queues[key].put({"action": "TELEPORT"})
                                                             state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
                                                             state["teleport_start_mp"] = mp
                                                             state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
-                                                        state["is_pulling"] = False; state["cooldown"] = curr_time + 1.0
+                                                            state["tele_retry_cnt"] = 0
+                                                        state["is_pulling"] = False
+                                                        state["cooldown"] = curr_time + 1.0
                                                         continue
-                                                        # 👆👆👆 ============================================================== 👆👆👆
+                                                        
                                                     elif state["astar_fail_count"] >= 3:
                                                         dprint(key, "🚧 [길찾기 지연] 길이 막혔습니다. 무작위 방향으로 비집기를 시도합니다.")
                                                         best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1, 1)
@@ -20111,6 +20167,13 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
 
                                     if is_req_dead_or_gone:
                                         dprint(key, f"✅ [구출 취소] 도망자가 위기 탈출(마을/사망/이탈)했습니다! 출동을 취소하고 사냥을 속행합니다.")
+                                        
+                                        # 👇👇👇 [무한 핑퐁 버그 완벽 수술 3] 👇👇👇
+                                        # 도망자의 헬프콜 깃발이 렉으로 아직 안 꺼졌을 경우를 대비해 5초간 무시 명단에 넣습니다!
+                                        state["ignored_requester"] = req_key
+                                        state["ignored_req_timer"] = curr_time + 5.0
+                                        # 👆👆👆 =========================================
+                                        
                                         state["helping_who"] = None
                                         state["help_target_pos"] = None
                                         state["dungeon_global_path"] = []
@@ -20158,6 +20221,12 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                 if curr_time - state.get("log_ignore_help_req_zone", 0) > 5.0:
                                                     dprint(key, f"🚫 [구조 포기] 도망자({p_key})가 사냥 구역(Zone) 밖으로 이탈했습니다! 진형 유지를 위해 쫓아가지 않고 포기합니다.")
                                                     state["log_ignore_help_req_zone"] = curr_time
+                                                continue
+                                                
+                                            # 👇👇👇 [무한 핑퐁 버그 완벽 수술 4] 👇👇👇
+                                            # 도망자의 헬프콜이 켜져 있더라도, 현재 도망자의 상태가 마을/위기탈출 상태면 아예 출동(반응)하지 않습니다!
+                                            req_state_chk = str(p_data.get("party_state", ""))
+                                            if req_state_chk in ["TOWN", "MAINT", "SURVIVAL", "DEATH"]:
                                                 continue
                                             # 👆👆👆 ========================================================
                                                 
