@@ -6862,14 +6862,23 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     for scroll_idx in range(50):
                                         found_any = False
                                         screen_chk = latest_frames.get(key)
-                                        dng_name = current_settings.get(key, {}).get("dungeon_name", "")
+                                        
+                                        # 👇👇👇 [완벽 수술: 메인/파티/오버라이드 사냥터 이름 통합 판독기] 👇👇👇
+                                        is_party_for_leave = current_settings.get(key, {}).get("use_party_hunt", False) or current_settings.get(key, {}).get("use_party_fixed", False)
+                                        dng_name = current_settings.get(key, {}).get("party_dungeon_name", "") if is_party_for_leave else current_settings.get(key, {}).get("dungeon_name", "")
+                                        if ai_states.get(key, {}).get("override_dungeon_name"):
+                                            dng_name = ai_states[key]["override_dungeon_name"]
+                                            
+                                        # 🚀 형님 오더: 오직 '개미굴'에서만 엔줄(ent) 맡기기를 스킵합니다!
                                         skip_ent_dungeons = ["개미굴"] 
+                                        # 👆👆👆 =========================================================================
                                         
                                         for tmpl_dict in LEAVE_TEMPLATES:
                                             tmpl_name = tmpl_dict['name']
-                                            is_ent_item = ("ent" in tmpl_name.lower() or "엔줄" in tmpl_name or "엔테" in tmpl_name)
-                                            if is_ent_item and any(kw in dng_name for kw in skip_ent_dungeons):
-                                                continue 
+                                            # 💡 엔트, 엔줄, 엔테, ent 모두 완벽하게 걸러냄
+                                            is_ent_item = ("ent" in tmpl_name.lower() or "엔줄" in tmpl_name or "엔테" in tmpl_name or "엔트" in tmpl_name)
+                                            if is_ent_item and any(kw in dng_name.lower() for kw in skip_ent_dungeons):
+                                                continue
                                             
                                             pos_list = find_all_imgs_universal(tmpl_dict, th=0.82, ui_only=True)
                                             for pos in pos_list:
@@ -6970,14 +6979,22 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     ai_states[key]["found_items_history"] = set()
                                 found_items = ai_states[key]["found_items_history"]
 
-                                dng_name = current_settings.get(key, {}).get("dungeon_name", "")
-                                skip_ent_dungeons = ["개미굴", "오땅"] # 🚀 [오땅 추가] 엔줄 인출 스킵!
+                                # 👇👇👇 [완벽 수술: 메인/파티/오버라이드 사냥터 이름 통합 판독기] 👇👇👇
+                                is_party_for_pick = current_settings.get(key, {}).get("use_party_hunt", False) or current_settings.get(key, {}).get("use_party_fixed", False)
+                                dng_name = current_settings.get(key, {}).get("party_dungeon_name", "") if is_party_for_pick else current_settings.get(key, {}).get("dungeon_name", "")
+                                if ai_states.get(key, {}).get("override_dungeon_name"):
+                                    dng_name = ai_states[key]["override_dungeon_name"]
+                                    
+                                # 🚀 형님 오더: 오직 '개미굴'에서만 엔줄(ent) 찾기를 스킵합니다!
+                                skip_ent_dungeons = ["개미굴"] 
+                                # 👆👆👆 =========================================================================
+                                
                                 try: ent_qty = int(current_settings.get(key, {}).get("pick_ent", 0))
                                 except: ent_qty = 0
-                                if any(kw in dng_name for kw in skip_ent_dungeons):
+                                if any(kw in dng_name.lower() for kw in skip_ent_dungeons):
                                     if ent_qty > 0 and pick_retry_cnt == 0: 
                                         dprint(key, f"🌿 [{dng_name}] 독 관리가 필요 없는 사냥터입니다. 엔줄 인출(찾기)을 패스합니다.")
-                                    ent_qty = 0 
+                                    ent_qty = 0
 
                                 try: arrow_qty = int(current_settings.get(key, {}).get("pick_arrow", 0))
                                 except: arrow_qty = 0
@@ -7380,17 +7397,19 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 ai_states[key]["town_thread_running"] = False
                                 return
 
-                            # ======================================================
-                            # 🛡️ [STEP 3.5] 커맨드 센터 버프 수령 로직 (1사이클(6방향) 아웃 & Ping 생존 감시)
-                            # ======================================================
                             elif step_name == "DO_BUFF":
                                 c_num = str(current_pc_num).strip() if current_pc_num else "1"
                                 m_num = key.replace("미니", "").strip()
                                 char_id = f"{c_num}-{m_num}"
                                 
-                                dungeon_val = current_settings.get(key, {}).get("dungeon_name", "본던 1층")
+                                # 👇👇👇 [완벽 수술: 파티 모드 사냥터 혼동 방지] 👇👇👇
+                                is_party_for_buff = current_settings.get(key, {}).get("use_party_hunt", False) or current_settings.get(key, {}).get("use_party_fixed", False)
+                                dungeon_val = current_settings.get(key, {}).get("party_dungeon_name", "본던 1층") if is_party_for_buff else current_settings.get(key, {}).get("dungeon_name", "본던 1층")
+                                if ai_states.get(key, {}).get("override_dungeon_name"):
+                                    dungeon_val = ai_states[key]["override_dungeon_name"]
+                                # 👆👆👆 =========================================================================
                                 
-                                failed_angles = set() 
+                                failed_angles = set()
                                 cycle_count = 0
                                 
                                 def check_manual_buff_chat():
@@ -8091,7 +8110,12 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             # [STEP 4] 사냥터 복귀 (순정 걷기 추적 + 0.5초 길막 방어 엔진)
                             # ======================================================
                             elif step_name == "RETURN_HUNT":
-                                dungeon_name = current_settings.get(key, {}).get("dungeon_name", "")
+                                # 👇👇👇 [완벽 수술: 파티 모드 사냥터 혼동 방지] 👇👇👇
+                                is_party_for_ret = current_settings.get(key, {}).get("use_party_hunt", False) or current_settings.get(key, {}).get("use_party_fixed", False)
+                                dungeon_name = current_settings.get(key, {}).get("party_dungeon_name", "") if is_party_for_ret else current_settings.get(key, {}).get("dungeon_name", "")
+                                if ai_states.get(key, {}).get("override_dungeon_name"):
+                                    dungeon_name = ai_states[key]["override_dungeon_name"]
+                                # 👆👆👆 =========================================================================
                                 
                                 def wait_with_heal(duration):
                                     start_w = time.time()
@@ -9915,6 +9939,53 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 threshold_str = "1시간 50분(일반)"
                             # 👆👆👆 =======================================================
                             
+                            # 👇👇👇 [형님 기획 완벽 수술: 출발 전 아이콘 팩트 체크 방어막!] 👇👇👇
+                            # 뇌피셜(타이머)이 '아직 시간 남았다'고 뻥을 치더라도, 실제 화면에 아이콘이 없으면 무조건 강제 리필!
+                            if last_haste > 0 and haste_elapsed < buff_threshold:
+                                haste_found_fact = False
+                                if w >= 60 and h >= 350:
+                                    buff_roi_x1 = max(0, w - 60)
+                                    buff_roi_y1 = 0
+                                    buff_roi_x2 = w
+                                    buff_roi_y2 = min(h, 350)
+                                    buff_roi = img_bgr[buff_roi_y1:buff_roi_y2, buff_roi_x1:buff_roi_x2]
+                                    
+                                    import os
+                                    ha_imgs = [f"qq/ha{i}.png" for i in range(1, 11)]
+                                    for img_path in ha_imgs:
+                                        tmpl = loaded_models.get(img_path)
+                                        if tmpl and tmpl["color"] is not None:
+                                            try:
+                                                if tmpl["mask"] is not None: res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl["mask"]]*3))
+                                                else: res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCOEFF_NORMED)
+                                                _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
+                                                if max_val_haste >= (settings.get("haste_match_rate", 92.0) / 100.0):
+                                                    haste_found_fact = True
+                                                    break
+                                            except: pass
+                                            
+                                    if not haste_found_fact and globals().get("img_haste") is not None:
+                                        try:
+                                            if globals().get("img_haste_mask") is not None: res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste_mask")]*3))
+                                            else: res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCOEFF_NORMED)
+                                            _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
+                                            if max_val_haste >= (settings.get("haste_match_rate", 92.0) / 100.0): haste_found_fact = True
+                                        except: pass
+                                        
+                                    if not haste_found_fact and globals().get("img_haste2") is not None:
+                                        try:
+                                            if globals().get("img_haste2_mask") is not None: res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste2_mask")]*3))
+                                            else: res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCOEFF_NORMED)
+                                            _, max_val_haste2, _, _ = cv2.minMaxLoc(res_haste2)
+                                            if max_val_haste2 >= (settings.get("haste_match_rate", 92.0) / 100.0): haste_found_fact = True
+                                        except: pass
+                                        
+                                if not haste_found_fact:
+                                    dprint(key, f"🚨 [출발 전 팩트 검증 실패] 장부엔 {buff_threshold - haste_elapsed:.1f}초 남았다고 적혀있으나, 우측에 헤이 아이콘이 없습니다! (마을 대기 중 증발 확정) 타이머를 0으로 강제 포맷합니다!")
+                                    last_haste = 0.0
+                                    state["last_haste_time"] = 0.0
+                            # 👆👆👆 ============================================================== 👆👆👆
+
                             # 👇👇👇 [형님 오더 완벽 적용: CC연동 OFF 시 무한 대기 절대 금지!] 👇👇👇
                             use_cc_buff = settings.get("use_cc_buff", True)
                             if not use_cc_buff:
@@ -9938,7 +10009,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 state["target_fsm"] = "TOWN_MAINT_BUFF" 
                                 state["cooldown"] = curr_time + 0.1
                             else:
-                                dprint(key, f"🏃 [사냥터 직행] 헤이/강촐 받은지 {haste_elapsed/60:.1f}분 경과. [{threshold_str} 기준 미달] 리필 스킵, 사냥터로 직행!")
+                                dprint(key, f"🏃 [사냥터 직행] 헤이/강촐 받은지 {haste_elapsed/60:.1f}분 경과. [{threshold_str} 기준 미달 및 팩트 정상] 리필 스킵, 사냥터로 직행!")
                                 state["target_fsm"] = "TOWN_MAINT_RETURN" 
                                 state["cooldown"] = curr_time + 0.1
                                     
@@ -10226,10 +10297,16 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         state["sweep_active"] = False
                         
                     # 👇👇👇 [수술] MP 6% 방어막 3초 지연 적용 👇👇👇
-                    if is_mp_empty_3sec or "event" in settings.get("dungeon_name", ""):
-                        dprint(key, "🚨 [PK 긴급 대피] (이벤트 던전 또는 마나 고갈) 텔포 대신 두루마리 일반 귀환(F9)으로 도망칩니다!")
+                    dng_purple_esc = settings.get("dungeon_name", "")
+                    is_special_purple_esc = "event" in dng_purple_esc.lower() or "오땅" in dng_purple_esc
+                    
+                    if is_mp_empty_3sec or is_special_purple_esc:
+                        dprint(key, "🚨 [PK 긴급 대피] (특수 던전 또는 마나 고갈) 텔포 대신 두루마리 일반 귀환(F9)으로 도망칩니다!")
                         state["target_fsm"] = "TOWN_MAINT_NORMAL_RETURN"
-                        state["event_skip_maint"] = True # 🚀 정비 스킵 꼬리표 부착!
+                        
+                        if is_special_purple_esc:
+                            state["event_skip_maint"] = True # 🚀 특수 던전일 때만 정비 스킵 꼬리표 부착!
+                            
                         state["is_pulling"] = False
                         state["cooldown"] = curr_time + 0.1
                     else:
@@ -10375,40 +10452,52 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
 
                                 # 👇👇👇 [1순위: 채팅창 텍스트 감지 - 오땅, 이벤트, 수던 공통 적용!] 👇👇👇
                                 if is_oak_or_event or is_sudeon:
-                                    CHAT_X1, CHAT_X2 = 125, 600
-                                    CHAT_Y1, CHAT_Y2 = 490, h
-                                    
-                                    if w >= CHAT_X2 and h >= CHAT_Y2 and globals().get("img_haste_x") is not None:
-                                        if curr_time - state.get("hunt_start_time", curr_time) > 10.0:
-                                            chat_roi = img_bgr[CHAT_Y1:CHAT_Y2, CHAT_X1:CHAT_X2]
-                                            gray_check = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
-                                            _, bright_text = cv2.threshold(gray_check, 100, 255, cv2.THRESH_BINARY)
-                                            
-                                            if cv2.countNonZero(bright_text) > 20: 
-                                                try:
-                                                    img_h_x = globals().get("img_haste_x")
-                                                    img_h_x_m = globals().get("img_haste_x_mask")
-                                                    
-                                                    gray_roi = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
-                                                    gray_tmpl = cv2.cvtColor(img_h_x, cv2.COLOR_BGR2GRAY)
-                                                    
-                                                    if img_h_x_m is not None:
-                                                        res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCORR_NORMED, mask=img_h_x_m)
-                                                    else:
-                                                        res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCOEFF_NORMED)
+                                    # 👑 [형님 기획: 20분 채팅창 오인식 방어막]
+                                    # 찐버프 수령 후 20분(1200초) 이내이고, 사망 초기화(last_haste=0)가 아니라면 채팅창 텍스트는 헛방으로 간주하고 무시합니다!
+                                    is_chat_shield_active = False
+                                    if last_haste > 0.0 and time_since_buff < 1200.0:
+                                        is_chat_shield_active = True
+                                        
+                                    if is_chat_shield_active:
+                                        if curr_time > state.get("chat_shield_log_time", 0):
+                                            dprint(key, f"🛡️ [채팅창 억까 방어막] 헤이 수령 후 {time_since_buff/60:.1f}분 경과 (20분 내). 하단 채팅창 검사를 안전하게 스킵합니다!")
+                                            state["chat_shield_log_time"] = curr_time + 60.0
+                                    else:
+                                        CHAT_X1, CHAT_X2 = 125, 600
+                                        CHAT_Y1, CHAT_Y2 = 490, h
+                                        
+                                        if w >= CHAT_X2 and h >= CHAT_Y2 and globals().get("img_haste_x") is not None:
+                                            if curr_time - state.get("hunt_start_time", curr_time) > 10.0:
+                                                chat_roi = img_bgr[CHAT_Y1:CHAT_Y2, CHAT_X1:CHAT_X2]
+                                                gray_check = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
+                                                _, bright_text = cv2.threshold(gray_check, 100, 255, cv2.THRESH_BINARY)
+                                                
+                                                if cv2.countNonZero(bright_text) > 20: 
+                                                    try:
+                                                        img_h_x = globals().get("img_haste_x")
+                                                        img_h_x_m = globals().get("img_haste_x_mask")
                                                         
-                                                    _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
-                                                    
-                                                    OAK_HASTE_THRESHOLD = 0.80
-                                                    
-                                                    if max_val_haste >= OAK_HASTE_THRESHOLD: 
-                                                        is_detected_missing = True
-                                                        missing_reason = f"채팅창 헤이풀림 감지({max_val_haste*100:.1f}%)"
-                                                except: pass
+                                                        gray_roi = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
+                                                        gray_tmpl = cv2.cvtColor(img_h_x, cv2.COLOR_BGR2GRAY)
+                                                        
+                                                        if img_h_x_m is not None:
+                                                            res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCORR_NORMED, mask=img_h_x_m)
+                                                        else:
+                                                            res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCOEFF_NORMED)
+                                                            
+                                                        _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
+                                                        
+                                                        OAK_HASTE_THRESHOLD = 0.80
+                                                        
+                                                        if max_val_haste >= OAK_HASTE_THRESHOLD: 
+                                                            is_detected_missing = True
+                                                            missing_reason = f"채팅창 헤이풀림 감지({max_val_haste*100:.1f}%)"
+                                                    except: pass
                                 # 👆👆👆 ========================================================== 👆👆👆
 
-                                # 👇👇👇 [2순위: 우측 상단 아이콘 증발 감시 - 오땅/이벤트 제외 (수던 & 일반 사냥터 적용)] 👇👇👇
-                                if not is_detected_missing and not is_oak_or_event:
+                                # 👇👇👇 [2순위: 우측 상단 아이콘 증발 감시 - 전 구역 강제 100% 감시!] 👇👇👇
+                                # 🚀 [형님 기획: 오땅/이벤트 족쇄 파괴] 채팅창이 20분 쉴드로 무시되더라도, 우측 아이콘은 무조건 검사하여 찐으로 떨어지면 귀환하게 만듭니다!
+                                if not is_detected_missing:
                                     haste_found = False
                                     
                                     if w >= 60 and h >= 350:
@@ -10470,8 +10559,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         if state.get("haste_empty_start", 0) == 0:
                                             state["haste_empty_start"] = curr_time 
                                             
-                                    # 🚀 [형님 오더 적용] 수던은 120초, 그 외 사냥터는 40초 증발 시 귀환!
-                                    target_empty_time = 120.0 if is_sudeon else 40.0
+                                    # 🚀 [형님 오더 적용] 수던 및 오땅/이벤트는 120초(2분) 증발 시 귀환! 그 외 사냥터는 40초!
+                                    target_empty_time = 120.0 if (is_sudeon or is_oak_or_event) else 40.0
                                             
                                     if state.get("haste_empty_start", 0) > 0 and curr_time - state["haste_empty_start"] >= target_empty_time:
                                         is_detected_missing = True
@@ -10626,10 +10715,15 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             
                         # 👇👇👇 [핵심 수술] 3초 연속 6% 이하일 때만 마을 일반 귀환(F9) 실행! 👇👇👇
                         dng_pk_esc = settings.get("dungeon_name", "")
-                        if is_mp_empty_3sec or "event" in dng_pk_esc or "오땅" in dng_pk_esc:
+                        is_special_pk_esc = "event" in dng_pk_esc.lower() or "오땅" in dng_pk_esc
+                        
+                        if is_mp_empty_3sec or is_special_pk_esc:
                             dprint(key, "🚨 [PK 대피] (특수 던전 또는 마나 고갈) 텔포 대신 창고 귀환(F9)으로 강제 대피합니다!")
                             state["target_fsm"] = "TOWN_MAINT_NORMAL_RETURN"
-                            state["event_skip_maint"] = True # 🚀 정비 스킵 꼬리표 부착!
+                            
+                            if is_special_pk_esc:
+                                state["event_skip_maint"] = True # 🚀 특수 던전일 때만 정비 스킵!
+                                
                             state["hp_danger_cd"] = curr_time + 3.0
                             state["cooldown"] = curr_time + 0.1
                         else:
@@ -12068,6 +12162,11 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         state["cooldown"] = curr_time + g_val(0.15, 0.25)
                                     else:
                                         dprint(key, f"🚫 [{slot_n} 복구 실패] 최대 스크롤 후에도 순정 이미지를 못 찾았습니다! 10분간 치유 밴(Ban) 처리!")
+                                        
+                                        # 👇👇👇 [치명적 에러 수술] 장부가 없으면 먼저 빈 장부를 만듭니다! 👇👇👇
+                                        if "hk_ban_list" not in state: state["hk_ban_list"] = {}
+                                        # 👆👆👆 =======================================================
+                                        
                                         state["hk_ban_list"][slot_n] = curr_time + 600.0 
                                         
                                         ret_fsm = state.pop("hk_return_fsm", "IDLE")
@@ -12488,7 +12587,11 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             # 🚀 2. BRAKE_WAIT, IDLE 생략! 즉각 스나이퍼 조준 모드 진입!
                             state["target_fsm"] = "TARGET_AIMING"
                             state["aiming_start_time"] = curr_time 
-                            state["aiming_limit"] = g_val(1.5, 2.1)
+                            dng_name_aim1 = settings.get("dungeon_name", "")
+                            if "수던" in dng_name_aim1 or "heine" in dng_name_aim1.lower():
+                                state["aiming_limit"] = g_val(0.9, 1.3)
+                            else:
+                                state["aiming_limit"] = g_val(1.5, 2.1)
                             state["hover_retry_count"] = 0
                             
                             state["yolo_blind_active"] = False
@@ -14043,7 +14146,11 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     
                     state["target_fsm"] = "TARGET_AIMING"
                     state["aiming_start_time"] = curr_time 
-                    state["aiming_limit"] = g_val(1.5, 2.1)
+                    dng_name_aim2 = settings.get("dungeon_name", "")
+                    if "수던" in dng_name_aim2 or "heine" in dng_name_aim2.lower():
+                        state["aiming_limit"] = g_val(0.9, 1.3)
+                    else:
+                        state["aiming_limit"] = g_val(1.5, 2.1)
                     state["hover_retry_count"] = 0
                     state["cooldown"] = curr_time
 
@@ -14062,7 +14169,11 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         
                     state["target_fsm"] = "TARGET_AIMING"
                     state["aiming_start_time"] = curr_time 
-                    state["aiming_limit"] = g_val(1.5, 2.1)
+                    dng_name_aim3 = settings.get("dungeon_name", "")
+                    if "수던" in dng_name_aim3 or "heine" in dng_name_aim3.lower():
+                        state["aiming_limit"] = g_val(0.9, 1.3)
+                    else:
+                        state["aiming_limit"] = g_val(1.5, 2.1)
                     state["shift_brake_delay"] = 0.0
                     state["first_attempt"] = False
                     state["is_motion_target"] = False
@@ -14109,10 +14220,14 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         dprint(key, "🎯 [2차 타겟팅] 캐릭터 100% 정지 확인 완료! 2차 명중 스나이핑 발사 대기!")
                         state["target_fsm"] = "TARGET_AIMING"
                         state["aiming_start_time"] = curr_time 
-                        state["aiming_limit"] = g_val(1.5, 2.1) 
+                        dng_name_aim4 = settings.get("dungeon_name", "")
+                        if "수던" in dng_name_aim4 or "heine" in dng_name_aim4.lower():
+                            state["aiming_limit"] = g_val(0.9, 1.3)
+                        else:
+                            state["aiming_limit"] = g_val(1.5, 2.1) 
                         state["cooldown"] = curr_time + 0.05
                         
-                    state["first_attempt"] = False 
+                    state["first_attempt"] = False
                     state["stop_wait_start"] = 0
 
             # 🚨 [치명적 망부석(멍때림) 완벽 소각 엔진]
@@ -14433,7 +14548,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
 
             # 👇👇 [핵심 수술] 맨 끝에 'and not is_close_combat_scanning'을 추가하여 근접 탐색 중 딴짓하는 현상 완벽 방어!
             # 👑 [형님 오더 6] 대기(PARTY_WAIT) 중일 때도 멍때리지 말고 버프를 시전하도록 권한을 열어줍니다!
-            if state.get("is_hunt_active", False) and not mobs and not is_looting and state.get("target_fsm") in ["IDLE", "PARTY_WAIT", "SQUAD_WAIT"] and curr_time >= state["cooldown"] and not state.get("is_pulling", False) and curr_time >= state.get("body_cd", 0) and is_exp_safe_for_buff and not is_poisoned and not is_close_combat_scanning:
+            # 🚀 [추가] PARTY_ACTIVE_STANDBY (능동 대기) 상태일 때도 버프 시전을 허용!
+            if state.get("is_hunt_active", False) and not mobs and not is_looting and state.get("target_fsm") in ["IDLE", "PARTY_WAIT", "SQUAD_WAIT", "PARTY_ACTIVE_STANDBY"] and curr_time >= state["cooldown"] and not state.get("is_pulling", False) and curr_time >= state.get("body_cd", 0) and is_exp_safe_for_buff and not is_poisoned and not is_close_combat_scanning:
                 
                 expired_buffs = []
                 b_set = settings.get("buff_set", "선택안함")
@@ -14470,7 +14586,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                 if settings.get("use_trans") and curr_time > state.get("buff_trans_time", 0):
                     expired_buffs.append({"name": "trans", "page": 2, "key": KEY_F9, "double": False, "dur": BUFF_DUR_TRANS})
                 if settings.get("use_extra_f10") and curr_time > state.get("buff_extra_f10_time", 0):
-                    dur_seconds = int(settings.get("extra_f10_dur", "10분").replace("분", "")) * 60
+                    try: dur_seconds = int(settings.get("extra_f10_dur", "10분").replace("분", "")) * 60
+                    except: dur_seconds = 600.0
                     expired_buffs.append({"name": "extra_f10", "page": 2, "key": KEY_F10, "double": False, "dur": dur_seconds})
 
                 # =================================================================
@@ -14480,6 +14597,71 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     if curr_time > state.get("buff_blue_pot_time", 0):
                         blue_cd_seconds = settings.get("blue_cd_min", 20.0) * 60.0
                         expired_buffs.append({"name": "blue_pot", "page": 3, "key": KEY_F11, "double": False, "dur": blue_cd_seconds})
+
+                # 👇👇👇 [여기서부터 형님 마스터피스: 동반 엠탐 잉여 MP 선제 버프 소각 엔진!] 👇👇👇
+                # 💡 현재 파트너 엠탐을 기다리느라 대기 중인지 팩트 체크 (ACTIVE_STANDBY 중 호위 모드도 포함)!
+                is_guard_waiting = state.get("mptam_standby_guard", False) or (state.get("target_fsm") == "PARTY_ACTIVE_STANDBY" and state.get("mptam_extend_95", False))
+                
+                # 🚨 이미 만료된 진짜 급한 버프(expired_buffs)가 없을 때만 선제 시전을 가동합니다!
+                if not expired_buffs and is_guard_waiting and mp >= 95.0:
+                    pre_cands = []
+                    
+                    try: DUR_ENCHANT = BUFF_DUR_ENCHANT
+                    except: DUR_ENCHANT = 600.0
+                    try: DUR_BLESSED = BUFF_DUR_BLESSED
+                    except: DUR_BLESSED = 1200.0
+                    try: DUR_DEX = BUFF_DUR_DEX
+                    except: DUR_DEX = 300.0
+                    try: DUR_TRANS = BUFF_DUR_TRANS
+                    except: DUR_TRANS = 600.0
+                    
+                    if "1셋트" in b_set or "2셋트" in b_set or "3셋트" in b_set or "4셋트" in b_set:
+                        rem = max(0, state.get("buff_enchant_time", 0) - curr_time)
+                        # 💡 갓 시전한 버프 낭비 방지: 시간이 85% 미만으로 남았을 때만 후보 등록
+                        if 0 < rem < DUR_ENCHANT * 0.85: 
+                            pre_cands.append({"name": "enchant", "page": 2, "key": KEY_F7, "double": False, "dur": DUR_ENCHANT, "rem": rem})
+                        
+                    if "2셋트" in b_set or "3셋트" in b_set or "4셋트" in b_set:
+                        rem = max(0, state.get("buff_blessed_time", 0) - curr_time)
+                        if 0 < rem < DUR_BLESSED * 0.85: 
+                            pre_cands.append({"name": "blessed", "page": 2, "key": KEY_F8, "double": False, "dur": DUR_BLESSED, "rem": rem})
+                        
+                    if "3셋트" in b_set or "4셋트" in b_set:
+                        is_party_mode_f = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
+                        is_leader_lock_f = is_party_mode_f and settings.get("is_party_inviter", False)
+                        if not is_leader_lock_f:
+                            rem = max(0, state.get("buff_element_time", 0) - curr_time)
+                            if 0 < rem < 1200.0 * 0.85: 
+                                pre_cands.append({"name": "element", "page": 2, "key": KEY_F6, "double": False, "dur": 1200.0, "rem": rem})
+                            
+                    if "4셋트" in b_set:
+                        rem = max(0, state.get("buff_dex_time", 0) - curr_time)
+                        if 0 < rem < DUR_DEX * 0.85: 
+                            pre_cands.append({"name": "dex", "page": 2, "key": KEY_F11, "double": True, "dur": DUR_DEX, "rem": rem})
+                        
+                    if settings.get("use_trans"):
+                        rem = max(0, state.get("buff_trans_time", 0) - curr_time)
+                        if 0 < rem < DUR_TRANS * 0.85: 
+                            pre_cands.append({"name": "trans", "page": 2, "key": KEY_F9, "double": False, "dur": DUR_TRANS, "rem": rem})
+                        
+                    if settings.get("use_extra_f10"):
+                        try: dur_seconds = int(settings.get("extra_f10_dur", "10분").replace("분", "")) * 60
+                        except: dur_seconds = 600.0
+                        rem = max(0, state.get("buff_extra_f10_time", 0) - curr_time)
+                        if 0 < rem < dur_seconds * 0.85: 
+                            pre_cands.append({"name": "extra_f10", "page": 2, "key": KEY_F10, "double": False, "dur": dur_seconds, "rem": rem})
+                        
+                    if pre_cands:
+                        # 🚀 잔여 시간(rem)이 가장 적은 순으로 오름차순 정렬!
+                        pre_cands.sort(key=lambda x: x["rem"])
+                        
+                        # 가장 빨리 꺼질 버프 딱 1개만 추출
+                        best_pre_buff = pre_cands[0]
+                        rem_val = best_pre_buff.pop("rem") # 기존 배열 호환성을 위해 임시 변수 제거
+                        
+                        expired_buffs.append(best_pre_buff) # 정규 버프 큐에 강제 삽입!
+                        dprint(key, f"⏳ [잉여 마나 선제 버프] 파트너 대기 중 MP 95% 도달! 남은 시간이 가장 짧은 '{best_pre_buff['name']}'({rem_val:.0f}초 남음) 버프를 선제 시전합니다!")
+                # 👆👆👆 =================================================================================
 
                 if expired_buffs:
                     # 🚨 MP가 50.0 미만이라도 마나 소모가 없는 버프는 씹히지 않고 실행되도록 보장 (쉴드, 디크리즈 추가!)
@@ -14519,6 +14701,10 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         state["buff_start_mp"] = mp
                         state["current_buff"] = target_buff 
                         state["buff_retry_cnt"] = 0 # 💡 재시도 카운트 초기화!
+                        
+                        # 👇👇👇 [안전장치: 버프 완료 후 원래 상태 복구] 👇👇👇
+                        state["buff_return_fsm"] = state.get("target_fsm", "IDLE")
+                        # 👆👆👆 =========================================
                         
                         state["target_fsm"] = "BUFFING_START_PAGE"
                         state["cooldown"] = curr_time + 0.1
@@ -14657,6 +14843,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                 # ========================================================
                 item_boxes = []
                 ignored_boxes = []
+                raw_item_boxes = [] # 👇👇👇 [치명적 에러 수술] 미리 빈 상자를 만들어 두어 에러 원천 차단!
 
                 if role in ["LEADER", "DUNGEON"] and not action_taken:
                     
@@ -14709,10 +14896,9 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             raw_item_boxes = []
                             if state.get("sweep_active", False):
                                 pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
-                        # 👇👇👇 [수술 완료: 누락된 else 스캔 구문 완벽 추가!] 👇👇👇
                         else:
+                            # 🚀 [에러 수술] 파티 이동식 엠탐 중 아이템 스캔 로직 복구! (누락된 else 문 추가)
                             raw_item_boxes = find_item_boxes(img_bgr)
-                        # 👆👆👆 =========================================
                             
                     # 🚨 [스캔 강제 차단] 방금 진짜 킬 낸 게 아니라면(10초 지남), 전투/조준 중이어도 바닥 스캔을 칼같이 차단!
                     elif not is_actively_looting and not is_recent_kill_for_scan:
@@ -15048,7 +15234,11 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                             
                         state["target_fsm"] = "TARGET_AIMING"
                         state["aiming_start_time"] = curr_time 
-                        state["aiming_limit"] = g_val(1.5, 2.1)
+                        dng_name_aim5 = settings.get("dungeon_name", "")
+                        if "수던" in dng_name_aim5 or "heine" in dng_name_aim5.lower():
+                            state["aiming_limit"] = g_val(0.9, 1.3)
+                        else:
+                            state["aiming_limit"] = g_val(1.5, 2.1)
                         state["hover_retry_count"] = 0
                         
                         state["yolo_blind_active"] = False
@@ -20325,11 +20515,16 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                         # 👆👆👆 ======================================================== 👆👆👆
                             
                         dng_mptam_esc = settings.get("dungeon_name", "")
-                        if is_mp_empty_3sec or "event" in dng_mptam_esc or "오땅" in dng_mptam_esc:
+                        is_special_mptam_esc = "event" in dng_mptam_esc.lower() or "오땅" in dng_mptam_esc
+                        
+                        if is_mp_empty_3sec or is_special_mptam_esc:
                             state["dungeon_global_path"] = []
                             state["is_pulling"] = False
                             state["target_fsm"] = "TOWN_MAINT_NORMAL_RETURN"
-                            state["event_skip_maint"] = True 
+                            
+                            if is_special_mptam_esc:
+                                state["event_skip_maint"] = True # 🚀 특수 던전일 때만 정비 스킵!
+                                
                             state["is_mptam_mode"] = False 
                             state["mptam_low_mp_tele_cd"] = curr_time + 3.0
                             state["cooldown"] = curr_time + 0.1
