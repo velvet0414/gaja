@@ -19058,15 +19058,6 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                     state["dungeon_angle"] = best_angle % (2*math.pi)
                                                     action_taken = True
 
-                                                state["astar_fail_count"] = 0
-                                                with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                                                if state.get("sweep_active", False):
-                                                    pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
-                                                pico_queues[key].put({"action": "TELEPORT"})
-                                                state["is_pulling"] = False; state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
-                                                state["teleport_start_mp"] = mp; state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
-                                                state["tele_retry_cnt"] = 0; state["cooldown"] = curr_time + 1.0
-                                                continue
                                 elif not action_taken and not goal_node:
                                     # ----------------------------------------------------
                                     # 🌲 트랙 B (일반 맵 순정 코너링 로직 원본 100%)
