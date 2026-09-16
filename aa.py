@@ -5671,7 +5671,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     m_is_help_move = my_fsm == "PARTY_RETREAT_NAV" and ("구출" in str(state.get("retreat_reason", "")) or "대피" in str(state.get("retreat_reason", "")))
                     m_is_helping_or_fleeing = state.get("help_requester", False) or state.get("helping_who") is not None
                     
-                    is_me_hunting = not state.get("is_mptam_mode", False) and my_fsm not in ["TOWN_MAINT", "EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] and not my_fsm.startswith("DEATH")
+                    # 🚀 [수술 2-2] 여기도 startswith 적용
+                    is_me_hunting = not state.get("is_mptam_mode", False) and not my_fsm.startswith("TOWN_MAINT") and my_fsm not in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] and not my_fsm.startswith("DEATH")
                     
                     # 팟바람이거나 구출(헬프)/대피(도망) 상태일 때는 is_me_hunting을 False로 만들지 않음!
                     if my_fsm.startswith("PARTY_") and not (m_is_buffing_move or m_is_help_move or m_is_helping_or_fleeing):
@@ -5695,7 +5696,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     # 👆👆👆 =====================================================================
                     
                     if is_p_mptam and not is_m_out_of_zone and p_pos and curr_map_pos:
-                        if my_fsm not in ["TOWN_MAINT", "EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] and not my_fsm.startswith("DEATH") and not my_fsm.startswith("PARTY_"):
+                        if not my_fsm.startswith("TOWN_MAINT") and my_fsm not in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] and not my_fsm.startswith("DEATH") and not my_fsm.startswith("PARTY_"):
                             dist_to_p = math.hypot(curr_map_pos[0] - p_pos[0], curr_map_pos[1] - p_pos[1])
                             i_am_combat_mptam = my_fsm in ["COMBAT", "TARGET_AIMING", "HOVER_WAIT", "SNAP_WAIT", "MOTION_SNAP_CHECK_SWORD", "HEINE_GMOB_VERIFY"] or state.get("is_attacking", False) or state.get("arrow_is_firing", False) or my_fsm.startswith("LOOT") or state.get("sweep_active", False)
                             
@@ -6362,6 +6363,12 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
 
                         state["is_pulling"] = False; state["is_attacking"] = False; state["arrow_is_firing"] = False; state["has_fired_arrow"] = False
                         
+                        # 👇👇👇 [신규 추가: 맵 위치 유령화 완벽 초기화] 👇👇👇
+                        state["dungeon_map_pos"] = None
+                        state["dungeon_last_map_pos"] = None
+                        state["dungeon_global_path"] = []
+                        # 👆👆👆 ====================================== 👆👆👆
+
                         state["target_fsm"] = "SHUTDOWN_WAIT"
                         state["shutdown_timer"] = curr_time + 2.0
                         state["abs_return_cd"] = curr_time + 5.0 
@@ -6834,7 +6841,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 ai_states[key]["cooldown"] = time.time() + 0.1
 
                             # ======================================================
-                            # [STEP 2] 창고에 템 맡기기
+                            # [STEP 2] 창고에 템 맡기기 (파란색 0초 스킵 + 0.2초 팩트체크 엔진)
                             # ======================================================
                             elif step_name == "DO_LEAVE":
                                 if img_on is not None:
@@ -6866,7 +6873,6 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                 npc_img = "qq/npc_hakim.png" if wh_target == 1 else "qq/npc_hakim2.png"
                                 npc_desc = "하킴 NPC" if wh_target == 1 else "말섬 창고 NPC"
 
-                                # 🚀 [오인식 방지] th=0.82 추가
                                 if not click_img(npc_img, npc_desc, th=0.82, timeout=5.0, oy=35, jx=5, jy=6, d_min=0.3, d_max=0.45, ui_only=False): 
                                     handle_wh_fail()
                                     return
@@ -6887,67 +6893,91 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         found_any = False
                                         screen_chk = latest_frames.get(key)
                                         
-                                        # 👇👇👇 [완벽 수술: 메인/파티/오버라이드 사냥터 이름 통합 판독기] 👇👇👇
                                         is_party_for_leave = current_settings.get(key, {}).get("use_party_hunt", False) or current_settings.get(key, {}).get("use_party_fixed", False)
                                         dng_name = current_settings.get(key, {}).get("party_dungeon_name", "") if is_party_for_leave else current_settings.get(key, {}).get("dungeon_name", "")
                                         if ai_states.get(key, {}).get("override_dungeon_name"):
                                             dng_name = ai_states[key]["override_dungeon_name"]
                                             
-                                        # 🚀 형님 오더: 오직 '개미굴'에서만 엔줄(ent) 맡기기를 스킵합니다!
                                         skip_ent_dungeons = ["개미굴"] 
-                                        # 👆👆👆 =========================================================================
                                         
                                         for tmpl_dict in LEAVE_TEMPLATES:
                                             tmpl_name = tmpl_dict['name']
-                                            # 💡 엔트, 엔줄, 엔테, ent 모두 완벽하게 걸러냄
                                             is_ent_item = ("ent" in tmpl_name.lower() or "엔줄" in tmpl_name or "엔테" in tmpl_name or "엔트" in tmpl_name)
                                             if is_ent_item and any(kw in dng_name.lower() for kw in skip_ent_dungeons):
                                                 continue
                                             
                                             pos_list = find_all_imgs_universal(tmpl_dict, th=0.82, ui_only=True)
                                             
-                                            # 👇👇👇 [핵심 수술 1: 스크롤 관성 안정화 및 팩트 좌표 재스캔 엔진 이식] 👇👇👇
-                                            if pos_list:
-                                                dprint(key, f"📦 맡길 템({tmpl_name}) 1차 포착! 스크롤 잔상 안정화 0.4초 대기...")
-                                                time.sleep(0.4) # 💡 화면 미끄러짐이 완전히 멈출 때까지 대기
+                                            # 👇👇👇 [순서 교정 수술 1: 파란색인지 먼저 검사해서 0초 만에 스킵!] 👇👇👇
+                                            valid_target_pos = None
+                                            
+                                            if pos_list and screen_chk is not None:
+                                                h_s, w_s = screen_chk.shape[:2]
                                                 
-                                                # 멈춘 상태의 최신 화면으로 한 번 더 스캔하여 '진짜 좌표' 획득!
+                                                for pos in pos_list:
+                                                    is_already_selected = False
+                                                    chk_x1 = int(pos[0])
+                                                    chk_y1 = int(pos[1])
+                                                    chk_x2 = min(w_s, chk_x1 + 60)
+                                                    chk_y2 = min(h_s, chk_y1 + 20)
+                                                    
+                                                    if chk_x2 > chk_x1 and chk_y2 > chk_y1:
+                                                        chk_roi = screen_chk[chk_y1:chk_y2, chk_x1:chk_x2]
+                                                        hsv_roi = cv2.cvtColor(chk_roi, cv2.COLOR_BGR2HSV)
+                                                        mask_blue = cv2.inRange(hsv_roi, np.array([100, 50, 30]), np.array([140, 255, 150]))
+                                                        if cv2.countNonZero(mask_blue) >= 20:
+                                                            is_already_selected = True
+                                                    
+                                                    # 이미 누른 파란색이면 즉시 0초 만에 버리고 다음 템 검사! (무한 멍때림 완전 소각)
+                                                    if is_already_selected: continue 
+                                                    
+                                                    # 파란색이 아니다 = 진짜 새로 눌러야 할 타겟이다!
+                                                    valid_target_pos = pos
+                                                    break 
+                                                        
+                                            # 👇👇👇 [수술 2: 진짜 누를 템일 때만 0.2초 팩트체크 대기!] 👇👇👇
+                                            if valid_target_pos:
+                                                dprint(key, f"📦 맡길 템({tmpl_name}) 진짜 포착! 스크롤 안정화 대기 (0.2초)...")
+                                                time.sleep(0.2) # 💡 선생님 요청: 딱 0.2초만 대기
+                                                
+                                                # 0.2초 대기 후 멈춘 상태의 최신 화면으로 한 번 더 스캔하여 '진짜 좌표' 획득!
                                                 screen_chk2 = latest_frames.get(key)
                                                 pos_real_list = find_all_imgs_universal(tmpl_dict, th=0.82, ui_only=True)
                                                 
-                                                if not pos_real_list:
-                                                    dprint(key, "⚠️ 스크롤 관성으로 타겟 이탈. 다음 턴에 다시 찾습니다.")
-                                                    continue
+                                                final_pos = None
+                                                if pos_real_list and screen_chk2 is not None:
+                                                    h_s2, w_s2 = screen_chk2.shape[:2]
+                                                    for r_pos in pos_real_list:
+                                                        # 방금 0.2초 전에 찾았던 좌표 근처에 여전히 템이 있는지 확인
+                                                        if abs(r_pos[0] - valid_target_pos[0]) < 15 and abs(r_pos[1] - valid_target_pos[1]) < 15:
+                                                            is_selected = False
+                                                            rx1, ry1 = int(r_pos[0]), int(r_pos[1])
+                                                            rx2, ry2 = min(w_s2, rx1 + 60), min(h_s2, ry1 + 20)
+                                                            if rx2 > rx1 and ry2 > ry1:
+                                                                r_roi = screen_chk2[ry1:ry2, rx1:rx2]
+                                                                r_hsv = cv2.cvtColor(r_roi, cv2.COLOR_BGR2HSV)
+                                                                r_mask = cv2.inRange(r_hsv, np.array([100, 50, 30]), np.array([140, 255, 150]))
+                                                                if cv2.countNonZero(r_mask) >= 20:
+                                                                    is_selected = True
+                                                                    
+                                                            if not is_selected:
+                                                                final_pos = r_pos
+                                                                break
+                                                                
+                                                if not final_pos:
+                                                    dprint(key, "⚠️ 스크롤 관성으로 타겟 이탈 또는 이미 눌림. 다음 턴에 다시 찾습니다.")
+                                                    continue # 놓쳤으면 클릭 안 하고 시원하게 패스!
                                                     
-                                                for pos in pos_real_list:
-                                                    is_already_selected = False
-                                                    if screen_chk2 is not None:
-                                                        h_s, w_s = screen_chk2.shape[:2]
-                                                        chk_x1 = int(pos[0])
-                                                        chk_y1 = int(pos[1])
-                                                        chk_x2 = min(w_s, chk_x1 + 60)
-                                                        chk_y2 = min(h_s, chk_y1 + 20)
-                                                        
-                                                        if chk_x2 > chk_x1 and chk_y2 > chk_y1:
-                                                            chk_roi = screen_chk2[chk_y1:chk_y2, chk_x1:chk_x2]
-                                                            hsv_roi = cv2.cvtColor(chk_roi, cv2.COLOR_BGR2HSV)
-                                                            mask_blue = cv2.inRange(hsv_roi, np.array([100, 50, 30]), np.array([140, 255, 150]))
-                                                            if cv2.countNonZero(mask_blue) >= 20:
-                                                                is_already_selected = True
-                                                    
-                                                    if is_already_selected: continue 
-                                                    
-                                                    dprint(key, f"✅ 맡길 템({tmpl_name}) 팩트 좌표({pos[0]}, {pos[1]}) 확정! 수량(11111) 입력 발사.")
-                                                    time.sleep(g_val(0.15, 0.25))
-                                                    m_click(pos[0], pos[1], jx=13, jy=3, d_min=0.08, d_max=0.15)
-                                                    time.sleep(g_val(0.05, 0.1))
-                                                    m_spam_one() 
-                                                    time.sleep(g_val(0.2, 0.3)) 
-                                                    has_handled_any = True
-                                                    found_any = True
-                                                    break 
-                                            if found_any: break 
-                                            # 👆👆👆 [수술 1 끝] 👆👆👆
+                                                dprint(key, f"✅ 정확한 팩트 좌표({final_pos[0]}, {final_pos[1]}) 획득! 수량(11111) 입력합니다.")
+                                                time.sleep(g_val(0.15, 0.25))
+                                                m_click(final_pos[0], final_pos[1], jx=13, jy=3, d_min=0.08, d_max=0.15)
+                                                time.sleep(g_val(0.05, 0.1))
+                                                m_spam_one() 
+                                                time.sleep(g_val(0.2, 0.3)) 
+                                                has_handled_any = True
+                                                found_any = True
+                                                break 
+                                            # 👆👆👆 =======================================================================
                                         
                                         if found_any:
                                             stuck_scrolls = 0
@@ -6957,18 +6987,6 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         if screen is not None:
                                             h_scr, w_scr = screen.shape[:2]
                                             c_x, c_y = ai_states.get(key, {}).get("cursor_pos", [120, 200])
-                                            
-                                            # 👇👇👇 [핵심 수술 2: 스크롤 전 마우스 안전 구역 강제 주차 (우측 툴팁 가림 & 헛방 스크롤 차단)] 👇👇👇
-                                            safe_x, safe_y = 150, int(h_scr * 0.4)
-                                            if c_x > 290 or c_x < 50: # 마우스가 우측 인벤을 침범했다면 좌측 창고 구역으로 빼줌!
-                                                dx, dy = safe_x - c_x, safe_y - c_y
-                                                dur = apply_human_variance(0.12 + 0.04 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0))
-                                                deltas = generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)
-                                                if deltas: send_macro_buffer(p_serial, p_lock, deltas, key)
-                                                if key in ai_states: ai_states[key]["cursor_pos"] = [safe_x, safe_y]
-                                                time.sleep(dur + 0.05)
-                                                c_x, c_y = safe_x, safe_y
-                                            # 👆👆👆 [수술 2 끝] 👆👆👆
                                             
                                             chk_x1, chk_y1 = max(0, int(c_x) - 50), max(0, int(c_y) - 15)
                                             chk_x2, chk_y2 = min(w_scr, int(c_x) + 50), min(h_scr, int(c_y) + 15)
@@ -6987,9 +7005,8 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                 dprint(key, f"🛑 [맡기기 스크롤 끝] 커서 반경 변화 없음. 바닥 도달 확정.")
                                                 break
                                                 
-                                        # 🚀 [가속 완화 및 대기 연장]
-                                        send_mouse_scroll(p_serial, p_lock, -1 * int(round(g_val(5, 8))))
-                                        time.sleep(g_val(0.25, 0.35))
+                                        send_mouse_scroll(p_serial, p_lock, -1 * int(round(g_val(7, 10))))
+                                        time.sleep(g_val(0.08, 0.13))
                                 
                                     if has_handled_any:
                                         dprint(key, f"▶ [통합 결제] O.K. 버튼을 딱 1번 눌러 일괄 위탁합니다.")
@@ -17930,10 +17947,9 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     state["designated_base_node"] = None
                                     state["is_active_standby"] = False
                                     # 👆👆👆 =========================================
-                                    
-                                    # 💡 위기가 끝났으므로 굳이 헬퍼를 기다리지 않고 바로 사냥(IDLE)으로 전환!
-                                    # 만약 마나가 40%라 아직 엠탐이 더 필요하다면 메인 루프가 알아서 엠탐 모드를 유지해 줍니다.
-                                    state["target_fsm"] = "IDLE"
+                                    if not str(state.get("target_fsm", "")).startswith("TOWN_MAINT"):
+                                        state["target_fsm"] = "IDLE"
+                                        
                                     state["cooldown"] = curr_time + 0.1
                                     action_taken = True
                                 # 👆👆👆 ==============================================================
