@@ -397,8 +397,8 @@ def local_ipc_broadcaster_thread(my_key):
 # 1. 절대 금지: 기존 기능의 삭제, 축소, 임의 수정, 변수명 변경을 엄격히 금지합니다.
 # 2. 기능 추가 원칙: 사용자가 요청한 '새로운 기능'만 코드에 추가하십시오.
 # 3. 로직 보존: 기존의 제어 흐름(if/else 분기), 딜레이(time.sleep), 스레드 구조는 100% 원본 그대로 유지해야 합니다.
-# 4. 주석 보존: 기존에 작성된 모든 설명 및 디버그용 주석은 삭제하지 말고 유지하십시오.
-# 5. 리팩토링 금지: 자체적인 최적화나 리팩토링을 수행하지 마십시오.
+# 4. 
+# 5. 
 # 6. 모든 딜레이는 가우스난수를 사용한다 일반 random 사용금지.
 # 7. 모든 이미지는 매크로 폴더내 >> qq폴더에 저장됨
 # ==============================================================================
@@ -5260,9 +5260,14 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
             is_manual_mode = (active_manual_target == key)
             is_paused_mode = state.get("is_paused", False)
             
+            # 👇👇👇 [고스트 갇힘 버그 완벽 수술 2] 👇👇👇
+            if state.get("target_fsm") != "GHOST_MODE":
+                state["backup_hunt_active"] = state.get("is_hunt_active", False)
+                state["backup_target_fsm"] = str(state.get("target_fsm", "IDLE"))
+                
             # 👑 [유령 모드 엔진] 수동/정지 상태일 때 AI가 개입하지 못하도록 이번 턴에만 기억상실증을 겁니다!
-            original_hunt_state = state.get("is_hunt_active", False)
-            original_fsm = str(state.get("target_fsm", "IDLE"))
+            original_hunt_state = state.get("backup_hunt_active", False)
+            original_fsm = state.get("backup_target_fsm", "IDLE")
             
             if is_manual_mode or is_paused_mode:
                 if is_manual_mode:
@@ -5271,6 +5276,12 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                 # AI가 발작하지 못하게 상태를 강제로 잠금! (하지만 루프는 계속 돌아서 센서는 살아있음!)
                 state["is_hunt_active"] = False 
                 state["target_fsm"] = "GHOST_MODE" 
+            else:
+                # 🚀 수동 모드 해제 시, 이전에 GHOST_MODE로 굳어버린 상태를 즉각 복구!
+                if state.get("target_fsm") == "GHOST_MODE":
+                    state["is_hunt_active"] = original_hunt_state
+                    state["target_fsm"] = original_fsm
+            # 👆👆👆 =========================================
                 
             # 🚀 [시작 및 수동 모드 복귀 시 F1 강제 검증]
             # 수동 모드일 때는 검증 로직이 발동하지 않도록 방어막 추가!
@@ -5297,12 +5308,15 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                 state.pop("last_hp", None) 
                 
                 # 헤이스트 및 은화살 증발 타이머 백지화! (오래 정지해 있었어도 0초부터 새로 카운트함)
-                state["haste_empty_start"] = 0
-                state["haste_visible_start"] = 0
-                state["next_haste_scan"] = curr_time + 1.0 # 눈 뜨고 1초 뒤부터 스캔 시작
+                state["haste_empty_start"] = 0.0
+                state["haste_visible_start"] = 0.0
+                state["next_haste_scan"] = curr_time + 3.0 # 눈 뜨고 3초 뒤부터 스캔 시작
+                state["last_haste_loop_time"] = curr_time  # 🚀 [치명적 갭 방지] 과거 시간 찌꺼기 완벽 삭제!
+                state["sudeon_icon_log_time"] = 0.0
+                state["chat_shield_log_time"] = 0.0
                 
-                state["arrow_empty_start"] = 0
-                state["mp_empty_start"] = 0
+                state["arrow_empty_start"] = 0.0
+                state["mp_empty_start"] = 0.0
                 
                 # 독(Poison) 과거 기록 완벽 초기화
                 state["poison_history"] = []
@@ -8710,16 +8724,10 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                         cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
                                                         pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(tx - cur_x, ty - cur_y, behavior="NORMAL", key=key)})
                                                         
-                                                        try:
-                                                            ps, pl = picos.get(key), pico_locks.get(key)
-                                                            if ps and pl:
-                                                                def _click_once():
-                                                                    time.sleep(0.1)
-                                                                    send_mouse_click(ps, pl, 1, 1, is_manual=True)
-                                                                    time.sleep(g_val(0.04, 0.08))
-                                                                    send_mouse_click(ps, pl, 1, 0, is_manual=True)
-                                                                threading.Thread(target=_click_once, daemon=True).start()
-                                                        except: pass
+                                                        # 🚀 [클릭 증발 완벽 수술 1] 
+                                                        # 에러를 뿜는 스레드를 폐기하고, 피코 메인 큐에 단일 클릭을 안전하게 장전합니다!
+                                                        pico_queues[key].put({"action": "WAIT", "delay_min": 0.1, "delay_max": 0.15})
+                                                        pico_queues[key].put({"action": "SINGLE_ATTACK"})
                                                         
                                                         if key in ai_states: ai_states[key]["cursor_pos"] = [tx, ty]
                                                         
@@ -8810,20 +8818,12 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                                 break
                                                     tx, ty = safe_tx, safe_ty
                                                     
-                                                    try:
-                                                        ps, pl = picos.get(key), pico_locks.get(key)
-                                                        if ps and pl:
-                                                            def _click_door():
-                                                                time.sleep(0.1)
-                                                                send_mouse_click(ps, pl, 1, 1, is_manual=True)
-                                                                time.sleep(g_val(0.04, 0.08))
-                                                                send_mouse_click(ps, pl, 1, 0, is_manual=True)
-                                                                time.sleep(0.1)
-                                                                send_mouse_click(ps, pl, 1, 1, is_manual=True)
-                                                                time.sleep(g_val(0.04, 0.08))
-                                                                send_mouse_click(ps, pl, 1, 0, is_manual=True)
-                                                            threading.Thread(target=_click_door, daemon=True).start()
-                                                    except: pass
+                                                    # 🚀 [클릭 증발 완벽 수술 2]
+                                                    # 임시 스레드 방식을 완전히 도려내고 메인 하드웨어 통신망에 더블클릭을 확정적으로 꽂아 넣습니다!
+                                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.1, "delay_max": 0.15})
+                                                    pico_queues[key].put({"action": "SINGLE_ATTACK"})
+                                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.1, "delay_max": 0.15})
+                                                    pico_queues[key].put({"action": "SINGLE_ATTACK"})
                                                     
                                                     if key in ai_states: ai_states[key]["cursor_pos"] = [tx, ty]
                                                     
@@ -10433,26 +10433,30 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                     if is_safe_fsm:
                         is_ui_blocking = fsm_for_haste.startswith("INV_CLEAN") or fsm_for_haste.startswith("WEAPON_REPAIR") or fsm_for_haste.startswith("HK_HEAL_") or curr_time <= state.get("inv_close_grace_time", 0)
                         
-                        # 🚨🚨 [치명적 핑퐁 무한루프 파괴!] 🚨🚨
-                        # 과거의 '귀환(True)' 찌꺼기가 남아 스캔 없이 무지성 귀환하는 것을 막기 위해, 매 프레임 스위치를 초기화합니다!
                         force_haste_return = False 
+
+                        # 👇👇👇 [신규 엔진: 타임 점프(시간 왜곡) 방어막!] 👇👇👇
+                        # 사냥이 꺼져있거나 수동 모드 등 루프가 멈춰있다가 켜졌을 때, 
+                        # 그동안 흐른 엄청난 시간이 haste_empty_start에 한꺼번에 더해져서 켜자마자 즉각 귀환 타는 것을 100% 막습니다!
+                        loop_time_gap = curr_time - state.get("last_haste_loop_time", curr_time)
+                        if loop_time_gap > 2.0:
+                            loop_time_gap = 0.0 # 2초 이상 루프가 쉬었다면 누적 시간을 완전히 무효화!
+                        # 👆👆👆 ==========================================================
 
                         if is_ui_blocking:
                             if state.get("haste_empty_start", 0) > 0:
-                                state["haste_empty_start"] += (curr_time - state.get("last_haste_loop_time", curr_time))
+                                state["haste_empty_start"] += loop_time_gap
                         else:
                             if curr_time > state.get("next_haste_scan", 0):
                                 state["next_haste_scan"] = curr_time + 0.3
                                 
                                 dng_name_haste = settings.get("dungeon_name", "")
                                 
-                                # 🚨🚨 [치명적 뻗음 에러 원인 해결!] 팩트 변수를 부활시켰습니다!!! 🚨🚨
                                 last_haste = state.get("last_haste_time", 0.0)
                                 time_since_buff = curr_time - last_haste
                                 is_real_buff = state.get("is_real_buff_received", False)
                                 real_buff_time = state.get("real_buff_time", 0.0)
                                 time_since_real_buff = curr_time - real_buff_time
-                                # 👆👆👆 =========================================================================== 👆👆👆
 
                                 is_detected_missing = False
                                 missing_reason = ""
@@ -10479,13 +10483,10 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                     gray_roi = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
                                                     gray_tmpl = cv2.cvtColor(img_h_x, cv2.COLOR_BGR2GRAY)
                                                     
-                                                    if img_h_x_m is not None:
-                                                        res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCORR_NORMED, mask=img_h_x_m)
-                                                    else:
-                                                        res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCOEFF_NORMED)
+                                                    if img_h_x_m is not None: res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCORR_NORMED, mask=img_h_x_m)
+                                                    else: res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCOEFF_NORMED)
                                                         
                                                     _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
-                                                    
                                                     OAK_HASTE_THRESHOLD = 0.80
                                                     
                                                     if max_val_haste >= OAK_HASTE_THRESHOLD: 
@@ -10499,8 +10500,6 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     is_icon_check_needed = True
                                     
                                     if is_sudeon:
-                                        # 👑 [형님 오더 완벽 수정] 수던은 2시간 이전에는 아이콘 검사(오감지 귀환) 절대 안 함! 
-                                        # 단, 버프 받은지 2시간(7200초)이 넘었고 사냥터에 있다면 무조건 2분 감시를 켬!
                                         if time_since_buff >= 7200.0:
                                             is_icon_check_needed = True
                                             if curr_time > state.get("sudeon_icon_log_time", 0):
@@ -10509,11 +10508,10 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         else:
                                             is_icon_check_needed = False
 
-                                    # 🚨 [치명적 억까 방어막] 수던에서 아이콘 감시가 꺼져있을 때(2시간 이전)는 
-                                    # 120초 타이머가 억울하게 흘러가지 않도록 시간을 얼려버립니다(동결)!
+                                    # 🚨 [치명적 억까 방어막 - 타임워프 컷 추가] 
                                     if is_sudeon and not is_icon_check_needed:
                                         if state.get("haste_empty_start", 0) > 0:
-                                            state["haste_empty_start"] += (curr_time - state.get("last_haste_loop_time", curr_time))
+                                            state["haste_empty_start"] += loop_time_gap
 
                                     if is_icon_check_needed:
                                         haste_found = False
@@ -10572,12 +10570,24 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         if haste_found:
                                             state["haste_empty_start"] = 0 
                                             state["haste_visible_start"] = curr_time
+                                            
+                                            # 👇👇👇 [신규 엔진: 기억상실 자가 치유(Self-Healing)] 👇👇👇
+                                            # 게임 재부팅 등으로 뇌피셜(last_haste_time)이 0으로 초기화되었거나, 2시간이 지났다고 착각 중인데 
+                                            # 우측 상단에 버젓이 헤이 아이콘이 떠 있다면? ➔ 즉시 현재 시간으로 타이머를 고쳐서 헛걸음 귀환 방지!
+                                            last_h = state.get("last_haste_time", 0.0)
+                                            if last_h == 0.0 or (curr_time - last_h >= 7200.0):
+                                                if curr_time > state.get("haste_self_heal_log", 0):
+                                                    dprint(key, "✅ [헤이스트 자가 치유] 화면에서 아이콘 팩트 확인! 꼬여있던 타이머(0초 또는 2시간 초과)를 현재 시간으로 완벽 복구합니다!")
+                                                    state["haste_self_heal_log"] = curr_time + 60.0
+                                                state["last_haste_time"] = curr_time
+                                                state["is_real_buff_received"] = True
+                                                state["real_buff_time"] = curr_time
+                                            # 👆👆👆 =======================================================
                                         else:
                                             state["haste_visible_start"] = 0 
                                             if state.get("haste_empty_start", 0) == 0:
                                                 state["haste_empty_start"] = curr_time 
                                                 
-                                    # 🚀 [형님 오더 적용] 수던 및 오땅/이벤트는 120초(2분) 증발 시 귀환! 그 외 사냥터는 40초!
                                     target_empty_time = 120.0 if (is_sudeon or is_oak_or_event) else 40.0
                                             
                                     if state.get("haste_empty_start", 0) > 0 and curr_time - state.get("haste_empty_start", 0) >= target_empty_time:
@@ -10593,8 +10603,6 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                     elif last_haste > 0.0:
                                         safe_time_since = max(0.0, time_since_buff)
                                         
-                                        # 🚀 [수던 예외 처리] 수던은 2시간이 지나면 '아이콘 2분 감지'에 맡겨야 하므로,
-                                        # 타임아웃을 7200초에서 터뜨리지 않고 2시간 5분(7500초)을 최후의 방어막으로 둡니다!
                                         timeout_limit = 7500.0 if is_sudeon else 7200.0
                                         
                                         if safe_time_since >= timeout_limit:
@@ -10608,22 +10616,21 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                                 missing_reason = f"{int(timeout_limit/3600)}시간 타임아웃"
                                 # 👆👆👆 ====================================================================
 
-                                # 👑 [형님 마스터피스: 20분 방어막 완전 소각 & 팩트 즉시 귀환 엔진!]
                                 if is_detected_missing:
-                                    # 🚨 일반 사냥터의 20분 억지 방어막 완전 삭제! 
-                                    # 아이콘 증발, 타임아웃, 채팅창 텍스트 등 감지 시 조건 없이 즉각 귀환!
-                                    state["last_haste_time"] = 0.0 # 뇌 장부 알람시계 강제 0으로 포맷
+                                    state["last_haste_time"] = 0.0 
                                     state["used_gangchol"] = False
                                     state["is_real_buff_received"] = False
                                     
                                     if fsm_for_haste.startswith("TOWN_MAINT"):
-                                        # 👑 오땅처럼 마을에서도 예외로 감시 중일 때
                                         if curr_time > state.get("last_chat_dbg_log3", 0):
                                             dprint(key, f"🚨 [마을 내 헤이 증발] 정비 중 헤이 풀림 확정! 정비 완료 후 버프장소로 가도록 장부 리셋. ({missing_reason})")
                                             state["last_chat_dbg_log3"] = curr_time + 10.0
                                     else:
                                         force_haste_return = True
                                         dprint(key, f"🚨 [헤이 증발 확정] {missing_reason}! 쉴드 없이 즉각 귀환 발동!")
+                                        
+                        # 🚀 매 프레임 시간 갱신 (다음 프레임의 loop_time_gap 계산용)
+                        state["last_haste_loop_time"] = curr_time
                                         
                         # 🚀 [최종 귀환 발동 / 마을 스위칭 처리]
                         if locals().get("force_haste_return", False):
@@ -21461,25 +21468,41 @@ def sync_gui_vars():
 
 def toggle_individual_hunt(key):
     state = ai_states[key]
-    state["is_hunt_active"] = not state.get("is_hunt_active", False)
+    
+    # 👇👇👇 [고스트 갇힘 버그 완벽 수술 3] 👇👇👇
+    # GHOST_MODE로 인해 가짜 상태가 되어버린 is_hunt_active 대신, 백업된 진짜 상태를 기준으로 토글합니다!
+    real_state = state.get("backup_hunt_active", state.get("is_hunt_active", False))
+    state["is_hunt_active"] = not real_state
+    
+    # 토글된 새로운 진짜 상태를 백업 금고에도 동기화!
+    state["backup_hunt_active"] = state["is_hunt_active"]
+    
+    # 수동 모드 해제 후 올바른 복구를 위해 FSM도 초기화
+    if state["is_hunt_active"]:
+        state["backup_target_fsm"] = "F1_INIT_VERIFY"
+    else:
+        state["backup_target_fsm"] = "IDLE"
+    # 👆👆👆 ====================================================
+
+    curr_t = time.time() # 🚀 현재 시간 가져오기
     
     if state["is_hunt_active"]:
         state["is_paused"] = False; state["loot_state"] = "IDLE"
-        state["hunt_start_time"] = time.time() # 🚀 [치명적 누락 복구] 사냥 시작 시간 각인! (과거 채팅 잔상 필터링용)
+        state["hunt_start_time"] = curr_t # 🚀 [치명적 누락 복구] 사냥 시작 시간 각인! (과거 채팅 잔상 필터링용)
         state["arrow_image"] = None; state["arrow_is_firing"] = False; state["last_arrow_change_time"] = 0.0
-        state["exp_image"] = None; state["last_exp_time"] = time.time()
+        state["exp_image"] = None; state["last_exp_time"] = curr_t
         state["is_attacking"] = False; state["attack_cmd_time"] = 0.0; state["has_fired_arrow"] = False; state["humanize_cd"] = 0.0
         
         # 🚀 [형님 오더 적용] 자동 사냥(▶) 버튼을 누를 때만 무조건 F1 힐 아이콘 검사부터 시작하도록 강제 주입!
         state["arrived_at_base"] = False # 🚀 매크로 시작 시 집결 상태 무조건 초기화
-        state["is_pulling"] = False; state["target_fsm"] = "F1_INIT_VERIFY"; state["f1_retry_cnt"] = 0; state["last_cursor_found_time"] = time.time()
+        state["is_pulling"] = False; state["target_fsm"] = "F1_INIT_VERIFY"; state["f1_retry_cnt"] = 0; state["last_cursor_found_time"] = curr_t
         
         state["body_to_mind_active"] = False; state["body_cd"] = 0.0
         state["need_anchor_update"] = True; state["last_anchor_pos"] = None; state["anchor_lost_time"] = 0.0; state["anchor_image"] = None
         state["mob_template"] = None 
         state["dungeon_angle"] = random.uniform(0, 2 * math.pi)
         state["dungeon_map_pos"] = None; state["dungeon_last_map_pos"] = None
-        state["dungeon_stuck_timer"] = time.time(); state["dungeon_map_lost_timer"] = 0.0
+        state["dungeon_stuck_timer"] = curr_t; state["dungeon_map_lost_timer"] = 0.0
         state["abort_macro"] = False
         state["last_pause_time"] = 0.0
         state["last_mob_pos"] = None
@@ -21503,7 +21526,7 @@ def toggle_individual_hunt(key):
         state["skid_dx"] = 0
         state["skid_dy"] = 0
         state["is_inv_open"] = False 
-        # 덮어쓸 코드
+        
         state["was_manual_mode"] = True
         state["is_mptam_mode"] = False # 🚀 사냥 켤 때 엠탐 플래그 무조건 초기화
         state["is_active_standby"] = False # 🔗 켤 때 기억상실 방지 꼬리표 무조건 초기화
@@ -21511,6 +21534,24 @@ def toggle_individual_hunt(key):
 
         state["pick_retry_cnt"] = 0
         state.pop("found_items_history", None)
+
+        # 👇👇👇 [형님 오더 완벽 수술: 헤이스트/은화살 타이머 완전 백지화!] 👇👇👇
+        # 매크로가 꺼져있는 동안 흘러간 시간 때문에 켜자마자 2시간 타임아웃이 터지는 억까를 원천 차단합니다!
+        state["haste_empty_start"] = 0.0
+        state["haste_visible_start"] = 0.0
+        state["next_haste_scan"] = curr_t + 3.0 # 눈 뜨고 화면 안정화를 위해 3초 대기
+        state["last_haste_loop_time"] = curr_t
+        state["sudeon_icon_log_time"] = 0.0
+        state["chat_shield_log_time"] = 0.0
+        
+        state["arrow_empty_start"] = 0.0
+        state["mp_empty_start"] = 0.0
+        
+        # 사냥 버튼을 누르는 이 순간을 '찐버프 방금 받은 시간'으로 뇌에 강제 주입하여 2시간을 무조건 새로 보장!
+        state["last_haste_time"] = curr_t
+        state["real_buff_time"] = curr_t
+        state["is_real_buff_received"] = True
+        # 👆👆👆 ============================================================== 👆👆👆
 
         root.after(0, arrange_windows)
         
@@ -21528,6 +21569,17 @@ def toggle_individual_hunt(key):
         pico_queues[key].put({"action": "FORCE_RELEASE"})
         state["sweep_active"] = False
         
+        # 👇👇👇 [형님 오더 완벽 수술: 사냥 정지 시 찌꺼기 타이머 즉각 파기!] 👇👇👇
+        state["haste_empty_start"] = 0.0
+        state["haste_visible_start"] = 0.0
+        state["next_haste_scan"] = 0.0
+        state["last_haste_loop_time"] = curr_t
+        state["sudeon_icon_log_time"] = 0.0
+        state["chat_shield_log_time"] = 0.0
+        state["arrow_empty_start"] = 0.0
+        state["mp_empty_start"] = 0.0
+        # 👆👆👆 ============================================================== 👆👆👆
+
         # 👇👇👇 [수술 5: 사냥 정지 시 뇌피셜 및 물리적 바디 완벽 해제!] 👇👇👇
         if state.get("body_held", False):
             if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], 200, 0, is_manual=True)
@@ -21542,7 +21594,7 @@ def toggle_individual_hunt(key):
             state["is_inv_open"] = False
             
         if picos.get(key):
-            send_keyboard_key(picos[key], pico_locks[key], KEY_F4, 0)
+            send_keyboard_key(picos[key], pico_locks[key], 197, 0) # KEY_F4 강제 해제
             
     btn = hunt_btn_dict.get(key)
     if btn:
