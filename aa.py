@@ -4692,9 +4692,15 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
     while True:
         target_key = target_pc["key"]
         
+        # 👇👇👇 [고스트 갇힘 버그 완벽 수술 1] 👇👇👇
+        # 💡 수동 모드 중에 continue가 발생해서 상태가 GHOST_MODE로 굳어버리더라도,
+        # 진짜 사냥 상태를 기억하는 백업 금고를 확인하여 루프가 완전히 죽어버리는 것을 막습니다!
+        real_hunt_status = ai_states[target_key].get("backup_hunt_active", ai_states[target_key].get("is_hunt_active", False))
+        
         # 🚀 [창 증발 버그 해결] 디버그 모드일 때는 사냥 중이 아니더라도(대기 중) 화면을 그려야 하므로 루프를 통과시킵니다!
-        if not DEBUG_MODE and not ai_states[target_key].get("is_hunt_active", False):
+        if not DEBUG_MODE and not real_hunt_status:
             time.sleep(0.1); continue
+        # 👆👆👆 ====================================================
 
         curr_time = time.time()
         any_archer_firing = False
@@ -8930,7 +8936,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
 
                                     # 👇👇👇 [신규 엔진: 수던 전용 필수 강제 스크롤 12회 발동!] 👇👇👇
                                     dprint(key, "🔽 [강제 스크롤] 수던 항목을 찾기 위해 무조건 12회 휠을 먼저 내립니다.")
-                                    for _ in range(12):
+                                    for _ in range(13):
                                         send_mouse_scroll(p_serial, p_lock, -1 * int(round(g_val(3, 6))))
                                         wait_with_heal(g_val(0.08, 0.12)) # 빠른 연속 스크롤
                                     wait_with_heal(g_val(0.3, 0.5)) # 스크롤 후 UI 잔상 안정화 대기
@@ -8945,7 +8951,7 @@ def ai_commander_worker(target_pc): # 🚀 [최적화 3-2] 사령관 1명 체제
                                         pos = None
                                         for img_name in ["qq/sudun3.png", "qq/sudun33.png"]:
                                             # 💡 매칭률(th)은 0.82 로 설정되어 있습니다.
-                                            pos = find_img_universal(img_name, th=0.82, ui_only=True)
+                                            pos = find_img_universal(img_name, th=0.92, ui_only=True)
                                             if pos: break
                                             
                                         if pos:
