@@ -12470,7 +12470,6 @@ def ai_commander_worker(target_pc):
 
             if state.get("is_hunt_active", False) and not state.get("is_paused", False):
 
-                fsm_hit_chk = str(state.get("target_fsm", ""))
                 is_unexplained_hit = (
                     hp_diff >= 0.5
                     and not is_poisoned
@@ -12478,14 +12477,14 @@ def ai_commander_worker(target_pc):
                     and not is_fighting
                     and (curr_time - state.get("last_body_time", 0) > 1.0)
                     and (curr_time - state.get("last_exp_time", 0) > 1.0)
-                    and not fsm_hit_chk.startswith("TOWN_MAINT")
+                    and not state.get("is_mptam_mode", False)
                     and curr_time > state.get("motion_snap_block", 0)
 
-                    and fsm_hit_chk != "PARTY_RETREAT_NAV"
+                    and state.get("target_fsm") != "PARTY_RETREAT_NAV"
                 )
 
                 if is_unexplained_hit:
-                    if fsm_hit_chk in ["IDLE", "PATROL", "SQUAD_WAIT", "PARTY_WAIT", "PARTY_ACTIVE_STANDBY"]:
+                    if state.get("target_fsm") in ["IDLE", "PATROL", "SQUAD_WAIT"]:
 
                         dprint(key, "🚨 [피격 확정] 보이지 않는 적에게 피격! 즉시 모션 스냅으로 범인 색출!")
 
@@ -14006,8 +14005,7 @@ def ai_commander_worker(target_pc):
 
                                             thresh_roi = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
-                                            best_tx, best_ty = None, None
-                                            max_changed = 12 if state.get("is_mptam_mode", False) else 8
+                                            best_tx, best_ty, max_changed = None, None, 8
                                             for i in range(8):
                                                 angle = i * (math.pi / 4)
                                                 zx, zy = int(cx_roi + math.cos(angle) * 45), int(cy_roi + math.sin(angle) * 45 * 0.85)
@@ -15527,8 +15525,7 @@ def ai_commander_worker(target_pc):
 
                                 thresh_roi = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
-                                best_tx, best_ty = None, None
-                                max_changed = 12 if state.get("is_mptam_mode", False) else 8
+                                best_tx, best_ty, max_changed = None, None, 8
                                 for i in range(8):
                                     angle = i * (math.pi / 4)
                                     zx, zy = int(cx_roi + math.cos(angle) * 45), int(cy_roi + math.sin(angle) * 45 * 0.85)
@@ -19242,11 +19239,21 @@ def sync_gui_vars():
             p_help_call_use_val = gui_vars[k]["party_help_call_use"].get() if "party_help_call_use" in gui_vars[k] else True
             p_help_call_pct_val = safe_float(gui_vars[k]["party_help_call_pct"], 20.0) if "party_help_call_pct" in gui_vars[k] else 20.0
 
-            p_mode_val = gui_vars[k].get("party_mode", tk.StringVar(value="솔플 (사용안함)")).get()
-            gui_vars[k]["use_party_hunt"].set(p_mode_val in ["이동식 파티 (리더)", "이동식 파티 (멤버)"])
-            gui_vars[k]["use_party_fixed"].set(p_mode_val in ["고정식 파티 (딜러)", "고정식 파티 (풀러)"])
-            gui_vars[k]["is_party_inviter"].set(p_mode_val == "이동식 파티 (리더)")
-            gui_vars[k]["is_puller"].set(p_mode_val == "고정식 파티 (풀러)")
+            # --- [버그 수정] 체크박스의 실제 상태를 읽어서 내부 변수에 반영하도록 역전 ---
+            _use_hunt = gui_vars[k]["use_party_hunt"].get()
+            _use_fixed = gui_vars[k]["use_party_fixed"].get()
+            _is_inviter = gui_vars[k]["is_party_inviter"].get()
+            _is_puller = gui_vars[k]["is_puller"].get()
+
+            if _use_hunt and _is_inviter: p_mode_val = "이동식 파티 (리더)"
+            elif _use_hunt and not _is_inviter: p_mode_val = "이동식 파티 (멤버)"
+            elif _use_fixed and _is_puller: p_mode_val = "고정식 파티 (풀러)"
+            elif _use_fixed and not _is_puller: p_mode_val = "고정식 파티 (딜러)"
+            else: p_mode_val = "솔플 (사용안함)"
+            
+            if "party_mode" in gui_vars[k]:
+                gui_vars[k]["party_mode"].set(p_mode_val)
+            # -------------------------------------------------------------------------
 
             is_party = gui_vars[k]["use_party_hunt"].get() or gui_vars[k]["use_party_fixed"].get()
 
