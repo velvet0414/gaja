@@ -9683,7 +9683,8 @@ def ai_commander_worker(target_pc):
 
                         b_info_pk = state.get("current_buff")
                         if b_info_pk and b_info_pk["name"] != "cure_fallback":
-                            state[f"buff_{b_info_pk['name']}_time"] = curr_time + b_info_pk['dur'] + g_val(-10, 10)
+                            # [수정] 도망가느라 취소되었으므로 20분(dur)을 더하지 않고, 15초 뒤에 재시도
+                            state[f"buff_{b_info_pk['name']}_time"] = curr_time + 15.0
                             save_buff_times(ai_states)
 
                         state["buff_aborted"] = True
@@ -10219,7 +10220,8 @@ def ai_commander_worker(target_pc):
 
                         b_info_pk = state.get("current_buff")
                         if b_info_pk and b_info_pk["name"] != "cure_fallback":
-                            state[f"buff_{b_info_pk['name']}_time"] = curr_time + b_info_pk['dur'] + g_val(-10, 10)
+                            # [수정] 도망가느라 취소되었으므로 20분(dur)을 더하지 않고, 15초 뒤에 재시도
+                            state[f"buff_{b_info_pk['name']}_time"] = curr_time + 15.0
                             save_buff_times(ai_states)
 
                         state["buff_aborted"] = True
@@ -11168,7 +11170,8 @@ def ai_commander_worker(target_pc):
 
                     b_info_poison = state.get("current_buff")
                     if b_info_poison and b_info_poison["name"] != "cure_fallback":
-                        state[f"buff_{b_info_poison['name']}_time"] = curr_time + b_info_poison['dur'] + g_val(-10, 10)
+                        # [수정] 해독하느라 취소되었으므로 15초 뒤에 재시도
+                        state[f"buff_{b_info_poison['name']}_time"] = curr_time + 15.0
                         save_buff_times(ai_states)
 
                     state["target_fsm"] = "IDLE"
@@ -12024,9 +12027,10 @@ def ai_commander_worker(target_pc):
 
                         state["assist_cooldown_expire"] = curr_time + g_val(1.0, 2.0)
 
-                active_nav_fsms = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_LOCKED", "HOVER_RETRY_WAIT", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD", "MOB_DEATH_WAIT", "TARGET_AIMING", "WAIT_FOR_STOP", "BUFFING"]
+                active_nav_fsms = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_LOCKED", "HOVER_RETRY_WAIT", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD", "MOB_DEATH_WAIT", "TARGET_AIMING", "WAIT_FOR_STOP"]
 
-                is_tracking_busy = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or state.get("target_fsm") in active_nav_fsms or str(state.get("target_fsm", "")).startswith("LOOT")
+                fsm_nav_chk = str(state.get("target_fsm", ""))
+                is_tracking_busy = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or (fsm_nav_chk in active_nav_fsms) or fsm_nav_chk.startswith("LOOT") or fsm_nav_chk.startswith("BUFFING") or fsm_nav_chk.startswith("F1_INIT")
 
                 if not is_tracking_busy and not mobs and pc_graph and pc_graph.get("nodes") and not state.get("is_mptam_mode", False):
 
@@ -12839,6 +12843,7 @@ def ai_commander_worker(target_pc):
 
             if fsm is not None and (str(fsm).startswith("BUFFING") or str(fsm).startswith("F1_INIT")):
                 is_buffing = True
+                action_taken = True  # <--- [핵심 수정] 버프 중 네비게이션(길막) 로직이 끼어들지 못하게 강제 방어막 전개!
 
                 if "img_heal" not in loaded_models:
 
@@ -13010,14 +13015,17 @@ def ai_commander_worker(target_pc):
                             if is_aborted or mp <= start_mp - 0.001:
                                 if is_aborted:
                                     if not is_test: dprint(key, f"⚠️ [버프 캔슬] 시전 중 딴짓 발동!")
+                                    if b_info and b_info["name"] != "cure_fallback" and not is_test:
+                                        state[f"buff_{b_info['name']}_time"] = curr_time + 15.0
+                                        save_buff_times(ai_states)
                                 else:
                                     if is_test:
                                         elapsed = curr_time - (timeout_val - (1.8 if b_info.get("double", False) else 1.2))
                                         dprint(key, f"[{t_ms}] ✅ [4. 성공] MP 차감 포착! ({start_mp:.1f}% -> {mp:.1f}%). 소요시간: {elapsed:.2f}초! F1 복귀합니다.")
-
-                                if b_info and b_info["name"] != "cure_fallback" and not is_test:
-                                    state[f"buff_{b_info['name']}_time"] = curr_time + b_info['dur'] + g_val(-10, 10)
-                                    save_buff_times(ai_states)
+                                    # [수정] 캔슬(is_aborted)된 게 아니라 진짜 성공했을 때만 20분 타이머를 연장!
+                                    if b_info and b_info["name"] != "cure_fallback" and not is_test:
+                                        state[f"buff_{b_info['name']}_time"] = curr_time + b_info['dur'] + g_val(-10, 10)
+                                        save_buff_times(ai_states)
 
                                 state["target_fsm"] = "BUFFING_RETURN_F1"
                                 state["f1_retry_cnt"] = 0
@@ -13042,7 +13050,7 @@ def ai_commander_worker(target_pc):
                                         state["target_fsm"] = "BUFFING_CAST_AND_VERIFY"
                                         state["cooldown"] = curr_time + g_val(1.4, 1.6)
                                 else:
-                                    if cnt >= 3:
+                                    if cnt >= 2:
                                         if is_test:
                                             dprint(key, f"[{t_ms}] 💀 [5. 3아웃 탈락] 3연속 실패. 테스트를 종료하고 F1으로 복귀합니다.")
 
@@ -13055,7 +13063,7 @@ def ai_commander_worker(target_pc):
                                         state["cooldown"] = curr_time + 0.1
                                     else:
                                         if is_test:
-                                            dprint(key, f"[{t_ms}] ⏱️ [5. 실패 재시도] 타임아웃 도달! MP 안깎임! ({cnt}/3)")
+                                            dprint(key, f"[{t_ms}] ⏱️ [5. 실패 재시도] 타임아웃 도달! MP 안깎임! ({cnt}/2)")
 
                                         with pico_queues[key].mutex: pico_queues[key].queue.clear()
                                         state["target_fsm"] = "BUFFING_CAST_AND_VERIFY"
@@ -13178,12 +13186,12 @@ def ai_commander_worker(target_pc):
                     if "1셋트" in b_set or "2셋트" in b_set or "3셋트" in b_set or "4셋트" in b_set:
                         rem = max(0, state.get("buff_enchant_time", 0) - curr_time)
 
-                        if 0 < rem < DUR_ENCHANT * 0.85:
+                        if 0 < rem < DUR_ENCHANT * 0.33:
                             pre_cands.append({"name": "enchant", "page": 2, "key": KEY_F7, "double": False, "dur": DUR_ENCHANT, "rem": rem})
 
                     if "2셋트" in b_set or "3셋트" in b_set or "4셋트" in b_set:
                         rem = max(0, state.get("buff_blessed_time", 0) - curr_time)
-                        if 0 < rem < DUR_BLESSED * 0.85:
+                        if 0 < rem < DUR_BLESSED * 0.33:
                             pre_cands.append({"name": "blessed", "page": 2, "key": KEY_F8, "double": False, "dur": DUR_BLESSED, "rem": rem})
 
                     if "3셋트" in b_set or "4셋트" in b_set:
@@ -13191,12 +13199,12 @@ def ai_commander_worker(target_pc):
                         is_leader_lock_f = is_party_mode_f and settings.get("is_party_inviter", False)
                         if not is_leader_lock_f:
                             rem = max(0, state.get("buff_element_time", 0) - curr_time)
-                            if 0 < rem < 1200.0 * 0.85:
+                            if 0 < rem < 1200.0 * 0.33:
                                 pre_cands.append({"name": "element", "page": 2, "key": KEY_F6, "double": False, "dur": 1200.0, "rem": rem})
 
                     if "4셋트" in b_set:
                         rem = max(0, state.get("buff_dex_time", 0) - curr_time)
-                        if 0 < rem < DUR_DEX * 0.85:
+                        if 0 < rem < DUR_DEX * 0.33:
                             pre_cands.append({"name": "dex", "page": 2, "key": KEY_F11, "double": True, "dur": DUR_DEX, "rem": rem})
 
                     if settings.get("use_trans"):
