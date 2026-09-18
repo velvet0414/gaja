@@ -14672,7 +14672,8 @@ def ai_commander_worker(target_pc):
                     if "수던" in dungeon_name_check or "heine" in dungeon_name_check.lower():
 
                         fsm_curr = str(state.get("target_fsm", ""))
-                        is_looting_now = fsm_curr.startswith("LOOT") or state.get("sweep_active", False)
+                        # [수정 1] 무지성 F4 줍기(sweep_active)를 루팅 상태 판정에서 제거!
+                        is_looting_now = fsm_curr.startswith("LOOT") 
 
                         if is_fighting and not is_looting_now and fsm_curr != "HEINE_GMOB_VERIFY" and curr_time >= state.get("cooldown", 0):
 
@@ -15602,7 +15603,8 @@ def ai_commander_worker(target_pc):
 
                         dng_n = settings.get("dungeon_name", "")
                         if "수던" in dng_n or "heine" in dng_n.lower():
-                            if getattr(p, "is_g_mob", False) and math.hypot(p.x - char_screen_cx, p.foot_y - char_screen_cy) <= 250.0:
+                            # [수정 3] 250px 거리 제한 삭제! 파티 욜로 시야 내의 G몹은 거리 무관 무조건 0순위!
+                            if getattr(p, "is_g_mob", False):
                                 base_score -= 5000000
 
                         if is_retry and last_pos and curr_time - last_time < 0.5:
