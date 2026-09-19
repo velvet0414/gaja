@@ -9444,7 +9444,8 @@ def ai_commander_worker(target_pc):
                                     CHAT_Y1, CHAT_Y2 = 490, h
 
                                     if w >= CHAT_X2 and h >= CHAT_Y2 and globals().get("img_haste_x") is not None:
-                                        if curr_time - state.get("hunt_start_time", curr_time) > 10.0:
+                                        # 💡 time_since_real_buff > 180.0 조건을 추가 (180초 = 3분)
+                                        if (curr_time - state.get("hunt_start_time", curr_time) > 10.0) and (time_since_real_buff > 300.0):
                                             chat_roi = img_bgr[CHAT_Y1:CHAT_Y2, CHAT_X1:CHAT_X2]
                                             gray_check = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
                                             _, bright_text = cv2.threshold(gray_check, 100, 255, cv2.THRESH_BINARY)
@@ -16128,9 +16129,12 @@ def ai_commander_worker(target_pc):
                                         state["yolo_blind_active"] = False
                                         state["yolo_blind_expire"] = 0
 
-                                        state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
-                                        state["is_active_standby"] = True
-                                        state["standby_reason"] = "위기 자체 해방"
+                                        # 💡 [버그 픽스] 마을에 있을 때는 사냥 모드로 강제 변경 금지!
+                                        if not str(state.get("target_fsm", "")).startswith("TOWN_MAINT") and state.get("target_fsm", "") not in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY"] and not str(state.get("target_fsm", "")).startswith("DEATH"):
+                                            state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
+                                            state["is_active_standby"] = True
+                                            state["standby_reason"] = "위기 자체 해방"
+                                            
                                         state["cooldown"] = curr_time + 0.1
                                         action_taken = True
 
@@ -18164,7 +18168,11 @@ def ai_commander_worker(target_pc):
                                     state["yolo_blind_expire"] = 0
                                     state["dungeon_global_path"] = []
                                     state["current_target_node"] = None
-                                    state["target_fsm"] = "IDLE"
+                                    
+                                    # 💡 [버그 픽스] 귀환, 정비, 사망 대기 중일 때는 IDLE로 덮어쓰지 못하게 방어막 전개!
+                                    if not str(state.get("target_fsm", "")).startswith("TOWN_MAINT") and state.get("target_fsm", "") not in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY"] and not str(state.get("target_fsm", "")).startswith("DEATH"):
+                                        state["target_fsm"] = "IDLE"
+                                        
                                     state["cooldown"] = curr_time + 0.1
                                     action_taken = True
                                 else:
@@ -18183,15 +18191,17 @@ def ai_commander_worker(target_pc):
 
                                     if is_req_dead_or_gone:
                                         dprint(key, f"✅ [구출 취소] 도망자가 위기 탈출(마을/사망/이탈)했습니다! 출동을 취소하고 사냥을 속행합니다.")
-
                                         state["ignored_requester"] = req_key
                                         state["ignored_req_timer"] = curr_time + 5.0
-
                                         state["helping_who"] = None
                                         state["help_target_pos"] = None
                                         state["dungeon_global_path"] = []
                                         state["current_target_node"] = None
-                                        state["target_fsm"] = "IDLE"
+                                        
+                                        # 💡 [버그 픽스] 여기도 동일하게 방어막 적용!
+                                        if not str(state.get("target_fsm", "")).startswith("TOWN_MAINT") and state.get("target_fsm", "") not in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY"] and not str(state.get("target_fsm", "")).startswith("DEATH"):
+                                            state["target_fsm"] = "IDLE"
+                                            
                                         state["cooldown"] = curr_time + 0.1
                                         action_taken = True
                                     else:
@@ -18400,7 +18410,10 @@ def ai_commander_worker(target_pc):
 
                 fsm_mptam_chk = str(state.get("target_fsm", ""))
 
-                if not action_taken and use_mptam and not state.get("is_mptam_mode", False) and mp <= mptam_start_mp and not is_help_busy and allow_mptam_block and not is_safe_in_town and not state.get("moving_to_mptam_partner", False) and not fsm_mptam_chk.startswith("BUFFING"):
+                # 💡 [버그 픽스] 마을 귀환/정비 중이거나 비상 텔포/사망 대기 중일 때는 들판 엠탐 로직이 개입하지 못하게 완벽 차단!
+                is_mptam_invalid_fsm = fsm_mptam_chk.startswith("TOWN_MAINT") or fsm_mptam_chk in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY"] or fsm_mptam_chk.startswith("DEATH") or fsm_mptam_chk.startswith("BUFFING")
+
+                if not action_taken and use_mptam and not state.get("is_mptam_mode", False) and mp <= mptam_start_mp and not is_help_busy and allow_mptam_block and not is_mptam_invalid_fsm and not state.get("moving_to_mptam_partner", False):
                     active_combat_fsms_local = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_LOCKED", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD", "TARGET_AIMING", "WAIT_FOR_STOP"]
                     is_currently_fighting = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or str(state.get("target_fsm", "")) in active_combat_fsms_local
 
