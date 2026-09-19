@@ -18114,7 +18114,7 @@ def ai_commander_worker(target_pc):
 
                             else:
                                 g_mobs = [m for m in mobs if getattr(m, 'is_g_mob', False)]
-                                if len(g_mobs) >= 4:
+                                if len(g_mobs) >= 3:
                                     is_my_crisis = True
                                     crisis_txt = f"G몹 {len(g_mobs)}마리 포착"
                                 else:
