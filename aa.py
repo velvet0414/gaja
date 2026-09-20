@@ -6011,7 +6011,21 @@ def ai_commander_worker(target_pc):
                                 send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
                                 time.sleep(g_val(0.6, 0.8))
 
-                                if not click_img("qq/menu_heine_wh.png", "[창고지기] 메뉴", timeout=3.0, jx=13, jy=2, d_min=0.25, d_max=0.4, ui_only=True):
+                                # [수정] 가우스 지터 배제, 정중앙 기준 Y+2 내린 후 ±2픽셀 하드코딩 클릭
+                                wh_pos = None
+                                start_w_t = time.time()
+                                while time.time() - start_w_t < 3.0:
+                                    wh_pos = find_img_universal("qq/menu_heine_wh.png", th=0.80, ui_only=True)
+                                    if wh_pos: break
+                                    time.sleep(0.05)
+
+                                if wh_pos:
+                                    dprint(key, "✅ [창고지기] 메뉴 발견! Y축 보정 후 정밀 클릭합니다.")
+                                    time.sleep(g_val(0.15, 0.25))
+                                    safe_x = wh_pos[0] + random.randint(-2, 2)
+                                    safe_y = (wh_pos[1] + 2) + random.randint(-2, 2) # Y좌표 2픽셀 내림
+                                    m_click_ack(safe_x, safe_y, jx=0, jy=0, double=False, pre_delay=g_val(0.25, 0.4))
+                                else:
                                     dprint(key, "⚠️ 창고 두루마리 클릭 실패! 최후의 수단으로 비상 귀환(F8) 발동!")
                                     send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
 
@@ -6058,7 +6072,20 @@ def ai_commander_worker(target_pc):
                                 time.sleep(g_val(0.6, 0.8))
 
                                 if wh_target == 1:
-                                    if not click_img("qq/menu_heine_wh.png", "[창고지기] 메뉴", timeout=3.0, jx=13, jy=2, d_min=0.25, d_max=0.4, ui_only=True):
+                                    wh_pos = None
+                                    start_w_t = time.time()
+                                    while time.time() - start_w_t < 3.0:
+                                        wh_pos = find_img_universal("qq/menu_heine_wh.png", th=0.80, ui_only=True)
+                                        if wh_pos: break
+                                        time.sleep(0.05)
+
+                                    if wh_pos:
+                                        dprint(key, "✅ [창고지기] 메뉴 발견! Y축 보정 후 정밀 클릭합니다.")
+                                        time.sleep(g_val(0.15, 0.25))
+                                        safe_x = wh_pos[0] + random.randint(-2, 2)
+                                        safe_y = (wh_pos[1] + 2) + random.randint(-2, 2) # Y좌표 2픽셀 내림
+                                        m_click_ack(safe_x, safe_y, jx=0, jy=0, double=False, pre_delay=g_val(0.25, 0.4))
+                                    else:
                                         handle_wh_fail()
                                         return
                                 else:
@@ -6488,7 +6515,20 @@ def ai_commander_worker(target_pc):
 
                                 wh_target = ai_states.get(key, {}).get("wh_target", 1)
                                 if wh_target == 1:
-                                    if not click_img("qq/menu_heine_wh.png", "[창고지기] 메뉴", timeout=3.0, jx=13, jy=2, d_min=0.25, d_max=0.4, ui_only=True):
+                                    wh_pos = None
+                                    start_w_t = time.time()
+                                    while time.time() - start_w_t < 3.0:
+                                        wh_pos = find_img_universal("qq/menu_heine_wh.png", th=0.80, ui_only=True)
+                                        if wh_pos: break
+                                        time.sleep(0.05)
+
+                                    if wh_pos:
+                                        dprint(key, "✅ [창고지기] 메뉴 발견! Y축 보정 후 정밀 클릭합니다.")
+                                        time.sleep(g_val(0.15, 0.25))
+                                        safe_x = wh_pos[0] + random.randint(-2, 2)
+                                        safe_y = (wh_pos[1] + 2) + random.randint(-2, 2) # Y좌표 2픽셀 내림
+                                        m_click_ack(safe_x, safe_y, jx=0, jy=0, double=False, pre_delay=g_val(0.25, 0.4))
+                                    else:
                                         handle_wh_fail(); return
                                 else:
                                     MALSUM_X, MALSUM_Y = 45, 176
@@ -7646,7 +7686,19 @@ def ai_commander_worker(target_pc):
                                                 send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
                                                 time.sleep(g_val(0.6, 0.8))
 
-                                                if click_img("qq/menu_heine_wh.png", "[창고지기] 메뉴", timeout=3.0, jx=13, jy=2, d_min=0.25, d_max=0.4, ui_only=True):
+                                                wh_pos = None
+                                                start_w_t = time.time()
+                                                while time.time() - start_w_t < 3.0:
+                                                    wh_pos = find_img_universal("qq/menu_heine_wh.png", th=0.80, ui_only=True)
+                                                    if wh_pos: break
+                                                    time.sleep(0.05)
+
+                                                if wh_pos:
+                                                    dprint(key, "✅ [창고지기] 메뉴 발견! Y축 보정 후 정밀 클릭합니다.")
+                                                    time.sleep(g_val(0.15, 0.25))
+                                                    safe_x = wh_pos[0] + random.randint(-2, 2)
+                                                    safe_y = (wh_pos[1] + 2) + random.randint(-2, 2) # Y좌표 2픽셀 내림
+                                                    m_click_ack(safe_x, safe_y, jx=0, jy=0, double=False, pre_delay=g_val(0.25, 0.4))
                                                     time.sleep(g_val(3.3, 3.7))
                                                     ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
                                                     ai_states[key]["reentry_wait_start"] = time.time()
@@ -7997,7 +8049,19 @@ def ai_commander_worker(target_pc):
                                                 send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
                                                 time.sleep(g_val(0.6, 0.8))
 
-                                                if click_img("qq/menu_heine_wh.png", "[창고지기] 메뉴", timeout=3.0, jx=13, jy=2, d_min=0.25, d_max=0.4, ui_only=True):
+                                                wh_pos = None
+                                                start_w_t = time.time()
+                                                while time.time() - start_w_t < 3.0:
+                                                    wh_pos = find_img_universal("qq/menu_heine_wh.png", th=0.80, ui_only=True)
+                                                    if wh_pos: break
+                                                    time.sleep(0.05)
+
+                                                if wh_pos:
+                                                    dprint(key, "✅ [창고지기] 메뉴 발견! Y축 보정 후 정밀 클릭합니다.")
+                                                    time.sleep(g_val(0.15, 0.25))
+                                                    safe_x = wh_pos[0] + random.randint(-2, 2)
+                                                    safe_y = (wh_pos[1] + 2) + random.randint(-2, 2) # Y좌표 2픽셀 내림
+                                                    m_click_ack(safe_x, safe_y, jx=0, jy=0, double=False, pre_delay=g_val(0.25, 0.4))
                                                     time.sleep(g_val(3.3, 3.7))
                                                     ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
                                                     ai_states[key]["reentry_wait_start"] = time.time()
@@ -8274,7 +8338,19 @@ def ai_commander_worker(target_pc):
                                                 send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
                                                 time.sleep(g_val(0.6, 0.8))
 
-                                                if click_img("qq/menu_heine_wh.png", "[창고지기] 메뉴", timeout=3.0, jx=13, jy=2, d_min=0.25, d_max=0.4, ui_only=True):
+                                                wh_pos = None
+                                                start_w_t = time.time()
+                                                while time.time() - start_w_t < 3.0:
+                                                    wh_pos = find_img_universal("qq/menu_heine_wh.png", th=0.80, ui_only=True)
+                                                    if wh_pos: break
+                                                    time.sleep(0.05)
+
+                                                if wh_pos:
+                                                    dprint(key, "✅ [창고지기] 메뉴 발견! Y축 보정 후 정밀 클릭합니다.")
+                                                    time.sleep(g_val(0.15, 0.25))
+                                                    safe_x = wh_pos[0] + random.randint(-2, 2)
+                                                    safe_y = (wh_pos[1] + 2) + random.randint(-2, 2) # Y좌표 2픽셀 내림
+                                                    m_click_ack(safe_x, safe_y, jx=0, jy=0, double=False, pre_delay=g_val(0.25, 0.4))
                                                     time.sleep(g_val(3.3, 3.7))
                                                     ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
                                                     ai_states[key]["reentry_wait_start"] = time.time()
@@ -9444,8 +9520,8 @@ def ai_commander_worker(target_pc):
                                     CHAT_Y1, CHAT_Y2 = 490, h
 
                                     if w >= CHAT_X2 and h >= CHAT_Y2 and globals().get("img_haste_x") is not None:
-                                        # 💡 time_since_real_buff > 180.0 조건을 추가 (180초 = 3분)
-                                        if (curr_time - state.get("hunt_start_time", curr_time) > 10.0) and (time_since_real_buff > 300.0):
+                                        # 💡 time_since_real_buff > 120.0 조건을 추가 
+                                        if (curr_time - state.get("hunt_start_time", curr_time) > 10.0) and (time_since_real_buff > 120.0):
                                             chat_roi = img_bgr[CHAT_Y1:CHAT_Y2, CHAT_X1:CHAT_X2]
                                             gray_check = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
                                             _, bright_text = cv2.threshold(gray_check, 100, 255, cv2.THRESH_BINARY)
@@ -9544,9 +9620,11 @@ def ai_commander_worker(target_pc):
                                             state["haste_visible_start"] = curr_time
 
                                             last_h = state.get("last_haste_time", 0.0)
-                                            if last_h == 0.0 or (curr_time - last_h >= 7200.0):
+                                            # [수정 1] 2시간 초과 시 발생하는 물결 오인식으로 인해 타이머가 0초로 강제 리셋되는 치명적 버그 삭제!
+                                            # 오직 매크로를 처음 켰을 때(last_h == 0.0)만 타이머를 현재 시간으로 세팅해줍니다.
+                                            if last_h == 0.0:
                                                 if curr_time > state.get("haste_self_heal_log", 0):
-                                                    dprint(key, "✅ [헤이스트 자가 치유] 화면에서 아이콘 팩트 확인! 꼬여있던 타이머(0초 또는 2시간 초과)를 현재 시간으로 완벽 복구합니다!")
+                                                    dprint(key, "✅ [헤이스트 자가 치유] 초기화된 타이머(0초)를 현재 시간으로 복구합니다!")
                                                     state["haste_self_heal_log"] = curr_time + 60.0
                                                 state["last_haste_time"] = curr_time
                                                 state["is_real_buff_received"] = True
@@ -11747,8 +11825,8 @@ def ai_commander_worker(target_pc):
                             dng_name_chk = settings.get("dungeon_name", "")
                             is_sudeon_or_party = ("수던" in dng_name_chk or "heine" in dng_name_chk.lower() or settings.get("use_party_hunt", False))
 
-                            FIXED_ELLIPSE_RX = 350
-                            FIXED_ELLIPSE_RY = 250
+                            FIXED_ELLIPSE_RX = 340
+                            FIXED_ELLIPSE_RY = 240
 
                             is_party_hunt_active = settings.get("use_party_hunt", False)
                             is_fixed_party = settings.get("use_party_fixed", False)
@@ -11877,8 +11955,8 @@ def ai_commander_worker(target_pc):
 
                 if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
 
-                    DBG_ELLIPSE_RX = 350
-                    DBG_ELLIPSE_RY = 250
+                    DBG_ELLIPSE_RX = 340
+                    DBG_ELLIPSE_RY = 240
 
                     cv2.ellipse(debug_img, (char_screen_cx, char_screen_cy), (DBG_ELLIPSE_RX, DBG_ELLIPSE_RY), 0, 0, 360, (255, 105, 180), 1, cv2.LINE_AA)
                     cv2.putText(debug_img, f"FIXED RANGE ({DBG_ELLIPSE_RX}x{DBG_ELLIPSE_RY})", (char_screen_cx - 80, char_screen_cy - DBG_ELLIPSE_RY - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 105, 180), 1)
@@ -19469,10 +19547,10 @@ def toggle_individual_hunt(key):
 
         state["arrow_empty_start"] = 0.0
         state["mp_empty_start"] = 0.0
-
-        state["last_haste_time"] = curr_t
-        state["real_buff_time"] = curr_t
-        state["is_real_buff_received"] = True
+        if state.get("last_haste_time", 0.0) == 0.0:
+            state["last_haste_time"] = curr_t
+            state["real_buff_time"] = curr_t
+            state["is_real_buff_received"] = True
 
         root.after(0, arrange_windows)
 
