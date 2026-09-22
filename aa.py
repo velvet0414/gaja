@@ -408,7 +408,18 @@ DUNGEON_ASSETS = {
     "사던 3층": {"map": "silver3map.png", "graph": "silver3_graph.json", "model": "silver.pt"},
     "본던 3층": {"map": "gludio3map.png", "graph": "gludio3_graph.json", "model": "gludio.pt"},
     "본던 4층": {"map": "gludio4map.png", "graph": "gludio4_graph.json", "model": "gludio.pt"},
-    "본던 5층": {"map": "gludio5map.png", "graph": "gludio5_graph.json", "model": "gludio.pt"},
+    "본던 5-1": {"map": "gludio5.png", "graph": "gludio5-1.json", "model": "gludio.pt"},
+    "본던 5-2": {"map": "gludio5.png", "graph": "gludio5-2.json", "model": "gludio.pt"},
+    "본던 5-3": {"map": "gludio5.png", "graph": "gludio5-3.json", "model": "gludio.pt"},
+    "본던 5-4": {"map": "gludio5.png", "graph": "gludio5-4.json", "model": "gludio.pt"},
+    "본던 5-5": {"map": "gludio5.png", "graph": "gludio5-5.json", "model": "gludio.pt"},
+    "본던 5-6": {"map": "gludio5.png", "graph": "gludio5-6.json", "model": "gludio.pt"},
+    "본던 5-7": {"map": "gludio5.png", "graph": "gludio5-7.json", "model": "gludio.pt"},
+    "본던 5-8": {"map": "gludio5.png", "graph": "gludio5-8.json", "model": "gludio.pt"},
+    "본던 5-9": {"map": "gludio5.png", "graph": "gludio5-9.json", "model": "gludio.pt"},
+    "본던 5-10": {"map": "gludio5.png", "graph": "gludio5-10.json", "model": "gludio.pt"},
+    # -----------------------------------
+
     "본던 6층": {"map": "gludio6map.png", "graph": "gludio6_graph.json", "model": "gludio.pt"},
 
     "event1": {"map": "event1.png", "graph": "event1.json", "model": "event1.pt"},
@@ -1808,7 +1819,8 @@ def load_all_templates():
                 if img is not None:
                     h, w = img.shape[:2]
                     if h > 15 and w > 15: img = img[4:h-4, 4:w-4]
-                    TRASH_TEMPLATES.append({"color": img, "mask": None})
+                    # 💡 파일 이름(name)을 딕셔너리에 추가로 저장합니다.
+                    TRASH_TEMPLATES.append({"name": filename.lower(), "color": img, "mask": None})
         print(f"🗑️ [휴지통] 쓰레기 알맹이 추출 완료! (총 {len(TRASH_TEMPLATES)}개 장전)")
 
     LEAVE_TEMPLATES.clear()
@@ -5096,6 +5108,106 @@ def ai_commander_worker(target_pc):
 
                                         state["target_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
 
+                    # === [솔플/파티 공통] Zone 이탈 시 0순위 강제 복귀 로직 ===
+                    is_m_out_of_zone = state.get("is_out_of_zone", False)
+
+                    if (settings.get("use_party_hunt", False) or is_solo_zone_mode) and is_m_out_of_zone and curr_map_pos and pc_graph and pc_graph.get("nodes"):
+                        active_base_zone = active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon
+
+                        curr_target_str = str(state.get("current_target_node", ""))
+                        is_curr_target_valid_zone = False
+
+                        if curr_target_str and curr_target_str in pc_graph["nodes"]:
+                            c_data = pc_graph["nodes"][curr_target_str]
+                            if str(c_data.get("is_buff_spot", False)).lower() == "true":
+                                is_curr_target_valid_zone = True
+                            else:
+                                c_zone = str(c_data.get("zone", "")).strip()
+                                if c_zone:
+                                    for z in [z.strip() for z in c_zone.split(",")]:
+                                        if active_base_zone == (z.rsplit("-", 1)[0] if "-" in z else z):
+                                            is_curr_target_valid_zone = True
+                                            break
+                                else:
+                                    c_sp = c_data.get("is_special", False) or c_data.get("special", False)
+                                    if str(c_sp).lower() == "true": is_curr_target_valid_zone = True
+                                    else: is_curr_target_valid_zone = True
+
+                        if not is_curr_target_valid_zone:
+                            best_zone_node_los = None
+                            best_zone_node_any = None
+                            min_d_los = float('inf')
+                            min_d_any = float('inf')
+
+                            for nid, ndata in pc_graph["nodes"].items():
+                                if isinstance(ndata, dict):
+                                    nx = ndata.get("x", 0) if isinstance(ndata, dict) else ndata[0]
+                                    ny = ndata.get("y", 0) if isinstance(ndata, dict) else ndata[1]
+
+                                    node_zone = str(ndata.get("zone", "")).strip()
+                                    is_buff = ndata.get("is_buff_spot", False)
+                                    if str(is_buff).lower() == "true": is_buff = True
+
+                                    is_my_zone = False
+                                    if is_buff:
+                                        is_my_zone = True
+                                    elif node_zone:
+                                        zone_list = [z.strip() for z in node_zone.split(",")]
+                                        for z in zone_list:
+                                            z_base = z.rsplit("-", 1)[0] if "-" in z else z
+                                            if active_base_zone == z_base:
+                                                is_my_zone = True
+                                                break
+                                    else:
+                                        is_sp = ndata.get("is_special", False) or ndata.get("special", False)
+                                        if str(is_sp).lower() == "true": is_sp = True
+                                        if is_sp: is_my_zone = True
+                                        else: is_my_zone = True
+
+                                    if is_my_zone:
+                                        d = (nx - curr_map_pos[0])**2 + (ny - curr_map_pos[1])**2
+
+                                        if d < min_d_any:
+                                            min_d_any = d
+                                            best_zone_node_any = str(nid)
+
+                                        has_los = True
+                                        if pc_map_gray_los is not None:
+                                            has_los = check_line_of_sight(pc_map_gray_los, curr_map_pos, (nx, ny), margin_steps=1)
+
+                                        if has_los and d < min_d_los:
+                                            min_d_los = d
+                                            best_zone_node_los = str(nid)
+
+                            best_zone_node = best_zone_node_los if best_zone_node_los else best_zone_node_any
+
+                            if best_zone_node:
+                                if str(state.get("current_target_node")) != best_zone_node:
+                                    state["current_target_node"] = best_zone_node
+                                    state["dungeon_global_path"] = []
+
+                                    if state.get("target_fsm") not in ["IDLE", "PARTY_WAIT"]:
+                                        state["target_fsm"] = "IDLE"
+
+                                    new_path = calculate_graph_astar_path(pc_graph, curr_map_pos, best_zone_node, pc_map_gray, set(), is_blind=True)
+                                    if new_path:
+                                        state["dungeon_global_path"] = new_path
+                                        state["dungeon_path_time"] = curr_time
+                                        state["astar_fail_count"] = 0
+
+                                    if curr_time - state.get("zone_return_log_time", 0) > 5.0:
+                                        if is_solo_zone_mode:
+                                            dprint(key, f"🚨 [솔플 0순위 존 복귀] 구역 이탈 확정! 가장 가까운 내 구역(ID:{best_zone_node})으로 즉시 A* 복귀합니다!")
+                                        else:
+                                            dprint(key, f"🚨 [파티 0순위 존 복귀] 구역 이탈 확정! 파트너 합류를 무시하고 가장 가까운 Zone(ID:{best_zone_node})으로 즉시 A* 복귀합니다!")
+                                        state["zone_return_log_time"] = curr_time
+                        else:
+                            state["current_target_node"] = None
+                    else:
+                        if not state.get("is_out_of_zone", False):
+                            state["current_target_node"] = None
+
+                    # === [기존 파티 로직 (이탈 복귀 제외 부분)] ===
                     if is_partner_hunting and is_me_hunting:
                         if p_pos and curr_map_pos:
                             dist_to_partner = math.hypot(curr_map_pos[0] - p_pos[0], curr_map_pos[1] - p_pos[1])
@@ -5105,99 +5217,6 @@ def ai_commander_worker(target_pc):
 
                                 state["is_assisting"] = False
                                 state["moving_to_mptam_partner"] = False
-
-                                if is_m_out_of_zone and curr_map_pos and pc_graph and pc_graph.get("nodes"):
-                                    active_base_zone = active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon
-
-                                    curr_target_str = str(state.get("current_target_node", ""))
-                                    is_curr_target_valid_zone = False
-
-                                    if curr_target_str and curr_target_str in pc_graph["nodes"]:
-                                        c_data = pc_graph["nodes"][curr_target_str]
-                                        if str(c_data.get("is_buff_spot", False)).lower() == "true":
-                                            is_curr_target_valid_zone = True
-                                        else:
-                                            c_zone = str(c_data.get("zone", "")).strip()
-                                            if c_zone:
-                                                for z in [z.strip() for z in c_zone.split(",")]:
-                                                    if active_base_zone == (z.rsplit("-", 1)[0] if "-" in z else z):
-                                                        is_curr_target_valid_zone = True
-                                                        break
-                                            else:
-                                                c_sp = c_data.get("is_special", False) or c_data.get("special", False)
-                                                if str(c_sp).lower() == "true": is_curr_target_valid_zone = True
-                                                else: is_curr_target_valid_zone = True
-
-                                    if not is_curr_target_valid_zone:
-                                        best_zone_node_los = None
-                                        best_zone_node_any = None
-                                        min_d_los = float('inf')
-                                        min_d_any = float('inf')
-
-                                        for nid, ndata in pc_graph["nodes"].items():
-                                            if isinstance(ndata, dict):
-                                                nx = ndata.get("x", 0) if isinstance(ndata, dict) else ndata[0]
-                                                ny = ndata.get("y", 0) if isinstance(ndata, dict) else ndata[1]
-
-                                                node_zone = str(ndata.get("zone", "")).strip()
-                                                is_buff = ndata.get("is_buff_spot", False)
-                                                if str(is_buff).lower() == "true": is_buff = True
-
-                                                is_my_zone = False
-                                                if is_buff:
-                                                    is_my_zone = True
-                                                elif node_zone:
-                                                    zone_list = [z.strip() for z in node_zone.split(",")]
-                                                    for z in zone_list:
-                                                        z_base = z.rsplit("-", 1)[0] if "-" in z else z
-                                                        if active_base_zone == z_base:
-                                                            is_my_zone = True
-                                                            break
-                                                else:
-                                                    is_sp = ndata.get("is_special", False) or ndata.get("special", False)
-                                                    if str(is_sp).lower() == "true": is_sp = True
-                                                    if is_sp: is_my_zone = True
-                                                    else: is_my_zone = True
-
-                                                if is_my_zone:
-                                                    d = (nx - curr_map_pos[0])**2 + (ny - curr_map_pos[1])**2
-
-                                                    if d < min_d_any:
-                                                        min_d_any = d
-                                                        best_zone_node_any = str(nid)
-
-                                                    has_los = True
-                                                    if pc_map_gray_los is not None:
-                                                        has_los = check_line_of_sight(pc_map_gray_los, curr_map_pos, (nx, ny), margin_steps=1)
-
-                                                    if has_los and d < min_d_los:
-                                                        min_d_los = d
-                                                        best_zone_node_los = str(nid)
-
-                                        best_zone_node = best_zone_node_los if best_zone_node_los else best_zone_node_any
-
-                                        if best_zone_node:
-                                            if str(state.get("current_target_node")) != best_zone_node:
-                                                state["current_target_node"] = best_zone_node
-                                                state["dungeon_global_path"] = []
-
-                                                if state.get("target_fsm") not in ["IDLE", "PARTY_WAIT"]:
-                                                    state["target_fsm"] = "IDLE"
-
-                                                new_path = calculate_graph_astar_path(pc_graph, curr_map_pos, best_zone_node, pc_map_gray, set(), is_blind=True)
-                                                if new_path:
-                                                    state["dungeon_global_path"] = new_path
-                                                    state["dungeon_path_time"] = curr_time
-                                                    state["astar_fail_count"] = 0
-
-                                                if curr_time - state.get("zone_return_log_time", 0) > 5.0:
-                                                    dprint(key, f"🚨 [0순위 존 복귀] 구역 이탈 확정! 파트너 합류를 무시하고 가장 가까운 Zone(ID:{best_zone_node}) 내부로 즉시 A* 복귀합니다!")
-                                                    state["zone_return_log_time"] = curr_time
-                                        else:
-                                            state["current_target_node"] = None
-                                else:
-                                    if not state.get("is_out_of_zone", False):
-                                        state["current_target_node"] = None
 
                                 if state.get("target_fsm") == "SQUAD_WAIT":
                                     state["target_fsm"] = "IDLE"
@@ -6314,7 +6333,8 @@ def ai_commander_worker(target_pc):
                                 try: tele_qty = int(current_settings.get(key, {}).get("pick_teleport", 0))
                                 except: tele_qty = 0
 
-                                if "수던" in dng_name or "heine" in dng_name.lower() or "오땅" in dng_name or "event" in dng_name.lower():
+                                # 💡 [수정] 본던(gludio) 사냥 시에도 축순(teleport) 수량을 0으로 강제하여 인출 생략!
+                                if "수던" in dng_name or "heine" in dng_name.lower() or "오땅" in dng_name or "event" in dng_name.lower() or "본던" in dng_name or "gludio" in dng_name.lower():
                                     if tele_qty > 0 and pick_retry_cnt == 0:
                                         dprint(key, f"📜 [{dng_name}] 축순이 필요 없는 사냥터입니다. 축순 인출을 생략합니다.")
                                     tele_qty = 0
@@ -8079,6 +8099,282 @@ def ai_commander_worker(target_pc):
                                         send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
                                         send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
                                         ai_states[key]["target_fsm"] = "IDLE"
+                                
+                                elif "본던" in dungeon_name or "gludio" in dungeon_name.lower():
+                                    ensure_minimap_open(check_time=1.5, pre_teleport=True)
+
+                                    dprint(key, f"▶ [사냥터 복귀] F3 -> F8 (던전책) 눌러 '{dungeon_name}' 기억 장소를 엽니다.")
+                                    send_keyboard_key(p_serial, p_lock, 196, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 196, 0, is_manual=True)
+                                    wait_with_heal(g_val(0.2, 0.3))
+                                    send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
+                                    wait_with_heal(g_val(0.8, 1.2))
+
+                                    cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
+                                    park_x, park_y = 150, 250
+                                    dx, dy = park_x - cur_x, park_y - cur_y
+                                    dur = apply_human_variance(0.15 + 0.05 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if math.hypot(dx, dy) > 0 else 0.1)
+
+                                    pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)})
+                                    state["pico_arrived"] = False
+                                    state["cursor_pos"] = [park_x, park_y]
+                                    wait_with_heal(dur + g_val(0.3, 0.5))
+
+                                    # -------------------------------------------------------------
+                                    # [본던 층별 전용 이미지 세팅]
+                                    # -------------------------------------------------------------
+                                    book_img_list = []
+                                    in_img_path = ""
+                                    
+                                    if "5-" in dungeon_name or "5층" in dungeon_name:
+                                        book_img_list = ["qq/gludio55.png"]
+                                        in_img_path = "qq/gludio5_in.png"
+                                    elif "6-" in dungeon_name or "6층" in dungeon_name:
+                                        book_img_list = ["qq/gludio66.png"]
+                                        in_img_path = "qq/gludio6_in.png"
+                                    elif "7-" in dungeon_name or "7층" in dungeon_name:
+                                        book_img_list = ["qq/gludio77.png"]
+                                        in_img_path = "qq/gludio7_in.png"
+                                    else:
+                                        # 기본값
+                                        book_img_list = ["qq/gludio.png", "qq/bondon.png"]
+                                        in_img_path = "qq/gludio_in.png"
+
+                                    found = False
+                                    
+                                    # 휠 내림 동작 없이 바로 10회 스캔 시도 (UI 뜨는 딜레이 감안)
+                                    for _ in range(10):
+                                        pos = None
+                                        for img_name in book_img_list:
+                                            pos = find_img_universal(img_name, th=0.92, ui_only=True)
+                                            if pos: break
+
+                                        if pos:
+                                            dprint(key, f"✅ 던전책({dungeon_name}) 텍스트 발견! 원클릭하여 텔레포트합니다.")
+
+                                            safe_x = pos[0] + random.randint(-2, 2)
+                                            safe_y = pos[1] + random.randint(-2, 2)
+                                            m_click_ack(safe_x, safe_y, jx=0, jy=0, double=False, pre_delay=g_val(0.37, 0.72))
+                                            found = True
+                                            break
+                                        
+                                        wait_with_heal(g_val(0.2, 0.3))
+
+                                    if found:
+                                        wait_with_heal(g_val(1.5, 2.5))
+
+                                        dprint(key, "🛡️ [생존 셋팅] 텔레포트 완료. 즉시 F1 탭으로 복귀합니다.")
+                                        send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+                                        wait_with_heal(g_val(0.2, 0.4))
+
+                                        door_found_and_moving = False
+                                        global_start_t = time.time()
+
+                                        dprint(key, f"▶ [본던 진입 대기] {in_img_path} 텍스트 또는 맵 좌표 매칭을 대기합니다. (최대 2분)")
+
+                                        while time.time() - global_start_t < 120.0:
+                                            wait_with_heal(0.1)
+
+                                            if ai_states.get(key, {}).get("dungeon_map_pos") is not None:
+                                                dprint(key, f"🚪 [진입 성공] {dungeon_name} 맵(좌표) 인식 완료! 사냥을 개시합니다!")
+                                                door_found_and_moving = True
+                                                break
+
+                                            if os.path.exists(in_img_path):
+                                                scr = latest_frames.get(key)
+                                                if scr is not None:
+                                                    try: ANT_IN_X1_v = globals().get("ANT_IN_X1", 1)
+                                                    except: ANT_IN_X1_v = 1
+                                                    try: ANT_IN_X2_v = globals().get("ANT_IN_X2", 130)
+                                                    except: ANT_IN_X2_v = 130
+
+                                                    c_y1 = max(0, min(h, 430))
+                                                    c_y2 = max(0, min(h, 480))
+                                                    c_x1 = max(0, min(w, ANT_IN_X1_v))
+                                                    c_x2 = max(0, min(w, ANT_IN_X2_v))
+
+                                                    if c_x2 > c_x1 and c_y2 > c_y1:
+                                                        ui_check_roi = scr[c_y1:c_y2, c_x1:c_x2]
+                                                        try:
+                                                            if "gludio_in_img" not in loaded_models or loaded_models.get("gludio_in_path") != in_img_path:
+                                                                bgra = cv2.imread(in_img_path, cv2.IMREAD_UNCHANGED)
+                                                                if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4:
+                                                                    loaded_models["gludio_in_img"] = {"color": cv2.cvtColor(bgra[:, :, :3], cv2.COLOR_BGR2GRAY), "mask": bgra[:, :, 3]}
+                                                                else:
+                                                                    loaded_models["gludio_in_img"] = {"color": cv2.imread(in_img_path, cv2.IMREAD_GRAYSCALE), "mask": None}
+                                                                loaded_models["gludio_in_path"] = in_img_path
+
+                                                            gludio_in_tmpl = loaded_models.get("gludio_in_img")
+                                                            if gludio_in_tmpl and gludio_in_tmpl["color"] is not None:
+                                                                roi_gray = cv2.cvtColor(ui_check_roi, cv2.COLOR_BGR2GRAY)
+                                                                if gludio_in_tmpl["mask"] is not None:
+                                                                    res = cv2.matchTemplate(roi_gray, gludio_in_tmpl["color"], cv2.TM_CCORR_NORMED, mask=gludio_in_tmpl["mask"])
+                                                                else:
+                                                                    res = cv2.matchTemplate(roi_gray, gludio_in_tmpl["color"], cv2.TM_CCOEFF_NORMED)
+                                                                _, max_val, _, _ = cv2.minMaxLoc(res)
+
+                                                                if max_val >= 0.85:
+                                                                    dprint(key, f"🚪 [진입 성공] 본던 진입 텍스트({in_img_path}) 발견! 사냥을 개시합니다!")
+                                                                    door_found_and_moving = True
+                                                                    break
+                                                        except: pass
+
+                                        if key in ai_states: ai_states[key]["debug_door_pos"] = None
+
+                                        if door_found_and_moving:
+                                            dprint(key, f"🏃‍♂️ [{dungeon_name} 진입] 0.2초 대기 후 캐릭터 발밑(6시) 돌격! 막히면 3시->7시->5시 순으로 뚫어냅니다!")
+                                            ai_states[key]["target_fsm"] = "TOWN_MAINT_SUDUN_RUSH_LOCKED"
+                                            wait_with_heal(0.2)
+
+                                            escape_angles = [92.0, 359.0, 150.0, 30.0]
+                                            escape_names = ["6시", "3시", "7시", "5시"]
+                                            char_center_x, char_center_y = 400, 245
+
+                                            for idx, angle_deg in enumerate(escape_angles):
+                                                scr_now = latest_frames.get(key)
+                                                h_s = scr_now.shape[0] if scr_now is not None else 600
+
+                                                cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
+                                                if scr_now is not None:
+                                                    real_c = find_cursor_pos(scr_now, last_pos=(cur_x, cur_y), allow_full_scan=True)
+                                                    if real_c:
+                                                        cur_x, cur_y = real_c[0], real_c[1]
+                                                        ai_states[key]["cursor_pos"] = [cur_x, cur_y]
+
+                                                rad = math.radians(angle_deg)
+                                                dist = random.randint(100, 150)
+
+                                                tx = int(char_center_x + math.cos(rad) * dist)
+                                                ty = int(char_center_y + math.sin(rad) * (dist * 0.85))
+
+                                                tx = int(max(10, min(740, tx)))
+                                                ty = int(max(5, min(int(h_s * 0.68), ty)))
+
+                                                if tx < 165 and ty < 150:
+                                                    if (165 - tx) < (150 - ty): tx = 165
+                                                    else: ty = 150
+
+                                                dx, dy = tx - cur_x, ty - cur_y
+                                                dur = apply_human_variance(0.12 + 0.04 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if math.hypot(dx, dy) > 0 else 0.1)
+                                                deltas = generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)
+
+                                                with pico_queues[key].mutex: pico_queues[key].queue.clear()
+
+                                                if deltas:
+                                                    pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas})
+                                                    wait_with_heal(dur + 0.05)
+                                                    if key in ai_states: ai_states[key]["cursor_pos"] = [tx, ty]
+
+                                                dprint(key, f"▶ [{escape_names[idx]} 돌격] {dist}px 투척 완료. 1.5초간 4~5회 스팸 시작!")
+
+                                                before_img = None
+                                                scr_before = latest_frames.get(key)
+                                                if scr_before is not None:
+                                                    before_img = cv2.cvtColor(scr_before[200:400, 20:140], cv2.COLOR_BGR2GRAY)
+
+                                                click_cnt = random.randint(4, 5)
+                                                interval = 1.5 / click_cnt
+                                                moved_successfully = False
+
+                                                for c_i in range(click_cnt):
+                                                    fsm_now = str(ai_states.get(key, {}).get("target_fsm", ""))
+                                                    if fsm_now in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] or fsm_now.startswith("TOWN_MAINT_NORMAL_RETURN"):
+                                                        dprint(key, "🚨 [돌격 취소] 비상 상황 감지! 본던 진입 돌격을 즉시 중단합니다.")
+                                                        return
+
+                                                    try:
+                                                        ps, pl = picos.get(key), pico_locks.get(key)
+                                                        if ps and pl:
+                                                            send_mouse_click(ps, pl, 1, 1, is_manual=True)
+                                                            wait_with_heal(g_val(0.04, 0.08))
+                                                            send_mouse_click(ps, pl, 1, 0, is_manual=True)
+                                                    except: pass
+
+                                                    sleep_time = interval - 0.06
+                                                    if sleep_time > 0: wait_with_heal(sleep_time)
+
+                                                    if c_i >= 1 and before_img is not None and not moved_successfully:
+                                                        scr_after = latest_frames.get(key)
+                                                        if scr_after is not None:
+                                                            after_img = cv2.cvtColor(scr_after[200:400, 20:140], cv2.COLOR_BGR2GRAY)
+                                                            diff = cv2.absdiff(before_img, after_img)
+                                                            _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
+                                                            if cv2.countNonZero(thresh) > 500:
+                                                                moved_successfully = True
+
+                                                if moved_successfully:
+                                                    dprint(key, f"✅ [{escape_names[idx]}] 돌파 성공! 입구 길막을 뚫었습니다.")
+                                                    break
+                                                else:
+                                                    if idx < 3:
+                                                        dprint(key, f"🚧 [{escape_names[idx]} 길막힘] 제자리걸음 감지! 다음 우회로({escape_names[idx+1]})로 꺾습니다!")
+                                                    else:
+                                                        dprint(key, "🚨 [모든 탈출로 막힘] 4방향을 모두 찔렀으나 갇혔습니다! 강제로 사냥(IDLE)을 개시하여 AI에 맡깁니다.")
+
+                                            ai_states[key]["town_done_logged"] = False
+                                            ai_states[key]["dungeon_map_pos"] = None
+                                            ai_states[key]["dungeon_last_map_pos"] = None
+                                            ai_states[key]["dungeon_global_path"] = []
+                                            ai_states[key]["is_pulling"] = False
+                                            ai_states[key]["is_attacking"] = False
+                                            ai_states[key]["arrow_is_firing"] = False
+                                            ai_states[key]["reentry_retry_cnt"] = 0
+
+                                            try:
+                                                send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True)
+                                                wait_with_heal(g_val(0.04, 0.08))
+                                                send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+                                            except: pass
+
+                                            ai_states[key]["cooldown"] = time.time() + 1.0
+                                            ai_states[key]["target_fsm"] = "IDLE"
+                                        else:
+                                            retry_cnt = ai_states.get(key, {}).get("reentry_retry_cnt", 0) + 1
+                                            ai_states[key]["reentry_retry_cnt"] = retry_cnt
+
+                                            if retry_cnt > 3:
+                                                dprint(key, f"❌ [재진입 3아웃] 3회 연속 사냥터 진입 실패! 비상 귀환(F8) 후 마을 정비로 넘깁니다.")
+                                                send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
+                                                ai_states[key]["reentry_retry_cnt"] = 0
+
+                                                ai_states[key]["target_fsm"] = "SHUTDOWN_WAIT"
+                                                ai_states[key]["shutdown_timer"] = time.time() + 2.0
+                                            else:
+                                                dprint(key, f"⏳ [진입 타임아웃] 진입 확인 실패. 창고(F1>F9)로 대피하여 30초 대기 후 재도전합니다. ({retry_cnt}/3)")
+                                                send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+                                                time.sleep(g_val(0.2, 0.3))
+                                                send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
+                                                time.sleep(g_val(0.6, 0.8))
+
+                                                wh_pos = None
+                                                start_w_t = time.time()
+                                                while time.time() - start_w_t < 3.0:
+                                                    wh_pos = find_img_universal("qq/menu_heine_wh.png", th=0.80, ui_only=True)
+                                                    if wh_pos: break
+                                                    time.sleep(0.05)
+
+                                                if wh_pos:
+                                                    dprint(key, "✅ [창고지기] 메뉴 발견! Y축 보정 후 정밀 클릭합니다.")
+                                                    time.sleep(g_val(0.15, 0.25))
+                                                    safe_x = wh_pos[0] + random.randint(-2, 2)
+                                                    safe_y = (wh_pos[1] + 2) + random.randint(-2, 2) # Y좌표 2픽셀 내림
+                                                    m_click_ack(safe_x, safe_y, jx=0, jy=0, double=False, pre_delay=g_val(0.25, 0.4))
+                                                    time.sleep(g_val(3.3, 3.7))
+                                                    ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
+                                                    ai_states[key]["reentry_wait_start"] = time.time()
+                                                else:
+                                                    dprint(key, "⚠️ 창고 두루마리 클릭 실패! 귀환(F8) 사용.")
+                                                    send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
+                                                    time.sleep(g_val(3.3, 3.7))
+                                                    ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
+                                                    ai_states[key]["reentry_wait_start"] = time.time()
+
+                                                send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+
+                                    else:
+                                        dprint(key, f"❌ 던전책에서 '{dungeon_name}'({book_img_list})을 찾지 못했습니다.")
+                                        send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
+                                        send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+                                        ai_states[key]["target_fsm"] = "IDLE"
 
                                 elif "수던" in dungeon_name or "heine" in dungeon_name.lower():
                                     ensure_minimap_open(check_time=1.5, pre_teleport=True)
@@ -9042,9 +9338,9 @@ def ai_commander_worker(target_pc):
                             haste_elapsed = curr_time - last_haste
 
                             dng_name_for_buff = settings.get("dungeon_name", "")
-                            if "수던" in dng_name_for_buff or "heine" in dng_name_for_buff.lower():
+                            if "수던" in dng_name_for_buff or "heine" in dng_name_for_buff.lower() or "본던" in dng_name_for_buff or "gludio" in dng_name_for_buff.lower():
                                 buff_threshold = 2400.0
-                                threshold_str = "40분(수던)"
+                                threshold_str = "40분(수던/본던)"
                             else:
                                 buff_threshold = 6600.0
                                 threshold_str = "1시간 50분(일반)"
@@ -9514,8 +9810,9 @@ def ai_commander_worker(target_pc):
 
                                 is_oak_or_event = "오땅" in dng_name_haste or "event" in dng_name_haste.lower()
                                 is_sudeon = "수던" in dng_name_haste or "heine" in dng_name_haste.lower()
+                                is_bondon = "본던" in dng_name_haste or "gludio" in dng_name_haste.lower()
 
-                                if is_oak_or_event or is_sudeon:
+                                if is_oak_or_event or is_sudeon or is_bondon:
                                     CHAT_X1, CHAT_X2 = 125, 600
                                     CHAT_Y1, CHAT_Y2 = 490, h
 
@@ -9548,16 +9845,17 @@ def ai_commander_worker(target_pc):
                                 if not is_detected_missing and not is_oak_or_event:
                                     is_icon_check_needed = True
 
-                                    if is_sudeon:
+                                    if is_sudeon or is_bondon:
                                         if time_since_buff >= 7200.0:
                                             is_icon_check_needed = True
                                             if curr_time > state.get("sudeon_icon_log_time", 0):
-                                                dprint(key, f"🚨 [수던 헤이 감시] 버프 후 2시간 경과! 사냥터 내 우측 상단 아이콘 팩트 체크를 상시 가동합니다.")
+                                                loc_name = "수던" if is_sudeon else "본던"
+                                                dprint(key, f"🚨 [{loc_name} 헤이 감시] 버프 후 2시간 경과! 사냥터 내 우측 상단 아이콘 팩트 체크를 상시 가동합니다.")
                                                 state["sudeon_icon_log_time"] = curr_time + 60.0
                                         else:
                                             is_icon_check_needed = False
 
-                                    if is_sudeon and not is_icon_check_needed:
+                                    if (is_sudeon or is_bondon) and not is_icon_check_needed:
                                         if state.get("haste_empty_start", 0) > 0:
                                             state["haste_empty_start"] += loop_time_gap
 
@@ -9635,7 +9933,7 @@ def ai_commander_worker(target_pc):
                                             if state.get("haste_empty_start", 0) == 0:
                                                 state["haste_empty_start"] = curr_time
 
-                                    target_empty_time = 120.0 if (is_sudeon or is_oak_or_event) else 40.0
+                                    target_empty_time = 120.0 if (is_sudeon or is_bondon or is_oak_or_event) else 40.0
 
                                     if state.get("haste_empty_start", 0) > 0 and curr_time - state.get("haste_empty_start", 0) >= target_empty_time:
                                         is_detected_missing = True
@@ -9648,7 +9946,7 @@ def ai_commander_worker(target_pc):
                                     elif last_haste > 0.0:
                                         safe_time_since = max(0.0, time_since_buff)
 
-                                        timeout_limit = 7500.0 if is_sudeon else 7200.0
+                                        timeout_limit = 7500.0 if (is_sudeon or is_bondon) else 7200.0
 
                                         if safe_time_since >= timeout_limit:
                                             if state.get("is_real_buff_received", False) and safe_time_since > (timeout_limit + 800.0):
@@ -9958,8 +10256,9 @@ def ai_commander_worker(target_pc):
                 dng_name_debug_haste = settings.get("dungeon_name", "")
                 is_oak_event_dbg = "오땅" in dng_name_debug_haste or "event" in dng_name_debug_haste.lower()
                 is_sudeon_dbg = "수던" in dng_name_debug_haste or "heine" in dng_name_debug_haste.lower()
+                is_bondon_dbg = "본던" in dng_name_debug_haste or "gludio" in dng_name_debug_haste.lower()
 
-                if is_oak_event_dbg or is_sudeon_dbg:
+                if is_oak_event_dbg or is_sudeon_dbg or is_bondon_dbg:
                     CHAT_X1, CHAT_X2 = 125, 600
                     CHAT_Y1, CHAT_Y2 = 490, h
                     cv2.rectangle(debug_img, (CHAT_X1, CHAT_Y1), (CHAT_X2, CHAT_Y2), (255, 100, 100), 2)
@@ -9973,7 +10272,7 @@ def ai_commander_worker(target_pc):
 
                 show_icon_scan_dbg = False
                 if not is_oak_event_dbg:
-                    if is_sudeon_dbg:
+                    if is_sudeon_dbg or is_bondon_dbg:
                         time_passed_dbg = curr_time - state.get("last_haste_time", curr_time)
 
                         if time_passed_dbg >= 7200.0:
@@ -9983,16 +10282,16 @@ def ai_commander_worker(target_pc):
 
                 if show_icon_scan_dbg:
                     cv2.rectangle(debug_img, (max(0, w-60), 0), (w, min(h, 350)), (0, 255, 255), 1)
-                    title_str = "HASTE_ICON (2H_OVER)" if is_sudeon_dbg else "HASTE_ICON"
-                    cv2.putText(debug_img, title_str, (max(0, w-180 if is_sudeon_dbg else w-80), 345), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                    title_str = "HASTE_ICON (2H_OVER)" if (is_sudeon_dbg or is_bondon_dbg) else "HASTE_ICON"
+                    cv2.putText(debug_img, title_str, (max(0, w-180 if (is_sudeon_dbg or is_bondon_dbg) else w-80), 345), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
 
-                    target_limit_time = 120.0 if (is_sudeon_dbg or is_oak_event_dbg) else 40.0
+                    target_limit_time = 120.0 if (is_sudeon_dbg or is_bondon_dbg or is_oak_event_dbg) else 40.0
 
                     if state.get("haste_empty_start", 0) > 0 and curr_time - state.get("haste_empty_start", 0) < target_limit_time + 60.0:
                         missing_sec = curr_time - state["haste_empty_start"]
                         if missing_sec >= target_limit_time: missing_sec = target_limit_time
                         cv2.putText(debug_img, f"MISSING: {missing_sec:.1f}s / {int(target_limit_time)}s", (max(0, w-180), 360), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-                elif is_sudeon_dbg:
+                elif is_sudeon_dbg or is_bondon_dbg:
 
                     cv2.putText(debug_img, "ICON SCAN PAUSED (< 2H)", (max(0, w-210), 360), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 2)
 
@@ -10662,12 +10961,17 @@ def ai_commander_worker(target_pc):
                                     try:
                                         template = tmpl["color"]
                                         mask = tmpl["mask"]
+                                        tmpl_name = tmpl.get("name", "")  # 저장된 파일 이름 가져오기
+                                        
                                         if mask is not None: res = cv2.matchTemplate(inv_roi, template, cv2.TM_CCORR_NORMED, mask=mask)
                                         else: res = cv2.matchTemplate(inv_roi, template, cv2.TM_CCOEFF_NORMED)
 
                                         _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
-                                        if max_val >= 0.79:
+                                        # 💡 파일명에 'bichi'가 포함되어 있으면 92% 적용, 나머지는 기존 79% 적용
+                                        target_threshold = 0.92 if "bichi" in tmpl_name else 0.82
+
+                                        if max_val >= target_threshold:
                                             exact_tx = inv_roi_x1 + max_loc[0] + template.shape[1]//2
                                             exact_ty = max_loc[1] + template.shape[0]//2
 
@@ -11413,7 +11717,9 @@ def ai_commander_worker(target_pc):
                 if "event" in dng_name_tele or "오땅" in dng_name_tele:
                     tele_hunt_enabled = False
 
-                if settings.get("use_party_hunt", False):
+                is_solo_zone_tele = ("본던 5-" in dng_name_tele or "본던 6-" in dng_name_tele or "본던 7-" in dng_name_tele) and not (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False))
+
+                if settings.get("use_party_hunt", False) or is_solo_zone_tele:
                     tele_hunt_enabled = False
 
                 if tele_hunt_enabled and not state.get("is_mptam_mode", False) and state.get("target_fsm") == "IDLE" and state.get("loot_state", "IDLE") == "IDLE" and not state.get("is_pulling", False) and not survival_action_taken:
@@ -11458,15 +11764,18 @@ def ai_commander_worker(target_pc):
 
                         is_party_mode = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
                         is_chain_kill_on = settings.get("chain_kill", False)
+                        
+                        dng_name_aim1 = settings.get("dungeon_name", "")
+                        is_bondon_aim = "본던" in dng_name_aim1 or "gludio" in dng_name_aim1.lower()
 
-                        if is_party_mode or is_chain_kill_on:
+                        if is_party_mode or is_chain_kill_on or is_bondon_aim:
 
                             state["corpse_blind_expire"] = 0.0
 
                             state["target_fsm"] = "TARGET_AIMING"
                             state["aiming_start_time"] = curr_time
-                            dng_name_aim1 = settings.get("dungeon_name", "")
-                            if "수던" in dng_name_aim1 or "heine" in dng_name_aim1.lower():
+                            dng_name_aim2 = settings.get("dungeon_name", "")
+                            if "수던" in dng_name_aim2 or "heine" in dng_name_aim2.lower() or "본던" in dng_name_aim2 or "gludio" in dng_name_aim2.lower():
                                 state["aiming_limit"] = g_val(0.9, 1.3)
                             else:
                                 state["aiming_limit"] = g_val(1.5, 2.1)
@@ -11540,11 +11849,14 @@ def ai_commander_worker(target_pc):
                         if not state.get("has_fired_arrow", False):
 
                             is_party_f4_mode = (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)) and not settings.get("is_puller", False)
+                            
+                            dng_name_f4 = settings.get("dungeon_name", "")
+                            is_bondon_f4 = "본던" in dng_name_f4 or "gludio" in dng_name_f4.lower()
 
-                            if is_party_f4_mode:
+                            if is_party_f4_mode or is_bondon_f4:
                                 state["party_blind_sweep_start"] = curr_time + 0.1
                                 state["party_blind_sweep_end"] = 0.0
-                                dprint(key, "🏹 [파티 루팅] 묻따 줍기 장전! 0.1초 대기 후 F4 1~1.5초간 유지 시전!")
+                                dprint(key, "🏹 [파티/본던 루팅] 묻따 줍기 장전! 0.1초 대기 후 F4 1~1.5초간 유지 시전!")
                         state["has_fired_arrow"] = True
 
                     if state.get("party_blind_sweep_start", 0) > 0 and curr_time >= state["party_blind_sweep_start"]:
@@ -11639,7 +11951,11 @@ def ai_commander_worker(target_pc):
 
             if "is_out_of_zone" not in state: state["is_out_of_zone"] = False
 
-            if settings.get("use_party_hunt", False) and state.get("dungeon_map_pos") and pc_graph and pc_graph.get("nodes"):
+            # 💡 [핵심 추가] 본던 5, 6, 7층은 솔플이더라도 Zone 이탈 방지 로직을 똑같이 적용합니다.
+            dng_zone_chk = settings.get("dungeon_name", "")
+            is_solo_zone_mode = ("본던 5-" in dng_zone_chk or "본던 6-" in dng_zone_chk or "본던 7-" in dng_zone_chk) and not (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False))
+
+            if (settings.get("use_party_hunt", False) or is_solo_zone_mode) and state.get("dungeon_map_pos") and pc_graph and pc_graph.get("nodes"):
                 if curr_time - state.get("zone_check_time", 0) > 1.0:
                     char_map_pos_for_zone = state.get("dungeon_map_pos")
                     my_zone_nodes = []
@@ -11823,7 +12139,7 @@ def ai_commander_worker(target_pc):
                             is_close_combat = curr_time < state.get("close_combat_timer", 0)
 
                             dng_name_chk = settings.get("dungeon_name", "")
-                            is_sudeon_or_party = ("수던" in dng_name_chk or "heine" in dng_name_chk.lower() or settings.get("use_party_hunt", False))
+                            is_sudeon_or_party = ("수던" in dng_name_chk or "heine" in dng_name_chk.lower() or "본던" in dng_name_chk or "gludio" in dng_name_chk.lower() or settings.get("use_party_hunt", False))
 
                             FIXED_ELLIPSE_RX = 340
                             FIXED_ELLIPSE_RY = 240
@@ -11853,14 +12169,21 @@ def ai_commander_worker(target_pc):
                             fsm_for_yolo = str(state.get("target_fsm", ""))
                             is_buff_retreat = fsm_for_yolo == "PARTY_RETREAT_NAV" and "팟바람" in state.get("retreat_reason", "")
 
-                            if is_party_hunt_active:
+                            # 💡 [핵심 추가] 본던 솔플 존 사냥 모드에서도 구역 이탈 시 시야를 파티모드처럼 제한합니다.
+                            dng_chk_yolo = settings.get("dungeon_name", "")
+                            is_bondon_zone_solo = False
+                            if not is_any_party and ("본던 5-" in dng_chk_yolo or "본던 6-" in dng_chk_yolo or "본던 7-" in dng_chk_yolo):
+                                is_bondon_zone_solo = True
 
+                            if is_party_hunt_active:
                                 if state.get("help_requester", False) or state.get("helping_who") is not None or is_buff_retreat:
                                     is_yolo_free = True
                                 else:
                                     is_yolo_free = (dist_to_base <= 15.0) if is_party_wait else True
                             elif is_fixed_party:
                                 is_yolo_free = is_fixed_arrived or (is_fixed_dealer and dist_to_base <= 15.0) or is_buff_retreat or state.get("helping_who") is not None or state.get("help_requester", False)
+                            elif is_bondon_zone_solo:
+                                is_yolo_free = not state.get("is_out_of_zone", False)
                             else:
                                 is_yolo_free = False
 
@@ -11896,7 +12219,8 @@ def ai_commander_worker(target_pc):
                                 yolo_radius = 200
                             elif is_any_party and not is_yolo_free:
                                 yolo_radius = 250
-
+                            elif is_bondon_zone_solo and not is_yolo_free:
+                                yolo_radius = 150  # 솔플 이탈 시 반경 제한 적용
                             elif is_close_combat:
                                 yolo_radius = 150 if is_sudeon_or_party else 70
                             else:
@@ -11963,7 +12287,7 @@ def ai_commander_worker(target_pc):
 
                 if curr_time < state.get("close_combat_timer", 0):
                     dng_name_chk = settings.get("dungeon_name", "")
-                    is_sudeon_or_party = ("수던" in dng_name_chk or "heine" in dng_name_chk.lower() or settings.get("use_party_hunt", False))
+                    is_sudeon_or_party = ("수던" in dng_name_chk or "heine" in dng_name_chk.lower() or "본던" in dng_name_chk or "gludio" in dng_name_chk.lower() or settings.get("use_party_hunt", False))
 
                     if is_sudeon_or_party:
 
@@ -12115,7 +12439,14 @@ def ai_commander_worker(target_pc):
 
                     is_allowed_hidden_track = True
 
-                    if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
+                    # 💡 [핵심 추가] 솔플 존 사냥 모드에서도 벽 너머 회색몹 추적을 금지시켜 구역 이탈을 막습니다.
+                    dng_zone_solo_chk = settings.get("dungeon_name", "")
+                    is_bondon_zone_solo = False
+                    if not (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)):
+                        if "본던 5-" in dng_zone_solo_chk or "본던 6-" in dng_zone_solo_chk or "본던 7-" in dng_zone_solo_chk:
+                            is_bondon_zone_solo = True
+
+                    if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False) or is_bondon_zone_solo:
                         is_allowed_hidden_track = False
 
                         is_helper_guarding = (state.get("helping_who") is not None and state.get("helper_wait_start", 0) > 0)
@@ -12829,8 +13160,8 @@ def ai_commander_worker(target_pc):
 
                     state["target_fsm"] = "TARGET_AIMING"
                     state["aiming_start_time"] = curr_time
-                    dng_name_aim2 = settings.get("dungeon_name", "")
-                    if "수던" in dng_name_aim2 or "heine" in dng_name_aim2.lower():
+                    dng_name_aim3 = settings.get("dungeon_name", "")
+                    if "수던" in dng_name_aim3 or "heine" in dng_name_aim3.lower() or "본던" in dng_name_aim3 or "gludio" in dng_name_aim3.lower():
                         state["aiming_limit"] = g_val(0.9, 1.3)
                     else:
                         state["aiming_limit"] = g_val(1.5, 2.1)
@@ -12851,8 +13182,8 @@ def ai_commander_worker(target_pc):
 
                     state["target_fsm"] = "TARGET_AIMING"
                     state["aiming_start_time"] = curr_time
-                    dng_name_aim3 = settings.get("dungeon_name", "")
-                    if "수던" in dng_name_aim3 or "heine" in dng_name_aim3.lower():
+                    dng_name_aim4 = settings.get("dungeon_name", "")
+                    if "수던" in dng_name_aim4 or "heine" in dng_name_aim4.lower() or "본던" in dng_name_aim4 or "gludio" in dng_name_aim4.lower():
                         state["aiming_limit"] = g_val(0.9, 1.3)
                     else:
                         state["aiming_limit"] = g_val(1.5, 2.1)
@@ -12899,7 +13230,7 @@ def ai_commander_worker(target_pc):
                         state["target_fsm"] = "TARGET_AIMING"
                         state["aiming_start_time"] = curr_time
                         dng_name_aim4 = settings.get("dungeon_name", "")
-                        if "수던" in dng_name_aim4 or "heine" in dng_name_aim4.lower():
+                        if "수던" in dng_name_aim4 or "heine" in dng_name_aim4.lower() or "본던" in dng_name_aim4 or "gludio" in dng_name_aim4.lower():
                             state["aiming_limit"] = g_val(0.9, 1.3)
                         else:
                             state["aiming_limit"] = g_val(1.5, 2.1)
@@ -13817,7 +14148,7 @@ def ai_commander_worker(target_pc):
                         state["target_fsm"] = "TARGET_AIMING"
                         state["aiming_start_time"] = curr_time
                         dng_name_aim5 = settings.get("dungeon_name", "")
-                        if "수던" in dng_name_aim5 or "heine" in dng_name_aim5.lower():
+                        if "수던" in dng_name_aim5 or "heine" in dng_name_aim5.lower() or "본던" in dng_name_aim5 or "gludio" in dng_name_aim5.lower():
                             state["aiming_limit"] = g_val(0.9, 1.3)
                         else:
                             state["aiming_limit"] = g_val(1.5, 2.1)
@@ -14034,7 +14365,7 @@ def ai_commander_worker(target_pc):
 
                                         if is_close_combat:
                                             dng_name_chk = settings.get("dungeon_name", "")
-                                            is_sudeon_or_party = ("수던" in dng_name_chk or "heine" in dng_name_chk.lower() or settings.get("use_party_hunt", False))
+                                            is_sudeon_or_party = ("수던" in dng_name_chk or "heine" in dng_name_chk.lower() or "본던" in dng_name_chk or "gludio" in dng_name_chk.lower() or settings.get("use_party_hunt", False))
 
                                             yolo_limit = 150 if is_sudeon_or_party else 70
                                             if math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy) > yolo_limit:
@@ -14748,7 +15079,7 @@ def ai_commander_worker(target_pc):
 
                 if not action_taken and state.get("is_hunt_active", False) and not state.get("is_paused", False):
                     dungeon_name_check = settings.get("dungeon_name", "")
-                    if "수던" in dungeon_name_check or "heine" in dungeon_name_check.lower():
+                    if "수던" in dungeon_name_check or "heine" in dungeon_name_check.lower() or "본던" in dungeon_name_check or "gludio" in dungeon_name_check.lower():
 
                         fsm_curr = str(state.get("target_fsm", ""))
                         # [수정 1] 무지성 F4 줍기(sweep_active)를 루팅 상태 판정에서 제거!
@@ -14759,12 +15090,14 @@ def ai_commander_worker(target_pc):
                             is_curr_g = state.get("current_is_g_mob", False) and not state.get("is_motion_target", False)
 
                             if not is_curr_g:
+                                is_bondon_g_chk = "본던" in dungeon_name_check or "gludio" in dungeon_name_check.lower()
+                                g_mob_limit = 150.0 if is_bondon_g_chk else 250.0
 
-                                g_mobs_nearby = [m for m in mobs if getattr(m, 'is_g_mob', False) and math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy) <= 250.0]
+                                g_mobs_nearby = [m for m in mobs if getattr(m, 'is_g_mob', False) and math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy) <= g_mob_limit]
 
                                 if g_mobs_nearby:
                                     best_g = min(g_mobs_nearby, key=lambda m: math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy))
-                                    dprint(key, "🚨 [수던 G몹 포착] 250px 내 휴먼형(5번) 등장! 기존 몹 무시하고 G몹으로 스위칭 시도!")
+                                    dprint(key, f"🚨 [G몹 포착] {int(g_mob_limit)}px 내 휴먼형(5번) 등장! 기존 몹 무시하고 G몹으로 스위칭 시도!")
 
                                     state["abort_macro"] = True
                                     clear_movements_only(pico_queues[key])
@@ -15681,7 +16014,7 @@ def ai_commander_worker(target_pc):
                             base_score -= 2000000
 
                         dng_n = settings.get("dungeon_name", "")
-                        if "수던" in dng_n or "heine" in dng_n.lower():
+                        if "수던" in dng_n or "heine" in dng_n.lower() or "본던" in dng_n or "gludio" in dng_n.lower():
                             # [수정 3] 250px 거리 제한 삭제! 파티 욜로 시야 내의 G몹은 거리 무관 무조건 0순위!
                             if getattr(p, "is_g_mob", False):
                                 base_score -= 5000000
