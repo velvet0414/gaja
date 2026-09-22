@@ -4201,19 +4201,9 @@ def patched_check_attack_cursor(img_bgr, cx, cy, check_maintain=False, pc_key=No
     if is_sword:
         return True
 
-    import time
-    curr_time = time.time()
-    state = ai_states.get(pc_key, {}) if pc_key else {}
-
-    if curr_time - state.get("last_broken_check", 0) > 1.0:
-        state["last_broken_check"] = curr_time
-
-        if check_broken_weapon(img_bgr, cx, cy):
-            if pc_key in ai_states:
-                ai_states[pc_key]["weapon_broken_flag"] = True
-                ai_states[pc_key]["cursor_pos"] = [cx, cy]
-
-            return False
+    # 기존 일반 칼 확인 실패 시, 부러진 칼 매칭 시도 (연산 낭비 방지)
+    if check_broken_weapon(img_bgr, cx, cy):
+        return True
 
     return False
 
@@ -5064,49 +5054,40 @@ def ai_commander_worker(target_pc):
                             dprint(key, "🛑 [엠탐 합류 취소] 파트너가 엠탐을 종료했거나 사라졌습니다. 합류 이동을 취소합니다.")
                             state["moving_to_mptam_partner"] = False
 
-                    if is_p_mptam and not is_m_out_of_zone and p_pos and curr_map_pos:
+                        if state.get("mptam_extend_80", False):
+                            dprint(key, "🛑 [동반 엠탐 조기 종료] 파트너가 엠탐을 마쳤습니다. 나도 동반 엠탐을 끝내고 사냥에 복귀합니다.")
+                            state["mptam_extend_80"] = False
+                            state["is_mptam_mode"] = False
+
+                    if is_p_mptam and not is_m_out_of_zone and not is_p_out_of_zone and p_pos and curr_map_pos:
                         if not my_fsm.startswith("TOWN_MAINT") and my_fsm not in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] and not my_fsm.startswith("DEATH") and not my_fsm.startswith("PARTY_"):
-                            dist_to_p = math.hypot(curr_map_pos[0] - p_pos[0], curr_map_pos[1] - p_pos[1])
                             i_am_combat_mptam = my_fsm in ["COMBAT", "TARGET_AIMING", "HOVER_WAIT", "SNAP_WAIT", "MOTION_SNAP_CHECK_SWORD", "HEINE_GMOB_VERIFY"] or state.get("is_attacking", False) or state.get("arrow_is_firing", False) or my_fsm.startswith("LOOT") or state.get("sweep_active", False)
 
-                            if dist_to_p > 6.0:
+                            state["moving_to_mptam_partner"] = False
 
-                                if not state.get("is_mptam_mode", False) and not i_am_combat_mptam and my_fsm in ["IDLE", "PATROL"]:
+                            if not state.get("is_mptam_mode", False):
+                                if not i_am_combat_mptam and mp < 80.0:
                                     if curr_time - state.get("party_log_timer", 0) > 5.0:
-                                        dprint(key, f"🏃‍♂️ [동반 엠탐 집결] 파트너가 엠탐 중입니다! 무조건 파트너 곁(6px 이내)으로 이동합니다. (거리: {dist_to_p:.1f}px)")
+                                        dprint(key, "💤 [제자리 동반 엠탐] 파트너가 엠탐 중입니다! 교전이 끝난 현재 위치에서 의리로 80%까지만 동반 엠탐을 개시합니다.")
                                         state["party_log_timer"] = curr_time
+                                    
+                                    state["is_mptam_mode"] = True
+                                    state["mptam_extend_95"] = False
+                                    state["mptam_extend_80"] = True
+                                    clear_movements_only(pico_queues[key])
+                                    if state.get("sweep_active", False):
+                                        pico_queues[key].put({"action": "SWEEP_STOP"})
+                                        state["sweep_active"] = False
 
-                                    state["moving_to_mptam_partner"] = True
+                                    state["is_attacking"] = False
+                                    state["arrow_is_firing"] = False
+                                    state["has_fired_arrow"] = False
+                                    state["is_pulling"] = False
+                                    state["loot_state"] = "IDLE"
+                                    state["dungeon_global_path"] = []
+                                    state["current_target_node"] = None
 
-                                    if pc_graph and pc_graph.get("nodes"):
-                                        p_nearest = find_nearest_visible_node(pc_graph, p_pos, pc_map_gray_los)
-                                        if p_nearest and str(state.get("current_target_node")) != str(p_nearest):
-                                            state["current_target_node"] = str(p_nearest)
-                                            state["dungeon_global_path"] = []
-                            else:
-
-                                state["moving_to_mptam_partner"] = False
-
-                                if not state.get("is_mptam_mode", False):
-
-                                    if not i_am_combat_mptam and mp < 95.0:
-                                        if curr_time - state.get("party_log_timer", 0) > 5.0:
-                                            dprint(key, "💤 [동반 엠탐 안착] 파트너 곁에 도착했습니다! 같이 앉아서 엠탐을 개시합니다.")
-                                            state["party_log_timer"] = curr_time
-                                        state["is_mptam_mode"] = True
-                                        state["mptam_extend_95"] = True
-                                        clear_movements_only(pico_queues[key])
-                                        if state.get("sweep_active", False):
-                                            pico_queues[key].put({"action": "SWEEP_STOP"})
-                                            state["sweep_active"] = False
-
-                                        state["is_attacking"] = False
-                                        state["arrow_is_firing"] = False
-                                        state["has_fired_arrow"] = False
-                                        state["is_pulling"] = False
-                                        state["loot_state"] = "IDLE"
-
-                                        state["target_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
+                                    state["target_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
 
                     # === [솔플/파티 공통] Zone 이탈 시 0순위 강제 복귀 로직 ===
                     is_m_out_of_zone = state.get("is_out_of_zone", False)
@@ -5251,95 +5232,57 @@ def ai_commander_worker(target_pc):
                                     is_tension_broken = True
 
                                 if is_tension_broken:
-
-                                    if p_is_combat and not i_am_combat and my_fsm in ["IDLE", "PATROL"]:
-                                        if curr_time - state.get("party_log_timer", 0) > 5.0:
-                                            dprint(key, f"🤝 [전투 지원 출동] 파트너({partner_data.get('pc_key')}) 교전 중! 파트너 몹 좌표로 즉각 A* 진군합니다! ({dist_to_partner:.1f}px)")
-                                            state["party_log_timer"] = curr_time
-
-                                        p_mob_pos = partner_data.get("mob_map_pos")
-                                        target_assist_pos = p_mob_pos if p_mob_pos else p_pos
-
-                                        if pc_graph and pc_graph.get("nodes"):
-                                            p_nearest = find_nearest_visible_node(pc_graph, target_assist_pos, pc_map_gray_los)
-                                            if p_nearest and str(state.get("current_target_node")) != str(p_nearest):
-
-                                                if curr_time - state.get("last_assist_repath_time", 0) > 1.0:
-
-                                                    should_repath = True
-                                                    if state.get("dungeon_global_path") and pc_graph and pc_graph.get("nodes") and str(p_nearest) in pc_graph["nodes"]:
-                                                        n_data = pc_graph["nodes"][str(p_nearest)]
-                                                        nx = n_data.get("x", 0) if isinstance(n_data, dict) else n_data[0]
-                                                        ny = n_data.get("y", 0) if isinstance(n_data, dict) else n_data[1]
-
-                                                        end_px, end_py = state["dungeon_global_path"][-1]
-                                                        if math.hypot(end_px - nx, end_py - ny) < 50.0:
-                                                            should_repath = False
-
-                                                    if should_repath:
-                                                        state["current_target_node"] = str(p_nearest)
-                                                        state["dungeon_global_path"] = []
-
-                                                    state["last_assist_repath_time"] = curr_time
-
-                                        state["is_assisting"] = True
-
-                                    elif not p_is_combat and not i_am_combat and my_fsm in ["IDLE", "PATROL"]:
-
-                                        if state.get("is_assisting", False):
-                                            pass
-                                        else:
-                                            if curr_time - state.get("party_log_timer", 0) > 10.0:
-                                                dprint(key, f"🤝 [스마트 랑데부] 거리가 멀어졌습니다({dist_to_partner:.1f}px). 선두 위치와 가장 가까운 안전 구역으로 합류합니다.")
+                                    if is_vanguard:
+                                        if state.get("is_assisting", False) or state.get("is_chasing_leader", False):
+                                            state["is_assisting"] = False
+                                            state["is_chasing_leader"] = False
+                                            state["current_target_node"] = None
+                                            state["dungeon_global_path"] = []
+                                    else:
+                                        if p_is_combat and not i_am_combat and my_fsm in ["IDLE", "PATROL"]:
+                                            if curr_time - state.get("party_log_timer", 0) > 5.0:
+                                                dprint(key, f"🤝 [전투 지원 출동] 파트너({partner_data.get('pc_key')}) 교전 중! 파트너 몹 좌표로 즉각 A* 진군합니다! ({dist_to_partner:.1f}px)")
                                                 state["party_log_timer"] = curr_time
 
-                                            if is_vanguard:
-                                                mid_x = curr_map_pos[0]
-                                                mid_y = curr_map_pos[1]
-                                            else:
-                                                mid_x = p_pos[0]
-                                                mid_y = p_pos[1]
+                                            p_mob_pos = partner_data.get("mob_map_pos")
+                                            target_assist_pos = p_mob_pos if p_mob_pos else p_pos
 
                                             if pc_graph and pc_graph.get("nodes"):
-                                                active_base_zone = active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon
-                                                best_mid_node = None
-                                                min_d = float('inf')
+                                                p_nearest = find_nearest_visible_node(pc_graph, target_assist_pos, pc_map_gray_los)
+                                                if p_nearest and str(state.get("current_target_node")) != str(p_nearest):
 
-                                                for nid, ndata in pc_graph["nodes"].items():
-                                                    if isinstance(ndata, dict):
-                                                        nx = ndata.get("x", 0)
-                                                        ny = ndata.get("y", 0)
+                                                    if curr_time - state.get("last_assist_repath_time", 0) > 1.0:
 
-                                                        node_zone = str(ndata.get("zone", "")).strip()
-                                                        is_buff = ndata.get("is_buff_spot", False)
-                                                        if str(is_buff).lower() == "true": is_buff = True
+                                                        should_repath = True
+                                                        if state.get("dungeon_global_path") and pc_graph and pc_graph.get("nodes") and str(p_nearest) in pc_graph["nodes"]:
+                                                            n_data = pc_graph["nodes"][str(p_nearest)]
+                                                            nx = n_data.get("x", 0) if isinstance(n_data, dict) else n_data[0]
+                                                            ny = n_data.get("y", 0) if isinstance(n_data, dict) else n_data[1]
 
-                                                        is_my_zone = False
-                                                        if is_buff:
-                                                            is_my_zone = True
-                                                        elif node_zone:
-                                                            zone_list = [z.strip() for z in node_zone.split(",")]
-                                                            for z in zone_list:
-                                                                z_base = z.rsplit("-", 1)[0] if "-" in z else z
-                                                                if active_base_zone == z_base:
-                                                                    is_my_zone = True
-                                                                    break
-                                                        else:
+                                                            end_px, end_py = state["dungeon_global_path"][-1]
+                                                            if math.hypot(end_px - nx, end_py - ny) < 50.0:
+                                                                should_repath = False
 
-                                                            is_sp = ndata.get("is_special", False) or ndata.get("special", False)
-                                                            if str(is_sp).lower() == "true": is_sp = True
-                                                            if is_sp: is_my_zone = True
-                                                            else: is_my_zone = True
+                                                        if should_repath:
+                                                            state["current_target_node"] = str(p_nearest)
+                                                            state["dungeon_global_path"] = []
 
-                                                        if is_my_zone:
-                                                            d = (nx - mid_x)**2 + (ny - mid_y)**2
-                                                            if d < min_d:
-                                                                min_d = d
-                                                                best_mid_node = str(nid)
+                                                        state["last_assist_repath_time"] = curr_time
 
-                                                if not best_mid_node:
-                                                    fallback_node = find_nearest_visible_node(pc_graph, (mid_x, mid_y), pc_map_gray_los)
-                                                    best_mid_node = str(fallback_node) if fallback_node else None
+                                            state["is_assisting"] = True
+                                            state["is_chasing_leader"] = True
+
+                                        elif not p_is_combat and not i_am_combat and my_fsm in ["IDLE", "PATROL"]:
+                                            if curr_time - state.get("party_log_timer", 0) > 10.0:
+                                                dprint(key, f"🏃‍♂️ [선두 맹추격] 선두와 거리가 멀어졌습니다({dist_to_partner:.1f}px). 사냥을 보류하고 선두 위치로 즉각 합류합니다.")
+                                                state["party_log_timer"] = curr_time
+
+                                            mid_x = p_pos[0]
+                                            mid_y = p_pos[1]
+
+                                            if pc_graph and pc_graph.get("nodes"):
+                                                fallback_node = find_nearest_visible_node(pc_graph, (mid_x, mid_y), pc_map_gray_los)
+                                                best_mid_node = str(fallback_node) if fallback_node else None
 
                                                 if best_mid_node and curr_time - state.get("last_midpoint_change", 0) > 2.0:
                                                     if str(state.get("current_target_node")) != best_mid_node:
@@ -5348,17 +5291,18 @@ def ai_commander_worker(target_pc):
                                                         state["last_midpoint_change"] = curr_time
 
                                             state["is_assisting"] = True
+                                            state["is_chasing_leader"] = True
 
-                                    else:
-
-                                        pass
+                                        else:
+                                            pass
                                 else:
 
-                                    if state.get("is_assisting", False):
+                                    if state.get("is_assisting", False) or state.get("is_chasing_leader", False):
                                         if curr_time - state.get("party_log_timer", 0) > 5.0:
                                             dprint(key, "✅ [합류 완료] 파트너 코앞(6.0px 이내) 도착! 진형을 단단히 갖추고 정상 사냥을 재개합니다.")
                                             state["party_log_timer"] = curr_time
                                         state["is_assisting"] = False
+                                        state["is_chasing_leader"] = False
                                         state["current_target_node"] = None
                                         state["dungeon_global_path"] = []
 
@@ -9705,30 +9649,31 @@ def ai_commander_worker(target_pc):
                     state["is_attacking"] = False; state["arrow_is_firing"] = False; state["has_fired_arrow"] = False; state["hover_start_time"] = 0; state["locked_by_blind"] = False
                     continue
 
-                if state.pop("weapon_broken_flag", False):
-                    dprint(key, "🚨 [무기 손상] 손상된 칼 감지! F9(두루마리)로 마을 귀환 후 수리합니다!")
-                    clear_movements_only(pico_queues[key])
-                    if str(state.get("target_fsm", "")).startswith("INV_CLEAN"):
-                        state["target_fsm"] = "IDLE"
-                    if state.get("sweep_active", False):
-                        pico_queues[key].put({"action": "SWEEP_STOP"})
-                        state["sweep_active"] = False
-
-                    pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
-                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.2, "delay_max": 0.3})
-                    pico_queues[key].put({"action": "HOLD_KEY", "keycode": 202, "duration": g_val(0.08, 0.15)})
-
-                    state["dungeon_global_path"] = []
-                    state["is_pulling"] = False
-                    state["is_attacking"] = False
-                    state["arrow_is_firing"] = False
-                    state["has_fired_arrow"] = False
-                    state["hover_start_time"] = 0
-
-                    state["target_fsm"] = "WEAPON_REPAIR_TOWN_WAIT"
-                    state["repair_town_timeout"] = curr_time + 4.5
-                    state["cooldown"] = curr_time + 0.5
-                    continue
+                # [주석 처리] 무기 손상 수리 로직 비활성화
+                # if state.pop("weapon_broken_flag", False):
+                #     dprint(key, "🚨 [무기 손상] 손상된 칼 감지! F9(두루마리)로 마을 귀환 후 수리합니다!")
+                #     clear_movements_only(pico_queues[key])
+                #     if str(state.get("target_fsm", "")).startswith("INV_CLEAN"):
+                #         state["target_fsm"] = "IDLE"
+                #     if state.get("sweep_active", False):
+                #         pico_queues[key].put({"action": "SWEEP_STOP"})
+                #         state["sweep_active"] = False
+                # 
+                #     pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
+                #     pico_queues[key].put({"action": "WAIT", "delay_min": 0.2, "delay_max": 0.3})
+                #     pico_queues[key].put({"action": "HOLD_KEY", "keycode": 202, "duration": g_val(0.08, 0.15)})
+                # 
+                #     state["dungeon_global_path"] = []
+                #     state["is_pulling"] = False
+                #     state["is_attacking"] = False
+                #     state["arrow_is_firing"] = False
+                #     state["has_fired_arrow"] = False
+                #     state["hover_start_time"] = 0
+                # 
+                #     state["target_fsm"] = "WEAPON_REPAIR_TOWN_WAIT"
+                #     state["repair_town_timeout"] = curr_time + 4.5
+                #     state["cooldown"] = curr_time + 0.5
+                #     continue
 
                 ret_cond = settings.get("return_cond", "")
                 if ret_cond in ["은화살부족", "두가지다"]:
@@ -11911,6 +11856,10 @@ def ai_commander_worker(target_pc):
 
                         if combat_dur > 15.0 and not state.get("combat_took_damage", False):
                             force_timeout = True
+                            
+                    elif "본던" in dng_combat_name or "gludio" in dng_combat_name.lower():
+                        if state.get("current_is_normal", True):
+                            max_combat_time = 5.0
 
                     if combat_dur > max_combat_time or force_timeout:
                         if force_timeout:
@@ -12105,6 +12054,7 @@ def ai_commander_worker(target_pc):
 
                                 m_obj.is_g_mob = (cls_id == G_MOB_CLASS_ID)
                                 m_obj.is_beast = (cls_id == BEAST_MOB_CLASS_ID)
+                                m_obj.is_normal = (cls_id == 0)
                                 temp_mobs.append(m_obj)
 
                             elif cls_id in [1, 3, 4]:
@@ -12191,6 +12141,9 @@ def ai_commander_worker(target_pc):
                                 if not state.get("is_assisting", False) and not state.get("moving_to_mptam_partner", False):
                                     is_yolo_free = False
 
+                            if state.get("is_chasing_leader", False):
+                                is_yolo_free = False
+
                             if state.get("is_mptam_mode", False) or state.get("mptam_extend_95", False) or state.get("mptam_standby_guard", False) or fsm_for_yolo == "PARTY_ACTIVE_STANDBY":
                                 if is_fixed_party:
                                     yolo_radius = 0 if state.get("mptam_blind_active", False) else 150
@@ -12211,16 +12164,20 @@ def ai_commander_worker(target_pc):
                                 else:
                                     yolo_radius = 200
 
-                            elif is_buff_retreat or state.get("help_requester", False) or state.get("helping_who") is not None or state.get("is_assisting", False) or state.get("moving_to_mptam_partner", False):
+                            elif is_buff_retreat or state.get("help_requester", False) or state.get("helping_who") is not None or state.get("moving_to_mptam_partner", False):
+                                yolo_radius = 9999
+                            elif state.get("is_chasing_leader", False):
+                                yolo_radius = 120
+                            elif state.get("is_assisting", False):
                                 yolo_radius = 9999
                             elif state.get("is_out_of_zone", False):
-                                yolo_radius = 100
+                                yolo_radius = 120
                             elif fsm_for_yolo == "PARTY_WAIT" and not is_yolo_free:
                                 yolo_radius = 200
                             elif is_any_party and not is_yolo_free:
                                 yolo_radius = 250
                             elif is_bondon_zone_solo and not is_yolo_free:
-                                yolo_radius = 150  # 솔플 이탈 시 반경 제한 적용
+                                yolo_radius = 120  # 솔플 이탈 시 반경 제한 적용
                             elif is_close_combat:
                                 yolo_radius = 150 if is_sudeon_or_party else 70
                             else:
@@ -12459,7 +12416,7 @@ def ai_commander_worker(target_pc):
                     if state.get("is_out_of_zone", False) or state.get("target_fsm") == "PARTY_RETREAT_NAV":
                         is_allowed_hidden_track = False
 
-                    if state.get("is_rendezvous_mode", False):
+                    if state.get("is_rendezvous_mode", False) or state.get("is_chasing_leader", False):
                         is_allowed_hidden_track = False
 
                     if hidden_mobs and is_allowed_hidden_track:
@@ -15166,6 +15123,7 @@ def ai_commander_worker(target_pc):
 
                             state["is_motion_target"] = False
                             state["current_is_g_mob"] = True
+                            state["current_is_normal"] = False
 
                             state["humanize_cd"] = 0
                             state["park_push_dist"] = g_val(110, 130)
@@ -15406,6 +15364,7 @@ def ai_commander_worker(target_pc):
                             state["party_buff_status"] = "IDLE"
                             state["is_mptam_mode"] = False
                             state["mptam_extend_95"] = False
+                            state["mptam_extend_80"] = False
                             state["mptam_standby_guard"] = False
                             state["is_active_standby"] = False
                             state["designated_base_node"] = None
@@ -15430,17 +15389,18 @@ def ai_commander_worker(target_pc):
                                 if state.get("is_mptam_mode", False):
                                     dprint(key, f"🛡️ [호위 모드 전환] 내 MP가 95% 이상({mp:.1f}%) 찼습니다! 일어나서 파트너({partner_mp:.1f}%)를 호위하며 기다립니다.")
                                 state["mptam_extend_95"] = False
+                                state["mptam_extend_80"] = False
                                 state["is_mptam_mode"] = False
                             else:
                                 if not is_buff_resolved or not is_mp_resolved or not partner_ready:
                                     if not partner_ready and is_mp_resolved:
-                                        if not state.get("mptam_extend_95", False):
+                                        if not state.get("mptam_extend_80", False) and not state.get("mptam_extend_95", False):
                                             dprint(key, f"🔋 [의리 연장] 나는 완료했으나 파트너({partner_mp:.1f}%) 대기 중! 파트너 끝날때까지 계속 쉬며 기다립니다.")
                                         state["mptam_extend_95"] = True
                                     elif not partner_ready and not is_mp_resolved:
                                         pass
                                     else:
-                                        if not state.get("mptam_extend_95", False):
+                                        if not state.get("mptam_extend_80", False) and not state.get("mptam_extend_95", False):
                                             dprint(key, f"🔋 [엠탐 연장] 2순위 달성! 하지만 버프 대기 중이므로 MP를 계속 연장 회복합니다!")
                                         state["mptam_extend_95"] = True
 
@@ -15450,7 +15410,9 @@ def ai_commander_worker(target_pc):
                                 resolve_txt = "대기목적 달성완료" if is_reason_resolved else f"목적진행중({standby_reason})"
                                 wait_txt = " / 1순위 대기중(버프)" if not is_buff_resolved else ""
 
-                                if state.get("mptam_extend_95", False):
+                                if state.get("mptam_extend_80", False):
+                                    mp_txt = f" / 동반 엠탐 중 (목표 80%)"
+                                elif state.get("mptam_extend_95", False):
                                     if not partner_ready:
                                         mp_txt = f" / 파트너({partner_mp:.1f}%) 대기 ➔ 동반 회복 중!"
                                     else:
@@ -15540,6 +15502,7 @@ def ai_commander_worker(target_pc):
                             state["hover_start_time"] = 0
 
                             state["current_is_g_mob"] = state.get("next_is_g_mob", False)
+                            state["current_is_normal"] = state.get("next_is_normal", True)
                         else:
 
                             if curr_time - state.get("sword_verify_start", curr_time) <= 0.12:
@@ -15549,29 +15512,32 @@ def ai_commander_worker(target_pc):
 
                                 state["sword_verify_active"] = False
 
-                                if check_broken_weapon(img_bgr, cur_x, cur_y):
-                                    dprint(key, "🚨 [무기 손상] 타겟팅 실패! 손상된 칼 확인! F9 귀환 후 수리 발동!")
-                                    clear_movements_only(pico_queues[key])
-                                    if state.get("sweep_active", False):
-                                        pico_queues[key].put({"action": "SWEEP_STOP"})
-                                        state["sweep_active"] = False
+                                # [주석 처리] 타겟팅 실패 시 무기 손상 검사 및 수리 로직 비활성화
+                                # if check_broken_weapon(img_bgr, cur_x, cur_y):
+                                #     dprint(key, "🚨 [무기 손상] 타겟팅 실패! 손상된 칼 확인! F9 귀환 후 수리 발동!")
+                                #     clear_movements_only(pico_queues[key])
+                                #     if state.get("sweep_active", False):
+                                #         pico_queues[key].put({"action": "SWEEP_STOP"})
+                                #         state["sweep_active"] = False
+                                # 
+                                #     pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
+                                #     pico_queues[key].put({"action": "WAIT", "delay_min": 0.2, "delay_max": 0.3})
+                                #     pico_queues[key].put({"action": "HOLD_KEY", "keycode": 202, "duration": g_val(0.08, 0.15)})
+                                # 
+                                #     state["dungeon_global_path"] = []
+                                #     state["is_pulling"] = False
+                                #     state["is_attacking"] = False
+                                #     state["arrow_is_firing"] = False
+                                #     state["has_fired_arrow"] = False
+                                #     state["hover_start_time"] = 0
+                                # 
+                                #     state["target_fsm"] = "WEAPON_REPAIR_TOWN_WAIT"
+                                #     state["repair_town_timeout"] = curr_time + 4.5
+                                #     state["cooldown"] = curr_time + 0.5
+                                #     action_taken = True
+                                #     continue
 
-                                    pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
-                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.2, "delay_max": 0.3})
-                                    pico_queues[key].put({"action": "HOLD_KEY", "keycode": 202, "duration": g_val(0.08, 0.15)})
-
-                                    state["dungeon_global_path"] = []
-                                    state["is_pulling"] = False
-                                    state["is_attacking"] = False
-                                    state["arrow_is_firing"] = False
-                                    state["has_fired_arrow"] = False
-                                    state["hover_start_time"] = 0
-
-                                    state["target_fsm"] = "WEAPON_REPAIR_TOWN_WAIT"
-                                    state["repair_town_timeout"] = curr_time + 4.5
-                                    state["cooldown"] = curr_time + 0.5
-                                    action_taken = True
-                                    continue
+                                retry_cnt = state.get("hover_retry_count", 0)
 
                                 retry_cnt = state.get("hover_retry_count", 0)
                                 is_just_killed = (curr_time - state.get("last_exp_time", 0) < 3.0)
@@ -16026,6 +15992,7 @@ def ai_commander_worker(target_pc):
 
                     best_mob = min(mobs, key=get_mob_score)
                     state["next_is_g_mob"] = getattr(best_mob, "is_g_mob", False)
+                    state["next_is_normal"] = getattr(best_mob, "is_normal", True)
 
                     if role == "ARCHER":
                         raw_tx = best_mob.x + random.gauss(0, 5)
@@ -17146,7 +17113,7 @@ def ai_commander_worker(target_pc):
                                                     if not state.get("is_mptam_mode", False):
                                                         dprint(key, "💤 [13px 합석 엠탐] 파트너 곁으로 인정! 제자리 엠탐을 시작합니다.")
                                                         state["is_mptam_mode"] = True
-                                                        state["mptam_extend_95"] = True
+                                                        state["mptam_extend_80"] = True
                                                         state["target_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
                                                 elif state.get("is_assisting", False):
                                                     state["is_assisting"] = False
@@ -17433,9 +17400,7 @@ def ai_commander_worker(target_pc):
                                                                     partner_dist_for_wait = math.hypot(char_map_pos[0] - p_pos_w[0], char_map_pos[1] - p_pos_w[1])
                                                                 break
 
-                                                is_waiting_needed = settings.get("use_party_hunt", False) and partner_dist_for_wait > 8.0
-                                                if is_zone_returning:
-                                                    is_waiting_needed = False
+                                                is_waiting_needed = False # 🚀 선두는 파트너를 기다리지 않고 갈 길을 감
 
                                                 if is_waiting_needed:
                                                     if state.get("target_fsm") != "SQUAD_WAIT":
@@ -18525,7 +18490,12 @@ def ai_commander_worker(target_pc):
 
                             else:
                                 g_mobs = [m for m in mobs if getattr(m, 'is_g_mob', False)]
-                                if len(g_mobs) >= 3:
+                                
+                                dng_name_hlp = settings.get("dungeon_name", "")
+                                is_bondon_hlp = "본던" in dng_name_hlp or "gludio" in dng_name_hlp.lower()
+
+                                # 💡 [수정] 본던에서는 G몹이 몇 마리가 몰리든 헬프콜을 치지 않습니다.
+                                if len(g_mobs) >= 3 and not is_bondon_hlp:
                                     is_my_crisis = True
                                     crisis_txt = f"G몹 {len(g_mobs)}마리 포착"
                                 else:
@@ -18761,37 +18731,19 @@ def ai_commander_worker(target_pc):
 
                 if state.get("pending_mptam", False) and state.get("target_fsm") in ["IDLE", "PATROL", "SQUAD_WAIT", "PARTY_ACTIVE_STANDBY"] and state.get("loot_state") == "IDLE" and not state.get("sweep_active", False) and not state.get("is_attacking", False):
 
-                    partner_resting_far = False
-                    if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
-                        with party_lock:
-                            for p_key, p_data in local_party_states.items():
-                                if p_data.get("party_group") == my_team and p_data.get("dungeon_name") == active_dungeon and p_key != key:
-                                    if curr_time - p_data.get("recv_time", 0) < 3.0:
-                                        if p_data.get("is_mptam", False) or str(p_data.get("party_state", "")) == "MPTAM":
-                                            p_pos = p_data.get("map_pos")
-                                            curr_pos = state.get("dungeon_map_pos")
-                                            if p_pos and curr_pos and math.hypot(curr_pos[0]-p_pos[0], curr_pos[1]-p_pos[1]) > 6.0:
-                                                partner_resting_far = True
-                                    break
+                    dprint(key, "💤 [예약 엠탐 돌입] 교전/루팅이 끝났습니다! 제자리 엠탐을 가동합니다.")
+                    state["pending_mptam"] = False
+                    state["is_mptam_mode"] = True
+                    state["moving_to_mptam_partner"] = False
+                    clear_movements_only(pico_queues[key])
+                    state["dungeon_global_path"] = []
 
-                    if partner_resting_far:
-                        dprint(key, "🏃‍♂️ [예약 엠탐 연기] 엠탐 예약 발동! 하지만 파트너가 멀리서 쉬고 있으므로 합류 이동합니다.")
-                        state["pending_mptam"] = False
-                        state["moving_to_mptam_partner"] = True
+                    if settings.get("use_party_fixed", False):
+                        state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
+                        state["is_active_standby"] = True
+                        state["standby_reason"] = "현장 MP 고갈"
                     else:
-                        dprint(key, "💤 [예약 엠탐 돌입] 교전/루팅이 끝났습니다! 제자리 엠탐을 가동합니다.")
-                        state["pending_mptam"] = False
-                        state["is_mptam_mode"] = True
-                        state["moving_to_mptam_partner"] = False
-                        clear_movements_only(pico_queues[key])
-                        state["dungeon_global_path"] = []
-
-                        if settings.get("use_party_fixed", False):
-                            state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
-                            state["is_active_standby"] = True
-                            state["standby_reason"] = "현장 MP 고갈"
-                        else:
-                            state["target_fsm"] = "IDLE"
+                        state["target_fsm"] = "IDLE"
 
                 state["mptam_blind_active"] = False
 
@@ -18838,27 +18790,8 @@ def ai_commander_worker(target_pc):
 
                     if (is_party_hunt and not force_party_tele) or (not is_party_hunt and not tele_hunt_enabled):
 
-                        partner_resting_far = False
-
                         if state.get("is_out_of_zone", False):
-                            dprint(key, "🚨 [이탈 구역 엠탐] Zone 밖으로 밀려난 상태입니다! 파트너 합류를 무시하고 제자리에서 즉각 엠탐을 실시합니다.")
-                        elif is_party_hunt:
-
-                            with party_lock:
-                                for p_key, p_data in local_party_states.items():
-                                    if p_data.get("party_group") == my_team and p_data.get("dungeon_name") == active_dungeon and p_key != key:
-                                        if curr_time - p_data.get("recv_time", 0) < 3.0:
-                                            if p_data.get("is_mptam", False) or str(p_data.get("party_state", "")) == "MPTAM":
-                                                p_pos = p_data.get("map_pos")
-                                                curr_pos = state.get("dungeon_map_pos")
-                                                if p_pos and curr_pos and math.hypot(curr_pos[0]-p_pos[0], curr_pos[1]-p_pos[1]) > 6.0:
-                                                    partner_resting_far = True
-                                        break
-
-                        if partner_resting_far:
-                            dprint(key, f"🏃‍♂️ [합류 엠탐 진행 중] 마나가 고갈({mp:.1f}%)되었으나 파트너가 멀리서 엠탐 중입니다! 길바닥에 앉지 않고 파트너에게 합류를 우선합니다.")
-                            state["moving_to_mptam_partner"] = True
-                            continue
+                            dprint(key, "🚨 [이탈 구역 엠탐] Zone 밖으로 밀려난 상태입니다! 제자리에서 즉각 엠탐을 실시합니다.")
 
                         if settings.get("use_party_fixed", False):
                             if not state.get("is_mptam_mode", False):
@@ -19030,24 +18963,32 @@ def ai_commander_worker(target_pc):
                                                 is_partner_still_resting = True
                                     break
 
-                    current_stop_limit = 95.0 if state.get("mptam_extend_95", False) else mptam_stop_mp
+                    current_stop_limit = 80.0 if state.get("mptam_extend_80", False) else (95.0 if state.get("mptam_extend_95", False) else mptam_stop_mp)
 
                     if mp >= current_stop_limit:
-                        if is_partner_still_resting:
+                        if state.get("mptam_extend_80", False):
+                            dprint(key, f"🚀 [선두 진격] 동반 엠탐 80% 달성 완료! 내가 선두로 나서 사냥을 재개합니다!")
+                            state["is_mptam_mode"] = False
+                            state["mptam_extend_80"] = False
+                            state["mptam_extend_95"] = False
+                            state["squad_leader"] = key
+                            state["moving_to_mptam_partner"] = False
+                        elif is_partner_still_resting and not settings.get("use_party_hunt", False):
                             if mp < 95.0:
                                 if not state.get("mptam_extend_95", False):
                                     dprint(key, f"🤝 [동반 엠탐 연장] 파트너가 아직 엠탐 중입니다! 의리로 95%까지 회복하며 같이 기다립니다.")
                                     state["mptam_extend_95"] = True
                             else:
                                 if not state.get("mptam_standby_guard", False):
-                                    dprint(key, f"🛡️ [호위 모드 전환] 내 MP 95% 도달! 일어서서 파트너가 엠탐을 마칠 때까지 제자리에서 호위하며 기다립니다!")
+                                    dprint(key, f"🛡️ [호위 모드 전환] 내 MP 95% 도달! 일어서서 파트너가 엠탐을 마칠 때 제자리에서 호위하며 기다립니다!")
                                 state["is_mptam_mode"] = False
                                 state["mptam_extend_95"] = True
                                 state["mptam_standby_guard"] = True
                         else:
-                            dprint(key, f"🔋 [엠탐 종료] 파티 엠탐 완료! 사냥을 재개합니다.")
+                            dprint(key, f"🔋 [엠탐 종료] 목표치 달성! 지체 없이 사냥을 재개합니다.")
                             state["is_mptam_mode"] = False
                             state["mptam_extend_95"] = False
+                            state["mptam_extend_80"] = False
                             state["mptam_standby_guard"] = False
                             state["moving_to_mptam_partner"] = False
             else:
@@ -19059,7 +19000,7 @@ def ai_commander_worker(target_pc):
                     use_body_setting = settings.get("use_body", False)
                     body_start_mp = settings.get("body_percent", 50.0)
 
-                    body_stop_mp = 95.0 if state.get("mptam_extend_95", False) else settings.get("body_stop_percent", 90.0)
+                    body_stop_mp = 80.0 if state.get("mptam_extend_80", False) else (95.0 if state.get("mptam_extend_95", False) else settings.get("body_stop_percent", 90.0))
 
                     if use_body_setting:
                         if mp <= body_start_mp: state["body_to_mind_active"] = True
