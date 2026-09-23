@@ -4490,9 +4490,9 @@ def ai_commander_worker(target_pc):
 
                                 if is_sudeon_bondon:
 
-                                    if min_portal_dist <= 15.0:
+                                    if min_portal_dist <= 10.0:
                                         if not state.get("portal_blind_mode", False):
-                                            dprint(key, "🚨 [포탈 하차 감지] P노드 15px 이내 진입! 몹을 무시하고(눈 감기) 목적지를 향해 이탈합니다.")
+                                            dprint(key, "🚨 [포탈 하차 감지] P노드 10px 이내 진입! 몹을 무시하고(눈 감기) 목적지를 향해 이탈합니다.")
                                             state["portal_blind_mode"] = True
 
                                             state["is_attacking"] = False
@@ -4514,8 +4514,8 @@ def ai_commander_worker(target_pc):
 
                                             state["cooldown"] = curr_time + 0.15
 
-                                    elif state.get("portal_blind_mode", False) and min_portal_dist >= 40.0:
-                                        dprint(key, "✅ [포탈 이탈 성공] 포탈과 40px 이상 멀어졌습니다! YOLO 눈을 다시 뜨고 사냥을 개시합니다.")
+                                    elif state.get("portal_blind_mode", False) and min_portal_dist >= 15.0:
+                                        dprint(key, "✅ [포탈 이탈 성공] 포탈과 15px 이상 멀어졌습니다! YOLO 눈을 다시 뜨고 사냥을 개시합니다.")
                                         state["portal_blind_mode"] = False
                                         state["cooldown"] = curr_time + 0.1
                                 else:
@@ -5093,7 +5093,8 @@ def ai_commander_worker(target_pc):
                     is_m_out_of_zone = state.get("is_out_of_zone", False)
 
                     if (settings.get("use_party_hunt", False) or is_solo_zone_mode) and is_m_out_of_zone and curr_map_pos and pc_graph and pc_graph.get("nodes"):
-                        active_base_zone = active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon
+                        is_bd_zone = "본던" in active_dungeon or "gludio" in active_dungeon.lower()
+                        active_base_zone = active_dungeon if is_bd_zone else (active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon)
 
                         curr_target_str = str(state.get("current_target_node", ""))
                         is_curr_target_valid_zone = False
@@ -5106,7 +5107,8 @@ def ai_commander_worker(target_pc):
                                 c_zone = str(c_data.get("zone", "")).strip()
                                 if c_zone:
                                     for z in [z.strip() for z in c_zone.split(",")]:
-                                        if active_base_zone == (z.rsplit("-", 1)[0] if "-" in z else z):
+                                        z_base = z if is_bd_zone else (z.rsplit("-", 1)[0] if "-" in z else z)
+                                        if active_base_zone == z_base:
                                             is_curr_target_valid_zone = True
                                             break
                                 else:
@@ -5135,7 +5137,7 @@ def ai_commander_worker(target_pc):
                                     elif node_zone:
                                         zone_list = [z.strip() for z in node_zone.split(",")]
                                         for z in zone_list:
-                                            z_base = z.rsplit("-", 1)[0] if "-" in z else z
+                                            z_base = z if is_bd_zone else (z.rsplit("-", 1)[0] if "-" in z else z)
                                             if active_base_zone == z_base:
                                                 is_my_zone = True
                                                 break
@@ -11909,7 +11911,8 @@ def ai_commander_worker(target_pc):
                     char_map_pos_for_zone = state.get("dungeon_map_pos")
                     my_zone_nodes = []
 
-                    active_base_zone = active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon
+                    is_bd_zone_chk3 = "본던" in active_dungeon or "gludio" in active_dungeon.lower()
+                    active_base_zone = active_dungeon if is_bd_zone_chk3 else (active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon)
 
                     for nid, ndata in pc_graph["nodes"].items():
                         if isinstance(ndata, dict):
@@ -11925,7 +11928,7 @@ def ai_commander_worker(target_pc):
                                 zone_list = [z.strip() for z in node_zone.split(",")]
 
                                 for z in zone_list:
-                                    z_base = z.rsplit("-", 1)[0] if "-" in z else z
+                                    z_base = z if is_bd_zone_chk3 else (z.rsplit("-", 1)[0] if "-" in z else z)
                                     if active_base_zone == z_base:
                                         my_zone_nodes.append(str(nid))
                                         break
@@ -13879,8 +13882,9 @@ def ai_commander_worker(target_pc):
                         is_parked_loot_mode = is_fixed_dealer_loot or is_party_wait_loot
 
                         if is_parked_loot_mode and not state.get("helping_who") and not state.get("help_requester", False):
-                            if dist_to_b >= 57.0:
-                                b['ignore_reason'] = "PARKED_1CELL_ONLY"
+                            parked_dist_limit = 120.0 if ("본던" in active_dungeon or "gludio" in active_dungeon.lower()) else 57.0
+                            if dist_to_b >= parked_dist_limit:
+                                b['ignore_reason'] = f"PARKED_LIMIT(>{int(parked_dist_limit)}px)"
                                 ignored_boxes.append(b)
                                 continue
 
@@ -13888,7 +13892,9 @@ def ai_commander_worker(target_pc):
                             if not active_base_loot and pc_graph and pc_graph.get("buff_spot_nodes"):
                                 active_base_loot = str(pc_graph["buff_spot_nodes"][0])
 
-                            if char_map_pos and pc_graph and active_base_loot:
+                            # ✅ 2번 수정: 본던은 제자리 엠탐이므로 엉뚱한 노드 기준의 목줄(Leash) 검사를 완전히 무시합니다!
+                            is_bondon_leash = ("본던" in active_dungeon or "gludio" in active_dungeon.lower())
+                            if not is_bondon_leash and char_map_pos and pc_graph and active_base_loot:
                                 bn_data_loot = pc_graph["nodes"].get(str(active_base_loot))
                                 if bn_data_loot:
                                     bx_l = bn_data_loot.get("x", 0) if isinstance(bn_data_loot, dict) else bn_data_loot[0]
@@ -13898,7 +13904,10 @@ def ai_commander_worker(target_pc):
                                     item_map_y_chk = char_map_pos[1] + (iy + 15 - char_screen_cy) * DUNGEON_SCALE_Y
 
                                     dist_item_to_base = math.hypot(item_map_x_chk - bx_l, item_map_y_chk - by_l)
-                                    if dist_item_to_base > 8.5:
+                                    
+                                    # ✅ 본던일 경우 목줄 제한도 12.0(약 120px)으로 늘려줌
+                                    leash_limit = 12.0 if ("본던" in active_dungeon or "gludio" in active_dungeon.lower()) else 8.5
+                                    if dist_item_to_base > leash_limit:
                                         b['ignore_reason'] = f"LEASH_OUT({dist_item_to_base:.1f}px)"
                                         ignored_boxes.append(b)
                                         continue
@@ -13918,8 +13927,10 @@ def ai_commander_worker(target_pc):
                                 b['ignore_reason'] = "IN_BUFF_ZONE"
                                 ignored_boxes.append(b)
 
-                            elif state.get("is_mptam_mode", False) and math.hypot(ix - char_screen_cx, iy + 15 - char_screen_cy) > (60.0 if settings.get("use_party_hunt", False) else 120.0):
-                                b['ignore_reason'] = "MPTAM_FAR(>1cell)" if settings.get("use_party_hunt", False) else "MPTAM_FAR(>120px)"
+                            # ✅ 1번 수정: 엠탐 거리(120px 등) 초과 시에만 걸러내고, 이내일 때는 정상 줍기로 통과시킴
+                            elif state.get("is_mptam_mode", False) and math.hypot(ix - char_screen_cx, iy + 15 - char_screen_cy) > (120.0 if ("본던" in active_dungeon or "gludio" in active_dungeon.lower()) else (60.0 if settings.get("use_party_hunt", False) else 120.0)):
+                                mptam_dist_limit = 120.0 if ("본던" in active_dungeon or "gludio" in active_dungeon.lower()) else (60.0 if settings.get("use_party_hunt", False) else 120.0)
+                                b['ignore_reason'] = f"MPTAM_FAR(>{int(mptam_dist_limit)}px)"
                                 ignored_boxes.append(b)
 
                             elif state.get("is_out_of_zone", False) and math.hypot(ix - char_screen_cx, iy + 15 - char_screen_cy) > 100.0:
@@ -14002,7 +14013,8 @@ def ai_commander_worker(target_pc):
 
                         current_fsm_for_loot = str(state.get("target_fsm", ""))
 
-                        if current_fsm_for_loot in ["IDLE", "PATROL", "TARGET_AIMING", "WAIT_FOR_STOP", "PARTY_WAIT", "SQUAD_WAIT"] and not state.get("is_pulling", False) and not is_buffing:
+                        # ✅ 3번 수정: 리스트 맨 끝에 "PARTY_ACTIVE_STANDBY" 추가 (엠탐/대기 상태에서도 템을 향해 출발 허용)
+                        if current_fsm_for_loot in ["IDLE", "PATROL", "TARGET_AIMING", "WAIT_FOR_STOP", "PARTY_WAIT", "SQUAD_WAIT", "PARTY_ACTIVE_STANDBY"] and not state.get("is_pulling", False) and not is_buffing:
 
                             best_box_eval = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
                             dist_to_best = math.hypot(best_box_eval['x'] - char_screen_cx, (best_box_eval['y'] + 15 - char_screen_cy) / 0.50)
@@ -16886,9 +16898,10 @@ def ai_commander_worker(target_pc):
                                                 is_buff_zone = False
 
                                                 if is_buff:
-                                                    active_base = active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon
+                                                    is_bd_zone_chk2 = "본던" in active_dungeon or "gludio" in active_dungeon.lower()
+                                                    active_base = active_dungeon if is_bd_zone_chk2 else (active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon)
                                                     for z in zone_list:
-                                                        z_base = z.rsplit("-", 1)[0] if "-" in z else z
+                                                        z_base = z if is_bd_zone_chk2 else (z.rsplit("-", 1)[0] if "-" in z else z)
                                                         if active_base == z_base:
                                                             is_buff_zone = True
                                                             break
