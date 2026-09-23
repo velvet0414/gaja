@@ -5108,10 +5108,19 @@ def ai_commander_worker(target_pc):
                                 if c_zone:
                                     for z in [z.strip() for z in c_zone.split(",")]:
                                         z_base = z if is_bd_zone else (z.rsplit("-", 1)[0] if "-" in z else z)
-                                        # 💡 "본던 5-1" 과 "5-1" 이 서로 포함되는지 유연하게 검사
-                                        if active_base_zone == z_base or z_base in active_base_zone or active_base_zone in z_base:
+                                        
+                                        if active_base_zone == z_base:
                                             is_curr_target_valid_zone = True
                                             break
+                                        elif is_bd_zone and "-" in active_base_zone and "-" in z_base:
+                                            # 💡 [최종 룰] GUI '본던 5-7'의 뒤(7) == JSON '수던7-1'의 앞(7) 정밀 매칭!
+                                            try:
+                                                a_sub = active_base_zone.split("-")[1].strip()
+                                                z_sub = z_base.replace("수던", "").replace("본던", "").split("-")[0].strip()
+                                                if a_sub == z_sub:
+                                                    is_curr_target_valid_zone = True
+                                                    break
+                                            except: pass
                                 else:
                                     c_sp = c_data.get("is_special", False) or c_data.get("special", False)
                                     if str(c_sp).lower() == "true": is_curr_target_valid_zone = True
@@ -5139,10 +5148,18 @@ def ai_commander_worker(target_pc):
                                         zone_list = [z.strip() for z in node_zone.split(",")]
                                         for z in zone_list:
                                             z_base = z if is_bd_zone else (z.rsplit("-", 1)[0] if "-" in z else z)
-                                            # 💡 포함 관계 검사로 수정
-                                            if active_base_zone == z_base or z_base in active_base_zone or active_base_zone in z_base:
+                                            
+                                            if active_base_zone == z_base:
                                                 is_my_zone = True
                                                 break
+                                            elif is_bd_zone and "-" in active_base_zone and "-" in z_base:
+                                                try:
+                                                    a_sub = active_base_zone.split("-")[1].strip()
+                                                    z_sub = z_base.replace("수던", "").replace("본던", "").split("-")[0].strip()
+                                                    if a_sub == z_sub:
+                                                        is_my_zone = True
+                                                        break
+                                                except: pass
                                     else:
                                         is_sp = ndata.get("is_special", False) or ndata.get("special", False)
                                         if str(is_sp).lower() == "true": is_sp = True
@@ -11926,15 +11943,26 @@ def ai_commander_worker(target_pc):
                                 continue
 
                             node_zone = str(ndata.get("zone", "")).strip()
-                            if node_zone:
+                            # 💡 [방어막 추가] JSON에 속성이 안 찍혀있어도 이 맵 파일의 노드라면 내 구역 편입!
+                            if not node_zone:
+                                my_zone_nodes.append(str(nid))
+                            else:
                                 zone_list = [z.strip() for z in node_zone.split(",")]
 
                                 for z in zone_list:
                                     z_base = z if is_bd_zone_chk3 else (z.rsplit("-", 1)[0] if "-" in z else z)
-                                    # 💡 포함 관계 검사로 수정
-                                    if active_base_zone == z_base or z_base in active_base_zone or active_base_zone in z_base:
+                                    
+                                    if active_base_zone == z_base:
                                         my_zone_nodes.append(str(nid))
                                         break
+                                    elif is_bd_zone_chk3 and "-" in active_base_zone and "-" in z_base:
+                                        try:
+                                            a_sub = active_base_zone.split("-")[1].strip()
+                                            z_sub = z_base.replace("수던", "").replace("본던", "").split("-")[0].strip()
+                                            if a_sub == z_sub:
+                                                my_zone_nodes.append(str(nid))
+                                                break
+                                        except: pass
 
                     is_out_of_zone = False
                     if my_zone_nodes:
@@ -12043,25 +12071,15 @@ def ai_commander_worker(target_pc):
 
                         G_MOB_CLASS_ID = 5
                         BEAST_MOB_CLASS_ID = 6
+                        AVOID_CLASS_ID = 2
 
-                        # 💡 [추가된 부분] 현재 던전이 본던(글루디오)인지 확인
-                        current_dungeon_name = settings.get("dungeon_name", "")
-                        is_bondon_map = "본던" in current_dungeon_name or "gludio" in current_dungeon_name.lower()
+                        dng_yolo_check = settings.get("dungeon_name", "")
+                        is_bondon_yolo = "본던" in dng_yolo_check or "gludio" in dng_yolo_check.lower()
 
                         for box in results[0].boxes:
                             cls_id = int(box.cls[0]); x1_box, y1_box, x2_box, y2_box = map(int, box.xyxy[0])
 
-                            # 💡 [추가된 부분] 본던일 경우 'avoid' 클래스(또는 ID 2번)를 일반 몹(0번)으로 강제 변환
-                            if is_bondon_map:
-                                try:
-                                    cls_name = str(pc_model.names.get(cls_id, "")).lower() if hasattr(pc_model, 'names') else ""
-                                    if cls_name == "avoid" or cls_id == 2:
-                                        cls_id = 0
-                                except Exception:
-                                    if cls_id == 2:
-                                        cls_id = 0
-
-                            if cls_id in [0, 5, 6]:
+                            if cls_id in [0, 5, 6] or (is_bondon_yolo and cls_id == AVOID_CLASS_ID):
                                 mob_cx, mob_cy = (x1_box + x2_box) // 2, (y1_box + y2_box) // 2
                                 mob_foot_y = int(y1_box + (y2_box - y1_box) * 0.85) + 10
 
@@ -12075,12 +12093,13 @@ def ai_commander_worker(target_pc):
                                 m_obj.is_g_mob = (cls_id == G_MOB_CLASS_ID)
                                 m_obj.is_beast = (cls_id == BEAST_MOB_CLASS_ID)
                                 m_obj.is_normal = (cls_id == 0)
+                                m_obj.is_avoid = (cls_id == AVOID_CLASS_ID) # 💡 정식 avoid 속성 추가
                                 temp_mobs.append(m_obj)
 
                             elif cls_id in [1, 3, 4]:
                                 temp_users.append(MobTarget((x1_box + x2_box) // 2, (y1_box + y2_box) // 2, x1_box, y1_box, x2_box, y2_box))
 
-                            elif cls_id == 2:
+                            elif cls_id == AVOID_CLASS_ID and not is_bondon_yolo:
 
                                 dng_slime_ignore = settings.get("dungeon_name", "")
                                 if "오땅" in dng_slime_ignore or "event" in dng_slime_ignore:
@@ -12282,21 +12301,30 @@ def ai_commander_worker(target_pc):
                         zy = int(scan_cy_yolo + math.sin(angle) * 45 * 0.85)
                         cv2.rectangle(debug_img, (zx - 15, zy - 25), (zx + 15, zy + 25), (0, 0, 255), 1)
 
-                if role != "DUNGEON":
-                    for m in mobs:
+                if is_clear:
+                        valid_mobs.append(m)
+                        if DEBUG_MODE and debug_img is not None:
 
-                        if getattr(m, 'is_g_mob', False):
-                            cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (0, 255, 0), 3)
-                            cv2.putText(debug_img, "G-MOB(FIRST)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                        elif getattr(m, 'is_beast', False):
-                            cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (0, 165, 255), 2)
-                            cv2.putText(debug_img, "BEAST(LAST)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
-                        elif getattr(m, 'is_current', False):
-                            cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (0, 255, 255), 2)
-                            cv2.putText(debug_img, "CURRENT", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-                        else:
-                            cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (0, 255, 0), 1)
-                            cv2.putText(debug_img, "MOB", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+                            if getattr(m, 'is_avoid', False):
+                                cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (255, 100, 255), 3)
+                                cv2.circle(debug_img, (m.x, m.foot_y), 3, (255, 100, 255), -1)
+                                cv2.putText(debug_img, "AVOID(PRIO) (CLEAR)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 255), 2)
+                            elif getattr(m, 'is_g_mob', False):
+                                cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (0, 255, 0), 3)
+                                cv2.circle(debug_img, (m.x, m.foot_y), 3, (0, 255, 0), -1)
+                                cv2.putText(debug_img, "G-MOB(FIRST) (CLEAR)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                            elif getattr(m, 'is_beast', False):
+                                cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (0, 165, 255), 2)
+                                cv2.circle(debug_img, (m.x, m.foot_y), 3, (0, 165, 255), -1)
+                                cv2.putText(debug_img, "BEAST(LAST) (CLEAR)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
+                            elif getattr(m, 'is_current', False):
+                                cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (0, 255, 255), 2)
+                                cv2.circle(debug_img, (m.x, m.foot_y), 3, (0, 255, 255), -1)
+                                cv2.putText(debug_img, "CURRENT (CLEAR)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                            else:
+                                cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (0, 255, 0), 1)
+                                cv2.circle(debug_img, (m.x, m.foot_y), 3, (0, 255, 0), -1)
+                                cv2.putText(debug_img, "MOB (CLEAR)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
 
                 for u in current_users:
                     cv2.rectangle(debug_img, (u.x1, u.y1), (u.x2, u.y2), (0, 165, 255), 2)
@@ -12612,6 +12640,7 @@ def ai_commander_worker(target_pc):
                 state["arrow_is_firing"] = False
                 state["has_fired_arrow"] = False
                 state["current_is_g_mob"] = False
+                state["current_is_avoid"] = False # 💡 완벽 초기화
                 state["combat_enchant_failed"] = False
                 state["is_combat_emergency_buff"] = False
 
@@ -15074,16 +15103,32 @@ def ai_commander_worker(target_pc):
                         if is_fighting and not is_looting_now and fsm_curr != "HEINE_GMOB_VERIFY" and curr_time >= state.get("cooldown", 0):
 
                             is_curr_g = state.get("current_is_g_mob", False) and not state.get("is_motion_target", False)
+                            is_curr_avoid = state.get("current_is_avoid", False) and not state.get("is_motion_target", False)
 
-                            if not is_curr_g:
+                            if not is_curr_avoid:
                                 is_bondon_g_chk = "본던" in dungeon_name_check or "gludio" in dungeon_name_check.lower()
                                 g_mob_limit = 150.0 if is_bondon_g_chk else 250.0
 
-                                g_mobs_nearby = [m for m in mobs if getattr(m, 'is_g_mob', False) and math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy) <= g_mob_limit]
+                                best_switch_target = None
+                                switch_type = ""
 
-                                if g_mobs_nearby:
-                                    best_g = min(g_mobs_nearby, key=lambda m: math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy))
-                                    dprint(key, f"🚨 [G몹 포착] {int(g_mob_limit)}px 내 휴먼형(5번) 등장! 기존 몹 무시하고 G몹으로 스위칭 시도!")
+                                # 💡 1순위: 본던 avoid 몹이 떴고, 내가 현재 avoid를 치고 있는게 아니라면 무조건 스위칭
+                                if is_bondon_g_chk:
+                                    avoid_mobs_nearby = [m for m in mobs if getattr(m, 'is_avoid', False) and math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy) <= g_mob_limit]
+                                    if avoid_mobs_nearby:
+                                        best_switch_target = min(avoid_mobs_nearby, key=lambda m: math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy))
+                                        switch_type = "AVOID"
+
+                                # 💡 2순위: avoid가 없고, 내가 현재 G몹을 치고 있는게 아니라면 기존처럼 G몹 스위칭
+                                if not best_switch_target and not is_curr_g:
+                                    g_mobs_nearby = [m for m in mobs if getattr(m, 'is_g_mob', False) and math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy) <= g_mob_limit]
+                                    if g_mobs_nearby:
+                                        best_switch_target = min(g_mobs_nearby, key=lambda m: math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy))
+                                        switch_type = "GMOB"
+
+                                if best_switch_target:
+                                    best_g = best_switch_target
+                                    dprint(key, f"🚨 [{switch_type} 포착] 거리 내 최우선 타겟 등장! 기존 몹 무시하고 스위칭 시도!")
 
                                     state["abort_macro"] = True
                                     clear_movements_only(pico_queues[key])
@@ -15117,6 +15162,7 @@ def ai_commander_worker(target_pc):
                                     state["has_fired_arrow"] = False
 
                                     state["target_fsm"] = "HEINE_GMOB_VERIFY"
+                                    state["switch_target_type"] = switch_type # 💡 갈아탄 타겟의 정체 기억
                                     state["cooldown"] = curr_time + 0.05
                                     action_taken = True
 
@@ -15151,7 +15197,10 @@ def ai_commander_worker(target_pc):
                             state["has_fired_arrow"] = False
 
                             state["is_motion_target"] = False
-                            state["current_is_g_mob"] = True
+                            # 💡 갈아탄 몹의 속성으로 전투 상태 완벽 업데이트
+                            sw_type = state.pop("switch_target_type", "")
+                            state["current_is_avoid"] = (sw_type == "AVOID")
+                            state["current_is_g_mob"] = (sw_type == "GMOB")
                             state["current_is_normal"] = False
 
                             state["humanize_cd"] = 0
@@ -15532,6 +15581,7 @@ def ai_commander_worker(target_pc):
 
                             state["current_is_g_mob"] = state.get("next_is_g_mob", False)
                             state["current_is_normal"] = state.get("next_is_normal", True)
+                            state["current_is_avoid"] = state.get("next_is_avoid", False) # 💡 전투 속성 반영
                         else:
 
                             if curr_time - state.get("sword_verify_start", curr_time) <= 0.12:
@@ -16009,8 +16059,13 @@ def ai_commander_worker(target_pc):
                             base_score -= 2000000
 
                         dng_n = settings.get("dungeon_name", "")
+                        
+                        if "본던" in dng_n or "gludio" in dng_n.lower():
+                            # 💡 본던 avoid 몹을 G몹보다 높은 최우선(1,000만점 가산점)으로 타겟팅
+                            if getattr(p, "is_avoid", False):
+                                base_score -= 10000000
+
                         if "수던" in dng_n or "heine" in dng_n.lower() or "본던" in dng_n or "gludio" in dng_n.lower():
-                            # [수정 3] 250px 거리 제한 삭제! 파티 욜로 시야 내의 G몹은 거리 무관 무조건 0순위!
                             if getattr(p, "is_g_mob", False):
                                 base_score -= 5000000
 
@@ -16022,6 +16077,7 @@ def ai_commander_worker(target_pc):
                     best_mob = min(mobs, key=get_mob_score)
                     state["next_is_g_mob"] = getattr(best_mob, "is_g_mob", False)
                     state["next_is_normal"] = getattr(best_mob, "is_normal", True)
+                    state["next_is_avoid"] = getattr(best_mob, "is_avoid", False) # 💡 예약 상태 추가
 
                     if role == "ARCHER":
                         raw_tx = best_mob.x + random.gauss(0, 5)
@@ -16911,30 +16967,39 @@ def ai_commander_worker(target_pc):
                                             if node_zone:
                                                 zone_list = [z.strip() for z in node_zone.split(",")]
 
-                                                # 💡 일반 존(Zone) 검사도 포함 관계로 유연하게 변경
-                                                is_normal_zone = False
-                                                for z_tmp in zone_list:
-                                                    if active_dungeon == z_tmp or z_tmp in active_dungeon or active_dungeon in z_tmp:
-                                                        is_normal_zone = True
-                                                        break
+                                                is_normal_zone = active_dungeon in zone_list
                                                 
+                                                is_bd_zone_chk2 = "본던" in active_dungeon or "gludio" in active_dungeon.lower()
+                                                if not is_normal_zone and is_bd_zone_chk2:
+                                                    # 💡 일반존 매칭: '본던 5-7'의 7과 '수던7-1'의 7이 일치하면 내 구역!
+                                                    for z in zone_list:
+                                                        if "-" in active_dungeon and "-" in z:
+                                                            try:
+                                                                if active_dungeon.split("-")[1].strip() == z.replace("수던", "").replace("본던", "").split("-")[0].strip():
+                                                                    is_normal_zone = True
+                                                                    break
+                                                            except: pass
+
                                                 is_buff_zone = False
 
                                                 if is_buff:
-                                                    is_bd_zone_chk2 = "본던" in active_dungeon or "gludio" in active_dungeon.lower()
                                                     active_base = active_dungeon if is_bd_zone_chk2 else (active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon)
                                                     for z in zone_list:
                                                         z_base = z if is_bd_zone_chk2 else (z.rsplit("-", 1)[0] if "-" in z else z)
-                                                        # 💡 버프 존 검사도 포함 관계로 변경
-                                                        if active_base == z_base or z_base in active_base or active_base in z_base:
+                                                        if active_base == z_base:
                                                             is_buff_zone = True
                                                             break
+                                                        elif is_bd_zone_chk2 and "-" in active_base and "-" in z_base:
+                                                            # 💡 버프존 매칭: 동일한 숫자 추출 룰 적용!
+                                                            try:
+                                                                if active_base.split("-")[1].strip() == z_base.replace("수던", "").replace("본던", "").split("-")[0].strip():
+                                                                    is_buff_zone = True
+                                                                    break
+                                                            except: pass
 
                                                 if is_buff and is_buff_zone:
-
                                                     buff_spot_nodes.append(str(nid))
                                                 elif not is_buff and is_normal_zone:
-
                                                     zone_matched_nodes.append(str(nid))
 
                                             elif is_sp:
