@@ -634,6 +634,16 @@ def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_sc
 
         OFFSET_X = 2
         OFFSET_Y = 2
+
+        # 💡 [추가] 본던(gludio)인 경우에만 앵커를 5시 방향으로 1픽셀 더 내림 (3, 3)
+        current_dng = current_settings.get(TARGET_PC_KEY, {}).get("dungeon_name", "")
+        if TARGET_PC_KEY in ai_states and ai_states[TARGET_PC_KEY].get("override_dungeon_name"):
+            current_dng = ai_states[TARGET_PC_KEY]["override_dungeon_name"]
+            
+        if "본던" in current_dng or "gludio" in current_dng.lower():
+            OFFSET_X = 3
+            OFFSET_Y = 3
+
         true_cx = (w // 2) + OFFSET_X
         true_cy = (h // 2) + OFFSET_Y
 
@@ -9274,22 +9284,22 @@ def ai_commander_worker(target_pc):
                                         if curr_time > state.get("buff_shield_time", 0): buffs_to_cast.append({"key": KEY_F5, "page": 2, "double": False, "name": "shield", "dur": BUFF_DUR_SHIELD})
                                         if curr_time > state.get("buff_light_time", 0): buffs_to_cast.append({"key": KEY_F12, "page": 3, "double": False, "name": "light", "dur": BUFF_DUR_LIGHT})
 
-                                        if state.get("buff_enchant_time", 0) - curr_time < 300.0:
+                                        # 💡 [버그 픽스] 인챈트 5분 미만 선제 버프 삭제 (다른 버프처럼 완전히 만료되었을 때만 시전)
+                                        if curr_time > state.get("buff_enchant_time", 0):
                                             buffs_to_cast.append({"key": KEY_F7, "page": 2, "double": False, "name": "enchant", "dur": BUFF_DUR_ENCHANT})
 
                                     if "2" in b_set or "3" in b_set or "4" in b_set:
                                         if curr_time > state.get("buff_blessed_time", 0): buffs_to_cast.append({"key": KEY_F8, "page": 2, "double": False, "name": "blessed", "dur": BUFF_DUR_BLESSED})
 
                                     if "3셋트" in b_set or "4셋트" in b_set:
-
                                         is_party_mode_m = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
                                         is_leader_lock_m = is_party_mode_m and settings.get("is_party_inviter", False)
                                         if not is_leader_lock_m:
                                             if curr_time > state.get("buff_element_time", 0): buffs_to_cast.append({"key": KEY_F6, "page": 2, "double": False, "name": "element", "dur": 1200.0})
 
                                     if "4" in b_set:
-
-                                        if state.get("buff_dex_time", 0) - curr_time < 300.0:
+                                        # 💡 [버그 픽스] 덱스 5분 미만 선제 버프 삭제 (완전히 만료되었을 때만 시전)
+                                        if curr_time > state.get("buff_dex_time", 0):
                                             buffs_to_cast.append({"key": KEY_F11, "page": 2, "double": True, "name": "dex", "dur": BUFF_DUR_DEX})
 
                                     if settings.get("use_dec_weight") and check_weight_status(img_bgr) > 0 and curr_time > state.get("buff_decrease_time", 0):
@@ -10827,6 +10837,9 @@ def ai_commander_worker(target_pc):
                             dprint(key, f"⚖️ [무게 인지] {status_str} 상태. {delay:.2f}초 뒤 정리를 시작합니다.")
                         elif curr_time >= state["perc_trash"]:
                             if curr_time >= state.get("cooldown", 0):
+                                # 💡 [추가] 인벤 정리가 끝나고 복귀할 원래 상태(엠탐, 파티대기 등)를 메모지에 확실히 기록!
+                                state["inv_clean_done_next_fsm"] = state.get("target_fsm", "IDLE")
+                                
                                 state["target_fsm"] = "INV_CLEAN_OPEN"
                                 state["cooldown"] = curr_time + 0.1
                                 state["perc_trash"] = 0.0
@@ -10844,6 +10857,13 @@ def ai_commander_worker(target_pc):
                         fsm = state["target_fsm"]
 
                         if fsm == "INV_CLEAN_OPEN":
+
+                            # 💡 [추가] 인벤 검사/정리 돌입 전 바디(F7) 누르고 있는 상태면 하드웨어 신호 강제 해제
+                            if state.get("body_held", False):
+                                if picos.get(key) and pico_locks.get(key): 
+                                    send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0)
+                                state["body_held"] = False
+                                dprint(key, "🛑 [바디 해제] 인벤 정리 전, 누르고 있던 바디(F7)를 완벽히 뗍니다!")
 
                             tab_dur = g_val(0.08, 0.15)
                             pico_queues[key].put({"action": "HOLD_KEY", "keycode": 179, "duration": tab_dur})
@@ -19114,20 +19134,28 @@ def ai_commander_worker(target_pc):
                     heal_mp_limit = settings.get("heal_mp_percent", 30.0)
                     is_critical_hp = state.get("is_panic", False)
 
+                    fsm_body_chk = str(state.get("target_fsm", ""))
+                    # 💡 [핵심 방어막] 인벤 정리나 단축키 복구 등 UI 창 조작 중인지 팩트 체크
+                    is_ui_blocking = fsm_body_chk.startswith("INV_CLEAN") or fsm_body_chk.startswith("HK_HEAL_")
+
                     if state.get("is_mptam_mode", False) and not mobs and use_body_setting:
-                        is_busy = False
-                        state["body_to_mind_active"] = True
+                        # 💡 엠탐 중이더라도 UI 조작 중이면 무조건 바빠짐(busy)으로 간주해 바디(F7) 차단!
+                        if is_ui_blocking:
+                            is_busy = True
+                            state["body_to_mind_active"] = False
+                        else:
+                            is_busy = False
+                            state["body_to_mind_active"] = True
                     else:
 
                         is_fixed_dealer_body = settings.get("use_party_fixed", False) and not settings.get("is_puller", False)
-                        fsm_body_chk = str(state.get("target_fsm", ""))
 
                         if is_fixed_dealer_body:
                             if state.get("is_mptam_mode", False):
-                                is_busy = False
+                                is_busy = True if is_ui_blocking else False
                             else:
 
-                                if fsm_body_chk in ["LOOTING_1CELL", "LOOT_SCAN_WAIT"]:
+                                if is_ui_blocking or fsm_body_chk in ["LOOTING_1CELL", "LOOT_SCAN_WAIT"]:
                                     is_busy = True
                                 else:
                                     is_busy = bool(mobs) or (is_looting or fsm_body_chk not in ["IDLE", "PATROL", "PARTY_WAIT", "PARTY_RETREAT_NAV"]) or state.get("is_pulling", False) or is_buffing or survival_action_taken
@@ -19137,7 +19165,8 @@ def ai_commander_worker(target_pc):
                             is_fsm_allowed = fsm_body_chk in ["IDLE", "PATROL", "PARTY_WAIT", "PARTY_BUFF_L_WAIT", "PARTY_BUFF_M_WAIT", "PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY", "SQUAD_WAIT"]
                             is_pb_waiting_tap = fsm_body_chk in ["PARTY_BUFF_L_WAIT", "PARTY_BUFF_M_WAIT", "PARTY_ACTIVE_STANDBY"]
 
-                            is_busy = (bool(mobs) and not is_pb_waiting_tap) or is_looting or not is_fsm_allowed or state.get("is_pulling", False) or is_buffing or survival_action_taken
+                            # 💡 is_ui_blocking 조건을 추가하여 단타 바디도 완벽 차단
+                            is_busy = (bool(mobs) and not is_pb_waiting_tap) or is_looting or not is_fsm_allowed or state.get("is_pulling", False) or is_buffing or survival_action_taken or is_ui_blocking
 
                         if role == "ARCHER" and state.get("arrow_is_firing", False): is_busy = True
 
