@@ -635,14 +635,14 @@ def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_sc
         OFFSET_X = 2
         OFFSET_Y = 2
 
-        # 💡 [추가] 본던(gludio)인 경우에만 앵커를 5시 방향으로 1픽셀 더 내림 (3, 3)
+        # 💡 [수정] 본던(gludio)인 경우에만 앵커를 1픽셀로 줄여서 위로 당김 (1, 1)
         current_dng = current_settings.get(TARGET_PC_KEY, {}).get("dungeon_name", "")
         if TARGET_PC_KEY in ai_states and ai_states[TARGET_PC_KEY].get("override_dungeon_name"):
             current_dng = ai_states[TARGET_PC_KEY]["override_dungeon_name"]
             
         if "본던" in current_dng or "gludio" in current_dng.lower():
-            OFFSET_X = 3
-            OFFSET_Y = 3
+            OFFSET_X = 1
+            OFFSET_Y = 1
 
         true_cx = (w // 2) + OFFSET_X
         true_cy = (h // 2) + OFFSET_Y
@@ -5287,14 +5287,9 @@ def ai_commander_worker(target_pc):
                                                     if curr_time - state.get("last_assist_repath_time", 0) > 1.0:
 
                                                         should_repath = True
-                                                        if state.get("dungeon_global_path") and pc_graph and pc_graph.get("nodes") and str(p_nearest) in pc_graph["nodes"]:
-                                                            n_data = pc_graph["nodes"][str(p_nearest)]
-                                                            nx = n_data.get("x", 0) if isinstance(n_data, dict) else n_data[0]
-                                                            ny = n_data.get("y", 0) if isinstance(n_data, dict) else n_data[1]
-
-                                                            end_px, end_py = state["dungeon_global_path"][-1]
-                                                            if math.hypot(end_px - nx, end_py - ny) < 50.0:
-                                                                should_repath = False
+                                                        # 💡 [관성 주행] 이미 진행 중인 A* 경로가 남아있다면 파트너가 움직여도 경로 파기 금지!
+                                                        if state.get("dungeon_global_path"):
+                                                            should_repath = False
 
                                                         if should_repath:
                                                             state["current_target_node"] = str(p_nearest)
@@ -5319,9 +5314,11 @@ def ai_commander_worker(target_pc):
 
                                                 if best_mid_node and curr_time - state.get("last_midpoint_change", 0) > 2.0:
                                                     if str(state.get("current_target_node")) != best_mid_node:
-                                                        state["current_target_node"] = best_mid_node
-                                                        state["dungeon_global_path"] = []
-                                                        state["last_midpoint_change"] = curr_time
+                                                        # 💡 [관성 주행] 맹추격 시에도 가던 길이 있으면 파기 금지!
+                                                        if not state.get("dungeon_global_path"):
+                                                            state["current_target_node"] = best_mid_node
+                                                            state["dungeon_global_path"] = []
+                                                            state["last_midpoint_change"] = curr_time
 
                                             state["is_assisting"] = True
                                             state["is_chasing_leader"] = True
@@ -5354,14 +5351,17 @@ def ai_commander_worker(target_pc):
                                     if curr_time - state.get("last_partner_node_change", 0) > 0.5:
                                         if p_hidden:
                                             if str(state.get("hidden_track_node")) != str(p_hidden):
-                                                state["hidden_track_node"] = p_hidden
-                                                state["dungeon_global_path"] = []
-                                                state["last_partner_node_change"] = curr_time
+                                                # 💡 [관성 주행] 파트너 노드가 바뀌어도 내 경로가 남아있다면 유지
+                                                if not state.get("dungeon_global_path"):
+                                                    state["hidden_track_node"] = p_hidden
+                                                    state["dungeon_global_path"] = []
+                                                    state["last_partner_node_change"] = curr_time
                                         elif p_node:
                                             if str(old_node) != str(p_node):
-                                                state["current_target_node"] = p_node
-                                                state["dungeon_global_path"] = []
-                                                state["last_partner_node_change"] = curr_time
+                                                if not state.get("dungeon_global_path"):
+                                                    state["current_target_node"] = p_node
+                                                    state["dungeon_global_path"] = []
+                                                    state["last_partner_node_change"] = curr_time
                                         else:
                                             if pc_graph and pc_graph.get("nodes"):
                                                 min_d = float('inf'); closest_n = None
@@ -5387,9 +5387,10 @@ def ai_commander_worker(target_pc):
                                                             min_d = d; closest_n = nid
 
                                                 if closest_n and str(old_node) != str(closest_n):
-                                                    state["current_target_node"] = closest_n
-                                                    state["dungeon_global_path"] = []
-                                                    state["last_partner_node_change"] = curr_time
+                                                    if not state.get("dungeon_global_path"):
+                                                        state["current_target_node"] = closest_n
+                                                        state["dungeon_global_path"] = []
+                                                        state["last_partner_node_change"] = curr_time
                     else:
                         state["party_is_vanguard"] = True
 
