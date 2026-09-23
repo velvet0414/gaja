@@ -1259,7 +1259,9 @@ def calculate_graph_astar_path(graph, start_pos, goal_node_id, map_gray, blocked
             wall_penalty = 1.2
 
             dng_name_astar = graph.get("dungeon_name", "") if graph else ""
-            is_sudeon_astar = "수던" in dng_name_astar or "heine" in dng_name_astar.lower()
+            
+            # 💡 [핵심 수정] 본던(gludio) 사냥 시에도 수던처럼 북쪽(길 위쪽) 벽 타기 가중치를 무효화합니다.
+            is_sudeon_astar = "수던" in dng_name_astar or "heine" in dng_name_astar.lower() or "본던" in dng_name_astar or "gludio" in dng_name_astar.lower()
 
             if is_sudeon_astar:
                 wall_penalty = 1.0
@@ -5358,10 +5360,22 @@ def ai_commander_worker(target_pc):
                                                     ny = ndata.get("y", 0) if isinstance(ndata, dict) else ndata[1]
                                                     d = (nx - p_pos[0])**2 + (ny - p_pos[1])**2
                                                     if d < min_d:
-                                                        if pc_map_gray_los is not None and char_map_pos:
-                                                            if not check_line_of_sight(pc_map_gray_los, char_map_pos, (nx, ny), margin_steps=1):
+                                                        # 💡 시야 검사 기준을 '내 위치'가 아닌 '파트너 위치'로 변경해야 코너를 돌 수 있음
+                                                        if pc_map_gray_los is not None and p_pos:
+                                                            if not check_line_of_sight(pc_map_gray_los, p_pos, (nx, ny), margin_steps=1):
                                                                 continue
                                                         min_d = d; closest_n = nid
+                                                        
+                                                # 💡 시야가 다 막혀있을 경우 가장 가까운 노드 강제 할당
+                                                if closest_n is None:
+                                                    min_d = float('inf')
+                                                    for nid, ndata in pc_graph["nodes"].items():
+                                                        nx = ndata.get("x", 0) if isinstance(ndata, dict) else ndata[0]
+                                                        ny = ndata.get("y", 0) if isinstance(ndata, dict) else ndata[1]
+                                                        d = (nx - p_pos[0])**2 + (ny - p_pos[1])**2
+                                                        if d < min_d:
+                                                            min_d = d; closest_n = nid
+
                                                 if closest_n and str(old_node) != str(closest_n):
                                                     state["current_target_node"] = closest_n
                                                     state["dungeon_global_path"] = []
@@ -11852,11 +11866,24 @@ def ai_commander_worker(target_pc):
                             state["cooldown"] = curr_time + 0.1
                             state["is_attacking"] = False; state["target_fsm"] = "IDLE"; state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
                     else:
-
                         time_since_arrow = curr_time - state.get("last_arrow_change_time", curr_time)
 
-                        allowable_arrow_delay = 5.0 if curr_time < state.get("emergency_buff_grace_time", 0) else 2.8
+                        # 💡 [핵심 스마트 로직] 마지막 화살 발사 이후 힐/바디 등 마법을 사용했는지 팩트 체크!
+                        last_arrow_time = state.get("last_arrow_change_time", 0)
+                        last_spell_time = max(state.get("last_heal_time", 0), state.get("last_body_time", 0))
+                        
+                        is_spell_cast_recently = last_spell_time > last_arrow_time
+
+                        if curr_time < state.get("emergency_buff_grace_time", 0):
+                            allowable_arrow_delay = 5.0
+                        elif is_spell_cast_recently:
+                            allowable_arrow_delay = 2.8 # 마법 시전(모션)을 감안하여 기존처럼 2.8초 대기
+                        else:
+                            allowable_arrow_delay = 1.5 # 마법도 안 썼는데 화살이 안 나가면 1.5초 만에 빠른 타겟 포기 (딜로스 제거)
+
                         if time_since_arrow > allowable_arrow_delay:
+                            reason_str = "비상 버프 대기" if curr_time < state.get("emergency_buff_grace_time", 0) else ("마법 사용 딜레이 연장" if is_spell_cast_recently else "빠른 사격 중단")
+                            dprint(key, f"⚠️ [전투 중단] {allowable_arrow_delay}초 경과 ({reason_str})! 화살이 나가지 않아 타겟 포기!")
                             state["cooldown"] = curr_time + 0.1
                             state["is_attacking"] = False; state["target_fsm"] = "IDLE"; state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
 
@@ -12301,31 +12328,6 @@ def ai_commander_worker(target_pc):
                         zy = int(scan_cy_yolo + math.sin(angle) * 45 * 0.85)
                         cv2.rectangle(debug_img, (zx - 15, zy - 25), (zx + 15, zy + 25), (0, 0, 255), 1)
 
-                if is_clear:
-                        valid_mobs.append(m)
-                        if DEBUG_MODE and debug_img is not None:
-
-                            if getattr(m, 'is_avoid', False):
-                                cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (255, 100, 255), 3)
-                                cv2.circle(debug_img, (m.x, m.foot_y), 3, (255, 100, 255), -1)
-                                cv2.putText(debug_img, "AVOID(PRIO) (CLEAR)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 255), 2)
-                            elif getattr(m, 'is_g_mob', False):
-                                cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (0, 255, 0), 3)
-                                cv2.circle(debug_img, (m.x, m.foot_y), 3, (0, 255, 0), -1)
-                                cv2.putText(debug_img, "G-MOB(FIRST) (CLEAR)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                            elif getattr(m, 'is_beast', False):
-                                cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (0, 165, 255), 2)
-                                cv2.circle(debug_img, (m.x, m.foot_y), 3, (0, 165, 255), -1)
-                                cv2.putText(debug_img, "BEAST(LAST) (CLEAR)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
-                            elif getattr(m, 'is_current', False):
-                                cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (0, 255, 255), 2)
-                                cv2.circle(debug_img, (m.x, m.foot_y), 3, (0, 255, 255), -1)
-                                cv2.putText(debug_img, "CURRENT (CLEAR)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-                            else:
-                                cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (0, 255, 0), 1)
-                                cv2.circle(debug_img, (m.x, m.foot_y), 3, (0, 255, 0), -1)
-                                cv2.putText(debug_img, "MOB (CLEAR)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
-
                 for u in current_users:
                     cv2.rectangle(debug_img, (u.x1, u.y1), (u.x2, u.y2), (0, 165, 255), 2)
                     cv2.putText(debug_img, "USER", (u.x1, max(0, u.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
@@ -12357,7 +12359,7 @@ def ai_commander_worker(target_pc):
                 for m in mobs:
                     map_dx = (m.x - char_screen_cx) * DUNGEON_SCALE_X
                     map_dy = (m.foot_y - char_screen_cy) * DUNGEON_SCALE_Y
-                    is_clear = True
+                    is_clear = True  # 💡 에러 방지를 위해 변수 확실히 생성!
 
                     dng_mob_name = settings.get("dungeon_name", "")
                     is_event_dungeon = "event" in dng_mob_name.lower() or "오땅" in dng_mob_name
@@ -12382,14 +12384,12 @@ def ai_commander_worker(target_pc):
                     near_portal_mob = False
                     if mob_map_x is not None and mob_map_y is not None and portal_map_pts:
                         for px, py in portal_map_pts:
-
                             if math.hypot(mob_map_x - px, mob_map_y - py) <= 15.0:
                                 near_portal_mob = True
                                 break
 
                     if near_portal_mob:
                         if DEBUG_MODE and debug_img is not None:
-
                             cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (100, 100, 100), 2)
                             cv2.putText(debug_img, "PORTAL IGN", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
                         continue
@@ -12397,8 +12397,11 @@ def ai_commander_worker(target_pc):
                     if is_clear:
                         valid_mobs.append(m)
                         if DEBUG_MODE and debug_img is not None:
-
-                            if getattr(m, 'is_g_mob', False):
+                            if getattr(m, 'is_avoid', False):
+                                cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (255, 100, 255), 3)
+                                cv2.circle(debug_img, (m.x, m.foot_y), 3, (255, 100, 255), -1)
+                                cv2.putText(debug_img, "AVOID(PRIO) (CLEAR)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 255), 2)
+                            elif getattr(m, 'is_g_mob', False):
                                 cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (0, 255, 0), 3)
                                 cv2.circle(debug_img, (m.x, m.foot_y), 3, (0, 255, 0), -1)
                                 cv2.putText(debug_img, "G-MOB(FIRST) (CLEAR)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
@@ -12415,7 +12418,6 @@ def ai_commander_worker(target_pc):
                                 cv2.circle(debug_img, (m.x, m.foot_y), 3, (0, 255, 0), -1)
                                 cv2.putText(debug_img, "MOB (CLEAR)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
                     else:
-
                         if not getattr(m, 'is_slime', False) and not is_event_dungeon:
                             hidden_mobs.append(m)
                             if DEBUG_MODE and debug_img is not None:
