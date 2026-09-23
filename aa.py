@@ -5108,7 +5108,8 @@ def ai_commander_worker(target_pc):
                                 if c_zone:
                                     for z in [z.strip() for z in c_zone.split(",")]:
                                         z_base = z if is_bd_zone else (z.rsplit("-", 1)[0] if "-" in z else z)
-                                        if active_base_zone == z_base:
+                                        # 💡 "본던 5-1" 과 "5-1" 이 서로 포함되는지 유연하게 검사
+                                        if active_base_zone == z_base or z_base in active_base_zone or active_base_zone in z_base:
                                             is_curr_target_valid_zone = True
                                             break
                                 else:
@@ -5138,7 +5139,8 @@ def ai_commander_worker(target_pc):
                                         zone_list = [z.strip() for z in node_zone.split(",")]
                                         for z in zone_list:
                                             z_base = z if is_bd_zone else (z.rsplit("-", 1)[0] if "-" in z else z)
-                                            if active_base_zone == z_base:
+                                            # 💡 포함 관계 검사로 수정
+                                            if active_base_zone == z_base or z_base in active_base_zone or active_base_zone in z_base:
                                                 is_my_zone = True
                                                 break
                                     else:
@@ -11929,7 +11931,8 @@ def ai_commander_worker(target_pc):
 
                                 for z in zone_list:
                                     z_base = z if is_bd_zone_chk3 else (z.rsplit("-", 1)[0] if "-" in z else z)
-                                    if active_base_zone == z_base:
+                                    # 💡 포함 관계 검사로 수정
+                                    if active_base_zone == z_base or z_base in active_base_zone or active_base_zone in z_base:
                                         my_zone_nodes.append(str(nid))
                                         break
 
@@ -12041,8 +12044,22 @@ def ai_commander_worker(target_pc):
                         G_MOB_CLASS_ID = 5
                         BEAST_MOB_CLASS_ID = 6
 
+                        # 💡 [추가된 부분] 현재 던전이 본던(글루디오)인지 확인
+                        current_dungeon_name = settings.get("dungeon_name", "")
+                        is_bondon_map = "본던" in current_dungeon_name or "gludio" in current_dungeon_name.lower()
+
                         for box in results[0].boxes:
                             cls_id = int(box.cls[0]); x1_box, y1_box, x2_box, y2_box = map(int, box.xyxy[0])
+
+                            # 💡 [추가된 부분] 본던일 경우 'avoid' 클래스(또는 ID 2번)를 일반 몹(0번)으로 강제 변환
+                            if is_bondon_map:
+                                try:
+                                    cls_name = str(pc_model.names.get(cls_id, "")).lower() if hasattr(pc_model, 'names') else ""
+                                    if cls_name == "avoid" or cls_id == 2:
+                                        cls_id = 0
+                                except Exception:
+                                    if cls_id == 2:
+                                        cls_id = 0
 
                             if cls_id in [0, 5, 6]:
                                 mob_cx, mob_cy = (x1_box + x2_box) // 2, (y1_box + y2_box) // 2
@@ -16894,7 +16911,13 @@ def ai_commander_worker(target_pc):
                                             if node_zone:
                                                 zone_list = [z.strip() for z in node_zone.split(",")]
 
-                                                is_normal_zone = active_dungeon in zone_list
+                                                # 💡 일반 존(Zone) 검사도 포함 관계로 유연하게 변경
+                                                is_normal_zone = False
+                                                for z_tmp in zone_list:
+                                                    if active_dungeon == z_tmp or z_tmp in active_dungeon or active_dungeon in z_tmp:
+                                                        is_normal_zone = True
+                                                        break
+                                                
                                                 is_buff_zone = False
 
                                                 if is_buff:
@@ -16902,7 +16925,8 @@ def ai_commander_worker(target_pc):
                                                     active_base = active_dungeon if is_bd_zone_chk2 else (active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon)
                                                     for z in zone_list:
                                                         z_base = z if is_bd_zone_chk2 else (z.rsplit("-", 1)[0] if "-" in z else z)
-                                                        if active_base == z_base:
+                                                        # 💡 버프 존 검사도 포함 관계로 변경
+                                                        if active_base == z_base or z_base in active_base or active_base in z_base:
                                                             is_buff_zone = True
                                                             break
 
