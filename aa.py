@@ -641,8 +641,8 @@ def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_sc
             current_dng = ai_states[TARGET_PC_KEY]["override_dungeon_name"]
             
         if "본던" in current_dng or "gludio" in current_dng.lower():
-            OFFSET_X = 1
-            OFFSET_Y = 1
+            OFFSET_X = 2
+            OFFSET_Y = 2
 
         true_cx = (w // 2) + OFFSET_X
         true_cy = (h // 2) + OFFSET_Y
@@ -905,6 +905,17 @@ def check_line_of_sight(map_gray, start_point, end_point, margin_steps=3):
 
     if map_gray is None: return True
 
+    # 💡 [추가] 글로벌 변수에서 현재 사냥터가 본던(gludio)인지 팩트 체크
+    is_bondon = False
+    try:
+        current_dng = current_settings.get(TARGET_PC_KEY, {}).get("dungeon_name", "")
+        if TARGET_PC_KEY in ai_states and ai_states[TARGET_PC_KEY].get("override_dungeon_name"):
+            current_dng = ai_states[TARGET_PC_KEY]["override_dungeon_name"]
+        if "본던" in current_dng or "gludio" in current_dng.lower():
+            is_bondon = True
+    except:
+        pass
+
     x0, y0 = float(start_point[0]), float(start_point[1])
     x1, y1 = float(end_point[0]), float(end_point[1])
 
@@ -912,7 +923,10 @@ def check_line_of_sight(map_gray, start_point, end_point, margin_steps=3):
 
     dist = math.hypot(x1 - x0, y1 - y0)
 
-    if dist <= margin_steps * 2.0:
+    # 💡 [요청 1] 초근접 교전 시 무조건 통과 (완충 지대)
+    # 본던일 경우 마진을 1.0으로 타이트하게 제한하고, 아니면 원래 마진(margin_steps * 2.0) 유지
+    close_combat_limit = 1.0 if is_bondon else (margin_steps * 2.0)
+    if dist <= close_combat_limit:
         return True
 
     steps = max(1, int(dist))
@@ -954,7 +968,10 @@ def check_line_of_sight(map_gray, start_point, end_point, margin_steps=3):
         if is_wall:
             dist_from_end = math.hypot(x1 - cx, y1 - cy)
 
-            if dist_from_end > margin_steps:
+            # 💡 [요청 2] 몹 발끝에 걸친 벽은 무시 (진짜 마진)
+            # 본던일 경우 마진을 0.0으로 줘서 벽 픽셀에 닿기만 해도 칼같이 막힘 판정!
+            wall_ignore_margin = 0.0 if is_bondon else float(margin_steps)
+            if dist_from_end > wall_ignore_margin:
                 return False
 
     return True
