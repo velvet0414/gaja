@@ -905,7 +905,7 @@ def check_line_of_sight(map_gray, start_point, end_point, margin_steps=3):
 
     if map_gray is None: return True
 
-    # 💡 [추가] 글로벌 변수에서 현재 사냥터가 본던(gludio)인지 팩트 체크
+    # 💡 글로벌 변수에서 현재 사냥터가 본던(gludio)인지 팩트 체크
     is_bondon = False
     try:
         current_dng = current_settings.get(TARGET_PC_KEY, {}).get("dungeon_name", "")
@@ -923,8 +923,7 @@ def check_line_of_sight(map_gray, start_point, end_point, margin_steps=3):
 
     dist = math.hypot(x1 - x0, y1 - y0)
 
-    # 💡 [요청 1] 초근접 교전 시 무조건 통과 (완충 지대)
-    # 본던일 경우 마진을 1.0으로 타이트하게 제한하고, 아니면 원래 마진(margin_steps * 2.0) 유지
+    # 본던일 경우 마진을 1.0으로 타이트하게 제한하고, 아니면 원래 마진 유지
     close_combat_limit = 1.0 if is_bondon else (margin_steps * 2.0)
     if dist <= close_combat_limit:
         return True
@@ -932,6 +931,10 @@ def check_line_of_sight(map_gray, start_point, end_point, margin_steps=3):
     steps = max(1, int(dist))
     dx = (x1 - x0) / steps
     dy = (y1 - y0) / steps
+    
+    # 💡 [핵심 튜닝] 본던일 경우 벽으로 인정하는 밝기 임계값을 대폭 상향!
+    # 기존 50미만 -> 80미만으로 올려서 뼈다귀 주변의 회색 테두리까지 모조리 두꺼운 벽으로 판정
+    wall_threshold = 80 if is_bondon else 50
 
     for i in range(1, steps):
         cx = x0 + dx * i
@@ -941,10 +944,10 @@ def check_line_of_sight(map_gray, start_point, end_point, margin_steps=3):
         is_wall = False
         if 0 <= ix < w and 0 <= iy < h:
             val = map_gray[iy, ix]
-
             if isinstance(val, (list, tuple)) or getattr(val, 'ndim', 0) > 0:
                 val = val[0]
-            if val < 50:
+                
+            if val < wall_threshold:  # 💡 상향된 임계값 적용
                 is_wall = True
 
         if not is_wall:
@@ -956,19 +959,18 @@ def check_line_of_sight(map_gray, start_point, end_point, margin_steps=3):
                 if 0 <= ax < w:
                     val = map_gray[iy, ax]
                     if isinstance(val, (list, tuple)) or getattr(val, 'ndim', 0) > 0: val = val[0]
-                    if val < 50: is_wall = True
+                    if val < wall_threshold: is_wall = True # 💡 상향된 임계값 적용
 
             if not is_wall and abs(dy_frac) > 0.35:
                 ay = iy + (1 if dy_frac > 0 else -1)
                 if 0 <= ay < h:
                     val = map_gray[ay, ix]
                     if isinstance(val, (list, tuple)) or getattr(val, 'ndim', 0) > 0: val = val[0]
-                    if val < 50: is_wall = True
+                    if val < wall_threshold: is_wall = True # 💡 상향된 임계값 적용
 
         if is_wall:
             dist_from_end = math.hypot(x1 - cx, y1 - cy)
-
-            # 💡 [요청 2] 몹 발끝에 걸친 벽은 무시 (진짜 마진)
+            
             # 본던일 경우 마진을 0.0으로 줘서 벽 픽셀에 닿기만 해도 칼같이 막힘 판정!
             wall_ignore_margin = 0.0 if is_bondon else float(margin_steps)
             if dist_from_end > wall_ignore_margin:
@@ -6364,7 +6366,7 @@ def ai_commander_worker(target_pc):
                                     if total_target_count == 0:
                                         dprint(key, "✅ 찾을 물건이 설정되지 않았습니다. 즉시 스킵합니다.")
                                     else:
-                                        for scroll_idx in range(50):
+                                        for scroll_idx in range(100):
                                             if len(found_items) >= total_target_count:
                                                 dprint(key, "✅ [찾기 조기 달성] 지정된 모든 물건을 찾았습니다. 헛발질(스크롤) 조기 종료!")
                                                 break
