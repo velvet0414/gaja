@@ -11000,7 +11000,7 @@ def ai_commander_worker(target_pc):
                                                 fail_cnt = state.get("last_trash_fail_cnt", 0) + 1
                                                 state["last_trash_fail_cnt"] = fail_cnt
 
-                                                if fail_cnt >= 2:
+                                                if fail_cnt >= 3:
                                                     dprint(key, f"🚫 [인벤 정리] 착용/잠금템 감지! 영구 블랙리스트에 추가하고 무시합니다.")
                                                     state.setdefault("trash_blacklist", []).append((exact_tx, exact_ty))
                                                     state["last_trash_x"], state["last_trash_y"] = -1000, -1000
@@ -11078,7 +11078,7 @@ def ai_commander_worker(target_pc):
                             if pico_queues[key].empty() and not state.get("hw_busy", False):
                                 state["target_fsm"] = "INV_CLEAN_SCAN"
 
-                                state["cooldown"] = curr_time + g_val(0.3, 0.5)
+                                state["cooldown"] = curr_time + g_val(0.5, 0.6)
                                 dprint(key, "🎒 [인벤 정리] 삭제 조작 완료! UI 슬롯 재정렬 넉넉히 대기 중...")
                             else:
                                 state["cooldown"] = curr_time + 0.2
