@@ -642,7 +642,7 @@ def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_sc
             
         if "본던" in current_dng or "gludio" in current_dng.lower():
             OFFSET_X = 2
-            OFFSET_Y = 2
+            OFFSET_Y = 3
 
         true_cx = (w // 2) + OFFSET_X
         true_cy = (h // 2) + OFFSET_Y
