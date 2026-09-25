@@ -923,7 +923,7 @@ def check_line_of_sight(map_gray, start_point, end_point, margin_steps=3):
 
     dist = math.hypot(x1 - x0, y1 - y0)
 
-    # 본던일 경우 마진을 1.0으로 타이트하게 제한하고, 아니면 원래 마진 유지
+    # 본던일 경우 초근접 무조건 통과 마진을 1.0으로 타이트하게 제한하고, 아니면 원래 마진 유지
     close_combat_limit = 1.0 if is_bondon else (margin_steps * 2.0)
     if dist <= close_combat_limit:
         return True
@@ -932,9 +932,9 @@ def check_line_of_sight(map_gray, start_point, end_point, margin_steps=3):
     dx = (x1 - x0) / steps
     dy = (y1 - y0) / steps
     
-    # 💡 [핵심 튜닝] 본던일 경우 벽으로 인정하는 밝기 임계값을 대폭 상향!
-    # 기존 50미만 -> 80미만으로 올려서 뼈다귀 주변의 회색 테두리까지 모조리 두꺼운 벽으로 판정
-    wall_threshold = 80 if is_bondon else 50
+    # 💡 [핵심 튜닝] 본던일 경우 벽으로 인정하는 밝기 임계값을 100으로 극단적 상향!
+    # 기존 50미만 -> 100미만으로 올려서 뼈다귀 주변의 꽤 밝은 회색 테두리까지 모조리 두꺼운 벽으로 판정
+    wall_threshold = 100 if is_bondon else 50
 
     for i in range(1, steps):
         cx = x0 + dx * i
@@ -947,7 +947,7 @@ def check_line_of_sight(map_gray, start_point, end_point, margin_steps=3):
             if isinstance(val, (list, tuple)) or getattr(val, 'ndim', 0) > 0:
                 val = val[0]
                 
-            if val < wall_threshold:  # 💡 상향된 임계값 적용
+            if val < wall_threshold:  # 💡 상향된 100 임계값 적용
                 is_wall = True
 
         if not is_wall:
@@ -959,14 +959,14 @@ def check_line_of_sight(map_gray, start_point, end_point, margin_steps=3):
                 if 0 <= ax < w:
                     val = map_gray[iy, ax]
                     if isinstance(val, (list, tuple)) or getattr(val, 'ndim', 0) > 0: val = val[0]
-                    if val < wall_threshold: is_wall = True # 💡 상향된 임계값 적용
+                    if val < wall_threshold: is_wall = True
 
             if not is_wall and abs(dy_frac) > 0.35:
                 ay = iy + (1 if dy_frac > 0 else -1)
                 if 0 <= ay < h:
                     val = map_gray[ay, ix]
                     if isinstance(val, (list, tuple)) or getattr(val, 'ndim', 0) > 0: val = val[0]
-                    if val < wall_threshold: is_wall = True # 💡 상향된 임계값 적용
+                    if val < wall_threshold: is_wall = True
 
         if is_wall:
             dist_from_end = math.hypot(x1 - cx, y1 - cy)
@@ -6282,8 +6282,10 @@ def ai_commander_worker(target_pc):
                                                 dprint(key, f"🛑 [맡기기 스크롤 끝] 커서 반경 변화 없음. 바닥 도달 확정.")
                                                 break
 
-                                        send_mouse_scroll(p_serial, p_lock, -1 * int(round(g_val(7, 10))))
-                                        time.sleep(g_val(0.08, 0.13))
+                                        send_mouse_scroll(p_serial, p_lock, -3)
+                                        time.sleep(g_val(0.04, 0.06))
+                                        send_mouse_scroll(p_serial, p_lock, -3)
+                                        time.sleep(g_val(0.05, 0.08))
 
                                     if has_handled_any:
                                         dprint(key, f"▶ [통합 결제] O.K. 버튼을 딱 1번 눌러 일괄 위탁합니다.")
@@ -8383,7 +8385,17 @@ def ai_commander_worker(target_pc):
                                         dprint(key, f"❌ 던전책에서 '{dungeon_name}'({book_img_list})을 찾지 못했습니다.")
                                         send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
                                         send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
-                                        ai_states[key]["target_fsm"] = "IDLE"
+                                        import time as builtin_time
+                                        # 💡 [진짜 원인 픽스 4] 못 찾았다고 사냥(IDLE) 켜지 말고 3회 재시도 대기 상태로 넘김
+                                        retry_cnt = ai_states.get(key, {}).get("reentry_retry_cnt", 0) + 1
+                                        ai_states[key]["reentry_retry_cnt"] = retry_cnt
+                                        if retry_cnt > 3:
+                                            ai_states[key]["reentry_retry_cnt"] = 0
+                                            ai_states[key]["target_fsm"] = "SHUTDOWN_WAIT"
+                                            ai_states[key]["shutdown_timer"] = builtin_time.time() + 2.0
+                                        else:
+                                            ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
+                                            ai_states[key]["reentry_wait_start"] = builtin_time.time()
 
                                 elif "수던" in dungeon_name or "heine" in dungeon_name.lower():
                                     ensure_minimap_open(check_time=1.5, pre_teleport=True)
@@ -8669,10 +8681,21 @@ def ai_commander_worker(target_pc):
                                                 send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
 
                                     else:
-                                        dprint(key, f"❌ 던전책에서 '{dungeon_name}'(sudun3.png)을 찾지 못했습니다.")
+                                        dprint(key, f"❌ 북마크/던전책 목적지를 찾지 못했습니다. 복구를 위해 재시도 큐로 넘깁니다.")
                                         send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
                                         send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
-                                        ai_states[key]["target_fsm"] = "IDLE"
+                                        
+                                        import time as builtin_time
+                                        # 💡 [진짜 원인 픽스 3] 못 찾았다고 사냥(IDLE) 켜지 말고 3회 재시도 대기 상태로 넘김
+                                        retry_cnt = ai_states.get(key, {}).get("reentry_retry_cnt", 0) + 1
+                                        ai_states[key]["reentry_retry_cnt"] = retry_cnt
+                                        if retry_cnt > 3:
+                                            ai_states[key]["reentry_retry_cnt"] = 0
+                                            ai_states[key]["target_fsm"] = "SHUTDOWN_WAIT"
+                                            ai_states[key]["shutdown_timer"] = builtin_time.time() + 2.0
+                                        else:
+                                            ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
+                                            ai_states[key]["reentry_wait_start"] = builtin_time.time()
 
                                 elif "오땅" in dungeon_name:
                                     ensure_minimap_open(check_time=1.5, pre_teleport=True)
@@ -9023,13 +9046,20 @@ def ai_commander_worker(target_pc):
 
                         except ManualAbort:
                             dprint(key, "🛑 [정비 스레드 셧다운] 수동 모드 개입(또는 사냥 정지) 확인! 진행 중인 정비 작업을 즉시 멈춥니다.")
-                            ai_states[key]["target_fsm"] = "IDLE"
+                            # 💡 수동 모드 개입 시 진짜 사냥이 꺼졌을 때만 IDLE, 켜져있다면 TOWN_MAINT 유지
+                            if not ai_states.get(key, {}).get("is_hunt_active", False):
+                                ai_states[key]["target_fsm"] = "IDLE"
+                            else:
+                                ai_states[key]["target_fsm"] = "TOWN_MAINT_START"
 
                         except Exception as e:
                             import traceback
                             traceback.print_exc()
-                            dprint(key, f"❌ 마을 정비 중 에러 발생: {e}")
-                            ai_states[key]["target_fsm"] = "IDLE"
+                            dprint(key, f"❌ 마을 정비 중 에러 발생: {e} (IDLE 튕김 방어 및 3초 대기 후 정비 재시작)")
+                            import time as builtin_time
+                            # 💡 [진짜 원인 픽스 1] 에러 발생 시 사냥(IDLE)으로 던져버리는 최악의 버그 삭제! 안전하게 정비 재시도 모드로 전환.
+                            ai_states[key]["target_fsm"] = "SHUTDOWN_WAIT"
+                            ai_states[key]["shutdown_timer"] = builtin_time.time() + 3.0
                         finally:
                             ai_states[key]["town_thread_running"] = False
 
@@ -11992,7 +12022,11 @@ def ai_commander_worker(target_pc):
             dng_zone_chk = settings.get("dungeon_name", "")
             is_solo_zone_mode = ("본던 5-" in dng_zone_chk or "본던 6-" in dng_zone_chk or "본던 7-" in dng_zone_chk) and not (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False))
 
-            if (settings.get("use_party_hunt", False) or is_solo_zone_mode) and state.get("dungeon_map_pos") and pc_graph and pc_graph.get("nodes"):
+            # 💡 [진짜 원인 픽스 2-1] 정비/엠탐 중에는 백그라운드 구역 이탈 검사 자체를 완벽 차단!
+            fsm_for_zone_eval = str(state.get("target_fsm", ""))
+            is_safe_in_town_zone_eval = fsm_for_zone_eval.startswith("TOWN_MAINT") or fsm_for_zone_eval.startswith("DEATH") or fsm_for_zone_eval in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"]
+
+            if not is_safe_in_town_zone_eval and (settings.get("use_party_hunt", False) or is_solo_zone_mode) and state.get("dungeon_map_pos") and pc_graph and pc_graph.get("nodes"):
                 if curr_time - state.get("zone_check_time", 0) > 1.0:
                     char_map_pos_for_zone = state.get("dungeon_map_pos")
                     my_zone_nodes = []
