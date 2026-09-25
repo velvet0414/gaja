@@ -10512,13 +10512,53 @@ def ai_commander_worker(target_pc):
                 cv2.putText(debug_img, f"HP:{hp:.1f}% / MP:{mp:.1f}% / {role_var} / FSM:{fsm_txt} / LOOT:{state.get('loot_state')}{body_txt}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
                 if is_poisoned: cv2.putText(debug_img, "POISONED!", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-                if settings.get("use_party_hunt", False) and settings.get("party_group", "선택안함") != "선택안함":
+                if (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)) and settings.get("party_group", "선택안함") != "선택안함":
                     my_group = settings.get("party_group", "선택안함")
                     is_inviter = settings.get("is_party_inviter", False)
                     inv_txt = "INVITER" if is_inviter else "MEMBER"
 
-                    p_txt = f"[{my_group}] {inv_txt} (SOLO ACT)"
-                    cv2.putText(debug_img, p_txt, (max(0, w - 240), 80), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 100, 255), 2)
+                    # 💡 동적 페어링 상태 판별 (하드코딩 제거 및 AI 실제 상태 연동)
+                    partner_dist = 999.0
+                    partner_found = False
+                    with party_lock:
+                        for p_key, p_data in local_party_states.items():
+                            if p_data.get("party_group") == my_group and p_key != key and curr_time - p_data.get("recv_time", 0) < 3.0:
+                                partner_found = True
+                                p_pos = p_data.get("map_pos")
+                                m_pos = state.get("dungeon_map_pos")
+                                if p_pos and m_pos:
+                                    partner_dist = math.hypot(m_pos[0] - p_pos[0], m_pos[1] - p_pos[1])
+                                break
+
+                    if not partner_found:
+                        p_status = "OFFLINE"
+                        p_color = (150, 150, 150) # 회색 (통신 두절)
+                    elif state.get("help_requester", False) or state.get("helping_who") is not None:
+                        p_status = "EMERGENCY"
+                        p_color = (0, 0, 255) # 빨간색 (위기 구출)
+                    elif state.get("is_out_of_zone", False):
+                        p_status = "ZONE OUT (SOLO)"
+                        p_color = (150, 150, 150) # 회색 (구역 이탈)
+                    elif state.get("is_assisting", False) or state.get("partner_combat_assist", False):
+                        p_status = "ASSISTING"
+                        p_color = (0, 255, 255) # 노란색 (십자포화/전투지원)
+                    elif state.get("is_chasing_leader", False) or state.get("is_rendezvous_mode", False) or state.get("moving_to_mptam_partner", False):
+                        p_status = "CHASING"
+                        p_color = (255, 100, 255) # 핑크색 (합류 기동)
+                    elif partner_dist <= 20.0:
+                        if state.get("party_is_vanguard", True):
+                            p_status = f"VANGUARD ({partner_dist:.1f}px)"
+                            p_color = (0, 255, 0) # 녹색 (내가 선두 리드)
+                        else:
+                            p_status = f"FOLLOW ({partner_dist:.1f}px)"
+                            p_color = (255, 255, 0) # 옥색 (내가 후위 대기)
+                    else:
+                        p_status = f"UNPAIRED ({partner_dist:.1f}px)"
+                        p_color = (150, 150, 150) # 회색 (각자도생)
+
+                    p_txt = f"[{my_group}] {inv_txt} | {p_status}"
+                    # 텍스트가 길어지므로 겹치지 않게 X 시작 좌표를 240에서 280으로 넉넉하게 당김
+                    cv2.putText(debug_img, p_txt, (max(0, w - 280), 80), cv2.FONT_HERSHEY_SIMPLEX, 0.45, p_color, 2)
 
                     y_off = 100
                     with party_lock:
