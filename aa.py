@@ -5255,8 +5255,6 @@ def ai_commander_worker(target_pc):
                                         else:
                                             dprint(key, f"🚨 [파티 0순위 존 복귀] 구역 이탈 확정! 파트너 합류를 무시하고 가장 가까운 Zone(ID:{best_zone_node})으로 즉시 A* 복귀합니다!")
                                         state["zone_return_log_time"] = curr_time
-                        else:
-                            state["current_target_node"] = None
                     else:
                         if not state.get("is_out_of_zone", False):
                             state["current_target_node"] = None
@@ -5455,7 +5453,12 @@ def ai_commander_worker(target_pc):
             else:
                 state["mp_empty_start"] = 0
 
-            # 💡 [핵심 수정] 사냥터 판별하여 3초/30초 로직 완벽 분리
+            # 💡 [쿨타임 핵심 픽스] 텔레포트 후 120초(2분) 동안은 마나 고갈 30초 타이머가 오르지 않도록 묶어둠
+            if curr_time < state.get("mp_empty_tele_cd", 0):
+                if state.get("mp_empty_start", 0) > 0:
+                    state["mp_empty_start"] = curr_time
+
+            # 💡 사냥터 판별하여 3초/30초 로직 완벽 분리
             dng_mp_chk = settings.get("dungeon_name", "")
             is_special_dng_mp = "event" in dng_mp_chk.lower() or "오땅" in dng_mp_chk
 
@@ -5469,38 +5472,40 @@ def ai_commander_worker(target_pc):
             if is_mp_empty_30sec and state.get("is_hunt_active", False) and not state.get("is_paused", False):
                 fsm_for_mp_check = str(state.get("target_fsm", ""))
                 if not fsm_for_mp_check.startswith("TOWN_MAINT") and not fsm_for_mp_check.startswith("DEATH") and fsm_for_mp_check not in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"]:
-                    if curr_time > state.get("mp_empty_tele_cd", 0):
-                        dprint(key, "🚨 [마나 고갈] 30초 연속 MP 6% 이하 지속! 텔레포트(F11) 발동하여 어그로를 리셋합니다.")
-                        state["mp_empty_tele_cd"] = curr_time + 5.0
-                        state["mp_empty_start"] = 0 # 타이머 초기화
+                    
+                    # 💡 텔레포트 재발동 쿨타임을 30로 넉넉하게 설정! (필요시 이 숫자를 변경하세요)
+                    state["mp_empty_tele_cd"] = curr_time + 30.0
+                    state["mp_empty_start"] = 0
+                    
+                    dprint(key, "🚨 [마나 고갈] 30초 연속 MP 6% 이하 지속! 텔레포트(F11) 발동 (재발동 쿨타임 120초 적용)")
+                    
+                    state["abort_macro"] = True
+                    with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                    clear_movements_only(pico_queues[key])
+                    if state.get("sweep_active", False):
+                        pico_queues[key].put({"action": "SWEEP_STOP"})
+                        state["sweep_active"] = False
                         
-                        state["abort_macro"] = True
-                        with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                        clear_movements_only(pico_queues[key])
-                        if state.get("sweep_active", False):
-                            pico_queues[key].put({"action": "SWEEP_STOP"})
-                            state["sweep_active"] = False
-                            
-                        # 무조건 텔레포트(F11) 큐에 삽입
-                        pico_queues[key].put({"action": "TELEPORT"})
-                        state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
-                        state["teleport_start_mp"] = mp
+                    # 무조건 텔레포트(F11) 큐에 삽입
+                    pico_queues[key].put({"action": "TELEPORT"})
+                    state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
+                    state["teleport_start_mp"] = mp
+                    
+                    if h >= 200 and w >= 200:
+                        state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY)
+                    else:
+                        state["tele_snapshot"] = None
                         
-                        if h >= 200 and w >= 200:
-                            state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY)
-                        else:
-                            state["tele_snapshot"] = None
-                            
-                        state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
-                        state["tele_retry_cnt"] = 0
-                        
-                        state["dungeon_global_path"] = []
-                        state["is_pulling"] = False
-                        state["is_attacking"] = False
-                        state["arrow_is_firing"] = False
-                        state["has_fired_arrow"] = False
-                        state["cooldown"] = curr_time + 0.5
-                        continue
+                    state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
+                    state["tele_retry_cnt"] = 0
+                    
+                    state["dungeon_global_path"] = []
+                    state["is_pulling"] = False
+                    state["is_attacking"] = False
+                    state["arrow_is_firing"] = False
+                    state["has_fired_arrow"] = False
+                    state["cooldown"] = curr_time + 0.5
+                    continue
 
             if "poison_history" not in state: state["poison_history"] = []
             state["poison_history"].append((curr_time, raw_poison))
