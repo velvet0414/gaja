@@ -642,7 +642,7 @@ def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_sc
             
         if "본던" in current_dng or "gludio" in current_dng.lower():
             OFFSET_X = 2
-            OFFSET_Y = 3
+            OFFSET_Y = 2
 
         true_cx = (w // 2) + OFFSET_X
         true_cy = (h // 2) + OFFSET_Y
@@ -4244,6 +4244,33 @@ def ai_commander_worker(target_pc):
     import os
     import threading
 
+    # 👇👇 [여기서부터 복사해서 추가] 👇👇
+    def check_zone_match(gui_name, json_name):
+        """GUI 사냥터 이름과 JSON 노드 속성을 스마트하게 매칭하는 만능 함수"""
+        if not json_name: return True
+        gui_name = str(gui_name).strip()
+        json_name = str(json_name).strip()
+        if gui_name == json_name: return True
+        
+        import re
+        g_nums = [int(x) for x in re.findall(r'\d+', gui_name)]
+        j_nums = [int(x) for x in re.findall(r'\d+', json_name)]
+        
+        if g_nums and j_nums:
+            if g_nums == j_nums: return True
+            is_bd = "본던" in gui_name or "gludio" in gui_name.lower()
+            if is_bd and len(g_nums) >= 2 and g_nums[1] == j_nums[0]:
+                return True
+            if g_nums[0] == j_nums[0]:
+                if len(g_nums) == 1 or len(j_nums) == 1: return True
+                if len(g_nums) >= 2 and len(j_nums) >= 2 and g_nums[1] == j_nums[1]: return True
+                
+        g_base = gui_name.rsplit("-", 1)[0] if "-" in gui_name else gui_name
+        j_base = json_name.rsplit("-", 1)[0] if "-" in json_name else json_name
+        if g_base == j_base: return True
+        return False
+    # 👆👆 [여기까지 추가] 👆👆
+
     clock_dirs = [("12시", -90), ("1시반", -45), ("3시", 0), ("4시반", 45), ("6시", 90), ("7시반", 135), ("9시", 180), ("10시반", 225)]
 
     item_limit_x, item_limit_y = 0.40, 0.35
@@ -5123,10 +5150,10 @@ def ai_commander_worker(target_pc):
                     # === [솔플/파티 공통] Zone 이탈 시 0순위 강제 복귀 로직 ===
                     is_m_out_of_zone = state.get("is_out_of_zone", False)
 
-                    if (settings.get("use_party_hunt", False) or is_solo_zone_mode) and is_m_out_of_zone and curr_map_pos and pc_graph and pc_graph.get("nodes"):
-                        is_bd_zone = "본던" in active_dungeon or "gludio" in active_dungeon.lower()
-                        active_base_zone = active_dungeon if is_bd_zone else (active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon)
+                    # 💡 [버그 픽스] 고정 파티(use_party_fixed)도 Zone 이탈 검사에 포함시킵니다!
+                    is_party_zone_chk2 = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
 
+                    if (is_party_zone_chk2 or is_solo_zone_mode) and is_m_out_of_zone and curr_map_pos and pc_graph and pc_graph.get("nodes"):
                         curr_target_str = str(state.get("current_target_node", ""))
                         is_curr_target_valid_zone = False
 
@@ -5138,20 +5165,9 @@ def ai_commander_worker(target_pc):
                                 c_zone = str(c_data.get("zone", "")).strip()
                                 if c_zone:
                                     for z in [z.strip() for z in c_zone.split(",")]:
-                                        z_base = z if is_bd_zone else (z.rsplit("-", 1)[0] if "-" in z else z)
-                                        
-                                        if active_base_zone == z_base:
+                                        if check_zone_match(active_dungeon, z):
                                             is_curr_target_valid_zone = True
                                             break
-                                        elif is_bd_zone and "-" in active_base_zone and "-" in z_base:
-                                            # 💡 [최종 룰] GUI '본던 5-7'의 뒤(7) == JSON '수던7-1'의 앞(7) 정밀 매칭!
-                                            try:
-                                                a_sub = active_base_zone.split("-")[1].strip()
-                                                z_sub = z_base.replace("수던", "").replace("본던", "").split("-")[0].strip()
-                                                if a_sub == z_sub:
-                                                    is_curr_target_valid_zone = True
-                                                    break
-                                            except: pass
                                 else:
                                     c_sp = c_data.get("is_special", False) or c_data.get("special", False)
                                     if str(c_sp).lower() == "true": is_curr_target_valid_zone = True
@@ -5176,21 +5192,10 @@ def ai_commander_worker(target_pc):
                                     if is_buff:
                                         is_my_zone = True
                                     elif node_zone:
-                                        zone_list = [z.strip() for z in node_zone.split(",")]
-                                        for z in zone_list:
-                                            z_base = z if is_bd_zone else (z.rsplit("-", 1)[0] if "-" in z else z)
-                                            
-                                            if active_base_zone == z_base:
+                                        for z in [z.strip() for z in node_zone.split(",")]:
+                                            if check_zone_match(active_dungeon, z):
                                                 is_my_zone = True
                                                 break
-                                            elif is_bd_zone and "-" in active_base_zone and "-" in z_base:
-                                                try:
-                                                    a_sub = active_base_zone.split("-")[1].strip()
-                                                    z_sub = z_base.replace("수던", "").replace("본던", "").split("-")[0].strip()
-                                                    if a_sub == z_sub:
-                                                        is_my_zone = True
-                                                        break
-                                                except: pass
                                     else:
                                         is_sp = ndata.get("is_special", False) or ndata.get("special", False)
                                         if str(is_sp).lower() == "true": is_sp = True
@@ -12060,23 +12065,16 @@ def ai_commander_worker(target_pc):
 
             # 💡 [핵심 추가] 본던 5, 6, 7층은 솔플이더라도 Zone 이탈 방지 로직을 똑같이 적용합니다.
             dng_zone_chk = settings.get("dungeon_name", "")
-            is_solo_zone_mode = ("본던 5-" in dng_zone_chk or "본던 6-" in dng_zone_chk or "본던 7-" in dng_zone_chk) and not (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False))
+            is_party_any_zone = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
+            is_solo_zone_mode = ("본던 5-" in dng_zone_chk or "본던 6-" in dng_zone_chk or "본던 7-" in dng_zone_chk) and not is_party_any_zone
 
-            # 💡 [진짜 원인 픽스 2-1] 정비/엠탐 중에는 백그라운드 구역 이탈 검사 자체를 완벽 차단!
-            fsm_for_zone_eval = str(state.get("target_fsm", ""))
-            is_safe_in_town_zone_eval = fsm_for_zone_eval.startswith("TOWN_MAINT") or fsm_for_zone_eval.startswith("DEATH") or fsm_for_zone_eval in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"]
-
-            if not is_safe_in_town_zone_eval and (settings.get("use_party_hunt", False) or is_solo_zone_mode) and state.get("dungeon_map_pos") and pc_graph and pc_graph.get("nodes"):
+            if (is_party_any_zone or is_solo_zone_mode) and state.get("dungeon_map_pos") and pc_graph and pc_graph.get("nodes"):
                 if curr_time - state.get("zone_check_time", 0) > 1.0:
                     char_map_pos_for_zone = state.get("dungeon_map_pos")
                     my_zone_nodes = []
 
-                    is_bd_zone_chk3 = "본던" in active_dungeon or "gludio" in active_dungeon.lower()
-                    active_base_zone = active_dungeon if is_bd_zone_chk3 else (active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon)
-
                     for nid, ndata in pc_graph["nodes"].items():
                         if isinstance(ndata, dict):
-
                             is_buff = ndata.get("is_buff_spot", False)
                             if str(is_buff).lower() == "true": is_buff = True
                             if is_buff:
@@ -12084,30 +12082,16 @@ def ai_commander_worker(target_pc):
                                 continue
 
                             node_zone = str(ndata.get("zone", "")).strip()
-                            # 💡 [방어막 추가] JSON에 속성이 안 찍혀있어도 이 맵 파일의 노드라면 내 구역 편입!
                             if not node_zone:
                                 my_zone_nodes.append(str(nid))
                             else:
-                                zone_list = [z.strip() for z in node_zone.split(",")]
-
-                                for z in zone_list:
-                                    z_base = z if is_bd_zone_chk3 else (z.rsplit("-", 1)[0] if "-" in z else z)
-                                    
-                                    if active_base_zone == z_base:
+                                for z in [z.strip() for z in node_zone.split(",")]:
+                                    if check_zone_match(active_dungeon, z):
                                         my_zone_nodes.append(str(nid))
                                         break
-                                    elif is_bd_zone_chk3 and "-" in active_base_zone and "-" in z_base:
-                                        try:
-                                            a_sub = active_base_zone.split("-")[1].strip()
-                                            z_sub = z_base.replace("수던", "").replace("본던", "").split("-")[0].strip()
-                                            if a_sub == z_sub:
-                                                my_zone_nodes.append(str(nid))
-                                                break
-                                        except: pass
 
                     is_out_of_zone = False
                     if my_zone_nodes:
-
                         min_d_sq = float('inf')
                         closest_zn = None
 
@@ -12122,14 +12106,10 @@ def ai_commander_worker(target_pc):
                                     closest_zn = zn
 
                         if closest_zn:
-
-                            if min_d_sq > 6400:
-
+                            if min_d_sq > 6400: # 80픽셀 밖으로 밀려나면 이탈
                                 is_out_of_zone = True
                             else:
-
                                 z_path = calculate_graph_astar_path(pc_graph, char_map_pos_for_zone, closest_zn, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
-
                                 if not z_path or len(z_path) > 16:
                                     is_out_of_zone = True
 
@@ -17080,38 +17060,18 @@ def ai_commander_worker(target_pc):
                                                     puller_routes[r_num][step_num] = str(nid)
                                                 except: pass
 
+                                            # 👇👇 [이렇게 깔끔하게 바뀝니다] 👇👇
                                             if node_zone:
                                                 zone_list = [z.strip() for z in node_zone.split(",")]
-
-                                                is_normal_zone = active_dungeon in zone_list
-                                                
-                                                is_bd_zone_chk2 = "본던" in active_dungeon or "gludio" in active_dungeon.lower()
-                                                if not is_normal_zone and is_bd_zone_chk2:
-                                                    # 💡 일반존 매칭: '본던 5-7'의 7과 '수던7-1'의 7이 일치하면 내 구역!
-                                                    for z in zone_list:
-                                                        if "-" in active_dungeon and "-" in z:
-                                                            try:
-                                                                if active_dungeon.split("-")[1].strip() == z.replace("수던", "").replace("본던", "").split("-")[0].strip():
-                                                                    is_normal_zone = True
-                                                                    break
-                                                            except: pass
-
+                                                is_normal_zone = False
                                                 is_buff_zone = False
 
-                                                if is_buff:
-                                                    active_base = active_dungeon if is_bd_zone_chk2 else (active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon)
-                                                    for z in zone_list:
-                                                        z_base = z if is_bd_zone_chk2 else (z.rsplit("-", 1)[0] if "-" in z else z)
-                                                        if active_base == z_base:
-                                                            is_buff_zone = True
-                                                            break
-                                                        elif is_bd_zone_chk2 and "-" in active_base and "-" in z_base:
-                                                            # 💡 버프존 매칭: 동일한 숫자 추출 룰 적용!
-                                                            try:
-                                                                if active_base.split("-")[1].strip() == z_base.replace("수던", "").replace("본던", "").split("-")[0].strip():
-                                                                    is_buff_zone = True
-                                                                    break
-                                                            except: pass
+                                                for z in zone_list:
+                                                    # 💡 [핵심] 복잡한 텍스트 쪼개기를 없애고, 1번에 추가한 만능 검증 함수 하나로 다 해결!
+                                                    if check_zone_match(active_dungeon, z):
+                                                        if is_buff: is_buff_zone = True
+                                                        else: is_normal_zone = True
+                                                        break
 
                                                 if is_buff and is_buff_zone:
                                                     buff_spot_nodes.append(str(nid))
