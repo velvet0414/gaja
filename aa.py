@@ -626,6 +626,7 @@ def _get_pc_assets_internal(dungeon_name):
 
 def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_scan=True, map_gray=None, is_open_map=False):
     import numpy as np
+    import time
     if img_bgr is None or img_bgr.size == 0 or full_map_edges_ref is None:
         return None, None
     try:
@@ -635,21 +636,27 @@ def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_sc
         OFFSET_X = 2
         OFFSET_Y = 2
 
-        # 💡 [수정] 본던(gludio)인 경우에만 앵커를 1픽셀로 줄여서 위로 당김 (1, 1)
+        # 💡 현재 던전 이름 팩트 체크
         current_dng = current_settings.get(TARGET_PC_KEY, {}).get("dungeon_name", "")
         if TARGET_PC_KEY in ai_states and ai_states[TARGET_PC_KEY].get("override_dungeon_name"):
             current_dng = ai_states[TARGET_PC_KEY]["override_dungeon_name"]
             
+        is_bondon = False
         if "본던" in current_dng or "gludio" in current_dng.lower():
+            is_bondon = True
             OFFSET_X = 2
             OFFSET_Y = 2
 
         true_cx = (w // 2) + OFFSET_X
         true_cy = (h // 2) + OFFSET_Y
 
-        if is_open_map and map_gray is not None:
-            cv2.circle(minimap_gray, (true_cx, true_cy), 14, 255, -1)
+        # 💡 본던일 경우 오땅과 동일하게 이진화(threshold) 방식 적용
+        if (is_open_map or is_bondon) and map_gray is not None:
+            # 본던과 오땅의 가운데 캐릭터 마커 지우는 크기를 살짝 다르게 조절
+            mask_size = 14 if is_open_map else 10
+            cv2.circle(minimap_gray, (true_cx, true_cy), mask_size, 255, -1)
 
+            # 💡 [GUI 감도 연계] GUI 화면의 '감도(oak_thresh)' 값을 가져와 이진화 기준으로 사용
             thresh_val = int(current_settings.get(TARGET_PC_KEY, {}).get("oak_thresh", 127))
 
             _, minimap_processed = cv2.threshold(minimap_gray, thresh_val, 255, cv2.THRESH_BINARY)
@@ -658,8 +665,13 @@ def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_sc
             minimap_processed[0, 0] = 0
             minimap_processed[-1, -1] = 255
 
-            MATCH_THRESHOLD = 0.15
-            skip_ground_check = True
+            # 💡 매칭률 깐깐하게: 본던은 0.40(40%), 오땅은 0.15(15%)
+            if is_bondon:
+                MATCH_THRESHOLD = 0.40
+                skip_ground_check = False # 본던은 벽(장애물)이 있으므로 바닥 검사 유지
+            else:
+                MATCH_THRESHOLD = 0.15
+                skip_ground_check = True
         else:
             cv2.circle(minimap_gray, (true_cx, true_cy), 8, 128, -1)
             minimap_processed = cv2.Canny(minimap_gray, 50, 150)
@@ -669,6 +681,7 @@ def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_sc
             skip_ground_check = False
 
         best_match_pos = None
+        max_matching_rate = 0.0  # 💡 터미널 출력을 위한 최고 매칭률 기록용
 
         def is_valid_ground(cx, cy):
             if skip_ground_check: return True
@@ -690,7 +703,7 @@ def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_sc
         if last_pos is not None:
             fh, fw = full_map_target.shape[:2]
             lx, ly = int(last_pos[0]), int(last_pos[1])
-            pad = 200 if is_open_map else 120
+            pad = 200 if (is_open_map or is_bondon) else 120
 
             x1 = max(0, lx - true_cx - pad)
             y1 = max(0, ly - true_cy - pad)
@@ -704,6 +717,8 @@ def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_sc
                 temp_res = res.copy()
                 for _ in range(15):
                     _, max_val, _, max_loc = cv2.minMaxLoc(temp_res)
+                    if max_val > max_matching_rate:
+                        max_matching_rate = max_val
 
                     if np.isinf(max_val) or np.isnan(max_val) or max_val < MATCH_THRESHOLD:
                         break
@@ -718,7 +733,7 @@ def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_sc
                         cv2.circle(temp_res, max_loc, 9, -1.0, -1)
 
         if not allow_full_scan and best_match_pos is None:
-            return None, minimap_processed
+            return None, minimap_processed # 🚀 출력이 없으므로 여기서 즉시 탈출하여 CPU 렉 방지!
 
         if best_match_pos is None:
             res = cv2.matchTemplate(full_map_target, minimap_processed, cv2.TM_CCOEFF_NORMED)
@@ -726,6 +741,7 @@ def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_sc
 
             for _ in range(25):
                 _, max_val, _, max_loc = cv2.minMaxLoc(temp_res)
+
                 if np.isinf(max_val) or np.isnan(max_val) or max_val < MATCH_THRESHOLD:
                     break
 
@@ -5171,7 +5187,7 @@ def ai_commander_worker(target_pc):
                                 else:
                                     c_sp = c_data.get("is_special", False) or c_data.get("special", False)
                                     if str(c_sp).lower() == "true": is_curr_target_valid_zone = True
-                                    else: is_curr_target_valid_zone = True
+                                    else: is_curr_target_valid_zone = False # 💡 변경 완료
 
                         if not is_curr_target_valid_zone:
                             best_zone_node_los = None
@@ -5200,7 +5216,7 @@ def ai_commander_worker(target_pc):
                                         is_sp = ndata.get("is_special", False) or ndata.get("special", False)
                                         if str(is_sp).lower() == "true": is_sp = True
                                         if is_sp: is_my_zone = True
-                                        else: is_my_zone = True
+                                        else: is_my_zone = False # 💡 변경 완료
 
                                     if is_my_zone:
                                         d = (nx - curr_map_pos[0])**2 + (ny - curr_map_pos[1])**2
@@ -5439,7 +5455,52 @@ def ai_commander_worker(target_pc):
             else:
                 state["mp_empty_start"] = 0
 
-            is_mp_empty_3sec = (state.get("mp_empty_start", 0) > 0 and curr_time - state["mp_empty_start"] >= 3.0)
+            # 💡 [핵심 수정] 사냥터 판별하여 3초/30초 로직 완벽 분리
+            dng_mp_chk = settings.get("dungeon_name", "")
+            is_special_dng_mp = "event" in dng_mp_chk.lower() or "오땅" in dng_mp_chk
+
+            # 1. 특수 던전(오땅/이벤트)은 기존과 완벽히 동일하게 3초 유지 시 플래그 ON -> 기존 로직이 귀환(F9) 발동
+            is_mp_empty_3sec = (is_special_dng_mp and state.get("mp_empty_start", 0) > 0 and curr_time - state["mp_empty_start"] >= 3.0)
+            
+            # 2. 일반 사냥터(본던 등)는 30초 유지 시 플래그 ON
+            is_mp_empty_30sec = (not is_special_dng_mp and state.get("mp_empty_start", 0) > 0 and curr_time - state["mp_empty_start"] >= 30.0)
+
+            # 💡 일반 사냥터에서 30초 연속 마나 고갈 시 텔레포트(F11) 단독 발동!
+            if is_mp_empty_30sec and state.get("is_hunt_active", False) and not state.get("is_paused", False):
+                fsm_for_mp_check = str(state.get("target_fsm", ""))
+                if not fsm_for_mp_check.startswith("TOWN_MAINT") and not fsm_for_mp_check.startswith("DEATH") and fsm_for_mp_check not in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"]:
+                    if curr_time > state.get("mp_empty_tele_cd", 0):
+                        dprint(key, "🚨 [마나 고갈] 30초 연속 MP 6% 이하 지속! 텔레포트(F11) 발동하여 어그로를 리셋합니다.")
+                        state["mp_empty_tele_cd"] = curr_time + 5.0
+                        state["mp_empty_start"] = 0 # 타이머 초기화
+                        
+                        state["abort_macro"] = True
+                        with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                        clear_movements_only(pico_queues[key])
+                        if state.get("sweep_active", False):
+                            pico_queues[key].put({"action": "SWEEP_STOP"})
+                            state["sweep_active"] = False
+                            
+                        # 무조건 텔레포트(F11) 큐에 삽입
+                        pico_queues[key].put({"action": "TELEPORT"})
+                        state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
+                        state["teleport_start_mp"] = mp
+                        
+                        if h >= 200 and w >= 200:
+                            state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY)
+                        else:
+                            state["tele_snapshot"] = None
+                            
+                        state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
+                        state["tele_retry_cnt"] = 0
+                        
+                        state["dungeon_global_path"] = []
+                        state["is_pulling"] = False
+                        state["is_attacking"] = False
+                        state["arrow_is_firing"] = False
+                        state["has_fired_arrow"] = False
+                        state["cooldown"] = curr_time + 0.5
+                        continue
 
             if "poison_history" not in state: state["poison_history"] = []
             state["poison_history"].append((curr_time, raw_poison))
@@ -6428,8 +6489,8 @@ def ai_commander_worker(target_pc):
                                                         if cv2.countNonZero(thresh) < 100: stuck_scrolls += 1
                                                         else: stuck_scrolls = 0
                                                     last_scroll_img = curr_scroll_img
-                                                if stuck_scrolls >= random.randint(6, 7):
-                                                    dprint(key, "🛑 [찾기 스크롤 끝] 바닥에 도달. 더 꺼낼 아이템이 없습니다.")
+                                                if stuck_scrolls >= 20:
+                                                    dprint(key, "🛑 [스크롤 끝] 바닥 도달 팩트 체크 완료(20회).")
                                                     break
 
                                             send_mouse_scroll(p_serial, p_lock, -1 * int(round(g_val(3, 6))))
@@ -9069,6 +9130,38 @@ def ai_commander_worker(target_pc):
                             ai_states[key]["town_thread_running"] = False
 
                     if curr_time >= state.get("cooldown", 0):
+
+                        # 👇👇 [여기서부터 새로 추가할 독 해제 로직] 👇👇
+                        if state.get("is_poisoned", False) and not state.get("town_thread_running", False):
+                            if curr_time > state.get("antidote_cd", 0):
+                                dprint(key, f"🚨 [마을 비상 해독] 정비({fsm_town}) 도중 독 감지! 하던 작업을 잠시 멈추고 해독부터 실시합니다!")
+                                
+                                is_party_psn = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
+                                poison_type = settings.get("party_poison_type", "해독제") if is_party_psn else settings.get("poison_type", "해독제")
+                                
+                                # 혹시 열려있을지 모르는 UI(창고, 인벤 등)를 닫고 F1 탭으로 강제 전환
+                                pico_queues[key].put({"action": "HOLD_KEY", "keycode": 177, "duration": g_val(0.08, 0.15)}) # ESC 키
+                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.1, "delay_max": 0.15})
+                                pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
+                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.1, "delay_max": 0.15})
+                                
+                                if poison_type == "해독제":
+                                    pico_queues[key].put({"action": "ANTIDOTE", "is_spell": False})
+                                else:
+                                    pico_queues[key].put({"action": "ANTIDOTE", "is_spell": True})
+                                
+                                # 해독 모션이 완전히 끝날 때까지 2.0초간 쿨타임(대기) 부여
+                                state["antidote_cd"] = curr_time + 1.5
+                                state["cooldown"] = curr_time + 2.0
+                                
+                                # 독 이력을 지워 즉시 is_poisoned 가 False로 풀리게 만듦
+                                state["poison_history"].clear()
+                                state["is_poisoned"] = False
+                                state["poison_timer"] = 0
+                            else:
+                                state["cooldown"] = curr_time + 0.1
+                            continue # 💡 핵심: IDLE로 바꾸지 않고 continue로 튕겨내어 원래 정비 상태(fsm_town)를 100% 보존!
+                        # 👆👆 [독 해제 로직 완료] 👆👆
 
                         if fsm_town == "TOWN_MAINT_NORMAL_RETURN":
                             if not state.get("town_thread_running", False):
@@ -12082,15 +12175,16 @@ def ai_commander_worker(target_pc):
                                 continue
 
                             node_zone = str(ndata.get("zone", "")).strip()
-                            if not node_zone:
-                                my_zone_nodes.append(str(nid))
-                            else:
+                            # 💡 [핵심 버그 수정] 속성이 없는 빈 타일을 내 구역으로 편입시키는 오류 제거!
+                            if node_zone:
                                 for z in [z.strip() for z in node_zone.split(",")]:
                                     if check_zone_match(active_dungeon, z):
                                         my_zone_nodes.append(str(nid))
                                         break
 
+                    was_out = state.get("is_out_of_zone", False)
                     is_out_of_zone = False
+                    
                     if my_zone_nodes:
                         min_d_sq = float('inf')
                         closest_zn = None
@@ -12106,17 +12200,27 @@ def ai_commander_worker(target_pc):
                                     closest_zn = zn
 
                         if closest_zn:
-                            if min_d_sq > 6400: # 80픽셀 밖으로 밀려나면 이탈
-                                is_out_of_zone = True
-                            else:
-                                z_path = calculate_graph_astar_path(pc_graph, char_map_pos_for_zone, closest_zn, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
-                                if not z_path or len(z_path) > 16:
+                            if was_out:
+                                # 💡 [관성 유지 핑퐁 차단] 이미 존을 이탈한 상태라면, 완벽히 구역 내(3칸 이내)로 들어올 때까지 시야 제한 유지!
+                                if min_d_sq > 256: 
                                     is_out_of_zone = True
+                                else:
+                                    z_path = calculate_graph_astar_path(pc_graph, char_map_pos_for_zone, closest_zn, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
+                                    if not z_path or len(z_path) > 3:
+                                        is_out_of_zone = True
+                            else:
+                                # 💡 정상 상태에서는 크게 벗어날 때만 이탈 판정 (기존과 동일)
+                                if min_d_sq > 6400: # 80픽셀 밖으로 밀려나면 이탈
+                                    is_out_of_zone = True
+                                else:
+                                    z_path = calculate_graph_astar_path(pc_graph, char_map_pos_for_zone, closest_zn, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
+                                    if not z_path or len(z_path) > 16:
+                                        is_out_of_zone = True
 
-                    if is_out_of_zone and not state.get("is_out_of_zone", False):
-                        dprint(key, f"🚨 [존 이탈 감지] 할당 구역({active_dungeon}) 실제 도보 15노드 밖으로 밀려남! 복귀 모드 가동!")
-                    elif not is_out_of_zone and state.get("is_out_of_zone", False):
-                        dprint(key, f"🎯 [존 진입 완료] 할당 구역({active_dungeon}) 도보 15노드 이내 진입! 정상 사냥 모드 복구!")
+                    if is_out_of_zone and not was_out:
+                        dprint(key, f"🚨 [존 이탈 감지] 할당 구역({active_dungeon}) 밖으로 이탈! 시야를 120px로 좁히고 복귀 모드 가동!")
+                    elif not is_out_of_zone and was_out:
+                        dprint(key, f"🎯 [존 진입 완료] 할당 구역({active_dungeon}) 안착 완료! 족쇄를 풀고 정상 사냥 모드 복구!")
 
                     state["is_out_of_zone"] = is_out_of_zone
                     state["zone_check_time"] = curr_time
@@ -12394,13 +12498,21 @@ def ai_commander_worker(target_pc):
                 cv2.rectangle(debug_img, (0, int(h * 0.68)), (w, h), (0, 0, 150), 1)
                 cv2.putText(debug_img, "BLIND ZONE", (45, int(h * 0.68) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 150), 1)
 
-                if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
+                is_any_party_dbg = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
+                dng_chk_dbg = settings.get("dungeon_name", "")
+                is_bondon_zone_solo_dbg = ("본던 5-" in dng_chk_dbg or "본던 6-" in dng_chk_dbg or "본던 7-" in dng_chk_dbg) and not is_any_party_dbg
 
-                    DBG_ELLIPSE_RX = 340
-                    DBG_ELLIPSE_RY = 240
-
-                    cv2.ellipse(debug_img, (char_screen_cx, char_screen_cy), (DBG_ELLIPSE_RX, DBG_ELLIPSE_RY), 0, 0, 360, (255, 105, 180), 1, cv2.LINE_AA)
-                    cv2.putText(debug_img, f"FIXED RANGE ({DBG_ELLIPSE_RX}x{DBG_ELLIPSE_RY})", (char_screen_cx - 80, char_screen_cy - DBG_ELLIPSE_RY - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 105, 180), 1)
+                if is_any_party_dbg or is_bondon_zone_solo_dbg:
+                    # 💡 구역 이탈 상태일 때는 핑크색 풀 스크린 원을 끄고 120px 주황색 제한 원을 켭니다.
+                    if not state.get("is_out_of_zone", False):
+                        if is_any_party_dbg:
+                            DBG_ELLIPSE_RX = 340
+                            DBG_ELLIPSE_RY = 240
+                            cv2.ellipse(debug_img, (char_screen_cx, char_screen_cy), (DBG_ELLIPSE_RX, DBG_ELLIPSE_RY), 0, 0, 360, (255, 105, 180), 1, cv2.LINE_AA)
+                            cv2.putText(debug_img, f"FIXED RANGE ({DBG_ELLIPSE_RX}x{DBG_ELLIPSE_RY})", (char_screen_cx - 80, char_screen_cy - DBG_ELLIPSE_RY - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 105, 180), 1)
+                    else:
+                        cv2.circle(debug_img, (char_screen_cx, char_screen_cy), 120, (0, 165, 255), 2)
+                        cv2.putText(debug_img, "OUT OF ZONE YOLO (120px)", (char_screen_cx - 80, char_screen_cy - 125), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 2)
 
                 if curr_time < state.get("close_combat_timer", 0):
                     dng_name_chk = settings.get("dungeon_name", "")
