@@ -407,7 +407,23 @@ DUNGEON_ASSETS = {
     "사던 2층": {"map": "silver2map.png", "graph": "silver2_graph.json", "model": "silver.pt"},
     "사던 3층": {"map": "silver3map.png", "graph": "silver3_graph.json", "model": "silver.pt"},
     "본던 3층": {"map": "gludio3map.png", "graph": "gludio3_graph.json", "model": "gludio.pt"},
-    "본던 4층": {"map": "gludio4map.png", "graph": "gludio4_graph.json", "model": "gludio.pt"},
+    
+    "본던 4-1": {"map": "gludio4.png", "graph": "gludio4-1.json", "model": "gludio.pt"},
+    "본던 4-2": {"map": "gludio4.png", "graph": "gludio4-2.json", "model": "gludio.pt"},
+    "본던 4-3": {"map": "gludio4.png", "graph": "gludio4-3.json", "model": "gludio.pt"},
+    "본던 4-4": {"map": "gludio4.png", "graph": "gludio4-4.json", "model": "gludio.pt"},
+    "본던 4-5": {"map": "gludio4.png", "graph": "gludio4-5.json", "model": "gludio.pt"},
+    "본던 4-6": {"map": "gludio4.png", "graph": "gludio4-6.json", "model": "gludio.pt"},
+    "본던 4-7": {"map": "gludio4.png", "graph": "gludio4-7.json", "model": "gludio.pt"},
+    "본던 4-8": {"map": "gludio4.png", "graph": "gludio4-8.json", "model": "gludio.pt"},
+    "본던 4-9": {"map": "gludio4.png", "graph": "gludio4-9.json", "model": "gludio.pt"},
+    "본던 4-10": {"map": "gludio4.png", "graph": "gludio4-10.json", "model": "gludio.pt"},
+    "본던 4-11": {"map": "gludio4.png", "graph": "gludio4-11.json", "model": "gludio.pt"},
+    "본던 4-12": {"map": "gludio4.png", "graph": "gludio4-12.json", "model": "gludio.pt"},
+    "본던 4-13": {"map": "gludio4.png", "graph": "gludio4-13.json", "model": "gludio.pt"},
+    "본던 4-14": {"map": "gludio4.png", "graph": "gludio4-14.json", "model": "gludio.pt"},
+    "본던 4-15": {"map": "gludio4.png", "graph": "gludio4-15.json", "model": "gludio.pt"},
+
     "본던 5-1": {"map": "gludio5.png", "graph": "gludio5-1.json", "model": "gludio.pt"},
     "본던 5-2": {"map": "gludio5.png", "graph": "gludio5-2.json", "model": "gludio.pt"},
     "본던 5-3": {"map": "gludio5.png", "graph": "gludio5-3.json", "model": "gludio.pt"},
@@ -418,6 +434,11 @@ DUNGEON_ASSETS = {
     "본던 5-8": {"map": "gludio5.png", "graph": "gludio5-8.json", "model": "gludio.pt"},
     "본던 5-9": {"map": "gludio5.png", "graph": "gludio5-9.json", "model": "gludio.pt"},
     "본던 5-10": {"map": "gludio5.png", "graph": "gludio5-10.json", "model": "gludio.pt"},
+    "본던 5-11": {"map": "gludio5.png", "graph": "gludio5-11.json", "model": "gludio.pt"},
+    "본던 5-12": {"map": "gludio5.png", "graph": "gludio5-12.json", "model": "gludio.pt"},
+    "본던 5-13": {"map": "gludio5.png", "graph": "gludio5-13.json", "model": "gludio.pt"},
+    "본던 5-14": {"map": "gludio5.png", "graph": "gludio5-14.json", "model": "gludio.pt"},
+    "본던 5-15": {"map": "gludio5.png", "graph": "gludio5-15.json", "model": "gludio.pt"},
     # -----------------------------------
 
     "본던 6층": {"map": "gludio6map.png", "graph": "gludio6_graph.json", "model": "gludio.pt"},
@@ -2056,6 +2077,7 @@ for pc in MINI_PCS:
 
         "chain_kill": tk.BooleanVar(value=pc_set.get("chain_kill", False)),
         "haste_match_rate": tk.StringVar(value=pc_set.get("haste_match_rate", "92")),
+        "zone_tele_nodes": tk.StringVar(value=pc_set.get("zone_tele_nodes", "120")),
 
         "oak_thresh": tk.StringVar(value=pc_set.get("oak_thresh", "127")),
 
@@ -5263,6 +5285,31 @@ def ai_commander_worker(target_pc):
                                         else:
                                             dprint(key, f"🚨 [파티 0순위 존 복귀] 구역 이탈 확정! 파트너 합류를 무시하고 가장 가까운 Zone(ID:{best_zone_node})으로 즉시 A* 복귀합니다!")
                                         state["zone_return_log_time"] = curr_time
+
+                                # 👇👇 [스마트 Zone 텔레포트 추가] 👇👇
+                                global_path_for_tele = state.get("dungeon_global_path", [])
+                                try: zone_tele_limit = int(settings.get("zone_tele_nodes", 120))
+                                except: zone_tele_limit = 120
+                                
+                                if zone_tele_limit > 0 and len(global_path_for_tele) >= zone_tele_limit and mp >= 50.0:
+                                    if curr_time > state.get("zone_tele_cd", 0):
+                                        dprint(key, f"🌀 [구역 복귀 텔레포트] 내 구역까지 너무 멉니다 (경로 {len(global_path_for_tele)}칸 >= 기준 {zone_tele_limit}칸, MP {mp:.1f}%). 3초 쿨 일반텔(F11) 시도!")
+                                        clear_movements_only(pico_queues[key])
+                                        if state.get("sweep_active", False):
+                                            pico_queues[key].put({"action": "SWEEP_STOP"})
+                                            state["sweep_active"] = False
+
+                                        pico_queues[key].put({"action": "TELEPORT"})
+                                        
+                                        # 텔레포트 직후 경로 파기
+                                        state["dungeon_global_path"] = []
+                                        state["current_target_node"] = None
+                                        
+                                        state["zone_tele_cd"] = curr_time + 3.0
+                                        state["cooldown"] = curr_time + 1.0
+                                        continue
+                                # 👆👆 [스마트 Zone 텔레포트 끝] 👆👆
+
                     else:
                         if not state.get("is_out_of_zone", False):
                             state["current_target_node"] = None
@@ -8215,8 +8262,11 @@ def ai_commander_worker(target_pc):
                                     book_img_list = []
                                     in_img_path = ""
                                     
-                                    if "5-" in dungeon_name or "5층" in dungeon_name:
-                                        book_img_list = ["qq/gludio55.png"]
+                                    if "4-" in dungeon_name or "4층" in dungeon_name:
+                                        book_img_list = ["qq/gludio44.png", "qq/gludio.png", "qq/bondon.png"]
+                                        in_img_path = "qq/gludio4_in.png"
+                                    elif "5-" in dungeon_name or "5층" in dungeon_name:
+                                        book_img_list = ["qq/gludio55.png", "qq/gludio.png", "qq/bondon.png"]
                                         in_img_path = "qq/gludio5_in.png"
                                     elif "6-" in dungeon_name or "6층" in dungeon_name:
                                         book_img_list = ["qq/gludio66.png"]
@@ -11918,7 +11968,7 @@ def ai_commander_worker(target_pc):
                 if "event" in dng_name_tele or "오땅" in dng_name_tele:
                     tele_hunt_enabled = False
 
-                is_solo_zone_tele = ("본던 5-" in dng_name_tele or "본던 6-" in dng_name_tele or "본던 7-" in dng_name_tele) and not (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False))
+                is_solo_zone_tele = ("본던 4-" in dng_name_tele or "본던 5-" in dng_name_tele or "본던 6-" in dng_name_tele or "본던 7-" in dng_name_tele) and not (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False))
 
                 if settings.get("use_party_hunt", False) or is_solo_zone_tele:
                     tele_hunt_enabled = False
@@ -12166,10 +12216,10 @@ def ai_commander_worker(target_pc):
 
             if "is_out_of_zone" not in state: state["is_out_of_zone"] = False
 
-            # 💡 [핵심 추가] 본던 5, 6, 7층은 솔플이더라도 Zone 이탈 방지 로직을 똑같이 적용합니다.
+            # 💡 [핵심 추가] 본던 4, 5, 6, 7층은 솔플이더라도 Zone 이탈 방지 로직을 똑같이 적용합니다.
             dng_zone_chk = settings.get("dungeon_name", "")
             is_party_any_zone = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
-            is_solo_zone_mode = ("본던 5-" in dng_zone_chk or "본던 6-" in dng_zone_chk or "본던 7-" in dng_zone_chk) and not is_party_any_zone
+            is_solo_zone_mode = ("본던 4-" in dng_zone_chk or "본던 5-" in dng_zone_chk or "본던 6-" in dng_zone_chk or "본던 7-" in dng_zone_chk) and not is_party_any_zone
 
             if (is_party_any_zone or is_solo_zone_mode) and state.get("dungeon_map_pos") and pc_graph and pc_graph.get("nodes"):
                 if curr_time - state.get("zone_check_time", 0) > 1.0:
@@ -12231,6 +12281,11 @@ def ai_commander_worker(target_pc):
                         dprint(key, f"🚨 [존 이탈 감지] 할당 구역({active_dungeon}) 밖으로 이탈! 시야를 120px로 좁히고 복귀 모드 가동!")
                     elif not is_out_of_zone and was_out:
                         dprint(key, f"🎯 [존 진입 완료] 할당 구역({active_dungeon}) 안착 완료! 족쇄를 풀고 정상 사냥 모드 복구!")
+                        
+                        # 💡 [버그 픽스] 존에 진입하면 과거의 길찾기 경로(유령 궤적)를 완벽히 파기합니다!
+                        state["dungeon_global_path"] = []
+                        state["current_target_node"] = None
+                        clear_movements_only(pico_queues[key])
 
                     state["is_out_of_zone"] = is_out_of_zone
                     state["zone_check_time"] = curr_time
@@ -12397,7 +12452,7 @@ def ai_commander_worker(target_pc):
                             # 💡 [핵심 추가] 본던 솔플 존 사냥 모드에서도 구역 이탈 시 시야를 파티모드처럼 제한합니다.
                             dng_chk_yolo = settings.get("dungeon_name", "")
                             is_bondon_zone_solo = False
-                            if not is_any_party and ("본던 5-" in dng_chk_yolo or "본던 6-" in dng_chk_yolo or "본던 7-" in dng_chk_yolo):
+                            if not is_any_party and ("본던 4-" in dng_chk_yolo or "본던 5-" in dng_chk_yolo or "본던 6-" in dng_chk_yolo or "본던 7-" in dng_chk_yolo):
                                 is_bondon_zone_solo = True
 
                             if is_party_hunt_active:
@@ -12511,7 +12566,7 @@ def ai_commander_worker(target_pc):
 
                 is_any_party_dbg = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
                 dng_chk_dbg = settings.get("dungeon_name", "")
-                is_bondon_zone_solo_dbg = ("본던 5-" in dng_chk_dbg or "본던 6-" in dng_chk_dbg or "본던 7-" in dng_chk_dbg) and not is_any_party_dbg
+                is_bondon_zone_solo_dbg = ("본던 4-" in dng_chk_dbg or "본던 5-" in dng_chk_dbg or "본던 6-" in dng_chk_dbg or "본던 7-" in dng_chk_dbg) and not is_any_party_dbg
 
                 if is_any_party_dbg or is_bondon_zone_solo_dbg:
                     # 💡 구역 이탈 상태일 때는 핑크색 풀 스크린 원을 끄고 120px 주황색 제한 원을 켭니다.
@@ -12667,7 +12722,7 @@ def ai_commander_worker(target_pc):
                     dng_zone_solo_chk = settings.get("dungeon_name", "")
                     is_bondon_zone_solo = False
                     if not (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)):
-                        if "본던 5-" in dng_zone_solo_chk or "본던 6-" in dng_zone_solo_chk or "본던 7-" in dng_zone_solo_chk:
+                        if "본던 4-" in dng_zone_solo_chk or "본던 5-" in dng_zone_solo_chk or "본던 6-" in dng_zone_solo_chk or "본던 7-" in dng_zone_solo_chk:
                             is_bondon_zone_solo = True
 
                     if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False) or is_bondon_zone_solo:
@@ -18098,6 +18153,27 @@ def ai_commander_worker(target_pc):
 
                                 if global_path:
                                     cx, cy = char_map_pos
+
+                                    # 👇👇 [스마트 Zone 텔레포트] 👇👇
+                                    zone_tele_limit = int(settings.get("zone_tele_nodes", 120))
+                                    if state.get("is_out_of_zone", False) and zone_tele_limit > 0 and len(global_path) >= zone_tele_limit and mp >= 50.0:
+                                        if curr_time > state.get("zone_tele_cd", 0):
+                                            dprint(key, f"🌀 [구역 복귀 텔레포트] 내 구역까지 너무 멉니다 (남은 경로 {len(global_path)}칸 >= 기준 {zone_tele_limit}칸, MP {mp:.1f}%). 3초 쿨 일반텔(F11) 시도!")
+                                            clear_movements_only(pico_queues[key])
+                                            if state.get("sweep_active", False):
+                                                pico_queues[key].put({"action": "SWEEP_STOP"})
+                                                state["sweep_active"] = False
+
+                                            pico_queues[key].put({"action": "TELEPORT"})
+                                            
+                                            state["dungeon_global_path"] = []
+                                            state["current_target_node"] = None
+                                            
+                                            state["zone_tele_cd"] = curr_time + 3.0
+                                            state["cooldown"] = curr_time + 1.0
+                                            action_taken = True
+                                            continue
+
                                     min_dist_pure = float('inf')
                                     search_range = min(len(global_path), 30)
                                     for idx in range(search_range):
@@ -19894,7 +19970,8 @@ def sync_gui_vars():
 
             move_sens_val = int(safe_float(gui_vars[k]["move_sens"], 2000.0))
 
-            haste_match_val = safe_float(gui_vars[k]["haste_match_rate"], 92.0)
+            haste_match_val = 92.0 # 💡 92% 하드코딩
+            zone_tele_nodes_val = int(safe_float(gui_vars[k].get("zone_tele_nodes", tk.StringVar(value="120")), 120.0))
 
             oak_thresh_val = int(safe_float(gui_vars[k]["oak_thresh"], 127.0))
 
@@ -20019,8 +20096,10 @@ def sync_gui_vars():
 
                 "move_sens": move_sens_val,
                 "hunt_first": gui_vars[k]["hunt_first"].get(),
-                "chain_kill": gui_vars[k]["chain_kill"].get(),
+
+                "chain_kill": False, # 💡 체인킬 Off 하드코딩
                 "haste_match_rate": haste_match_val,
+                "zone_tele_nodes": zone_tele_nodes_val,
 
                 "oak_thresh": oak_thresh_val,
 
@@ -20594,11 +20673,10 @@ for i, pc in enumerate(MINI_PCS):
 
     tk.Checkbutton(sens_frame, text="사냥우선", variable=vars_dict["hunt_first"], bg=BG_PANEL, fg="#FF9800", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(2, 1))
 
-    tk.Checkbutton(sens_frame, text="체인킬", variable=vars_dict["chain_kill"], bg=BG_PANEL, fg="#E91E63", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(0, 1))
-
-    tk.Label(sens_frame, text="| 헤이:", bg=BG_PANEL, fg="#FFD54F", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(1, 0))
-    tk.Entry(sens_frame, textvariable=vars_dict["haste_match_rate"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=0)
-    tk.Label(sens_frame, text="%", bg=BG_PANEL, fg="#FFD54F", font=("맑은 고딕", 8)).pack(side="left", padx=0)
+    # 💡 체인킬, 헤이감도 UI 삭제 및 Zone 스마트 텔레포트 UI 추가
+    tk.Label(sens_frame, text=" | zone:", bg=BG_PANEL, fg="#E91E63", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(2, 0))
+    tk.Entry(sens_frame, textvariable=vars_dict["zone_tele_nodes"], width=4, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
+    tk.Label(sens_frame, text="노드밖 텔", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=0)
 
     notebook = ttk.Notebook(col_frame)
     notebook.pack(fill="both", expand=True, pady=(2, 5))
