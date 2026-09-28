@@ -1487,7 +1487,7 @@ BUFF_DUR_ENCHANT  = 1800
 BUFF_DUR_BLESSED  = 1800
 BUFF_DUR_DEX      = 1200
 BUFF_DUR_DECREASE = 1800
-BUFF_DUR_TRANS    = 1200
+BUFF_DUR_WINDWALK = 1200  # 💡 윈드워크 20분으로 변경
 BUFF_DUR_LIGHT    = 3600
 
 TARGET_PC_KEY = ""
@@ -1560,7 +1560,7 @@ def _save_buff_times_internal(states_dict):
         for k, st in states_dict.items():
             data[k] = {
 
-                "trans": max(0.0, st.get("buff_trans_time", 0) - curr_t),
+                "windwalk": max(0.0, st.get("buff_windwalk_time", 0) - curr_t),
                 "shield": max(0.0, st.get("buff_shield_time", 0) - curr_t),
                 "holy": max(0.0, st.get("buff_holy_time", 0) - curr_t),
                 "enchant": max(0.0, st.get("buff_enchant_time", 0) - curr_t),
@@ -1623,7 +1623,7 @@ def _save_settings_internal():
                 "heal_mp_pct": v["heal_mp_pct"].get(),
                 "pot_use": v["pot_use"].get(), "pot_pct": v["pot_pct"].get(),
                 "poison_type": v["poison_type"].get(), "poison_delay": v["poison_delay"].get(), "buff_set": v["buff_set"].get(),
-                "use_dec_weight": v["use_dec_weight"].get(), "use_trans": v["use_trans"].get(),
+                "use_dec_weight": v["use_dec_weight"].get(), "use_windwalk": v["use_windwalk"].get(),
                 "use_body": v["use_body"].get(), "body_pct": v["body_pct"].get(), "body_stop_pct": v["body_stop_pct"].get(),
                 "use_mptam": v["use_mptam"].get(), "mptam_start_pct": v["mptam_start_pct"].get(), "mptam_stop_pct": v["mptam_stop_pct"].get(),
                 "use_extra_f10": v["use_extra_f10"].get(), "extra_f10_dur": v["extra_f10_dur"].get(),
@@ -2020,7 +2020,7 @@ for pc in MINI_PCS:
 
         "buff_set": tk.StringVar(value=pc_set.get("buff_set", "3셋트 (실드, 웨폰, 아머, 계열)")),
         "use_dec_weight": tk.BooleanVar(value=pc_set.get("use_dec_weight", True)),
-        "use_trans": tk.BooleanVar(value=pc_set.get("use_trans", False)),
+        "use_windwalk": tk.BooleanVar(value=pc_set.get("use_windwalk", False)),
         "use_body": tk.BooleanVar(value=pc_set.get("use_body", True)),
         "body_pct": tk.StringVar(value=pc_set.get("body_pct", "80")),
         "body_stop_pct": tk.StringVar(value=pc_set.get("body_stop_pct", "85")),
@@ -2085,21 +2085,21 @@ for pc in MINI_PCS:
     pico_queues[k] = queue.Queue()
 
     sb = saved_buffs.get(k, {})
-    init_trans = sb.get("trans", 0); init_shield = sb.get("shield", 0); init_holy = sb.get("holy", 0)
+    init_windwalk = sb.get("windwalk", 0); init_shield = sb.get("shield", 0); init_holy = sb.get("holy", 0)
     init_enchant = sb.get("enchant", 0); init_blessed = sb.get("blessed", 0)
     init_dex = sb.get("dex", 0); init_decrease = sb.get("decrease", 0)
     init_extra_f10 = sb.get("extra_f10", 0); init_light = sb.get("light", 0)
 
     sb = saved_buffs.get(k, {})
 
-    init_trans = now_t + sb.get("trans", 0); init_shield = now_t + sb.get("shield", 0); init_holy = now_t + sb.get("holy", 0)
+    init_windwalk = now_t + sb.get("windwalk", 0); init_shield = now_t + sb.get("shield", 0); init_holy = now_t + sb.get("holy", 0)
     init_enchant = now_t + sb.get("enchant", 0); init_blessed = now_t + sb.get("blessed", 0)
     init_dex = now_t + sb.get("dex", 0); init_decrease = now_t + sb.get("decrease", 0)
     init_extra_f10 = now_t + sb.get("extra_f10", 0); init_light = now_t + sb.get("light", 0)
     init_blue_pot = now_t + sb.get("blue_pot", 0)
     init_element = now_t + sb.get("element", 0)
 
-    if sb.get("trans", 0) == 0:  init_trans  = now_t + g_val(10, 60)
+    if sb.get("windwalk", 0) == 0:  init_windwalk  = now_t + g_val(10, 60)
     if sb.get("shield", 0) == 0: init_shield = now_t + g_val(20, 120)
     if sb.get("holy", 0) == 0:   init_holy   = now_t + g_val(30, 180)
     if sb.get("enchant", 0) == 0: init_enchant = now_t + g_val(40, 200)
@@ -2120,7 +2120,7 @@ for pc in MINI_PCS:
         "patrol_start": time.time(), "patrol_duration": g_val(2.0, 3.0),
         "last_chase_dist": 999.0, "stuck_start_time": time.time(), "is_paused": False, "is_hunt_active": False,
         "poison_timer": 0, "antidote_cd": 0, "heal_cd": 0, "potion_cd": 0,
-        "buff_trans_time": init_trans, "buff_shield_time": init_shield, "buff_holy_time": init_holy,
+        "buff_windwalk_time": init_windwalk, "buff_shield_time": init_shield, "buff_holy_time": init_holy,
         "buff_enchant_time": init_enchant, "buff_blessed_time": init_blessed,
         "buff_dex_time": init_dex, "buff_decrease_time": init_decrease,
         "buff_extra_f10_time": init_extra_f10, "buff_light_time": init_light, "buff_blue_pot_time": init_blue_pot,
@@ -5596,7 +5596,7 @@ def ai_commander_worker(target_pc):
                                     state["death_btn_pos"] = (click_x, click_y)
 
                                     state["last_haste_time"] = 0.0; state["used_gangchol"] = False; state["buff_shield_time"] = 0.0; state["buff_holy_time"] = 0.0; state["buff_enchant_time"] = 0.0; state["buff_blessed_time"] = 0.0
-                                    state["buff_element_time"] = 0.0; state["buff_dex_time"] = 0.0; state["buff_decrease_time"] = 0.0; state["buff_trans_time"] = 0.0; state["buff_extra_f10_time"] = 0.0
+                                    state["buff_element_time"] = 0.0; state["buff_dex_time"] = 0.0; state["buff_decrease_time"] = 0.0; state["buff_windwalk_time"] = 0.0; state["buff_extra_f10_time"] = 0.0
                                     state["buff_light_time"] = 0.0; state["buff_blue_pot_time"] = 0.0
                                     save_buff_times(ai_states)
 
@@ -9457,8 +9457,8 @@ def ai_commander_worker(target_pc):
 
                                     if settings.get("use_dec_weight") and check_weight_status(img_bgr) > 0 and curr_time > state.get("buff_decrease_time", 0):
                                         buffs_to_cast.append({"key": KEY_F12, "page": 2, "double": False, "name": "decrease", "dur": BUFF_DUR_DECREASE})
-                                    if settings.get("use_trans") and curr_time > state.get("buff_trans_time", 0):
-                                        buffs_to_cast.append({"key": KEY_F9, "page": 2, "double": False, "name": "trans", "dur": BUFF_DUR_TRANS})
+                                    if settings.get("use_windwalk") and curr_time > state.get("buff_windwalk_time", 0):
+                                        buffs_to_cast.append({"key": KEY_F9, "page": 2, "double": False, "name": "windwalk", "dur": BUFF_DUR_WINDWALK})
                                     if settings.get("use_blue_pot") and mp <= settings.get("blue_mp_pct", 15.0) and curr_time > state.get("buff_blue_pot_time", 0):
                                         buffs_to_cast.append({"key": KEY_F11, "page": 3, "double": False, "name": "blue_pot", "dur": settings.get("blue_cd_min", 20.0) * 60.0})
 
@@ -12081,24 +12081,21 @@ def ai_commander_worker(target_pc):
                     else:
                         time_since_arrow = curr_time - state.get("last_arrow_change_time", curr_time)
 
-                        # 💡 [핵심 스마트 로직] 마지막 화살 발사 이후 힐/바디 등 마법을 사용했는지 팩트 체크!
-                        last_arrow_time = state.get("last_arrow_change_time", 0)
+                        # 마지막 마법(힐/바디) 사용 후 경과 시간 계산
                         last_spell_time = max(state.get("last_heal_time", 0), state.get("last_body_time", 0))
-                        
-                        is_spell_cast_recently = last_spell_time > last_arrow_time
+                        time_since_spell = curr_time - last_spell_time
 
                         if curr_time < state.get("emergency_buff_grace_time", 0):
-                            allowable_arrow_delay = 5.0
-                        elif is_spell_cast_recently:
-                            allowable_arrow_delay = 2.8 # 마법 시전(모션)을 감안하여 기존처럼 2.8초 대기
+                            if time_since_arrow > 5.0:
+                                dprint(key, "⚠️ [전투 중단] 5.0초 경과 (비상 버프 대기)! 화살이 나가지 않아 타겟 포기!")
+                                state["cooldown"] = curr_time + 0.1
+                                state["is_attacking"] = False; state["target_fsm"] = "IDLE"; state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
                         else:
-                            allowable_arrow_delay = 1.5 # 마법도 안 썼는데 화살이 안 나가면 1.5초 만에 빠른 타겟 포기 (딜로스 제거)
-
-                        if time_since_arrow > allowable_arrow_delay:
-                            reason_str = "비상 버프 대기" if curr_time < state.get("emergency_buff_grace_time", 0) else ("마법 사용 딜레이 연장" if is_spell_cast_recently else "빠른 사격 중단")
-                            dprint(key, f"⚠️ [전투 중단] {allowable_arrow_delay}초 경과 ({reason_str})! 화살이 나가지 않아 타겟 포기!")
-                            state["cooldown"] = curr_time + 0.1
-                            state["is_attacking"] = False; state["target_fsm"] = "IDLE"; state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
+                            if time_since_arrow > 2.0 and time_since_spell > 2.0:
+                                reason_str = "마법 사용 후 사격 지연" if time_since_spell <= 3.0 else "빠른 사격 중단"
+                                dprint(key, f"⚠️ [전투 중단] {reason_str}! 화살이 나가지 않아 타겟 포기!")
+                                state["cooldown"] = curr_time + 0.1
+                                state["is_attacking"] = False; state["target_fsm"] = "IDLE"; state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
 
                     max_combat_time = float(settings.get("max_combat_time", 15.0))
 
@@ -13534,7 +13531,7 @@ def ai_commander_worker(target_pc):
                             state["cooldown"] = curr_time
                         else:
                             target_page = b_info["page"]
-                            state["buff_is_0mp"] = b_info["name"] in ["trans", "extra_f10", "blue_pot"]
+                            state["buff_is_0mp"] = b_info["name"] in ["extra_f10", "blue_pot"]
 
                             if target_page == 1:
                                 state["target_fsm"] = "BUFFING_CAST_AND_VERIFY"
@@ -13786,8 +13783,8 @@ def ai_commander_worker(target_pc):
                 if settings.get("use_dec_weight") and is_heavy and curr_time > state.get("buff_decrease_time", 0):
                     expired_buffs.append({"name": "decrease", "page": 2, "key": KEY_F12, "double": False, "dur": BUFF_DUR_DECREASE})
 
-                if settings.get("use_trans") and curr_time > state.get("buff_trans_time", 0):
-                    expired_buffs.append({"name": "trans", "page": 2, "key": KEY_F9, "double": False, "dur": BUFF_DUR_TRANS})
+                if settings.get("use_windwalk") and curr_time > state.get("buff_windwalk_time", 0):
+                    expired_buffs.append({"name": "windwalk", "page": 2, "key": KEY_F9, "double": False, "dur": BUFF_DUR_WINDWALK})
                 if settings.get("use_extra_f10") and curr_time > state.get("buff_extra_f10_time", 0):
                     try: dur_seconds = int(settings.get("extra_f10_dur", "10분").replace("분", "")) * 60
                     except: dur_seconds = 600.0
@@ -13809,8 +13806,8 @@ def ai_commander_worker(target_pc):
                     except: DUR_BLESSED = 1200.0
                     try: DUR_DEX = BUFF_DUR_DEX
                     except: DUR_DEX = 300.0
-                    try: DUR_TRANS = BUFF_DUR_TRANS
-                    except: DUR_TRANS = 600.0
+                    try: DUR_WINDWALK = BUFF_DUR_WINDWALK
+                    except: DUR_WINDWALK = 1200.0
 
                     if "1셋트" in b_set or "2셋트" in b_set or "3셋트" in b_set or "4셋트" in b_set:
                         rem = max(0, state.get("buff_enchant_time", 0) - curr_time)
@@ -13836,10 +13833,11 @@ def ai_commander_worker(target_pc):
                         if 0 < rem < DUR_DEX * 0.33:
                             pre_cands.append({"name": "dex", "page": 2, "key": KEY_F11, "double": True, "dur": DUR_DEX, "rem": rem})
 
-                    if settings.get("use_trans"):
-                        rem = max(0, state.get("buff_trans_time", 0) - curr_time)
-                        if 0 < rem < DUR_TRANS * 0.85:
-                            pre_cands.append({"name": "trans", "page": 2, "key": KEY_F9, "double": False, "dur": DUR_TRANS, "rem": rem})
+                    if settings.get("use_windwalk"):
+                        rem = max(0, state.get("buff_windwalk_time", 0) - curr_time)
+                        # 💡 윈드워크는 스킬이므로 너무 자주 쓰면 마나낭비! 남은시간 1/3(약 6분) 미만일 때만 미리 쏩니다.
+                        if 0 < rem < DUR_WINDWALK * 0.33:
+                            pre_cands.append({"name": "windwalk", "page": 2, "key": KEY_F9, "double": False, "dur": DUR_WINDWALK, "rem": rem})
 
                     if settings.get("use_extra_f10"):
                         try: dur_seconds = int(settings.get("extra_f10_dur", "10분").replace("분", "")) * 60
@@ -13861,7 +13859,7 @@ def ai_commander_worker(target_pc):
                 if expired_buffs:
 
                     if mp < 50.0:
-                        expired_buffs = [b for b in expired_buffs if b["name"] in ["trans", "extra_f10", "blue_pot", "shield"]]
+                        expired_buffs = [b for b in expired_buffs if b["name"] in ["extra_f10", "blue_pot", "shield"]]
 
                     if expired_buffs:
 
@@ -19347,7 +19345,9 @@ def ai_commander_worker(target_pc):
                     need_heal = settings.get("heal_use") and hp <= settings.get("heal_percent", 70.0) and mp >= heal_mp_limit
 
                     is_body_blocked = curr_time <= state.get("body_block_time", 0)
-                    can_use_body = state.get("body_to_mind_active", False) and not is_busy and not need_heal and not is_critical_hp and not is_poisoned and not is_close_combat_scanning and is_exp_safe_for_body and not is_body_blocked and not is_manual_mode
+                    
+                    # 💡 [핵심 수정] 독(is_poisoned) 제한을 삭제하여 독 상태에서도 체력만 괜찮으면 바디를 정상 시전!
+                    can_use_body = state.get("body_to_mind_active", False) and not is_busy and not need_heal and not is_critical_hp and not is_close_combat_scanning and is_exp_safe_for_body and not is_body_blocked and not is_manual_mode
 
                     is_fixed_dealer_hold = settings.get("use_party_fixed", False) and not settings.get("is_puller", False) and state.get("target_fsm") in ["IDLE", "PARTY_WAIT"]
                     is_party_wait_hold = settings.get("use_party_hunt", False) and state.get("target_fsm") == "PARTY_WAIT"
@@ -19996,7 +19996,7 @@ def sync_gui_vars():
 
                 "buff_set": gui_vars[k]["buff_set"].get(),
                 "use_dec_weight": gui_vars[k]["use_dec_weight"].get(),
-                "use_trans": gui_vars[k]["use_trans"].get(),
+                "use_windwalk": gui_vars[k]["use_windwalk"].get(),
                 "use_body": gui_vars[k]["use_body"].get(),
                 "body_percent": body_start_val,
                 "body_stop_percent": body_stop_val,
@@ -20790,13 +20790,15 @@ for i, pc in enumerate(MINI_PCS):
     extra_frame = tk.Frame(tab1, bg=BG_PANEL)
     extra_frame.pack(side="top", fill="x", padx=2, pady=2)
     tk.Checkbutton(extra_frame, text="디크리즈(F12)", variable=vars_dict["use_dec_weight"], bg=BG_PANEL, fg=FG_TEXT, selectcolor="#3E3E42", font=("맑은 고딕", 8)).pack(side="left", padx=2)
-    tk.Checkbutton(extra_frame, text="변신(F9)", variable=vars_dict["use_trans"], bg=BG_PANEL, fg=FG_TEXT, selectcolor="#3E3E42", font=("맑은 고딕", 8)).pack(side="left", padx=2)
     tk.Checkbutton(extra_frame, text="CC연동", variable=vars_dict["use_cc_buff"], bg=BG_PANEL, fg="#B2FF59", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=2)
 
     f10_frame = tk.Frame(tab1, bg=BG_PANEL)
     f10_frame.pack(side="top", fill="x", padx=2, pady=2)
     tk.Checkbutton(f10_frame, text="기타버프(F10)", variable=vars_dict["use_extra_f10"], bg=BG_PANEL, fg=FG_TEXT, selectcolor="#3E3E42", font=("맑은 고딕", 8)).pack(side="left", padx=2)
     ttk.Combobox(f10_frame, textvariable=vars_dict["extra_f10_dur"], values=["10분", "20분", "30분", "40분", "50분", "60분"], state="readonly", width=5).pack(side="left", padx=2)
+    tk.Label(f10_frame, text="|", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(1,0))
+    # 💡 윗줄의 변줌을 삭제하고, 기타버프(F10) 콤보박스 우측에 윈웍(F9) 체크박스를 배치했습니다.
+    tk.Checkbutton(f10_frame, text="윈웍(F9)", variable=vars_dict["use_windwalk"], bg=BG_PANEL, fg="#A5D6A7", selectcolor="#3E3E42", font=("맑은 고딕", 8)).pack(side="left", padx=2)
 
     body_frame = tk.Frame(tab1, bg=BG_PANEL)
     body_frame.pack(side="top", fill="x", padx=2, pady=2)
