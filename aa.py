@@ -644,8 +644,8 @@ def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_sc
         is_bondon = False
         if "본던" in current_dng or "gludio" in current_dng.lower():
             is_bondon = True
-            OFFSET_X = 2
-            OFFSET_Y = 2
+            OFFSET_X = 1
+            OFFSET_Y = 1
 
         true_cx = (w // 2) + OFFSET_X
         true_cy = (h // 2) + OFFSET_Y
@@ -986,10 +986,17 @@ def check_line_of_sight(map_gray, start_point, end_point, margin_steps=3):
 
         if is_wall:
             dist_from_end = math.hypot(x1 - cx, y1 - cy)
+            # 💡 [추가] 출발점(내 캐릭터)에서 현재 부딪힌 벽 픽셀까지의 거리 계산
+            dist_from_start = math.hypot(cx - x0, cy - y0)
             
-            # 본던일 경우 마진을 0.0으로 줘서 벽 픽셀에 닿기만 해도 칼같이 막힘 판정!
+            # 목적지(몹) 쪽 마진: 본던은 0.0으로 칼같이 막아 헛방 방지
             wall_ignore_margin = 0.0 if is_bondon else float(margin_steps)
-            if dist_from_end > wall_ignore_margin:
+            
+            # 💡 [핵심] 출발점(내 캐릭터) 쪽 마진: 본던일 경우 반경 1.5(대각선 1픽셀 커버) 이내의 벽은 내 몸통에 비벼진 것으로 간주하고 투과!
+            start_ignore_margin = 1.5 if is_bondon else 0.0
+            
+            # 몹 쪽 마진도 벗어났고, 내 몸통 쪽 마진도 벗어난 순수한 '중간 벽'일 때만 시야 차단!
+            if dist_from_end > wall_ignore_margin and dist_from_start > start_ignore_margin:
                 return False
 
     return True
@@ -4296,7 +4303,8 @@ def ai_commander_worker(target_pc):
         def __init__(self, cx, cy, x1, y1, x2, y2):
             self.x = cx
             self.y = cy + 10
-            self.foot_y = int(y1 + (y2 - y1) * 0.85) + 10
+            # 💡 [수정 1] 몹의 절대 위치(발밑 좌표)를 10픽셀 더 내림 (총 +20)
+            self.foot_y = int(y1 + (y2 - y1) * 0.85) + 20
             self.x1, self.y1, self.x2, self.y2 = x1, y1, x2, y2
 
     while True:
@@ -12308,7 +12316,8 @@ def ai_commander_worker(target_pc):
 
                             if cls_id in [0, 5, 6] or (is_bondon_yolo and cls_id == AVOID_CLASS_ID):
                                 mob_cx, mob_cy = (x1_box + x2_box) // 2, (y1_box + y2_box) // 2
-                                mob_foot_y = int(y1_box + (y2_box - y1_box) * 0.85) + 10
+                                # 💡 [수정 2] YOLO 일반 몹 좌표 연산도 10픽셀 더 내림
+                                mob_foot_y = int(y1_box + (y2_box - y1_box) * 0.85) + 20
 
                                 is_current_target = False
                                 if mask_cx != -1000 and math.hypot(mob_cx - mask_cx, mob_foot_y - mask_cy) <= 35:
