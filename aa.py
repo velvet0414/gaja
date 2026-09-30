@@ -1651,6 +1651,7 @@ def _save_settings_internal():
                 "heal_mp_pct": v["heal_mp_pct"].get(),
                 "pot_use": v["pot_use"].get(), "pot_pct": v["pot_pct"].get(),
                 "poison_type": v["poison_type"].get(), "poison_delay": v["poison_delay"].get(), "buff_set": v["buff_set"].get(),
+                "combat_buff": v["combat_buff"].get(),
                 "use_dec_weight": v["use_dec_weight"].get(), "use_windwalk": v["use_windwalk"].get(),
                 "use_body": v["use_body"].get(), "body_pct": v["body_pct"].get(), "body_stop_pct": v["body_stop_pct"].get(),
                 "use_mptam": v["use_mptam"].get(), "mptam_start_pct": v["mptam_start_pct"].get(), "mptam_stop_pct": v["mptam_stop_pct"].get(),
@@ -2047,6 +2048,7 @@ for pc in MINI_PCS:
         "poison_delay": tk.StringVar(value=pc_set.get("poison_delay", "8")),
 
         "buff_set": tk.StringVar(value=pc_set.get("buff_set", "3셋트 (실드, 웨폰, 아머, 계열)")),
+        "combat_buff": tk.BooleanVar(value=pc_set.get("combat_buff", False)),
         "use_dec_weight": tk.BooleanVar(value=pc_set.get("use_dec_weight", True)),
         "use_windwalk": tk.BooleanVar(value=pc_set.get("use_windwalk", False)),
         "use_body": tk.BooleanVar(value=pc_set.get("use_body", True)),
@@ -10261,11 +10263,11 @@ def ai_commander_worker(target_pc):
 
                         b_info_pk = state.get("current_buff")
                         if b_info_pk and b_info_pk["name"] != "cure_fallback":
-                            # [수정] 도망가느라 취소되었으므로 20분(dur)을 더하지 않고, 15초 뒤에 재시도
                             state[f"buff_{b_info_pk['name']}_time"] = curr_time + 15.0
                             save_buff_times(ai_states)
 
                         state["buff_aborted"] = True
+                        state["is_combat_emergency_buff"] = False # <--- [여기에 1줄 추가!]
 
                     if state.get("target_fsm", "").startswith("INV_CLEAN"):
                         state["target_fsm"] = "IDLE"
@@ -10839,11 +10841,11 @@ def ai_commander_worker(target_pc):
 
                         b_info_pk = state.get("current_buff")
                         if b_info_pk and b_info_pk["name"] != "cure_fallback":
-                            # [수정] 도망가느라 취소되었으므로 20분(dur)을 더하지 않고, 15초 뒤에 재시도
                             state[f"buff_{b_info_pk['name']}_time"] = curr_time + 15.0
                             save_buff_times(ai_states)
 
                         state["buff_aborted"] = True
+                        state["is_combat_emergency_buff"] = False # <--- [여기에 1줄 추가!]
 
                     if state.get("target_fsm", "").startswith("INV_CLEAN"):
                         state["target_fsm"] = "IDLE"
@@ -12019,11 +12021,17 @@ def ai_commander_worker(target_pc):
                         dng_name_aim1 = settings.get("dungeon_name", "")
                         is_bondon_aim = "본던" in dng_name_aim1 or "gludio" in dng_name_aim1.lower()
 
+                        # ================= [ 변경 코드 ] =================
                         if is_party_mode or is_chain_kill_on or is_bondon_aim:
 
                             state["corpse_blind_expire"] = 0.0
 
-                            state["target_fsm"] = "TARGET_AIMING"
+                            # 👇 [변경] 버프 시전 중이면 목적지만 변경
+                            if str(state.get("target_fsm", "")).startswith("BUFFING"):
+                                state["buff_return_fsm"] = "TARGET_AIMING"
+                            else:
+                                state["target_fsm"] = "TARGET_AIMING"
+
                             state["aiming_start_time"] = curr_time
                             dng_name_aim2 = settings.get("dungeon_name", "")
                             if "수던" in dng_name_aim2 or "heine" in dng_name_aim2.lower() or "본던" in dng_name_aim2 or "gludio" in dng_name_aim2.lower():
@@ -12062,7 +12070,12 @@ def ai_commander_worker(target_pc):
                                 state["corpse_blind_expire"] = curr_time + 2.0
                                 state["corpse_blind_angle"] = mob_angle
 
-                            state["target_fsm"] = "BRAKE_WAIT"
+                            # 👇 [변경] 버프 시전 중이면 목적지만 변경
+                            if str(state.get("target_fsm", "")).startswith("BUFFING"):
+                                state["buff_return_fsm"] = "BRAKE_WAIT"
+                            else:
+                                state["target_fsm"] = "BRAKE_WAIT"
+
                             state["brake_end_time"] = curr_time + 0.15
 
                             state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
@@ -12131,15 +12144,23 @@ def ai_commander_worker(target_pc):
                     is_party_mode_active = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
                     first_arrow_timeout = 1.2 if is_party_mode_active else 2.0
 
+                    # ================= [ 변경 코드 ] =================
                     if not state.get("has_fired_arrow", False):
                         if combat_dur > first_arrow_timeout:
                             dprint(key, f"⚠️ [사격 지연] {first_arrow_timeout}초 경과! 화살 발사 확인 안됨. 헛방으로 간주하고 타겟 포기!")
                             state["cooldown"] = curr_time + 0.1
-                            state["is_attacking"] = False; state["target_fsm"] = "IDLE"; state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
+                            state["is_attacking"] = False
+                            
+                            # 👇 [변경]
+                            if str(state.get("target_fsm", "")).startswith("BUFFING"):
+                                state["buff_return_fsm"] = "IDLE"
+                            else:
+                                state["target_fsm"] = "IDLE"
+                                
+                            state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
                     else:
                         time_since_arrow = curr_time - state.get("last_arrow_change_time", curr_time)
 
-                        # 마지막 마법(힐/바디) 사용 후 경과 시간 계산
                         last_spell_time = max(state.get("last_heal_time", 0), state.get("last_body_time", 0))
                         time_since_spell = curr_time - last_spell_time
 
@@ -12147,13 +12168,29 @@ def ai_commander_worker(target_pc):
                             if time_since_arrow > 5.0:
                                 dprint(key, "⚠️ [전투 중단] 5.0초 경과 (비상 버프 대기)! 화살이 나가지 않아 타겟 포기!")
                                 state["cooldown"] = curr_time + 0.1
-                                state["is_attacking"] = False; state["target_fsm"] = "IDLE"; state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
+                                state["is_attacking"] = False
+                                
+                                # 👇 [변경]
+                                if str(state.get("target_fsm", "")).startswith("BUFFING"):
+                                    state["buff_return_fsm"] = "IDLE"
+                                else:
+                                    state["target_fsm"] = "IDLE"
+                                    
+                                state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
                         else:
                             if time_since_arrow > 2.0 and time_since_spell > 2.0:
                                 reason_str = "마법 사용 후 사격 지연" if time_since_spell <= 3.0 else "빠른 사격 중단"
                                 dprint(key, f"⚠️ [전투 중단] {reason_str}! 화살이 나가지 않아 타겟 포기!")
                                 state["cooldown"] = curr_time + 0.1
-                                state["is_attacking"] = False; state["target_fsm"] = "IDLE"; state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
+                                state["is_attacking"] = False
+                                
+                                # 👇 [변경]
+                                if str(state.get("target_fsm", "")).startswith("BUFFING"):
+                                    state["buff_return_fsm"] = "IDLE"
+                                else:
+                                    state["target_fsm"] = "IDLE"
+                                    
+                                state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
 
                     max_combat_time = float(settings.get("max_combat_time", 15.0))
 
@@ -12177,6 +12214,7 @@ def ai_commander_worker(target_pc):
                         if state.get("current_is_normal", True):
                             max_combat_time = 5.0
 
+                    # ================= [ 변경 코드 ] =================
                     if combat_dur > max_combat_time or force_timeout:
                         if force_timeout:
                             dprint(key, "🧱 [이벤트 던전 벽몹 감지] 15초간 1대도 안 맞음! 벽 몹(또는 갇힘)으로 간주하고 타겟 포기!")
@@ -12184,7 +12222,13 @@ def ai_commander_worker(target_pc):
                             dprint(key, f"🚨 [전투 타임아웃] 전투 지연({max_combat_time}초 초과). 벽치기/오류 판단. 타겟 포기!")
 
                         clear_movements_only(pico_queues[key])
-                        state["target_fsm"] = "BRAKE_WAIT"
+                        
+                        # 👇 [변경] 버프 시전 중이면 목적지만 변경
+                        if str(state.get("target_fsm", "")).startswith("BUFFING"):
+                            state["buff_return_fsm"] = "BRAKE_WAIT"
+                        else:
+                            state["target_fsm"] = "BRAKE_WAIT"
+                            
                         state["brake_end_time"] = curr_time + 0.15
                         state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
                         state["is_attacking"] = False
@@ -12924,55 +12968,17 @@ def ai_commander_worker(target_pc):
             else:
                 is_fighting = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or state.get("target_fsm") in active_fsms
 
-            if str(state.get("target_fsm", "")).startswith("BUFFING") and not state.get("is_combat_emergency_buff", False):
-                is_fighting = False
-
-            dng_name_buff = settings.get("dungeon_name", "")
-            is_oak_map = "오땅" in dng_name_buff
-            b_set = settings.get("buff_set", "선택안함")
-            need_enchant = ("1셋트" in b_set or "2셋트" in b_set or "3셋트" in b_set or "4셋트" in b_set)
-
-            is_combat_now_for_buff = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or str(state.get("target_fsm", "")) == "COMBAT"
+            if str(state.get("target_fsm", "")).startswith("BUFFING"):
+                # 버프 중이더라도 실제 타겟팅/공격 중이었다면 is_fighting을 유지하여 사냥 멍때림 방지
+                if state.get("is_attacking", False) or state.get("arrow_is_firing", False):
+                    is_fighting = True
+                else:
+                    is_fighting = False
 
             heal_mp_limit_buff = settings.get("heal_mp_percent", 30.0)
             need_heal_now = settings.get("heal_use") and hp <= settings.get("heal_percent", 70.0) and mp >= heal_mp_limit_buff
             need_pot_now = settings.get("potion_use") and hp <= settings.get("potion_percent", 60.0)
             is_hp_safe_for_buff = not need_heal_now and not need_pot_now and not is_poisoned
-
-            if is_oak_map and is_combat_now_for_buff and need_enchant and mp >= 50.0 and is_hp_safe_for_buff:
-                if curr_time > state.get("buff_enchant_time", 0) and not state.get("combat_enchant_failed", False):
-
-                    current_fsm = str(state.get("target_fsm", ""))
-                    if not current_fsm.startswith("TOWN_MAINT") and not current_fsm.startswith("DEATH") and current_fsm not in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"]:
-                        if state.get("combat_enchant_check_time", 0) == 0:
-                            dprint(key, f"⚔️ [전투 중 비상 버프] MP {mp:.1f}%! 사격/교전 상태를 유지한 채 인챈트 웨폰(F2->F7->F1) 다이렉트 시전!")
-
-                            pico_queues[key].put({"action": "HOLD_KEY", "keycode": 195, "duration": g_val(0.08, 0.15)})
-                            pico_queues[key].put({"action": "WAIT", "delay_min": 0.20, "delay_max": 0.30})
-                            pico_queues[key].put({"action": "HOLD_KEY", "keycode": 200, "duration": g_val(0.08, 0.15)})
-                            pico_queues[key].put({"action": "WAIT", "delay_min": 0.20, "delay_max": 0.30})
-                            pico_queues[key].put({"action": "HOLD_KEY", "keycode": 194, "duration": g_val(0.08, 0.15)})
-
-                            state["combat_enchant_start_mp"] = mp
-                            state["combat_enchant_check_time"] = curr_time + 1.5
-                            state["is_combat_emergency_buff"] = True
-                            state["emergency_buff_grace_time"] = curr_time + 5.0
-
-                            state["buff_enchant_time"] = curr_time + 5.0
-
-            if state.get("combat_enchant_check_time", 0) > 0 and curr_time > state["combat_enchant_check_time"]:
-                start_mp = state["combat_enchant_start_mp"]
-                if mp <= start_mp - 0.001:
-                    dprint(key, f"✅ [비상 버프 성공] MP 차감 확인! 전투 끊김 없이 웨폰 시전 완료.")
-                    state["buff_enchant_time"] = curr_time + BUFF_DUR_ENCHANT + g_val(-10, 10)
-                    save_buff_times(ai_states)
-                else:
-                    dprint(key, f"⚠️ [비상 버프 실패] MP 안깎임! 재시도 없이 포기하고, 전투 종료 전까지 락(Lock)을 겁니다.")
-                    state["buff_enchant_time"] = 0
-                    state["combat_enchant_failed"] = True
-
-                state["combat_enchant_check_time"] = 0
-                state["is_combat_emergency_buff"] = False
 
             is_strictly_combat = (state.get("target_fsm") == "COMBAT") or state.get("is_attacking", False) or state.get("arrow_is_firing", False)
 
@@ -13143,12 +13149,18 @@ def ai_commander_worker(target_pc):
             if is_confirmed_shooting:
                 if state.get("is_motion_target", False):
                     pass
+                # ================= [ 변경 코드 ] =================
                 elif (curr_time - state.get("last_combat_mob_seen", curr_time) > 3.0):
                     dprint(key, "🚨 [사냥 포기] 몹이 벽/모퉁이에 가려졌습니다! (3초 경과). 헛방 공격 중단!")
                     state["abort_macro"] = True
                     clear_movements_only(pico_queues[key])
 
-                    state["target_fsm"] = "BRAKE_WAIT"
+                    # 👇 [변경] 버프 시전 중이면 목적지만 변경
+                    if str(state.get("target_fsm", "")).startswith("BUFFING"):
+                        state["buff_return_fsm"] = "BRAKE_WAIT"
+                    else:
+                        state["target_fsm"] = "BRAKE_WAIT"
+                        
                     state["brake_end_time"] = curr_time + 0.15
                     state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
                     state["is_attacking"] = False
@@ -13158,7 +13170,6 @@ def ai_commander_worker(target_pc):
                     state["current_is_g_mob"] = False
 
                     is_fighting = False
-
                     state["attack_cmd_time"] = curr_time
                     state["last_combat_mob_seen"] = curr_time
 
@@ -13785,6 +13796,7 @@ def ai_commander_worker(target_pc):
                             state["current_buff"] = None
                             state["buff_aborted"] = False
                             state["buff_retry_cnt"] = 0
+                            state["is_combat_emergency_buff"] = False # <--- [여기 추가]
                             state["cooldown"] = curr_time + 0.1
                         else:
                             if curr_time > state.get("buff_page_timeout", 0):
@@ -13803,6 +13815,7 @@ def ai_commander_worker(target_pc):
                                     state["current_buff"] = None
                                     state["buff_aborted"] = False
                                     state["buff_retry_cnt"] = 0
+                                    state["is_combat_emergency_buff"] = False # <--- [여기 추가됨]
                                     state["cooldown"] = curr_time + 0.1
                                 else:
                                     dprint(key, f"🚨 [복귀 실패] 1.2초 경과! 힐이 안 보임. 다시 누릅니다! ({cnt}/3)")
@@ -13818,7 +13831,21 @@ def ai_commander_worker(target_pc):
 
             is_close_combat_scanning = curr_time < state.get("close_combat_timer", 0)
 
-            if state.get("is_hunt_active", False) and not mobs and not is_looting and state.get("target_fsm") in ["IDLE", "PARTY_WAIT", "SQUAD_WAIT", "PARTY_ACTIVE_STANDBY"] and curr_time >= state["cooldown"] and not state.get("is_pulling", False) and curr_time >= state.get("body_cd", 0) and is_exp_safe_for_buff and not is_poisoned and not is_close_combat_scanning:
+            # 👇👇 [전투 중 버프 진입 조건 설정] 👇👇
+            fsm_for_buff_eval = str(state.get("target_fsm", ""))
+            
+            # 1. 비전투 시 버프 조건
+            is_idle_buff_ready = not mobs and not is_looting and fsm_for_buff_eval in ["IDLE", "PARTY_WAIT", "SQUAD_WAIT", "PARTY_ACTIVE_STANDBY"]
+            
+            # 2. 전투 중 버프 조건 (GUI 체크됨 + 전투 중 + 체력 안전 + 마나 30% 이상)
+            is_combat_buff_ready = False
+            if settings.get("combat_buff", False) and not fsm_for_buff_eval.startswith("BUFFING"):
+                is_combat_now = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or fsm_for_buff_eval == "COMBAT"
+                if is_combat_now and is_hp_safe_for_buff and mp >= 30.0:
+                    is_combat_buff_ready = True
+
+            # 둘 중 하나라도 만족하면 메인 버프 로직(엠검사 포함) 발동!
+            if state.get("is_hunt_active", False) and (is_idle_buff_ready or is_combat_buff_ready) and curr_time >= state["cooldown"] and not state.get("is_pulling", False) and curr_time >= state.get("body_cd", 0) and is_exp_safe_for_buff and not is_poisoned and not is_close_combat_scanning:
 
                 expired_buffs = []
                 b_set = settings.get("buff_set", "선택안함")
@@ -13954,11 +13981,18 @@ def ai_commander_worker(target_pc):
                         state["current_buff"] = target_buff
                         state["buff_retry_cnt"] = 0
 
-                        state["buff_return_fsm"] = state.get("target_fsm", "IDLE")
+                        state["buff_return_fsm"] = state.get("target_fsm", "IDLE") # 전투 중이면 COMBAT으로 자동 저장됨
+
+                        # 👇👇 전투 중 진입한 경우에만 플래그 ON!
+                        if is_combat_buff_ready:
+                            state["is_combat_emergency_buff"] = True
+                            state["emergency_buff_grace_time"] = curr_time + 10.0
+                            dprint(key, f"⚔️ [전투 중 버프] 교전을 유지하며 {target_buff['name']} 1개 시전을 시작합니다!")
+                        else:
+                            dprint(key, f"🛡️ [스마트 버프 시작] {target_buff['name']} 1개 시전. 현장 팩트 체크 FSM 돌입!")
 
                         state["target_fsm"] = "BUFFING_START_PAGE"
                         state["cooldown"] = curr_time + 0.1
-                        dprint(key, f"🛡️ [스마트 버프 시작] {target_buff['name']} 1개 시전. 현장 팩트 체크 FSM 돌입!")
                         continue
                     else:
                         pass
@@ -20081,6 +20115,7 @@ def sync_gui_vars():
                 "party_help_call_pct": p_help_call_pct_val,
 
                 "buff_set": gui_vars[k]["buff_set"].get(),
+                "combat_buff": gui_vars[k]["combat_buff"].get(),
                 "use_dec_weight": gui_vars[k]["use_dec_weight"].get(),
                 "use_windwalk": gui_vars[k]["use_windwalk"].get(),
                 "use_body": gui_vars[k]["use_body"].get(),
@@ -20200,6 +20235,7 @@ def toggle_individual_hunt(key):
         state["is_mptam_mode"] = False
         state["is_active_standby"] = False
         state["designated_base_node"] = None
+        state["is_combat_emergency_buff"] = False # <--- [여기에 1줄 추가!]
 
         state["pick_retry_cnt"] = 0
         state.pop("found_items_history", None)
@@ -20871,8 +20907,10 @@ for i, pc in enumerate(MINI_PCS):
         "2셋트 (실드, 웨폰, 아머)",
         "3셋트 (실드, 웨폰, 아머, 계열)",
         "4셋트 (실드, 웨폰, 아머, 계열, 덱스)"
-    ], state="readonly", width=31, font=("맑은 고딕", 8))
+    ], state="readonly", width=22, font=("맑은 고딕", 8))
     cb_buff.pack(side="left", padx=2)
+
+    tk.Checkbutton(buff_main_frame, text="전투중", variable=vars_dict["combat_buff"], bg=BG_PANEL, fg="#FFB300", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=2)
 
     extra_frame = tk.Frame(tab1, bg=BG_PANEL)
     extra_frame.pack(side="top", fill="x", padx=2, pady=2)
