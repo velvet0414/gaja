@@ -11029,12 +11029,17 @@ def ai_commander_worker(target_pc):
 
                     is_busy = is_fighting_check or state.get("is_pulling", False) or state.get("loot_state", "IDLE") != "IDLE" or (state.get("target_fsm") != "IDLE" and not is_already_cleaning)
 
+                    # ==============================================================================
+                    # 💡 [버그 픽스 1] 깜빡임(픽셀 요동)으로 인한 귀환 카운트 무한 리셋 방지
+                    # ==============================================================================
                     if weight_bar_changed and not is_already_cleaning:
-
                         if curr_time >= state.get("inv_close_grace_time", 0):
                             dprint(key, "⚖️ [무게 변동] 새로운 아이템 획득(픽셀 요동) 포착! 가방 검사를 다시 예약합니다.")
                             state["inv_clean_done"] = False
-                            state["red_weight_clean_cnt"] = 0
+                            
+                            # 🚨 무게가 82% 이상(빨간색, 2)일 때는 깜빡임 오인식이므로 카운트 초기화 방지
+                            if weight_status != 2:
+                                state["red_weight_clean_cnt"] = 0
 
                     if state.get("inv_clean_done", False) and not is_already_cleaning:
 
@@ -11053,6 +11058,7 @@ def ai_commander_worker(target_pc):
                                         state["sweep_active"] = False
 
                                     pc_num_str = current_pc_num if current_pc_num else "1"
+                                    import threading
                                     threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 가방 가득참 귀환",), daemon=True).start()
 
                                     state["target_fsm"] = "TOWN_MAINT_NORMAL_RETURN"
@@ -11079,18 +11085,37 @@ def ai_commander_worker(target_pc):
                                         state["weight_heavy_count"] = count
                                         state["weight_last_alert_time"] = curr_time
                                         pc_num_str = current_pc_num if current_pc_num else "1"
-
                                         dprint(key, f"📢 [무게 경고] 가방이 여전히 무겁습니다. 사냥을 지속하며 새 템을 먹을 때만 지웁니다. ({count}/5회)")
 
-                    if not state.get("inv_clean_done", False) and not is_busy and not is_poisoned and not is_already_cleaning:
+                    # ==============================================================================
+                    # 💡 [버그 픽스 2] 82% 초과 시 is_busy(전투 중) 조건을 무시하고 즉각 인벤 정리(귀환 절차) 돌입
+                    # ==============================================================================
+                    is_weight_emergency = (weight_status == 2)
+                    
+                    if not state.get("inv_clean_done", False) and (not is_busy or is_weight_emergency) and not is_poisoned and not is_already_cleaning:
                         if state.get("perc_trash", 0) == 0:
-                            delay = g_val(1.0, 2.5)
-                            state["perc_trash"] = curr_time + delay
-                            status_str = "빨간색" if weight_status == 2 else "주황색"
-                            dprint(key, f"⚖️ [무게 인지] {status_str} 상태. {delay:.2f}초 뒤 정리를 시작합니다.")
+                            if is_weight_emergency:
+                                dprint(key, "🚨 [무게 82% 초과 비상] 전투/이동 강제 중단 및 즉각 가방 비우기 돌입!")
+                                clear_movements_only(pico_queues[key])
+                                if state.get("sweep_active", False):
+                                    pico_queues[key].put({"action": "SWEEP_STOP"})
+                                    state["sweep_active"] = False
+                                state["is_attacking"] = False
+                                state["arrow_is_firing"] = False
+                                state["has_fired_arrow"] = False
+                                state["is_pulling"] = False
+                                state["target_fsm"] = "IDLE" # FSM 꼬임 방지
+                                
+                                state["perc_trash"] = curr_time + 0.1 # 대기시간 0.1초 쾌속 발동
+                            else:
+                                delay = g_val(1.0, 2.5)
+                                state["perc_trash"] = curr_time + delay
+                                status_str = "주황색"
+                                dprint(key, f"⚖️ [무게 인지] {status_str} 상태. {delay:.2f}초 뒤 정리를 시작합니다.")
+                                
                         elif curr_time >= state["perc_trash"]:
                             if curr_time >= state.get("cooldown", 0):
-                                # 💡 [추가] 인벤 정리가 끝나고 복귀할 원래 상태(엠탐, 파티대기 등)를 메모지에 확실히 기록!
+                                # 💡 [추가] 인벤 정리가 끝나고 복귀할 원래 상태를 메모지에 확실히 기록!
                                 state["inv_clean_done_next_fsm"] = state.get("target_fsm", "IDLE")
                                 
                                 state["target_fsm"] = "INV_CLEAN_OPEN"
