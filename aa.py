@@ -10379,7 +10379,41 @@ def ai_commander_worker(target_pc):
                         continue
                     else:
                         reason = "화면에 유저 없음"
-                        dprint(key, f"⚠️ [PK 회피 무시] 순간 데미지({raw_hp_diff:.1f}%) 발생했으나 조건 미달로 무시됨 (사유: {reason})")
+                        dprint(key, f"⚠️ [PK 회피 무시] 순간 데미지({raw_hp_diff:.1f}%) 감지! 멍때림 방지를 위해 즉시 사냥(IDLE)으로 뇌를 포맷합니다.")
+                        
+                        # 하던 행동을 강제로 끊고 물리 마우스/키보드 클릭 해제
+                        state["abort_macro"] = True
+                        with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                        pico_queues[key].put({"action": "FORCE_RELEASE"})
+                        
+                        if state.get("sweep_active", False):
+                            pico_queues[key].put({"action": "SWEEP_STOP"})
+                            state["sweep_active"] = False
+
+                        # 버프 시전 중이었다면 꼬이지 않게 F1 복귀 처리
+                        if str(state.get("target_fsm", "")).startswith("BUFFING"):
+                            pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
+                            b_info_pk = state.get("current_buff")
+                            if b_info_pk and b_info_pk["name"] != "cure_fallback":
+                                state[f"buff_{b_info_pk['name']}_time"] = curr_time + 15.0
+                                save_buff_times(ai_states)
+                            state["buff_aborted"] = True
+                            state["is_combat_emergency_buff"] = False 
+
+                        state["is_mptam_mode"] = False
+                        state["is_attacking"] = False
+                        state["arrow_is_firing"] = False
+                        state["has_fired_arrow"] = False
+                        state["is_pulling"] = False
+                        
+                        # 마을 귀환, 사망 대기 등 치명적인 상태만 아니면 무조건 IDLE(사냥)로 꽂아버림
+                        if not str(state.get("target_fsm", "")).startswith("TOWN_MAINT") and state.get("target_fsm", "") not in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY"] and not str(state.get("target_fsm", "")).startswith("DEATH"):
+                            state["target_fsm"] = "IDLE"
+                            
+                        # 체력을 갱신하고 0.1초 뒤 즉시 행동 개시
+                        state["last_hp"] = hp
+                        state["cooldown"] = curr_time + 0.1
+                        continue
 
             if raw_hp_diff < 0:
                 state["last_hp"] = hp
@@ -11327,7 +11361,7 @@ def ai_commander_worker(target_pc):
                                         _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
                                         # 💡 파일명에 'bichi'가 포함되어 있으면 92% 적용, 나머지는 기존 79% 적용
-                                        target_threshold = 0.92 if "bichi" in tmpl_name else 0.84
+                                        target_threshold = 0.92 if "bichi" in tmpl_name else 0.87
 
                                         if max_val >= target_threshold:
                                             exact_tx = inv_roi_x1 + max_loc[0] + template.shape[1]//2
