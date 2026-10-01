@@ -1670,6 +1670,7 @@ def _save_settings_internal():
 
                 "chain_kill": v["chain_kill"].get(),
                 "haste_match_rate": v["haste_match_rate"].get(),
+                "zone_tele_nodes": v["zone_tele_nodes"].get(),  # 💡 [추가] GUI에서 설정한 값을 영구 저장!
 
                 "oak_thresh": v["oak_thresh"].get(),
 
@@ -11295,7 +11296,7 @@ def ai_commander_worker(target_pc):
                                         _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
                                         # 💡 파일명에 'bichi'가 포함되어 있으면 92% 적용, 나머지는 기존 79% 적용
-                                        target_threshold = 0.92 if "bichi" in tmpl_name else 0.82
+                                        target_threshold = 0.92 if "bichi" in tmpl_name else 0.87
 
                                         if max_val >= target_threshold:
                                             exact_tx = inv_roi_x1 + max_loc[0] + template.shape[1]//2
