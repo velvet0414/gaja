@@ -1656,7 +1656,7 @@ def _save_settings_internal():
                 "use_body": v["use_body"].get(), "body_pct": v["body_pct"].get(), "body_stop_pct": v["body_stop_pct"].get(),
                 "use_mptam": v["use_mptam"].get(), "mptam_start_pct": v["mptam_start_pct"].get(), "mptam_stop_pct": v["mptam_stop_pct"].get(),
                 "use_extra_f10": v["use_extra_f10"].get(), "extra_f10_dur": v["extra_f10_dur"].get(),
-                "use_blue_pot": v["use_blue_pot"].get(), "blue_mp_pct": v["blue_mp_pct"].get(), "blue_cd_min": v["blue_cd_min"].get(),
+                "use_blue_pot": v["use_blue_pot"].get(), "use_blue_pot_combat": v.get("use_blue_pot_combat", tk.BooleanVar(value=False)).get(), "blue_mp_pct": v["blue_mp_pct"].get(), "blue_cd_min": v["blue_cd_min"].get(),
                 "tele_hunt_use": v["tele_hunt_use"].get(), "tele_hunt_time": v["tele_hunt_time"].get(),
                 "hp_20_action": v["hp_20_action"].get(), "hp_danger_pct": v["hp_danger_pct"].get(),
                 "abs_return_use": v["abs_return_use"].get(),
@@ -2062,6 +2062,7 @@ for pc in MINI_PCS:
         "use_extra_f10": tk.BooleanVar(value=pc_set.get("use_extra_f10", False)),
         "extra_f10_dur": tk.StringVar(value=pc_set.get("extra_f10_dur", "10분")),
         "use_blue_pot": tk.BooleanVar(value=pc_set.get("use_blue_pot", False)),
+        "use_blue_pot_combat": tk.BooleanVar(value=pc_set.get("use_blue_pot_combat", False)),
         "blue_mp_pct": tk.StringVar(value=pc_set.get("blue_mp_pct", "15")),
         "blue_cd_min": tk.StringVar(value=pc_set.get("blue_cd_min", "20")),
         "tele_hunt_use": tk.BooleanVar(value=pc_set.get("tele_hunt_use", True)),
@@ -3990,17 +3991,23 @@ def check_attack_cursor(img_bgr, cx, cy, check_maintain=False, pc_key=None, **kw
                 if circle_err <= (0.30 + margin): is_attack_cursor = True
 
         if check_purple_name(img_bgr, cx, cy):
-            if pc_key and pc_key in ai_states:
+            is_party_mode = False
+            if pc_key:
+                settings_data = current_settings.get(pc_key, {})
+                if settings_data.get("use_party_hunt", False) or settings_data.get("use_party_fixed", False):
+                    is_party_mode = True
 
-                ai_states[pc_key]["purple_teleport_trigger"] = True
-
-            if DEBUG_MODE:
-                from datetime import datetime
-                t_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                key_str = f"[{pc_key}] " if pc_key else ""
-                print(f"[{t_str}] {key_str}🚨 [PK 절대 방어] 조준 위치(X:{int(cx)}, Y:{int(cy)}) 보라돌이 감지! 공격 취소 및 즉각 텔레포트를 발동합니다.")
-
-            return False
+            if is_party_mode:
+                if pc_key and pc_key in ai_states:
+                    ai_states[pc_key]["purple_party_ignore_trigger"] = True
+                    ai_states[pc_key]["purple_party_ignore_pos"] = (cx, cy)
+                    
+                if DEBUG_MODE:
+                    from datetime import datetime
+                    t_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                    key_str = f"[{pc_key}] " if pc_key else ""
+                    print(f"[{t_str}] {key_str}🚨 [PK 절대 방어] 조준 위치(X:{int(cx)}, Y:{int(cy)}) 보라돌이 감지! 즉각 텔레포트 발동!")
+                return False
 
         return is_attack_cursor
 
@@ -4045,9 +4052,6 @@ def check_purple_name(img_bgr, cx, cy):
     """🚀 [완벽 튜닝] PK 유저 연보라색 이름표 감지 (인게임 픽셀 데이터 기반)"""
 
     settings_data = current_settings.get(TARGET_PC_KEY, {})
-    if settings_data.get("use_party_hunt", False) or settings_data.get("use_party_fixed", False):
-        return False
-
     dng_name = settings_data.get("dungeon_name", "")
     if "오땅" in dng_name or "수던" in dng_name or "heine" in dng_name.lower() or "event" in dng_name.lower():
         return False
@@ -9519,8 +9523,11 @@ def ai_commander_worker(target_pc):
                                         buffs_to_cast.append({"key": KEY_F12, "page": 2, "double": False, "name": "decrease", "dur": BUFF_DUR_DECREASE})
                                     if settings.get("use_windwalk") and curr_time > state.get("buff_windwalk_time", 0):
                                         buffs_to_cast.append({"key": KEY_F9, "page": 2, "double": False, "name": "windwalk", "dur": BUFF_DUR_WINDWALK})
+                                        
                                     if settings.get("use_blue_pot") and mp <= settings.get("blue_mp_pct", 15.0) and curr_time > state.get("buff_blue_pot_time", 0):
-                                        buffs_to_cast.append({"key": KEY_F11, "page": 3, "double": False, "name": "blue_pot", "dur": settings.get("blue_cd_min", 20.0) * 60.0})
+                                        # 💡 [핵심 추가] 매크로 켠 지 무조건 3분(180초) 경과 + 무게 정상(weight_status == 0)일 때만 F6으로 파랭이 복용!
+                                        if (curr_time - MACRO_GLOBAL_START_TIME >= 180.0) and (check_weight_status(img_bgr) == 0):
+                                            buffs_to_cast.append({"key": KEY_F6, "page": 3, "double": False, "name": "blue_pot", "dur": settings.get("blue_cd_min", 20.0) * 60.0})
 
                                     if buffs_to_cast and mp >= 40.0:
                                         dprint(key, f"🪄 [어머니 엠탐 버프] 엠탐 중 만료된 버프 발견! 메인 버프 로직으로 토스합니다.")
@@ -9863,6 +9870,40 @@ def ai_commander_worker(target_pc):
                     continue
                 else:
                     state["perc_pvp"] = 0.0
+
+                # 👇👇 [파티모드 보라돌이 칼 거두기(즉각 캔슬) 로직] 👇👇
+                if state.pop("purple_party_ignore_trigger", False):
+                    if is_safe_in_town: continue
+                    ignore_pos = state.pop("purple_party_ignore_pos", (char_screen_cx, char_screen_cy))
+                    dprint(key, "🛑 [타겟 즉시 포기] 파티 모드 중 보라돌이 락온 감지! 칼을 즉시 거두고 5초간 시야를 차단합니다.")
+
+                    # 1. 매크로 큐 강제 폭파 (발송 대기 중인 어택/드래그 명령 싹 다 날림)
+                    state["abort_macro"] = True
+                    with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                    pico_queues[key].put({"action": "FORCE_RELEASE"})
+
+                    if str(state.get("target_fsm", "")).startswith("INV_CLEAN"):
+                        state["target_fsm"] = "IDLE"
+                    if state.get("sweep_active", False):
+                        pico_queues[key].put({"action": "SWEEP_STOP"})
+                        state["sweep_active"] = False
+
+                    # 2. 마우스를 캐릭터 발밑(안전지대)으로 던져서 칼표시 즉시 제거
+                    safe_tx = char_screen_cx + int(g_val(-20, 20))
+                    safe_ty = char_screen_cy + int(g_val(30, 50))
+                    pico_queues[key].put({"action": "HOVER", "dx": safe_tx - cur_x, "dy": safe_ty - cur_y})
+                    state["cursor_pos"] = [safe_tx, safe_ty]
+                    state["pico_arrived"] = False
+
+                    # 3. 5초간 해당 좌표(40x40) 블랙박스(맹인) 처리
+                    state.setdefault("purple_blackouts", []).append((ignore_pos[0] - 20, ignore_pos[1] - 20, ignore_pos[0] + 20, ignore_pos[1] + 20, curr_time + 5.0))
+
+                    # 4. 즉시 사냥(IDLE) 복귀 설정
+                    state["is_attacking"] = False; state["arrow_is_firing"] = False; state["has_fired_arrow"] = False; state["hover_start_time"] = 0; state["locked_by_blind"] = False
+                    state["target_fsm"] = "IDLE"
+                    state["cooldown"] = curr_time + 0.1
+                    continue
+                # 👆👆 -------------------------------------------------------- 👆👆
 
                 if state.pop("purple_teleport_trigger", False):
                     if is_safe_in_town: continue
@@ -10620,6 +10661,13 @@ def ai_commander_worker(target_pc):
                     if dead_x2 > dead_x1 and dead_y2 > dead_y1:
                         cv2.rectangle(debug_img, (dead_x1, dead_y1), (dead_x2, dead_y2), (128, 0, 128), 2)
                         cv2.putText(debug_img, "CORPSE", (dead_x1, max(0, dead_y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (128, 0, 128), 1)
+
+                # 👇👇 [추가] 보라돌이 블랙아웃 디버그 UI 👇👇
+                for px1, py1, px2, py2, exp_t in state.get("purple_blackouts", []):
+                    if curr_time < exp_t:
+                        cv2.rectangle(debug_img, (int(px1), int(py1)), (int(px2), int(py2)), (0, 0, 0), -1)
+                        cv2.rectangle(debug_img, (int(px1), int(py1)), (int(px2), int(py2)), (128, 0, 128), 2)
+                        cv2.putText(debug_img, "PK BLIND", (int(px1), max(0, int(py1) - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1)
 
                 active_combat_fsms = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_LOCKED"]
                 excluded_idx_debug = -1
@@ -12426,6 +12474,16 @@ def ai_commander_worker(target_pc):
                             if dead_x2 > dead_x1 and dead_y2 > dead_y1:
                                 cv2.rectangle(yolo_img, (dead_x1, dead_y1), (dead_x2, dead_y2), (0, 0, 0), -1)
 
+                        # 👇👇 [추가] 파티모드용 보라돌이 블랙아웃 처리 (YOLO 눈 가리기) 👇👇
+                        active_purples = [pb for pb in state.get("purple_blackouts", []) if curr_time < pb[4]]
+                        state["purple_blackouts"] = active_purples
+                        for px1, py1, px2, py2, _ in active_purples:
+                            px1, py1 = max(0, int(px1)), max(0, int(py1))
+                            px2, py2 = min(w, int(px2)), min(h, int(py2))
+                            if px2 > px1 and py2 > py1:
+                                cv2.rectangle(yolo_img, (px1, py1), (px2, py2), (0, 0, 0), -1)
+                        # 👆👆 ------------------------------------- 👆👆
+
                         results = pc_model.predict(source=yolo_img, conf=YOLO_CONF, half=True, verbose=False)
 
                         G_MOB_CLASS_ID = 5
@@ -12615,6 +12673,12 @@ def ai_commander_worker(target_pc):
                         user_blackouts = [bz for bz in state.get("user_blackouts", []) if curr_time < bz[4]]
                         for u in temp_users:
                             user_blackouts.append((u.x1, u.y1, u.x2, u.y2, curr_time + 0.3))
+                            
+                        # 👉 [추가] 보라돌이 블랙아웃 병합 (YOLO 감지부)
+                        for pb in state.get("purple_blackouts", []):
+                            if curr_time < pb[4]:
+                                user_blackouts.append(pb)
+                                
                         state["user_blackouts"] = user_blackouts
 
                         mobs = temp_mobs
@@ -13337,22 +13401,26 @@ def ai_commander_worker(target_pc):
                                 dprint(key, f"🎯 [피격 움직임 포착] 8각 센서 1등 구역({max_changed}px)! 락온 시도!")
 
                                 if check_purple_name(img_bgr, best_tx, best_ty):
-                                    if state.get("perc_purple2", 0) == 0:
-                                        state["perc_purple2"] = curr_time + g_val(0.25, 0.45)
+                                    is_party_mode = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
+                                    if is_party_mode:
+                                        state.setdefault("purple_blackouts", []).append((best_tx - 20, best_ty - 20, best_tx + 20, best_ty + 20, curr_time + 5.0))
+                                        dprint(key, "🚨 [파티모드 보라돌이] 피격 모션 타겟이 보라돌이입니다! 5초간 시야 차단 처리.")
+                                        state["target_fsm"] = "IDLE"
+                                        state["cooldown"] = curr_time + 0.1
+                                        continue
+                                    else:
+                                        if state.get("perc_purple2", 0) == 0:
+                                            state["perc_purple2"] = curr_time + g_val(0.25, 0.45)
 
                                 if state.get("perc_purple2", 0) > 0:
                                     if curr_time > state["perc_purple2"]:
                                         dprint(key, "🚨 [PK 도망] 모션 타겟이 보라돌이입니다! 즉시 텔레포트!")
                                         state["abort_macro"] = True
-
                                         with pico_queues[key].mutex: pico_queues[key].queue.clear()
-
                                         if state.get("sweep_active", False):
                                             pico_queues[key].put({"action": "SWEEP_STOP"})
                                             state["sweep_active"] = False
-
                                         pico_queues[key].put({"action": "TELEPORT"})
-
                                         state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
                                         state["teleport_start_mp"] = mp
                                         if h >= 200 and w >= 200:
@@ -13361,7 +13429,6 @@ def ai_commander_worker(target_pc):
                                             state["tele_snapshot"] = None
                                         state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
                                         state["tele_retry_cnt"] = 0
-
                                         state["perc_purple2"] = 0.0
                                     continue
 
@@ -13862,12 +13929,24 @@ def ai_commander_worker(target_pc):
             # 1. 비전투 시 버프 조건
             is_idle_buff_ready = not mobs and not is_looting and fsm_for_buff_eval in ["IDLE", "PARTY_WAIT", "SQUAD_WAIT", "PARTY_ACTIVE_STANDBY"]
             
-            # 2. 전투 중 버프 조건 (GUI 체크됨 + 전투 중 + 체력 안전 + 마나 30% 이상)
+            # 2. 전투 중 버프 조건 (전투 중 + 체력 안전)
             is_combat_buff_ready = False
-            if settings.get("combat_buff", False) and not fsm_for_buff_eval.startswith("BUFFING"):
+            if not fsm_for_buff_eval.startswith("BUFFING"):
                 is_combat_now = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or fsm_for_buff_eval == "COMBAT"
-                if is_combat_now and is_hp_safe_for_buff and mp >= 30.0:
-                    is_combat_buff_ready = True
+                if is_combat_now and is_hp_safe_for_buff:
+                    
+                    # 💡 A. 기존 메인 버프 전투 중 시전 (마나 30% 이상일 때만)
+                    if settings.get("combat_buff", False) and mp >= 30.0:
+                        is_combat_buff_ready = True
+                        
+                    # 💡 B. 파랭이 전투 중 시전 (GUI 전투중 켜져있고, 마나 부족, 3분 경과, 무게 정상일 때)
+                    elif settings.get("use_blue_pot", False) and settings.get("use_blue_pot_combat", False):
+                        try: blue_mp_limit = float(settings.get("blue_mp_pct", 15.0))
+                        except: blue_mp_limit = 15.0
+                        
+                        if mp <= blue_mp_limit:
+                            if curr_time > state.get("buff_blue_pot_time", 0) and (curr_time - MACRO_GLOBAL_START_TIME >= 180.0) and not is_heavy:
+                                is_combat_buff_ready = True
 
             # 둘 중 하나라도 만족하면 메인 버프 로직(엠검사 포함) 발동!
             if state.get("is_hunt_active", False) and (is_idle_buff_ready or is_combat_buff_ready) and curr_time >= state["cooldown"] and not state.get("is_pulling", False) and curr_time >= state.get("body_cd", 0) and is_exp_safe_for_buff and not is_poisoned and not is_close_combat_scanning:
@@ -13908,8 +13987,10 @@ def ai_commander_worker(target_pc):
 
                 if settings.get("use_blue_pot") and mp <= settings.get("blue_mp_pct", 15.0):
                     if curr_time > state.get("buff_blue_pot_time", 0):
-                        blue_cd_seconds = settings.get("blue_cd_min", 20.0) * 60.0
-                        expired_buffs.append({"name": "blue_pot", "page": 3, "key": KEY_F11, "double": False, "dur": blue_cd_seconds})
+                        # 💡 [핵심 추가] 매크로 켠 지 무조건 3분(180초) 경과 및 무게가 무겁지 않을 때만 F6으로 파랭이 복용!
+                        if (curr_time - MACRO_GLOBAL_START_TIME >= 180.0) and not is_heavy:
+                            blue_cd_seconds = settings.get("blue_cd_min", 20.0) * 60.0
+                            expired_buffs.append({"name": "blue_pot", "page": 3, "key": KEY_F6, "double": False, "dur": blue_cd_seconds})
 
                 is_guard_waiting = state.get("mptam_standby_guard", False) or (state.get("target_fsm") == "PARTY_ACTIVE_STANDBY" and state.get("mptam_extend_95", False))
 
@@ -14695,6 +14776,12 @@ def ai_commander_worker(target_pc):
                                     user_blackouts = [bz for bz in state.get("user_blackouts", []) if curr_time < bz[4]]
                                     for u in state.get("detected_users", []):
                                         user_blackouts.append((u.x1, u.y1, u.x2, u.y2, curr_time + 0.5))
+                                        
+                                    # 👉 [추가] 보라돌이 블랙아웃 병합 (루팅 다굴 방어 스캔부)
+                                    for pb in state.get("purple_blackouts", []):
+                                        if curr_time < pb[4]:
+                                            user_blackouts.append(pb)
+                                            
                                     state["user_blackouts"] = user_blackouts
                                     dprint(key, "⚔️ [다굴 방어 투트랙] 템 줍는 중 다굴 방어 스캔 개시! 0.5초간 70px 근접 타겟팅만 수행합니다.")
 
@@ -14795,9 +14882,15 @@ def ai_commander_worker(target_pc):
                                                     if changed > max_changed:
                                                         max_changed, best_tx, best_ty = changed, x1 + zx, y1 + zy
 
-                                            if best_tx is not None and best_ty is not None and not check_purple_name(img_bgr, best_tx, best_ty):
-                                                motion_tx = int(max(10, min(740, best_tx + int(round(random.gauss(0, 4))))))
-                                                motion_ty = int(max(5, min(int(h * 0.68), best_ty + int(round(random.gauss(0, 4))))))
+                                            if best_tx is not None and best_ty is not None:
+                                                if check_purple_name(img_bgr, best_tx, best_ty):
+                                                    is_party_mode = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
+                                                    if is_party_mode:
+                                                        state.setdefault("purple_blackouts", []).append((best_tx - 20, best_ty - 20, best_tx + 20, best_ty + 20, curr_time + 5.0))
+                                                        dprint(key, "🚨 [파티모드 보라돌이] 루팅 중 모션 타겟이 보라돌이입니다! 5초간 시야 차단 처리.")
+                                                else:
+                                                    motion_tx = int(max(10, min(740, best_tx + int(round(random.gauss(0, 4))))))
+                                                    motion_ty = int(max(5, min(int(h * 0.68), best_ty + int(round(random.gauss(0, 4))))))
 
                                 if is_close_combat:
                                     if motion_tx is not None:
@@ -16347,25 +16440,31 @@ def ai_commander_worker(target_pc):
                                         if changed > max_changed:
                                             max_changed, best_tx, best_ty = changed, x1 + zx, y1 + zy
 
-                                if best_tx is not None and best_ty is not None and not check_purple_name(img_bgr, best_tx, best_ty):
-                                    next_tx = int(max(10, min(740, best_tx + int(round(random.gauss(0, 4))))))
-                                    next_ty = int(max(5, min(int(h * 0.68), best_ty + int(round(random.gauss(0, 4))))))
+                                if best_tx is not None and best_ty is not None:
+                                    if check_purple_name(img_bgr, best_tx, best_ty):
+                                        is_party_mode = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
+                                        if is_party_mode:
+                                            state.setdefault("purple_blackouts", []).append((best_tx - 20, best_ty - 20, best_tx + 20, best_ty + 20, curr_time + 5.0))
+                                            dprint(key, "🚨 [파티모드 보라돌이] IDLE 모션 타겟이 보라돌이입니다! 5초간 시야 차단 처리.")
+                                    else:
+                                        next_tx = int(max(10, min(740, best_tx + int(round(random.gauss(0, 4))))))
+                                        next_ty = int(max(5, min(int(h * 0.68), best_ty + int(round(random.gauss(0, 4))))))
 
-                                    class MotionMobTarget:
-                                        def __init__(self, tx, ty):
-                                            self.x = tx
-                                            self.y = ty
-                                            self.foot_y = ty + 10
-                                            self.x1 = tx - 10
-                                            self.y1 = ty - 10
-                                            self.x2 = tx + 10
-                                            self.y2 = ty + 10
-                                            self.is_motion = True
+                                        class MotionMobTarget:
+                                            def __init__(self, tx, ty):
+                                                self.x = tx
+                                                self.y = ty
+                                                self.foot_y = ty + 10
+                                                self.x1 = tx - 10
+                                                self.y1 = ty - 10
+                                                self.x2 = tx + 10
+                                                self.y2 = ty + 10
+                                                self.is_motion = True
 
-                                    mobs = list(mobs)
-                                    mobs.append(MotionMobTarget(next_tx, next_ty))
-                                    state["is_motion_target"] = True
-                                    dprint(key, f"👁️ [다굴 방어 모션 감지] 0.3초 묻따 방어 발동! 주변 움직임({next_tx}, {next_ty}) 강제 락온!")
+                                        mobs = list(mobs)
+                                        mobs.append(MotionMobTarget(next_tx, next_ty))
+                                        state["is_motion_target"] = True
+                                        dprint(key, f"👁️ [다굴 방어 모션 감지] 0.3초 묻따 방어 발동! 주변 움직임({next_tx}, {next_ty}) 강제 락온!")
 
                 if not action_taken and mobs and allow_aiming and not is_fighting and curr_time >= state.get("cooldown", 0):
 
@@ -20149,6 +20248,7 @@ def sync_gui_vars():
                 "use_extra_f10": gui_vars[k]["use_extra_f10"].get(),
                 "extra_f10_dur": gui_vars[k]["extra_f10_dur"].get(),
                 "use_blue_pot": gui_vars[k]["use_blue_pot"].get(),
+                "use_blue_pot_combat": gui_vars[k].get("use_blue_pot_combat", tk.BooleanVar(value=False)).get(),
                 "blue_mp_pct": blue_mp_val,
                 "blue_cd_min": blue_cd_val,
                 "tele_hunt_use": gui_vars[k]["tele_hunt_use"].get(),
@@ -20968,10 +21068,12 @@ for i, pc in enumerate(MINI_PCS):
 
     blue_frame = tk.Frame(tab1, bg=BG_PANEL)
     blue_frame.pack(side="top", fill="x", padx=2, pady=(2, 6))
-    tk.Checkbutton(blue_frame, text="파랭이(F3>F11)", variable=vars_dict["use_blue_pot"], bg=BG_PANEL, fg="#4FC3F7", selectcolor="#3E3E42", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=1)
+    tk.Checkbutton(blue_frame, text="파랭이(F3>F6)", variable=vars_dict["use_blue_pot"], bg=BG_PANEL, fg="#4FC3F7", selectcolor="#3E3E42", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=1)
+    # 💡 [핵심 추가] 파랭이 옆에 '전투중' 옵션을 추가했습니다.
+    tk.Checkbutton(blue_frame, text="전투중", variable=vars_dict["use_blue_pot_combat"], bg=BG_PANEL, fg="#FF9800", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=1)
     tk.Entry(blue_frame, textvariable=vars_dict["blue_mp_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
-    tk.Label(blue_frame, text="% 이하, 쿨:", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left")
-    tk.Entry(blue_frame, textvariable=vars_dict["blue_cd_min"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
+    tk.Label(blue_frame, text="%↓쿨:", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left")
+    tk.Entry(blue_frame, textvariable=vars_dict["blue_cd_min"], width=2, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
     tk.Label(blue_frame, text="분", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left")
 
     supply_frame = tk.LabelFrame(tab2, text=" 🛒 마을 자동 정비 (구매/판매/창고) ", font=("맑은 고딕", 9, "bold"), bg=BG_PANEL, fg="#B2FF59", bd=1)
