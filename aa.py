@@ -4281,6 +4281,13 @@ def patched_check_attack_cursor(img_bgr, cx, cy, check_maintain=False, pc_key=No
 
     is_sword = original_check_attack_cursor(img_bgr, cx, cy, check_maintain=check_maintain, pc_key=pc_key, **kwargs)
 
+    # 👇👇 [핵심 픽스 3] 보라돌이가 감지되어 무시/텔포 트리거가 발동된 상태라면,
+    # 부러진 칼 스캔을 패스하고 무조건 False를 반환하여 단 1프레임의 클릭도 원천 차단!
+    if pc_key and pc_key in ai_states:
+        if ai_states[pc_key].get("purple_party_ignore_trigger", False) or ai_states[pc_key].get("purple_teleport_trigger", False):
+            return False
+    # 👆👆 -------------------------------------------------------------
+
     if is_sword:
         return True
 
@@ -9525,10 +9532,17 @@ def ai_commander_worker(target_pc):
                                     if settings.get("use_windwalk") and curr_time > state.get("buff_windwalk_time", 0):
                                         buffs_to_cast.append({"key": KEY_F9, "page": 2, "double": False, "name": "windwalk", "dur": BUFF_DUR_WINDWALK})
                                         
-                                    if settings.get("use_blue_pot") and mp <= settings.get("blue_mp_pct", 15.0) and curr_time > state.get("buff_blue_pot_time", 0):
-                                        # 💡 [핵심 추가] 매크로 켠 지 무조건 3분(180초) 경과 + 무게 정상(weight_status == 0)일 때만 F6으로 파랭이 복용!
+                                    # 💡 [파랭이 1프레임 기억 시스템] (마을 엠탐)
+                                    if settings.get("use_blue_pot") and curr_time > state.get("buff_blue_pot_time", 0):
                                         if (curr_time - MACRO_GLOBAL_START_TIME >= 180.0) and (check_weight_status(img_bgr) == 0):
-                                            buffs_to_cast.append({"key": KEY_F6, "page": 3, "double": False, "name": "blue_pot", "dur": settings.get("blue_cd_min", 20.0) * 60.0})
+                                            try: blue_pct_limit = float(settings.get("blue_mp_pct", 15.0))
+                                            except: blue_pct_limit = 15.0
+                                            
+                                            if mp <= blue_pct_limit:
+                                                state["pending_blue_pot"] = True
+                                                
+                                            if state.get("pending_blue_pot", False):
+                                                buffs_to_cast.append({"key": KEY_F6, "page": 3, "double": False, "name": "blue_pot", "dur": settings.get("blue_cd_min", 20.0) * 60.0})
 
                                     if buffs_to_cast and mp >= 40.0:
                                         dprint(key, f"🪄 [어머니 엠탐 버프] 엠탐 중 만료된 버프 발견! 메인 버프 로직으로 토스합니다.")
@@ -9536,8 +9550,19 @@ def ai_commander_worker(target_pc):
                                             if picos.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0)
                                             state["body_held"] = False
 
-                                        state["buff_start_mp"] = mp
+                                        # 💡 [파랭이 0순위 강제 새치기]
+                                        blue_idx = next((i for i, b in enumerate(buffs_to_cast) if b["name"] == "blue_pot"), -1)
+                                        if blue_idx != -1:
+                                            blue_b = buffs_to_cast.pop(blue_idx)
+                                            buffs_to_cast.insert(0, blue_b)
+                                            
                                         state["current_buff"] = buffs_to_cast[0]
+                                        
+                                        # 💡 [파랭이 깃발 수거]
+                                        if state["current_buff"]["name"] == "blue_pot":
+                                            state["pending_blue_pot"] = False
+
+                                        state["buff_start_mp"] = mp
                                         state["buff_retry_cnt"] = 0
                                         state["buff_return_fsm"] = "TOWN_MAINT_MOTHER_REST"
                                         state["target_fsm"] = "BUFFING_START_PAGE"
@@ -9878,10 +9903,8 @@ def ai_commander_worker(target_pc):
                     ignore_pos = state.pop("purple_party_ignore_pos", (char_screen_cx, char_screen_cy))
                     dprint(key, "🛑 [타겟 즉시 포기] 파티 모드 중 보라돌이 락온 감지! 칼을 즉시 거두고 5초간 시야를 차단합니다.")
 
-                    # 1. 매크로 큐 강제 폭파 (발송 대기 중인 어택/드래그 명령 싹 다 날림)
                     state["abort_macro"] = True
                     with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                    pico_queues[key].put({"action": "FORCE_RELEASE"})
 
                     if str(state.get("target_fsm", "")).startswith("INV_CLEAN"):
                         state["target_fsm"] = "IDLE"
@@ -9889,17 +9912,18 @@ def ai_commander_worker(target_pc):
                         pico_queues[key].put({"action": "SWEEP_STOP"})
                         state["sweep_active"] = False
 
-                    # 2. 마우스를 캐릭터 발밑(안전지대)으로 던져서 칼표시 즉시 제거
+                    # 💡 [핵심 픽스 1] 단클릭 오발 방지! 클릭을 떼기 전에 마우스를 발밑으로 먼저 던져 헛스윙 드래그 유도!
                     safe_tx = char_screen_cx + int(g_val(-20, 20))
                     safe_ty = char_screen_cy + int(g_val(30, 50))
                     pico_queues[key].put({"action": "HOVER", "dx": safe_tx - cur_x, "dy": safe_ty - cur_y})
+                    pico_queues[key].put({"action": "FORCE_RELEASE"})
+
                     state["cursor_pos"] = [safe_tx, safe_ty]
                     state["pico_arrived"] = False
 
-                    # 3. 5초간 해당 좌표(40x40) 블랙박스(맹인) 처리
-                    state.setdefault("purple_blackouts", []).append((ignore_pos[0] - 20, ignore_pos[1] - 20, ignore_pos[0] + 20, ignore_pos[1] + 20, curr_time + 5.0))
+                    # 💡 [핵심 픽스 2] 무한루프 방지! 캐릭터 크기에 맞춰 블랙박스를 60x60 으로 정밀 조정!
+                    state.setdefault("purple_blackouts", []).append((ignore_pos[0] - 30, ignore_pos[1] - 30, ignore_pos[0] + 30, ignore_pos[1] + 30, curr_time + 5.0))
 
-                    # 4. 즉시 사냥(IDLE) 복귀 설정
                     state["is_attacking"] = False; state["arrow_is_firing"] = False; state["has_fired_arrow"] = False; state["hover_start_time"] = 0; state["locked_by_blind"] = False
                     state["target_fsm"] = "IDLE"
                     state["cooldown"] = curr_time + 0.1
@@ -9912,6 +9936,11 @@ def ai_commander_worker(target_pc):
 
                     state["abort_macro"] = True
                     with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                    
+                    # 💡 텔레포트 도주 시에도 마우스를 떼기 전에 발밑으로 먼저 치움
+                    safe_tx = char_screen_cx + int(g_val(-20, 20))
+                    safe_ty = char_screen_cy + int(g_val(30, 50))
+                    pico_queues[key].put({"action": "HOVER", "dx": safe_tx - cur_x, "dy": safe_ty - cur_y})
                     pico_queues[key].put({"action": "FORCE_RELEASE"})
 
                     if state.get("target_fsm", "").startswith("INV_CLEAN"):
@@ -10291,28 +10320,30 @@ def ai_commander_worker(target_pc):
 
                 is_fixed_party_pk_bypass = settings.get("use_party_fixed", False)
 
+                # ================= [ 변경 코드 ] =================
                 if hp > 0.0 and raw_hp_diff >= active_pk_threshold and curr_time > state.get("hp_danger_cd", 0) and not is_fixed_party_pk_bypass and not is_safe_in_town:
 
                     if is_user_around:
                         dprint(key, f"🚨 [PK 절대 회피] 억! 순간 데미지({raw_hp_diff:.1f}%)! 유저 확인됨. 즉각 대피 발사!")
 
-                    state["abort_macro"] = True
-                    with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                    pico_queues[key].put({"action": "FORCE_RELEASE"})
+                        state["abort_macro"] = True
+                        with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                        pico_queues[key].put({"action": "FORCE_RELEASE"})
 
-                    if str(state.get("target_fsm", "")).startswith("BUFFING"):
-                        pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
+                        if str(state.get("target_fsm", "")).startswith("BUFFING"):
+                            pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
 
-                        b_info_pk = state.get("current_buff")
-                        if b_info_pk and b_info_pk["name"] != "cure_fallback":
-                            state[f"buff_{b_info_pk['name']}_time"] = curr_time + 15.0
-                            save_buff_times(ai_states)
+                            b_info_pk = state.get("current_buff")
+                            if b_info_pk and b_info_pk["name"] != "cure_fallback":
+                                state[f"buff_{b_info_pk['name']}_time"] = curr_time + 15.0
+                                save_buff_times(ai_states)
 
-                        state["buff_aborted"] = True
-                        state["is_combat_emergency_buff"] = False # <--- [여기에 1줄 추가!]
+                            state["buff_aborted"] = True
+                            state["is_combat_emergency_buff"] = False 
 
-                    if state.get("target_fsm", "").startswith("INV_CLEAN"):
-                        state["target_fsm"] = "IDLE"
+                        if state.get("target_fsm", "").startswith("INV_CLEAN"):
+                            state["target_fsm"] = "IDLE"
+                            
                         if state.get("sweep_active", False):
                             pico_queues[key].put({"action": "SWEEP_STOP"})
                             state["sweep_active"] = False
@@ -11296,7 +11327,7 @@ def ai_commander_worker(target_pc):
                                         _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
                                         # 💡 파일명에 'bichi'가 포함되어 있으면 92% 적용, 나머지는 기존 79% 적용
-                                        target_threshold = 0.92 if "bichi" in tmpl_name else 0.87
+                                        target_threshold = 0.92 if "bichi" in tmpl_name else 0.84
 
                                         if max_val >= target_threshold:
                                             exact_tx = inv_roi_x1 + max_loc[0] + template.shape[1]//2
@@ -13768,6 +13799,11 @@ def ai_commander_worker(target_pc):
                                 if b_info["name"] != "cure_fallback" and not is_test:
                                     state[f"buff_{b_info['name']}_time"] = curr_time + b_info['dur'] + g_val(-10, 10)
                                     save_buff_times(ai_states)
+                                    
+                                    # 👇 [파랭이 빚 청산] 파랭이를 마셨으면 장부에서 지웁니다!
+                                    if b_info["name"] == "blue_pot":
+                                        state["pending_blue_pot"] = False
+                                        
                                 state["target_fsm"] = "BUFFING_RETURN_F1"
                                 state["cooldown"] = curr_time + 1.4
                             else:
@@ -13930,24 +13966,26 @@ def ai_commander_worker(target_pc):
             # 1. 비전투 시 버프 조건
             is_idle_buff_ready = not mobs and not is_looting and fsm_for_buff_eval in ["IDLE", "PARTY_WAIT", "SQUAD_WAIT", "PARTY_ACTIVE_STANDBY"]
             
-            # 2. 전투 중 버프 조건 (전투 중 + 체력 안전)
+            # 💡 [파랭이 1프레임 기억 깃발 꽂기]
+            if settings.get("use_blue_pot", False):
+                try: blue_pct_limit = float(settings.get("blue_mp_pct", 15.0))
+                except: blue_pct_limit = 15.0
+                if curr_time > state.get("buff_blue_pot_time", 0) and (curr_time - MACRO_GLOBAL_START_TIME >= 180.0) and not is_heavy:
+                    if mp <= blue_pct_limit:
+                        state["pending_blue_pot"] = True
+            
+            # 2. 전투 중 버프 조건 (GUI 체크됨 + 전투 중 + 체력 안전 + 마나 30% 이상)
             is_combat_buff_ready = False
             if not fsm_for_buff_eval.startswith("BUFFING"):
                 is_combat_now = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or fsm_for_buff_eval == "COMBAT"
                 if is_combat_now and is_hp_safe_for_buff:
                     
-                    # 💡 A. 기존 메인 버프 전투 중 시전 (마나 30% 이상일 때만)
                     if settings.get("combat_buff", False) and mp >= 30.0:
                         is_combat_buff_ready = True
                         
-                    # 💡 B. 파랭이 전투 중 시전 (GUI 전투중 켜져있고, 마나 부족, 3분 경과, 무게 정상일 때)
-                    elif settings.get("use_blue_pot", False) and settings.get("use_blue_pot_combat", False):
-                        try: blue_mp_limit = float(settings.get("blue_mp_pct", 15.0))
-                        except: blue_mp_limit = 15.0
-                        
-                        if mp <= blue_mp_limit:
-                            if curr_time > state.get("buff_blue_pot_time", 0) and (curr_time - MACRO_GLOBAL_START_TIME >= 180.0) and not is_heavy:
-                                is_combat_buff_ready = True
+                    # 💡 파랭이 전투 중 시전 조건 (깃발 꽂혀있으면 발동)
+                    elif settings.get("use_blue_pot_combat", False) and state.get("pending_blue_pot", False):
+                        is_combat_buff_ready = True
 
             # 둘 중 하나라도 만족하면 메인 버프 로직(엠검사 포함) 발동!
             if state.get("is_hunt_active", False) and (is_idle_buff_ready or is_combat_buff_ready) and curr_time >= state["cooldown"] and not state.get("is_pulling", False) and curr_time >= state.get("body_cd", 0) and is_exp_safe_for_buff and not is_poisoned and not is_close_combat_scanning:
@@ -13986,12 +14024,10 @@ def ai_commander_worker(target_pc):
                     except: dur_seconds = 600.0
                     expired_buffs.append({"name": "extra_f10", "page": 2, "key": KEY_F10, "double": False, "dur": dur_seconds})
 
-                if settings.get("use_blue_pot") and mp <= settings.get("blue_mp_pct", 15.0):
-                    if curr_time > state.get("buff_blue_pot_time", 0):
-                        # 💡 [핵심 추가] 매크로 켠 지 무조건 3분(180초) 경과 및 무게가 무겁지 않을 때만 F6으로 파랭이 복용!
-                        if (curr_time - MACRO_GLOBAL_START_TIME >= 180.0) and not is_heavy:
-                            blue_cd_seconds = settings.get("blue_cd_min", 20.0) * 60.0
-                            expired_buffs.append({"name": "blue_pot", "page": 3, "key": KEY_F6, "double": False, "dur": blue_cd_seconds})
+                # 💡 [핵심] 마나가 찼더라도 깃발(pending)이 꽂혀있으면 묻지도 따지지도 않고 만료 버프 리스트에 추가!
+                if settings.get("use_blue_pot") and state.get("pending_blue_pot", False):
+                    blue_cd_seconds = settings.get("blue_cd_min", 20.0) * 60.0
+                    expired_buffs.append({"name": "blue_pot", "page": 3, "key": KEY_F6, "double": False, "dur": blue_cd_seconds})
 
                 is_guard_waiting = state.get("mptam_standby_guard", False) or (state.get("target_fsm") == "PARTY_ACTIVE_STANDBY" and state.get("mptam_extend_95", False))
 
@@ -14033,7 +14069,6 @@ def ai_commander_worker(target_pc):
 
                     if settings.get("use_windwalk"):
                         rem = max(0, state.get("buff_windwalk_time", 0) - curr_time)
-                        # 💡 윈드워크는 스킬이므로 너무 자주 쓰면 마나낭비! 남은시간 1/3(약 6분) 미만일 때만 미리 쏩니다.
                         if 0 < rem < DUR_WINDWALK * 0.33:
                             pre_cands.append({"name": "windwalk", "page": 2, "key": KEY_F9, "double": False, "dur": DUR_WINDWALK, "rem": rem})
 
@@ -14057,7 +14092,8 @@ def ai_commander_worker(target_pc):
                 if expired_buffs:
 
                     if mp < 50.0:
-                        expired_buffs = [b for b in expired_buffs if b["name"] in ["extra_f10", "blue_pot", "shield"]]
+                        # 💡 파랭이 제외
+                        expired_buffs = [b for b in expired_buffs if b["name"] in ["extra_f10", "shield", "blue_pot"]]
 
                     if expired_buffs:
 
@@ -14074,11 +14110,26 @@ def ai_commander_worker(target_pc):
                             state["body_held"] = False
                             dprint(key, "🛑 [버프 꼬임 방지] 버프 시전 전, 누르고 있던 바디(F7)를 완벽히 해제합니다!")
 
+                        # 💡 [파랭이 0순위 강제 새치기] 파랭이가 목록에 있다면 무조건 0순위(맨 앞)로 끌고 옴!
+                        blue_pot_index = next((i for i, b in enumerate(expired_buffs) if b["name"] == "blue_pot"), -1)
+                        if blue_pot_index != -1:
+                            blue_buff = expired_buffs.pop(blue_pot_index)
+                            expired_buffs.insert(0, blue_buff)
+
                         target_buff = expired_buffs[0]
+                        
+                        # 💡 [파랭이 깃발 수거] 시전할 타겟이 파랭이라면 '반드시 먹음' 상태이므로 깃발 회수
+                        if target_buff["name"] == "blue_pot":
+                            state["pending_blue_pot"] = False
 
                         if len(expired_buffs) > 1:
                             delay_seconds = 180.0
                             for idx, delayed_b in enumerate(expired_buffs[1:]):
+                                # 💡 [파랭이 3분 지연 면제] 다른 버프를 밀어낼 때, 파랭이는 절대 3분 지연 패널티를 주지 않음!
+                                if delayed_b["name"] == "blue_pot":
+                                    dprint(key, f"💊 [파랭이 특권] blue_pot은 3분 지연 페널티를 무시하고 즉각 다음 턴에 복용 대기합니다!")
+                                    continue
+                                    
                                 pushed_time = curr_time + delay_seconds * (idx + 1)
                                 state[f"buff_{delayed_b['name']}_time"] = pushed_time
                                 dprint(key, f"🕒 [버프 지연] {delayed_b['name']} 버프는 MP 관리를 위해 {int(delay_seconds*(idx+1))}초 뒤로 예약됩니다.")
@@ -15116,6 +15167,19 @@ def ai_commander_worker(target_pc):
                                 cur_x, cur_y = real_cursor[0], real_cursor[1]
                                 state["cursor_pos"] = [cur_x, cur_y]
 
+                            # 👇👇 [핵심 픽스 4] 원거리 템을 클릭하기 직전, 그 자리에 보라돌이가 서 있는지 팩트 체크!
+                            if check_purple_name(img_bgr, cur_x, cur_y):
+                                is_party_mode = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
+                                if is_party_mode:
+                                    state.setdefault("purple_blackouts", []).append((cur_x - 30, cur_y - 30, cur_x + 30, cur_y + 30, curr_time + 5.0))
+                                    dprint(key, "🚨 [원거리 줍기 방어] 템 위에 보라돌이 감지! 줍기를 포기하고 타겟을 넘깁니다.")
+                                    state["target_fsm"] = "IDLE"
+                                    state["cooldown"] = curr_time + 0.1
+                                else:
+                                    state["purple_teleport_trigger"] = True
+                                continue
+                            # 👆👆 -------------------------------------------------------------
+
                             dprint(key, f"✅ [루팅 동기화] 커서 팩트 체크 완료({cur_x}, {cur_y})! 정확한 위치에 클릭 발사!")
 
                             pico_queues[key].put({"action": "SINGLE_ATTACK"})
@@ -15505,6 +15569,19 @@ def ai_commander_worker(target_pc):
                             if real_cursor:
                                 cur_x, cur_y = real_cursor[0], real_cursor[1]
                                 state["cursor_pos"] = [cur_x, cur_y]
+
+                            # 👇👇 [핵심 픽스 5] 우회 줍기 성공 후 클릭하려는데 보라돌이가 서있다면 쏘지 않고 포기!
+                            if check_purple_name(img_bgr, cur_x, cur_y):
+                                is_party_mode = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
+                                if is_party_mode:
+                                    state.setdefault("purple_blackouts", []).append((cur_x - 30, cur_y - 30, cur_x + 30, cur_y + 30, curr_time + 5.0))
+                                    dprint(key, "🚨 [우회 줍기 방어] 템 위에 보라돌이 감지! 줍기를 포기하고 타겟을 넘깁니다.")
+                                    state["target_fsm"] = "IDLE"
+                                    state["cooldown"] = curr_time + 0.1
+                                else:
+                                    state["purple_teleport_trigger"] = True
+                                continue
+                            # 👆👆 -------------------------------------------------------------
 
                             pico_queues[key].put({"action": "SINGLE_ATTACK"})
 
