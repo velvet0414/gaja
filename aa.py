@@ -971,7 +971,7 @@ def check_line_of_sight(map_gray, start_point, end_point, margin_steps=3):
     
     # 💡 [핵심 튜닝] 본던일 경우 벽으로 인정하는 밝기 임계값을 100으로 극단적 상향!
     # 기존 50미만 -> 100미만으로 올려서 뼈다귀 주변의 꽤 밝은 회색 테두리까지 모조리 두꺼운 벽으로 판정
-    wall_threshold = 100 if is_bondon else 50
+    wall_threshold = 70 if is_bondon else 50
 
     for i in range(1, steps):
         cx = x0 + dx * i
@@ -14253,7 +14253,8 @@ def ai_commander_worker(target_pc):
                             pico_queues[key].put({"action": "SWEEP_STOP"})
                             state["sweep_active"] = False
 
-                    elif is_fixed_dealer_loot and (curr_time - state.get("last_exp_time", 0) <= 2.0):
+                    # 👇 2.0을 0.1로 수정 완료 (경험치 획득 0.1초 후 바로 아이템 스캔 가동)
+                    elif is_fixed_dealer_loot and (curr_time - state.get("last_exp_time", 0) <= 0.1):
                         raw_item_boxes = []
                         if state.get("sweep_active", False):
                             pico_queues[key].put({"action": "SWEEP_STOP"})
