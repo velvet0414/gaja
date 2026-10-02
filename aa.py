@@ -11361,7 +11361,7 @@ def ai_commander_worker(target_pc):
                                         _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
                                         # 💡 파일명에 'bichi'가 포함되어 있으면 92% 적용, 나머지는 기존 79% 적용
-                                        target_threshold = 0.92 if "bichi" in tmpl_name else 0.87
+                                        target_threshold = 0.92 if "bichi" in tmpl_name else 0.85
 
                                         if max_val >= target_threshold:
                                             exact_tx = inv_roi_x1 + max_loc[0] + template.shape[1]//2
