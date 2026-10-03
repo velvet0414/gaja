@@ -3197,16 +3197,18 @@ def pico_worker_thread(key):
 
             elif action == "TRASH_DELETE":
 
-                send_mouse_click(p_serial, p_lock, 1, 1); h_sleep(0.06, 0.09); send_mouse_click(p_serial, p_lock, 1, 0)
-
-                h_sleep(0.15, 0.25)
-
-                send_keyboard_key(p_serial, p_lock, 212, 1); h_sleep(0.06, 0.09); send_keyboard_key(p_serial, p_lock, 212, 0)
-                h_sleep(0.35, 0.60)
-                send_keyboard_key(p_serial, p_lock, 121, 1); h_sleep(0.06, 0.09); send_keyboard_key(p_serial, p_lock, 121, 0)
-                h_sleep(0.15, 0.22)
-                send_keyboard_key(p_serial, p_lock, 176, 1); h_sleep(0.06, 0.09); send_keyboard_key(p_serial, p_lock, 176, 0)
-                h_sleep(0.30, 0.40)
+                # 🚀 [초고속 모드] 클릭, Delete, Y, Enter 사이의 딜레이를 극한으로 단축!
+                send_mouse_click(p_serial, p_lock, 1, 1); h_sleep(0.04, 0.07); send_mouse_click(p_serial, p_lock, 1, 0)
+                h_sleep(0.10, 0.15) # 클릭 후 Delete 누르기 전 대기 단축
+                
+                send_keyboard_key(p_serial, p_lock, 212, 1); h_sleep(0.04, 0.07); send_keyboard_key(p_serial, p_lock, 212, 0)
+                h_sleep(0.15, 0.20) # Delete 누르고 Y 팝업 대기 (기존 0.6초 대기를 0.2초로!)
+                
+                send_keyboard_key(p_serial, p_lock, 121, 1); h_sleep(0.04, 0.07); send_keyboard_key(p_serial, p_lock, 121, 0)
+                h_sleep(0.08, 0.12) # Y 누르고 Enter 누르기 전 단축
+                
+                send_keyboard_key(p_serial, p_lock, 176, 1); h_sleep(0.04, 0.07); send_keyboard_key(p_serial, p_lock, 176, 0)
+                h_sleep(0.15, 0.20) # Enter 치고 마무리 대기 단축
 
             elif action == "SWEEP_START": send_keyboard_key(p_serial, p_lock, KEY_F4, 1)
             elif action == "SWEEP_STOP": send_keyboard_key(p_serial, p_lock, KEY_F4, 0)
@@ -11259,10 +11261,10 @@ def ai_commander_worker(target_pc):
                                     poison_type = settings.get("party_poison_type", "해독제") if is_party_psn else settings.get("poison_type", "해독제")
                                     
                                     # 혹시 열려있을지 모르는 창을 닫고 F1 탭으로 강제 전환
-                                    pico_queues[key].put({"action": "HOLD_KEY", "keycode": 177, "duration": g_val(0.08, 0.15)})
-                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.1, "delay_max": 0.15})
-                                    pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
-                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.1, "delay_max": 0.15})
+                                    pico_queues[key].put({"action": "HOLD_KEY", "keycode": 177, "duration": g_val(0.05, 0.10)})
+                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.05, "delay_max": 0.10})
+                                    pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.05, 0.10)})
+                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.05, "delay_max": 0.10})
                                     
                                     if poison_type == "해독제":
                                         pico_queues[key].put({"action": "ANTIDOTE", "is_spell": False})
@@ -11289,7 +11291,7 @@ def ai_commander_worker(target_pc):
                                 state["body_held"] = False
                                 dprint(key, "🛑 [바디 해제] 인벤 정리 전, 누르고 있던 바디(F7)를 완벽히 뗍니다!")
 
-                            tab_dur = g_val(0.08, 0.15)
+                            tab_dur = g_val(0.05, 0.10)
                             pico_queues[key].put({"action": "HOLD_KEY", "keycode": 179, "duration": tab_dur})
 
                             if INVEN_BLACK_TEMPLATE is not None:
@@ -11305,8 +11307,9 @@ def ai_commander_worker(target_pc):
                             state["last_trash_y"] = -1000
                             state["last_trash_fail_cnt"] = 0
 
-                            state["cooldown"] = curr_time + tab_dur + g_time(0.6, 1.0, key)
-                            dprint(key, "🎒 [인벤 정리] 인벤을 엽니다! 여백이 보일 때까지 마우스 휠 탐색을 준비합니다.")
+                            # 🚀 [가속] 인벤토리를 열고 멍때리는 대기 시간 대폭 단축 (기존 0.6~1.0초 -> 0.3~0.5초)
+                            state["cooldown"] = curr_time + tab_dur + g_time(0.3, 0.5, key)
+                            dprint(key, "🎒 [인벤 정리] 쾌속 모드 온! 인벤을 열고 탐색을 준비합니다.")
 
                         elif fsm == "INV_CLEAN_SCROLL_DOWN":
                             if INVEN_BLACK_TEMPLATE is None:
@@ -11317,7 +11320,6 @@ def ai_commander_worker(target_pc):
                             found_black = False
 
                             try:
-
                                 res = cv2.matchTemplate(inv_roi, INVEN_BLACK_TEMPLATE, cv2.TM_CCOEFF_NORMED)
                                 _, max_val, _, _ = cv2.minMaxLoc(res)
 
@@ -11328,7 +11330,7 @@ def ai_commander_worker(target_pc):
                             if found_black or state.get("inv_scroll_cnt", 0) >= 15:
                                 dprint(key, "🎒 [인벤 스크롤] 빈 공간(여백) 도달 완료! 밑바닥 최신 쓰레기 스캔을 시작합니다.")
                                 state["target_fsm"] = "INV_CLEAN_SCAN"
-                                state["cooldown"] = curr_time + 0.3
+                                state["cooldown"] = curr_time + 0.1 # 🚀 0.3초 대기 -> 0.1초 단축
                             else:
                                 inv_cx = w - 100
                                 inv_cy = int(h * 0.4)
@@ -11347,23 +11349,25 @@ def ai_commander_worker(target_pc):
                                     dist = math.hypot(dx, dy)
 
                                     move_dur = 0.15 + 0.05 * math.log2((dist / 20.0) + 1.0) if dist > 0 else 0.1
-                                    move_dur = apply_human_variance(move_dur * 0.55)
+                                    # 🚀 [가속] 스크롤을 위해 마우스 치우는 속도 향상
+                                    move_dur = apply_human_variance(move_dur * 0.35)
 
                                     deltas = generate_human_deltas(dx, dy, duration=move_dur, behavior="NORMAL", key=key)
                                     pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas})
                                     state["pico_arrived"] = False
                                     state["cursor_pos"] = [tx, ty]
 
-                                    state["cooldown"] = curr_time + move_dur + 0.15
-                                    dprint(key, f"🔽 [인벤 스크롤] 스크롤 먹통 방지! 커서를 인벤토리 중앙 안전 구역(X:{tx}, Y:{ty})으로 주차합니다.")
+                                    state["cooldown"] = curr_time + move_dur + 0.05
                                     continue
 
                                 cnt = state.get("inv_scroll_cnt", 0)
                                 state["inv_scroll_cnt"] = cnt + 1
 
-                                pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": -5})
+                                # 🚀 [가속] 휠을 한 번에 더 많이 굴림 (-5 -> -7)
+                                pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": -7})
 
-                                state["cooldown"] = curr_time + g_val(0.15, 0.25)
+                                # 🚀 [가속] 휠 굴린 후 대기시간 단축 (0.15~0.25 -> 0.08~0.12)
+                                state["cooldown"] = curr_time + g_val(0.08, 0.12)
                                 dprint(key, f"🔽 [인벤 스크롤] 템이 꽉 찼습니다. 휠을 아래로 굴립니다. (시도: {cnt+1}/15)")
 
                         elif fsm == "INV_CLEAN_SCAN":
@@ -11385,14 +11389,13 @@ def ai_commander_worker(target_pc):
                                     try:
                                         template = tmpl["color"]
                                         mask = tmpl["mask"]
-                                        tmpl_name = tmpl.get("name", "")  # 저장된 파일 이름 가져오기
+                                        tmpl_name = tmpl.get("name", "")
                                         
                                         if mask is not None: res = cv2.matchTemplate(inv_roi, template, cv2.TM_CCORR_NORMED, mask=mask)
                                         else: res = cv2.matchTemplate(inv_roi, template, cv2.TM_CCOEFF_NORMED)
 
                                         _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
-                                        # 💡 파일명에 'bichi'가 포함되어 있으면 92% 적용, 나머지는 기존 79% 적용
                                         target_threshold = 0.92 if "bichi" in tmpl_name else 0.85
 
                                         if max_val >= target_threshold:
@@ -11423,7 +11426,9 @@ def ai_commander_worker(target_pc):
                                             dx, dy = tx - cur_x, ty - cur_y
                                             dist = math.hypot(dx, dy)
                                             dur = 0.15 + 0.05 * math.log2((dist / 20.0) + 1.0) if dist > 0 else 0.1
-                                            dur = apply_human_variance(dur * 0.55)
+                                            
+                                            # 🚀 [가속] 쓰레기를 조준하는 마우스 속도를 대폭 증가! (0.55 -> 0.35)
+                                            dur = apply_human_variance(dur * 0.35)
 
                                             deltas = generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)
                                             pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas})
@@ -11434,10 +11439,12 @@ def ai_commander_worker(target_pc):
 
                                             state["inv_cursor_swept"] = False
                                             state["target_fsm"] = "INV_CLEAN_WAIT_DELETE"
-                                            state["cooldown"] = curr_time + dur + g_time(0.10, 0.15, key)
+                                            
+                                            # 🚀 [가속] 매크로 전송 직후 쓸데없는 대기시간 단축 (0.10~0.15 -> 0.04~0.08)
+                                            state["cooldown"] = curr_time + dur + g_time(0.04, 0.08, key)
 
                                             retry_str = f" ({state['last_trash_fail_cnt']}차 시도)" if state.get('last_trash_fail_cnt', 0) > 1 else ""
-                                            dprint(key, f"🗑️ [인벤 정리] 쓰레기 발견(일치율 {max_val*100:.1f}%)! 삭제 진행 중...{retry_str}")
+                                            dprint(key, f"🗑️ [초고속 정리] 쓰레기 발견(일치율 {max_val*100:.1f}%)! 광속 삭제 중...{retry_str}")
                                             found = True
                                             break
                                     except Exception: pass
@@ -11463,43 +11470,47 @@ def ai_commander_worker(target_pc):
                                     dist = math.hypot(dx, dy)
                                     dur = 0.15 + 0.05 * math.log2((dist / 20.0) + 1.0) if dist > 0 else 0.1
 
-                                    dur = apply_human_variance(dur * 0.85)
+                                    # 🚀 [가속] 가려진 툴팁 치우는 마우스 속도 증가
+                                    dur = apply_human_variance(dur * 0.45)
                                     deltas = generate_human_deltas(dx, dy, duration=dur, behavior="PATROL", key=key)
                                     pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas})
                                     state["pico_arrived"] = False
                                     state["cursor_pos"] = [safe_tx, safe_ty]
 
                                     state["inv_cursor_swept"] = True
-                                    state["cooldown"] = curr_time + dur + g_val(0.4, 0.7)
+                                    state["cooldown"] = curr_time + dur + g_val(0.15, 0.20)
                                     dprint(key, "🎒 [인벤 정리] 스캔 실패. 툴팁에 가려진 템 확인을 위해 커서를 중앙 방향으로 스윽 치웁니다.")
                                 else:
                                     dprint(key, "🎒 [인벤 정리] 최종 확인 완료! 쓰레기가 없습니다. 인벤을 닫습니다.")
                                     state["target_fsm"] = "INV_CLEAN_CLOSE"
-                                    state["cooldown"] = curr_time + g_val(0.15, 0.25)
+                                    state["cooldown"] = curr_time + g_val(0.10, 0.15)
 
                         elif fsm == "INV_CLEAN_WAIT_DELETE":
 
                             if pico_queues[key].empty() and not state.get("hw_busy", False):
                                 state["target_fsm"] = "INV_CLEAN_SCAN"
 
-                                state["cooldown"] = curr_time + g_val(0.5, 0.6)
-                                dprint(key, "🎒 [인벤 정리] 삭제 조작 완료! UI 슬롯 재정렬 넉넉히 대기 중...")
+                                # 🚀 [멍때림 제거] 아이템이 지워진 후 AI가 다음 템을 찾을 때까지 멍때리는 시간을 0.6초에서 0.2초 미만으로 날려버림!
+                                state["cooldown"] = curr_time + g_val(0.35, 0.45)
+                                dprint(key, "🎒 [인벤 정리] 삭제 조작 완료! 즉시 다음 쓰레기를 찾습니다!")
                             else:
-                                state["cooldown"] = curr_time + 0.2
+                                state["cooldown"] = curr_time + 0.05
 
                         elif fsm == "INV_CLEAN_CLOSE":
 
-                            tab_dur = g_val(0.08, 0.15)
+                            tab_dur = g_val(0.05, 0.10)
                             pico_queues[key].put({"action": "HOLD_KEY", "keycode": 179, "duration": tab_dur})
-                            pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
+                            pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.05, 0.10)})
 
                             next_fsm = state.pop("inv_clean_done_next_fsm", "IDLE")
                             state["target_fsm"] = next_fsm
                             state["inv_clean_done"] = True
 
-                            state["inv_close_grace_time"] = curr_time + 2.0
-                            state["cooldown"] = curr_time + tab_dur + g_time(0.6, 0.8, key)
-                            dprint(key, f"🎒 [인벤 정리 완료] 성공적으로 인벤을 닫고 이전 로직({next_fsm})으로 복귀합니다.")
+                            state["inv_close_grace_time"] = curr_time + 1.5
+                            
+                            # 🚀 [가속] 인벤 닫고 사냥 복귀 대기시간 단축
+                            state["cooldown"] = curr_time + tab_dur + g_time(0.25, 0.35, key)
+                            dprint(key, f"🎒 [인벤 정리 완료] 성공적으로 인벤을 닫고 이전 로직({next_fsm})으로 쾌속 복귀합니다.")
 
                     continue
 
