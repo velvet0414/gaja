@@ -13371,8 +13371,7 @@ def ai_commander_worker(target_pc):
                             dprint(key, "🚨 [엠탐 독테러 감지] 독에 걸렸으나 화면에 몹이 없습니다! (벽 뒤 은신 의심) 8방향 수색 모드로 돌입합니다!")
                             state["target_fsm"] = "POISON_WALL_SEARCH"
                             state["poison_search_step"] = 0
-                            
-                            import random
+                        
                             angles = [0, 45, 90, 135, 180, 225, 270, 315]
                             random.shuffle(angles)
                             state["poison_search_angles"] = angles
