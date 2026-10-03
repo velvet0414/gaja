@@ -11307,7 +11307,7 @@ def ai_commander_worker(target_pc):
                             state["last_trash_fail_cnt"] = 0
 
                             # 🚀 [가속] 인벤토리를 열고 멍때리는 대기 시간 대폭 단축 (기존 0.6~1.0초 -> 0.3~0.5초)
-                            state["cooldown"] = curr_time + tab_dur + g_time(0.3, 0.5, key)
+                            state["cooldown"] = curr_time + tab_dur + g_time(0.5, 0.8, key)
                             dprint(key, "🎒 [인벤 정리] 쾌속 모드 온! 인벤을 열고 탐색을 준비합니다.")
 
                         elif fsm == "INV_CLEAN_SCROLL_DOWN":
@@ -11362,8 +11362,7 @@ def ai_commander_worker(target_pc):
                                 cnt = state.get("inv_scroll_cnt", 0)
                                 state["inv_scroll_cnt"] = cnt + 1
 
-                                # 🚀 [가속] 휠을 한 번에 더 많이 굴림 (-5 -> -7)
-                                pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": -7})
+                                pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": -5})
 
                                 # 🚀 [가속] 휠 굴린 후 대기시간 단축 (0.15~0.25 -> 0.08~0.12)
                                 state["cooldown"] = curr_time + g_val(0.08, 0.12)
