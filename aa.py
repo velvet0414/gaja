@@ -686,9 +686,8 @@ def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_sc
             minimap_processed[0, 0] = 0
             minimap_processed[-1, -1] = 255
 
-            # 💡 매칭률 깐깐하게: 본던은 0.40(40%), 오땅은 0.15(15%)
             if is_bondon:
-                MATCH_THRESHOLD = 0.40
+                MATCH_THRESHOLD = 0.20
                 skip_ground_check = False # 본던은 벽(장애물)이 있으므로 바닥 검사 유지
             else:
                 MATCH_THRESHOLD = 0.15
