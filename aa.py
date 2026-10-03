@@ -1171,7 +1171,7 @@ def calculate_local_astar_path_for_loot(map_gray, start, goal, step=3, max_radiu
     if val < 80:
         found_safe_spot = False
 
-        for r in range(1, 4):
+        for r in range(1, 2):
             for dx in range(-r, r+1):
                 for dy in range(-r, r+1):
                     if dx == 0 and dy == 0: continue
@@ -11250,6 +11250,38 @@ def ai_commander_worker(target_pc):
 
                         if fsm == "INV_CLEAN_OPEN":
 
+                            # 👇👇 [형님 솔루션: 인벤 열기 전 GUI 딜레이 설정을 완전히 무시하고 즉시 비상 해독!] 👇👇
+                            if state.get("is_poisoned", False):
+                                if curr_time > state.get("antidote_cd", 0):
+                                    dprint(key, "🚨 [이중 방어막] 인벤 열기 직전 독 감지! GUI 딜레이 시간을 무시하고 즉시 해독부터 진행합니다.")
+                                    
+                                    is_party_psn = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
+                                    poison_type = settings.get("party_poison_type", "해독제") if is_party_psn else settings.get("poison_type", "해독제")
+                                    
+                                    # 혹시 열려있을지 모르는 창을 닫고 F1 탭으로 강제 전환
+                                    pico_queues[key].put({"action": "HOLD_KEY", "keycode": 177, "duration": g_val(0.08, 0.15)})
+                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.1, "delay_max": 0.15})
+                                    pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
+                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.1, "delay_max": 0.15})
+                                    
+                                    if poison_type == "해독제":
+                                        pico_queues[key].put({"action": "ANTIDOTE", "is_spell": False})
+                                    else:
+                                        pico_queues[key].put({"action": "ANTIDOTE", "is_spell": True})
+                                    
+                                    # 해독 모션이 끝날 때까지 1.5초 쿨타임 부여 (인벤 오픈 보류)
+                                    state["antidote_cd"] = curr_time + 1.5
+                                    
+                                    # 💡 [핵심 버그 방지] GUI 딜레이를 무시하고 즉시 해독했으므로, 일반 사냥루틴의 독 예약 타이머 장부를 완전히 찢어버립니다!
+                                    state["poison_history"].clear()
+                                    state["is_poisoned"] = False
+                                    state["poison_timer"] = 0
+                                
+                                # 💡 독이 시각적으로 완전히 풀릴 때까지 가방을 열지 않고 무한 대기
+                                state["cooldown"] = curr_time + 0.1
+                                continue
+                            # 👆👆 --------------------------------------------------------------------------------- 👆👆
+
                             # 💡 [추가] 인벤 검사/정리 돌입 전 바디(F7) 누르고 있는 상태면 하드웨어 신호 강제 해제
                             if state.get("body_held", False):
                                 if picos.get(key) and pico_locks.get(key): 
@@ -13330,6 +13362,33 @@ def ai_commander_worker(target_pc):
 
             if state.get("is_hunt_active", False) and not state.get("is_paused", False):
 
+                # 👇👇 [수정 1] 엠탐 중 독테러 감지 및 8각 수색 트리거 (쿨타임 적용) 👇👇
+                if state.get("is_mptam_mode", False) and state.get("is_poisoned", False) and not mobs:
+                    fsm_psn_chk = str(state.get("target_fsm", ""))
+                    if fsm_psn_chk not in ["POISON_WALL_SEARCH", "EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] and not fsm_psn_chk.startswith("TOWN_MAINT"):
+                        # 수색 실패 후 무한 뺑뺑이를 막기 위한 쿨타임(15초) 확인
+                        if curr_time > state.get("poison_search_cd", 0):
+                            dprint(key, "🚨 [엠탐 독테러 감지] 독에 걸렸으나 화면에 몹이 없습니다! (벽 뒤 은신 의심) 8방향 수색 모드로 돌입합니다!")
+                            state["target_fsm"] = "POISON_WALL_SEARCH"
+                            state["poison_search_step"] = 0
+                            
+                            import random
+                            angles = [0, 45, 90, 135, 180, 225, 270, 315]
+                            random.shuffle(angles)
+                            state["poison_search_angles"] = angles
+                            
+                            clear_movements_only(pico_queues[key])
+                            if state.get("sweep_active", False):
+                                pico_queues[key].put({"action": "SWEEP_STOP"})
+                                state["sweep_active"] = False
+                                
+                            if state.get("body_held", False):
+                                if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0)
+                                state["body_held"] = False
+                                
+                            state["cooldown"] = curr_time + 0.1
+                # 👆👆 ------------------------------------------------------------- 👆👆
+
                 is_unexplained_hit = (
                     hp_diff >= 0.5
                     and not is_poisoned
@@ -14004,7 +14063,7 @@ def ai_commander_worker(target_pc):
             if settings.get("use_blue_pot", False):
                 try: blue_pct_limit = float(settings.get("blue_mp_pct", 15.0))
                 except: blue_pct_limit = 15.0
-                if curr_time > state.get("buff_blue_pot_time", 0) and (curr_time - MACRO_GLOBAL_START_TIME >= 180.0) and not is_heavy:
+                if curr_time > state.get("buff_blue_pot_time", 0) and (curr_time - MACRO_GLOBAL_START_TIME >= 180.0) and not locals().get("is_heavy", False):
                     if mp <= blue_pct_limit:
                         state["pending_blue_pot"] = True
             
@@ -14384,7 +14443,7 @@ def ai_commander_worker(target_pc):
                     for ban_data in raw_ban_list:
                         if len(ban_data) >= 4:
                             bx, by, b_time, reason = ban_data[0], ban_data[1], ban_data[2], ban_data[3]
-                            if curr_time - b_time < 20.0:
+                            if curr_time - b_time < 40.0:
                                 hard_ban_list.append((bx, by, b_time, reason))
                         elif len(ban_data) == 2:
                             hard_ban_list.append((ban_data[0], ban_data[1], curr_time, "BANNED"))
@@ -15301,7 +15360,11 @@ def ai_commander_worker(target_pc):
 
                         if not state.get("is_char_moving", False):
                             if curr_time - state.get("astar_loot_stuck_timer", curr_time) > 1.0:
-                                dprint(key, "🚨 [A* 길막 돌파] 1.0초간 이동 불가! 골목에 유저/몹 포진. 밴하지 않고 즉시 뚝배기(전투) 전환!")
+                                dprint(key, "🚨 [A* 길막 돌파] 1.0초간 이동 불가! 벽 너머 아이템으로 간주하여 블랙리스트(Ban)에 등록합니다!")
+                                
+                                ban_mx = char_map_pos[0] + (best_box['x'] - char_screen_cx) * DUNGEON_SCALE_X
+                                ban_my = char_map_pos[1] + (best_box['y'] + 15 - char_screen_cy) * DUNGEON_SCALE_Y
+                                state.setdefault("hard_ban_item_map_list", []).append((ban_mx, ban_my, curr_time, "STUCK_WALL"))
 
                                 clear_movements_only(pico_queues[key])
                                 state["target_fsm"] = "MOTION_SNAP_BRAKE_WAIT"
@@ -16287,6 +16350,59 @@ def ai_commander_worker(target_pc):
                         else:
 
                             pass
+
+                # 👇👇 [수정 2] 8각 수색 로직 (텔포 금지 및 몹 처치 후 엠탐 자동 예약) 👇👇
+                elif not action_taken and state.get("target_fsm") == "POISON_WALL_SEARCH":
+                    if mobs:
+                        dprint(key, "🎯 [독 수색 성공] 시야 확보! 숨어있던 몹을 발견했습니다. 몹을 정리하고 다시 엠탐을 이어가도록 예약합니다!")
+                        state["is_mptam_mode"] = False
+                        state["pending_mptam"] = True
+                        
+                        state["target_fsm"] = "IDLE"
+                        state["cooldown"] = curr_time + 0.1
+                        action_taken = True
+                    elif curr_time >= state.get("cooldown", 0):
+                        step = state.get("poison_search_step", 0)
+                        angles = state.get("poison_search_angles", [0, 45, 90, 135, 180, 225, 270, 315])
+                        
+                        if step >= len(angles):
+                            dprint(key, "🛑 [독 수색 실패] 8방향을 모두 뒤졌으나 몹이 없습니다. 수색을 포기하고 제자리에서 엠탐을 재개합니다.")
+                            
+                            # 실패 시 텔포하지 않고 사냥/엠탐으로 복귀. 무한 반복을 막기 위해 30초간 해당 기능 차단
+                            state["poison_search_cd"] = curr_time + 30.0
+                            
+                            if settings.get("use_party_fixed", False):
+                                state["target_fsm"] = "PARTY_WAIT"
+                            else:
+                                state["target_fsm"] = "IDLE"
+                                
+                            state["cooldown"] = curr_time + 0.1
+                        else:
+                            rad = math.radians(angles[step])
+                            dist = g_val(130.0, 180.0) 
+                            
+                            tx = int(char_screen_cx + math.cos(rad) * dist)
+                            ty = int((char_screen_cy - 20) + math.sin(rad) * (dist * 0.85))
+                            
+                            tx = int(max(10, min(740, tx)))
+                            ty = int(max(5, min(int(h * 0.68), ty)))
+                            
+                            if tx < 165 and ty < 150:
+                                if (165 - tx) < (150 - ty): tx = 165
+                                else: ty = 150
+                                
+                            # 몹을 직접 공격(클릭)하는 게 아니라 바닥을 클릭하여 이동하게 유도 (is_combat: False)
+                            pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
+                            
+                            state["cursor_pos"] = [tx, ty]
+                            state["pico_arrived"] = False
+                            
+                            state["poison_search_step"] = step + 1
+                            state["cooldown"] = get_dynamic_cooldown(0.6, 0.9, key)
+                            
+                            dprint(key, f"🕵️ [독 수색 기동] {step+1}/8 번째 방향({angles[step]}도)으로 찔러봅니다. (엠탐 유지)")
+                        action_taken = True
+                # 👆👆 ------------------------------------------------------------- 👆👆
 
                 elif not action_taken and state.get("target_fsm") == "MOTION_EVADING_CALC":
                     base_angle = state.get("stuck_intended_angle")
@@ -17389,7 +17505,7 @@ def ai_commander_worker(target_pc):
 
                                             dng_stuck_esc = settings.get("dungeon_name", "")
                                             is_special_esc = "event" in dng_stuck_esc or "오땅" in dng_stuck_esc
-                                            is_party_moving_stuck = settings.get("use_party_hunt", False)
+                                            is_party_moving_stuck = settings.get("use_party_hunt", False) and "본던 5" not in dng_stuck_esc
 
                                             if is_special_esc:
                                                 dprint(key, "🚧 [특수 던전 갇힘] 15초 이상 끼임! 텔레포트 불가 지역이므로 F9 일반 귀환으로 대피합니다!")
