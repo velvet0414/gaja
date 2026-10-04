@@ -1689,6 +1689,7 @@ def _save_settings_internal():
                 "pick_teleport": v["pick_teleport"].get(),
                 "pick_ent": v["pick_ent"].get(),
                 "use_cc_buff": v["use_cc_buff"].get(),
+                "buff_mp_pct": v["buff_mp_pct"].get(),
 
                 "accum_hunt_time": st.get("accum_hunt_time", 0.0),
                 "fatigue_mult": st.get("fatigue_mult", 1.0),
@@ -2099,7 +2100,8 @@ for pc in MINI_PCS:
         "pick_teleport": tk.StringVar(value=pc_set.get("pick_teleport", "20")),
         "pick_ent": tk.StringVar(value=pc_set.get("pick_ent", "10")),
 
-        "use_cc_buff": tk.BooleanVar(value=pc_set.get("use_cc_buff", True))
+        "use_cc_buff": tk.BooleanVar(value=pc_set.get("use_cc_buff", True)),
+        "buff_mp_pct": tk.StringVar(value=pc_set.get("buff_mp_pct", "50"))
 
     }
 
@@ -14192,7 +14194,9 @@ def ai_commander_worker(target_pc):
 
                 if expired_buffs:
 
-                    if mp < 50.0:
+                    # 👇 하드코딩된 50.0 대신 GUI 설정값을 가져옵니다.
+                    buff_mp_limit = settings.get("buff_mp_pct", 50.0)
+                    if mp < buff_mp_limit:
                         # 💡 파랭이 제외
                         expired_buffs = [b for b in expired_buffs if b["name"] in ["extra_f10", "shield", "blue_pot"]]
 
@@ -20403,6 +20407,7 @@ def sync_gui_vars():
             pick_arrow_val = int(safe_float(gui_vars[k]["pick_arrow"], 5000.0))
             pick_tele_val = int(safe_float(gui_vars[k]["pick_teleport"], 20.0))
             pick_ent_val = int(safe_float(gui_vars[k]["pick_ent"], 10.0))
+            buff_mp_pct_val = safe_float(gui_vars[k]["buff_mp_pct"], 50.0)
 
             p_hp_val = safe_float(gui_vars[k]["party_heal_pct"], 77.0)
             p_heal_mp_val = safe_float(gui_vars[k]["party_heal_mp_pct"], 12.0)
@@ -20538,7 +20543,8 @@ def sync_gui_vars():
                 "pick_arrow": pick_arrow_val,
                 "pick_teleport": pick_tele_val,
                 "pick_ent": pick_ent_val,
-                "use_cc_buff": gui_vars[k]["use_cc_buff"].get()
+                "use_cc_buff": gui_vars[k]["use_cc_buff"].get(),
+                "buff_mp_pct": buff_mp_pct_val
             }
 
             if k in ai_states and k in btn_dict:
@@ -21300,6 +21306,11 @@ for i, pc in enumerate(MINI_PCS):
     extra_frame.pack(side="top", fill="x", padx=2, pady=2)
     tk.Checkbutton(extra_frame, text="디크리즈(F12)", variable=vars_dict["use_dec_weight"], bg=BG_PANEL, fg=FG_TEXT, selectcolor="#3E3E42", font=("맑은 고딕", 8)).pack(side="left", padx=2)
     tk.Checkbutton(extra_frame, text="CC연동", variable=vars_dict["use_cc_buff"], bg=BG_PANEL, fg="#B2FF59", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=2)
+    
+    # 👇 CC연동 우측에 버프MP 입력 칸을 배치합니다.
+    tk.Label(extra_frame, text="| 버프MP:", bg=BG_PANEL, fg="#FFB300", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(5, 0))
+    tk.Entry(extra_frame, textvariable=vars_dict["buff_mp_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
+    tk.Label(extra_frame, text="%↑", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=0)
 
     f10_frame = tk.Frame(tab1, bg=BG_PANEL)
     f10_frame.pack(side="top", fill="x", padx=2, pady=2)
