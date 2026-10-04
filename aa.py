@@ -19769,6 +19769,28 @@ def ai_commander_worker(target_pc):
                     state["is_mptam_mode"] = False
 
             if state.get("is_hunt_active", False) and not state.get("is_paused", False):
+                
+                # 👇👇 [추가] 잉여 체력 바디 투 마인드 (패시브 단타) 👇👇
+                if not action_taken:
+                    fsm_for_passive = str(state.get("target_fsm", ""))
+                    is_ui_open_passive = fsm_for_passive.startswith("INV_CLEAN") or fsm_for_passive.startswith("HK_HEAL_")
+                    is_safe_state = not fsm_for_passive.startswith("TOWN_MAINT") and not fsm_for_passive.startswith("DEATH") and fsm_for_passive not in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY"]
+                    
+                    if is_safe_state and not is_ui_open_passive and not is_fighting and not is_looting and not state.get("is_pulling", False) and not is_manual_mode:
+                        if hp >= 95.0 and mp < 100.0 and curr_time > state.get("passive_body_cd", 0) and curr_time >= state.get("body_cd", 0):
+                            if state.get("body_held", False):
+                                if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], 200, 0, is_manual=True)
+                                state["body_held"] = False
+                            
+                            pico_queues[key].put({"action": "BODY_TO_MIND"})
+                            state["passive_body_cd"] = curr_time + 2.0
+                            state["body_cd"] = curr_time + g_time(0.8, 1.2, key)
+                            state["last_body_time"] = curr_time
+                            state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
+                            dprint(key, f"🩸 [패시브 바디] 잉여 체력(HP {hp:.1f}%) 감지! 비전투 상태이므로 마나로 1회 변환합니다 (쿨 2초).")
+                            action_taken = True
+                # 👆👆 ------------------------------------------------------------- 👆👆
+
                 if not action_taken:
                     use_body_setting = settings.get("use_body", False)
                     body_start_mp = settings.get("body_percent", 50.0)
