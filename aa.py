@@ -441,7 +441,21 @@ DUNGEON_ASSETS = {
     "본던 5-15": {"map": "gludio5.png", "graph": "gludio5-15.json", "model": "gludio.pt"},
     # -----------------------------------
 
-    "본던 6층": {"map": "gludio6map.png", "graph": "gludio6_graph.json", "model": "gludio.pt"},
+    "본던 6-1": {"map": "gludio6.png", "graph": "gludio6-1.json", "model": "gludio.pt"},
+    "본던 6-2": {"map": "gludio6.png", "graph": "gludio6-2.json", "model": "gludio.pt"},
+    "본던 6-3": {"map": "gludio6.png", "graph": "gludio6-3.json", "model": "gludio.pt"},
+    "본던 6-4": {"map": "gludio6.png", "graph": "gludio6-4.json", "model": "gludio.pt"},
+    "본던 6-5": {"map": "gludio6.png", "graph": "gludio6-5.json", "model": "gludio.pt"},
+    "본던 6-6": {"map": "gludio6.png", "graph": "gludio6-6.json", "model": "gludio.pt"},
+    "본던 6-7": {"map": "gludio6.png", "graph": "gludio6-7.json", "model": "gludio.pt"},
+    "본던 6-8": {"map": "gludio6.png", "graph": "gludio6-8.json", "model": "gludio.pt"},
+    "본던 6-9": {"map": "gludio6.png", "graph": "gludio6-9.json", "model": "gludio.pt"},
+    "본던 6-10": {"map": "gludio6.png", "graph": "gludio6-10.json", "model": "gludio.pt"},
+    "본던 6-11": {"map": "gludio6.png", "graph": "gludio6-11.json", "model": "gludio.pt"},
+    "본던 6-12": {"map": "gludio6.png", "graph": "gludio6-12.json", "model": "gludio.pt"},
+    "본던 6-13": {"map": "gludio6.png", "graph": "gludio6-13.json", "model": "gludio.pt"},
+    "본던 6-14": {"map": "gludio6.png", "graph": "gludio6-14.json", "model": "gludio.pt"},
+    "본던 6-15": {"map": "gludio6.png", "graph": "gludio6-15.json", "model": "gludio.pt"},
 
     "event1": {"map": "event1.png", "graph": "event1.json", "model": "event1.pt"},
 
@@ -687,7 +701,7 @@ def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_sc
             minimap_processed[-1, -1] = 255
 
             if is_bondon:
-                MATCH_THRESHOLD = 0.20
+                MATCH_THRESHOLD = 0.30
                 skip_ground_check = False # 본던은 벽(장애물)이 있으므로 바닥 검사 유지
             else:
                 MATCH_THRESHOLD = 0.15
@@ -1895,7 +1909,9 @@ def load_all_templates():
                 img = cv2.imread(path, cv2.IMREAD_COLOR)
                 if img is not None:
                     h, w = img.shape[:2]
-                    if h > 15 and w > 15: img = img[4:h-4, 4:w-4]
+                    if h > 34 and w > 34: 
+                        img = img[4:h-4, 4:w-4] 
+                        
                     # 💡 파일 이름(name)을 딕셔너리에 추가로 저장합니다.
                     TRASH_TEMPLATES.append({"name": filename.lower(), "color": img, "mask": None})
         print(f"🗑️ [휴지통] 쓰레기 알맹이 추출 완료! (총 {len(TRASH_TEMPLATES)}개 장전)")
@@ -10560,8 +10576,17 @@ def ai_commander_worker(target_pc):
                 cv2.rectangle(debug_img, (WEIGHT_ROI_X1, WEIGHT_ROI_Y1), (WEIGHT_ROI_X2, WEIGHT_ROI_Y2), (0, 165, 255), 2)
                 cv2.putText(debug_img, "WT", (WEIGHT_ROI_X1, max(0, WEIGHT_ROI_Y1 - 2)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
 
-                cv2.rectangle(debug_img, (max(0, w-100), 0), (w, min(h, 450)), (255, 100, 100), 1)
-                cv2.putText(debug_img, "INVEN_SCAN", (max(0, w-195), 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 100, 100), 1)
+                # 👇👇 [수정] 엉뚱한 가짜 박스를 지우고, 진짜 AI가 스캔하는 영역 2가지를 띄웁니다! 👇👇
+                inv_x1 = int(w * 0.5)
+                
+                # 1. 쓰레기템 스캔 영역 (우측 절반 전체) - 노란색 박스
+                cv2.rectangle(debug_img, (inv_x1, 0), (w, h), (0, 255, 255), 1)
+                cv2.putText(debug_img, "TRASH_SCAN", (inv_x1 + 5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                
+                # 2. 빈 공간(바닥) 감지 영역 (우측 절반, Y 200부터 끝까지) - 하늘색 박스
+                cv2.rectangle(debug_img, (inv_x1, 200), (w, h), (255, 200, 0), 1)
+                cv2.putText(debug_img, "EMPTY_SCAN", (inv_x1 + 5, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 0), 1)
+                # 👆👆 ------------------------------------------------------------------------- 👆👆
 
                 cv2.rectangle(debug_img, (max(0, w-180), 0), (w, min(h, 180)), (255, 0, 255), 1)
                 cv2.putText(debug_img, "DEATH_SCAN", (max(0, w-175), 55), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1)
