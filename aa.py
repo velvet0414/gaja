@@ -9569,11 +9569,17 @@ def ai_commander_worker(target_pc):
                                             if picos.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0)
                                             state["body_held"] = False
 
-                                        # 💡 [파랭이 0순위 강제 새치기]
+                                        # 💡 [파랭이 강제 새치기]
                                         blue_idx = next((i for i, b in enumerate(buffs_to_cast) if b["name"] == "blue_pot"), -1)
                                         if blue_idx != -1:
                                             blue_b = buffs_to_cast.pop(blue_idx)
                                             buffs_to_cast.insert(0, blue_b)
+
+                                        # 💡 [디크리즈 절대 0순위 강제 새치기]
+                                        dec_idx = next((i for i, b in enumerate(buffs_to_cast) if b["name"] == "decrease"), -1)
+                                        if dec_idx != -1:
+                                            dec_b = buffs_to_cast.pop(dec_idx)
+                                            buffs_to_cast.insert(0, dec_b)
                                             
                                         state["current_buff"] = buffs_to_cast[0]
                                         
@@ -10576,16 +10582,16 @@ def ai_commander_worker(target_pc):
                 cv2.rectangle(debug_img, (WEIGHT_ROI_X1, WEIGHT_ROI_Y1), (WEIGHT_ROI_X2, WEIGHT_ROI_Y2), (0, 165, 255), 2)
                 cv2.putText(debug_img, "WT", (WEIGHT_ROI_X1, max(0, WEIGHT_ROI_Y1 - 2)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
 
-                # 👇👇 [수정] 엉뚱한 가짜 박스를 지우고, 진짜 AI가 스캔하는 영역 2가지를 띄웁니다! 👇👇
-                inv_x1 = int(w * 0.5)
+                # 👇 [형님 지시사항 적용] 디버그 화면 시각화 좌표 동기화
+                trash_x1, trash_y1 = 607, 45
+                trash_x2, trash_y2 = 765, 355
+                cv2.rectangle(debug_img, (trash_x1, trash_y1), (trash_x2, trash_y2), (0, 255, 255), 1)
+                cv2.putText(debug_img, "TRASH_SCAN", (trash_x1 + 5, trash_y1 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
                 
-                # 1. 쓰레기템 스캔 영역 (우측 절반 전체) - 노란색 박스
-                cv2.rectangle(debug_img, (inv_x1, 0), (w, h), (0, 255, 255), 1)
-                cv2.putText(debug_img, "TRASH_SCAN", (inv_x1 + 5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-                
-                # 2. 빈 공간(바닥) 감지 영역 (우측 절반, Y 200부터 끝까지) - 하늘색 박스
-                cv2.rectangle(debug_img, (inv_x1, 200), (w, h), (255, 200, 0), 1)
-                cv2.putText(debug_img, "EMPTY_SCAN", (inv_x1 + 5, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 0), 1)
+                empty_x1, empty_y1 = 607, 120
+                empty_x2, empty_y2 = 765, 355
+                cv2.rectangle(debug_img, (empty_x1, empty_y1), (empty_x2, empty_y2), (255, 200, 0), 1)
+                cv2.putText(debug_img, "EMPTY_SCAN", (empty_x1 + 5, empty_y1 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 0), 1)
                 # 👆👆 ------------------------------------------------------------------------- 👆👆
 
                 cv2.rectangle(debug_img, (max(0, w-180), 0), (w, min(h, 180)), (255, 0, 255), 1)
@@ -11342,7 +11348,10 @@ def ai_commander_worker(target_pc):
                                 state["target_fsm"] = "INV_CLEAN_SCAN"
                                 continue
 
-                            inv_roi = img_bgr[200:h, int(w*0.5):w]
+                            # 👇 [형님 지시사항 적용] 빈 공간 스캔 영역 (양옆 5px 늘림, 하단 100px 위로 쳐냄)
+                            empty_x1, empty_y1 = 607, 120
+                            empty_x2, empty_y2 = 765, 355
+                            inv_roi = img_bgr[empty_y1:empty_y2, empty_x1:empty_x2]
                             found_black = False
 
                             try:
@@ -11401,12 +11410,16 @@ def ai_commander_worker(target_pc):
                                 cur_x, cur_y = real_cursor[0], real_cursor[1]
                                 state["cursor_pos"] = [cur_x, cur_y]
 
-                            inv_roi_x1 = int(w*0.5)
-                            inv_roi = img_bgr[0:h, inv_roi_x1:w].copy()
+                            # 👇 [형님 지시사항 적용] 쓰레기템 스캔 영역 (양옆 5px 늘림, 하단 100px 위로 쳐냄)
+                            trash_x1, trash_y1 = 607, 45
+                            trash_x2, trash_y2 = 765, 355
+                            inv_roi_x1 = trash_x1
+                            inv_roi = img_bgr[trash_y1:trash_y2, trash_x1:trash_x2].copy()
 
                             for bx, by in state.get("trash_blacklist", []):
-                                local_x = bx - inv_roi_x1
-                                cv2.rectangle(inv_roi, (max(0, local_x - 18), max(0, by - 18)), (min(inv_roi.shape[1], local_x + 18), min(inv_roi.shape[0], by + 18)), (0, 0, 0), -1)
+                                local_x = bx - trash_x1
+                                local_y = by - trash_y1
+                                cv2.rectangle(inv_roi, (max(0, local_x - 18), max(0, local_y - 18)), (min(inv_roi.shape[1], local_x + 18), min(inv_roi.shape[0], local_y + 18)), (0, 0, 0), -1)
 
                             found = False
                             if TRASH_TEMPLATES:
@@ -11424,8 +11437,8 @@ def ai_commander_worker(target_pc):
                                         target_threshold = 0.92 if "bichi" in tmpl_name else 0.85
 
                                         if max_val >= target_threshold:
-                                            exact_tx = inv_roi_x1 + max_loc[0] + template.shape[1]//2
-                                            exact_ty = max_loc[1] + template.shape[0]//2
+                                            exact_tx = trash_x1 + max_loc[0] + template.shape[1]//2
+                                            exact_ty = trash_y1 + max_loc[1] + template.shape[0]//2
 
                                             last_tx, last_ty = state.get("last_trash_x", -1000), state.get("last_trash_y", -1000)
                                             if abs(exact_tx - last_tx) < 15 and abs(exact_ty - last_ty) < 15:
@@ -14095,7 +14108,7 @@ def ai_commander_worker(target_pc):
             is_idle_buff_ready = not mobs and not is_looting and fsm_for_buff_eval in ["IDLE", "PARTY_WAIT", "SQUAD_WAIT", "PARTY_ACTIVE_STANDBY"]
             
             # 💡 [파랭이 1프레임 기억 깃발 꽂기]
-            if settings.get("use_blue_pot", False):
+            if settings.get("use_blue_pot", False) and state.get("is_hunt_active", False):
                 try: blue_pct_limit = float(settings.get("blue_mp_pct", 15.0))
                 except: blue_pct_limit = 15.0
                 if curr_time > state.get("buff_blue_pot_time", 0) and (curr_time - MACRO_GLOBAL_START_TIME >= 180.0) and not locals().get("is_heavy", False):
@@ -14222,8 +14235,8 @@ def ai_commander_worker(target_pc):
                     # 👇 하드코딩된 50.0 대신 GUI 설정값을 가져옵니다.
                     buff_mp_limit = settings.get("buff_mp_pct", 50.0)
                     if mp < buff_mp_limit:
-                        # 💡 파랭이 제외
-                        expired_buffs = [b for b in expired_buffs if b["name"] in ["extra_f10", "shield", "blue_pot"]]
+                        # 💡 파랭이, 디크리즈 제외 (MP가 부족해도 무거우면 써야함)
+                        expired_buffs = [b for b in expired_buffs if b["name"] in ["extra_f10", "shield", "blue_pot", "decrease"]]
 
                     if expired_buffs:
 
@@ -14240,11 +14253,17 @@ def ai_commander_worker(target_pc):
                             state["body_held"] = False
                             dprint(key, "🛑 [버프 꼬임 방지] 버프 시전 전, 누르고 있던 바디(F7)를 완벽히 해제합니다!")
 
-                        # 💡 [파랭이 0순위 강제 새치기] 파랭이가 목록에 있다면 무조건 0순위(맨 앞)로 끌고 옴!
+                        # 💡 [파랭이 강제 새치기] 
                         blue_pot_index = next((i for i, b in enumerate(expired_buffs) if b["name"] == "blue_pot"), -1)
                         if blue_pot_index != -1:
                             blue_buff = expired_buffs.pop(blue_pot_index)
                             expired_buffs.insert(0, blue_buff)
+
+                        # 💡 [디크리즈 절대 0순위 강제 새치기] 디크리즈가 있다면 파랭이보다도 맨 앞으로!
+                        dec_index = next((i for i, b in enumerate(expired_buffs) if b["name"] == "decrease"), -1)
+                        if dec_index != -1:
+                            dec_buff = expired_buffs.pop(dec_index)
+                            expired_buffs.insert(0, dec_buff)
 
                         target_buff = expired_buffs[0]
                         
@@ -14255,9 +14274,9 @@ def ai_commander_worker(target_pc):
                         if len(expired_buffs) > 1:
                             delay_seconds = 180.0
                             for idx, delayed_b in enumerate(expired_buffs[1:]):
-                                # 💡 [파랭이 3분 지연 면제] 다른 버프를 밀어낼 때, 파랭이는 절대 3분 지연 패널티를 주지 않음!
-                                if delayed_b["name"] == "blue_pot":
-                                    dprint(key, f"💊 [파랭이 특권] blue_pot은 3분 지연 페널티를 무시하고 즉각 다음 턴에 복용 대기합니다!")
+                                # 💡 [파랭이, 디크리즈 3분 지연 면제] 다른 버프를 밀어낼 때, 절대 3분 지연 패널티를 주지 않음!
+                                if delayed_b["name"] in ["blue_pot", "decrease"]:
+                                    dprint(key, f"💊 [{delayed_b['name']} 특권] 3분 지연 페널티를 무시하고 즉각 다음 턴에 시전 대기합니다!")
                                     continue
                                     
                                 pushed_time = curr_time + delay_seconds * (idx + 1)
