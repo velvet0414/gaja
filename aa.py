@@ -4591,103 +4591,142 @@ def ai_commander_worker(target_pc):
                     
                     map_pos, minimap_processed = get_robust_map_pos(minimap_bgr, pc_map_edges, last_pos=state.get("dungeon_map_pos"), allow_full_scan=allow_full, map_gray=pc_map_gray, is_open_map=is_oak_active)
 
+                    is_bondon = "본던" in active_dungeon or "gludio" in active_dungeon.lower()
+
+                    # 👇👇 [핵심 버그 수정] 본던 5층/6층 억지 매칭 방지 및 이진화 맵 정밀 스캔
+                    if map_pos is not None and allow_full and is_bondon and not settings.get("use_party_hunt", False):
+                        # 이미 이진화된 pc_map_gray 와 minimap_processed 로 점수 정밀 재검증
+                        thresh_val = int(settings.get("oak_thresh", 127))
+                        _, f_target = cv2.threshold(pc_map_gray, thresh_val, 255, cv2.THRESH_BINARY)
+                        try:
+                            res_verify = cv2.matchTemplate(f_target, minimap_processed, cv2.TM_CCOEFF_NORMED)
+                            _, max_v, _, _ = cv2.minMaxLoc(res_verify)
+                            # 💡 40% 미만이면 5층인데 6층맵에 억지로 끼워맞춘 것으로 간주하여 폐기!
+                            if max_v < 0.40: 
+                                map_pos = None
+                        except: pass
+
                     if (map_pos is None and allow_full and not settings.get("use_party_hunt", False)) or need_floor_scan:
                         is_ant = "개미굴" in active_dungeon
                         is_giran = "기란" in active_dungeon or "기던" in active_dungeon
-                        is_bondon = "본던" in active_dungeon or "gludio" in active_dungeon.lower()
 
+                        # 💡 [수정] 본던(is_bondon)도 오입장/불일치 감지 엔진에 편입!
                         if is_ant or is_giran or is_bondon:
-                            if need_floor_scan or curr_time - state.get("last_floor_detect_time", 0) > 10.0:
+                            if curr_time - state.get("last_floor_detect_time", 0) > 10.0:
                                 state["last_floor_detect_time"] = curr_time
                                 
-                                if is_ant: candidates = [k for k in DUNGEON_ASSETS.keys() if "개미굴" in k]
-                                elif is_giran: candidates = [k for k in DUNGEON_ASSETS.keys() if "기란" in k or "기던" in k]
-                                else: 
-                                    if need_floor_scan:
-                                        # 💡 사냥 시작 시 4, 5, 6, 7층의 모든 지도를 꺼내서 점수 대결!
-                                        candidates = ["본던 4-1", "본던 5-1", "본던 6-1", "본던 7-1"]
-                                    else:
-                                        candidates = [k for k in DUNGEON_ASSETS.keys() if "본던" in k or "gludio" in k.lower()]
+                                if is_ant:
+                                    candidates = [k for k in DUNGEON_ASSETS.keys() if "개미굴" in k]
+                                elif is_giran:
+                                    candidates = [k for k in DUNGEON_ASSETS.keys() if "기란" in k or "기던" in k]
+                                else:
+                                    # 💡 본던 스캔 시 5to6이 최우선으로 검사되도록 리스트 맨 앞으로 뺌
+                                    candidates = ["본던 5to6"] + [k for k in DUNGEON_ASSETS.keys() if ("본던" in k or "gludio" in k.lower()) and k != "본던 5to6"]
 
                                 try:
-                                    best_f_name = active_dungeon if not need_floor_scan else None
-                                    best_f_score = 0.0 # 💡 시작할 땐 백지상태에서 최고점 맵을 찾아야 하므로 0.0부터 공정하게 채점
+                                    best_f_name = None
+                                    best_f_score = 0.35
                                     best_f_pos = None
-                                    
+
+                                    current_map_file = DUNGEON_ASSETS.get(active_dungeon, {}).get("map", "")
+
                                     for f_name in candidates:
-                                        if not need_floor_scan and f_name == active_dungeon: continue
-                                        if "5to6" in f_name: continue # 임시 맵은 채점 후보에서 제외
-                                        
+                                        if f_name == active_dungeon: continue
+
+                                        # 💡 동일한 지도 이미지를 쓰는 구역은 검사 패스 (연산 낭비 방어)
+                                        cand_map_file = DUNGEON_ASSETS.get(f_name, {}).get("map", "")
+                                        if current_map_file and current_map_file == cand_map_file:
+                                            if "5to6" not in f_name:
+                                                continue
+
                                         f_assets = get_pc_assets(f_name)
-                                        f_edges = f_assets.get("edges")
-                                        f_gray = f_assets.get("gray")
-
-                                        # 💡 [핵심 버그 수정] 본던일 경우 엣지(선)가 아닌 밝기(이진화) 맵끼리 완벽히 공정하게 채점!
-                                        if is_bondon and f_gray is not None and minimap_processed is not None:
-                                            thresh_val = int(settings.get("oak_thresh", 127))
-                                            _, full_proc = cv2.threshold(f_gray, thresh_val, 255, cv2.THRESH_BINARY)
-                                            
-                                            if full_proc.shape[0] >= minimap_processed.shape[0] and full_proc.shape[1] >= minimap_processed.shape[1]:
-                                                res = cv2.matchTemplate(full_proc, minimap_processed, cv2.TM_CCOEFF_NORMED)
-                                                _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                                                if max_val > best_f_score:
-                                                    best_f_score = max_val
-                                                    best_f_name = f_name
-                                                    h_m, w_m = minimap_processed.shape
-                                                    true_cx = (w_m // 2) + 1
-                                                    true_cy = (h_m // 2) + 1
-                                                    best_f_pos = (max_loc[0] + true_cx, max_loc[1] + true_cy)
-                                                    
-                                        elif f_edges is not None and minimap_processed is not None:
-                                            if f_edges.shape[0] >= minimap_processed.shape[0] and f_edges.shape[1] >= minimap_processed.shape[1]:
-                                                res = cv2.matchTemplate(f_edges, minimap_processed, cv2.TM_CCOEFF_NORMED)
-                                                _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                                                if max_val > best_f_score:
-                                                    best_f_score = max_val
-                                                    best_f_name = f_name
-                                                    h_m, w_m = minimap_processed.shape
-                                                    true_cx = (w_m // 2) + (1 if is_bondon else 2)
-                                                    true_cy = (h_m // 2) + (1 if is_bondon else 2)
-                                                    best_f_pos = (max_loc[0] + true_cx, max_loc[1] + true_cy)
-
-                                    if best_f_name and (need_floor_scan or best_f_name != active_dungeon):
-                                        # 💡 최고 점수 맵 확정! 유저 목표(6층)와 실제 주차 위치(5층 등) 비교
-                                        is_goal_6f = "6-" in settings.get("dungeon_name", "") or "6층" in settings.get("dungeon_name", "")
-                                        is_current_5f = "5-" in best_f_name or "5층" in best_f_name
                                         
+                                        # 💡 [핵심 픽스] 본던은 Canny Edge가 아닌 이진화(흑백) 이미지로 스캔해야 제대로 점수가 나옴!
+                                        if is_bondon:
+                                            f_gray = f_assets.get("gray")
+                                            if f_gray is not None and minimap_processed is not None:
+                                                thresh_val = int(settings.get("oak_thresh", 127))
+                                                _, f_target = cv2.threshold(f_gray, thresh_val, 255, cv2.THRESH_BINARY)
+                                                
+                                                if f_target.shape[0] >= minimap_processed.shape[0] and f_target.shape[1] >= minimap_processed.shape[1]:
+                                                    res = cv2.matchTemplate(f_target, minimap_processed, cv2.TM_CCOEFF_NORMED)
+                                                    _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                                                else: continue
+                                            else: continue
+                                        else:
+                                            f_edges = f_assets.get("edges")
+                                            if f_edges is not None and minimap_processed is not None:
+                                                if f_edges.shape[0] >= minimap_processed.shape[0] and f_edges.shape[1] >= minimap_processed.shape[1]:
+                                                    res = cv2.matchTemplate(f_edges, minimap_processed, cv2.TM_CCOEFF_NORMED)
+                                                    _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                                                else: continue
+                                            else: continue
+
+                                        # 중복 맵 파일명 스킵 처리 (단 5to6 은 예외)
+                                        if best_f_name and cand_map_file == DUNGEON_ASSETS.get(best_f_name, {}).get("map", ""):
+                                            if "5to6" not in f_name:
+                                                continue
+
+                                        if max_val > best_f_score:
+                                            best_f_score = max_val
+                                            best_f_name = f_name
+                                            h_m, w_m = minimap_processed.shape
+                                            true_cx = (w_m // 2) + (1 if is_bondon else 2)
+                                            true_cy = (h_m // 2) + (1 if is_bondon else 2)
+                                            best_f_pos = (max_loc[0] + true_cx, max_loc[1] + true_cy)
+                                            
+                                            # 5to6이 1등이면 더 검사할 필요 없이 조기 확정!
+                                            if "5to6" in best_f_name and ("6-" in settings.get("dungeon_name", "") or "6층" in settings.get("dungeon_name", "")):
+                                                break
+
+                                    if best_f_name and best_f_pos:
+                                        gui_target_dng = settings.get("dungeon_name", "")
+                                        detected_map_file = DUNGEON_ASSETS.get(best_f_name, {}).get("map", "")
+                                        gui_target_map_file = DUNGEON_ASSETS.get(gui_target_dng, {}).get("map", "")
+                                        
+                                        is_goal_6f = "6-" in gui_target_dng or "6층" in gui_target_dng
+                                        is_current_5f = "5-" in best_f_name or "5층" in best_f_name or "5to6" in best_f_name
+                                        
+                                        # 💡 1. 6층 목표인데 5층 미니맵이 팩트 확인된 경우 -> 무조건 5to6 발동!
                                         if is_bondon and is_goal_6f and is_current_5f:
                                             best_f_name = "본던 5to6"
-                                            dprint(key, f"🚨 [6층 돌입 스마트 인지] 최고점 매칭 완료! 목표는 6층이나 현재 5층으로 판명되었습니다! (일치율 {best_f_score*100:.1f}%) 즉각 5to6 맵으로 덮어씌우고 진격(F11)합니다!")
+                                            dprint(key, f"🚨 [6층 돌입 스마트 인지] 목표는 6층이나 현재 위치가 5층으로 확인되었습니다! 즉각 6층 진입 작전을 가동합니다!")
                                             
+                                        # 💡 2. 내가 방금 감지한 맵(예: 6층 맵)이 GUI 설정(예: 6-3)과 완벽히 같은 층인 경우 (멍청한 6-1 덮어쓰기 방어!)
+                                        elif detected_map_file and detected_map_file == gui_target_map_file and "5to6" not in best_f_name:
+                                            best_f_name = gui_target_dng
+                                            if not state.get("override_dungeon_name"):
+                                                pass
+                                            else:
+                                                dprint(key, f"🎉 [목표 층수 도착] 실제 위치가 목표한 층({gui_target_dng})과 일치합니다! 임시 지도를 파기하고 정상 사냥을 개시합니다.")
+                                                state.pop("override_dungeon_name", None)
+                                        
+                                        # 💡 3. 그 외 엉뚱한 층일 경우
+                                        else:
+                                            dprint(key, f"🚨 [층수 오입장 감지] 목표는 '{active_dungeon}'이나, 실제 위치는 '{best_f_name}'입니다! (일치율 {best_f_score*100:.1f}%) 임시 지도를 꺼내 사냥을 속행합니다.")
+    
+                                        if best_f_name != gui_target_dng:
+                                            state["override_dungeon_name"] = best_f_name
+                                            
+                                        active_dungeon = best_f_name
+                                        pc_assets = get_pc_assets(active_dungeon)
+                                        pc_model, pc_map_gray, pc_map_edges, pc_graph = pc_assets["model"], pc_assets["gray"], pc_assets["edges"], pc_assets["graph"]
+                                        pc_map_gray_los = pc_assets.get("gray_los") if pc_assets.get("gray_los") is not None else pc_map_gray
+
+                                        map_pos = best_f_pos
+                                        state["dungeon_global_path"] = []
+                                        state["current_target_node"], state["hidden_track_node"] = None, None
+                                        state["astar_fail_count"] = 0
+                                        
+                                        # 5층에서 6층 작전 켤 때 몹사 방지용 위치 섞기 텔레포트 1회
+                                        if best_f_name == "본던 5to6" and is_bondon and is_goal_6f and is_current_5f:
                                             with pico_queues[key].mutex: pico_queues[key].queue.clear()
                                             if state.get("sweep_active", False):
                                                 pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
                                             pico_queues[key].put({"action": "TELEPORT"})
                                             state["target_fsm"] = "IDLE"
                                             state["cooldown"] = curr_time + 1.5
-                                        else:
-                                            if need_floor_scan:
-                                                dprint(key, f"🚨 [초기 위치 팩트체크] 최고점 맵 '{best_f_name}' (일치율 {best_f_score*100:.1f}%) 기반으로 현재 좌표를 강제 업데이트합니다!")
-                                            else:
-                                                dprint(key, f"🚨 [층수 오입장 감지] 설정은 '{active_dungeon}'이나 실제 위치(최고점)는 '{best_f_name}'입니다! (일치율 {best_f_score*100:.1f}%) 지도를 갱신합니다.")
-
-                                        state["override_dungeon_name"] = best_f_name
-                                        active_dungeon = best_f_name
-
-                                        pc_assets = get_pc_assets(active_dungeon)
-                                        pc_model, pc_map_gray, pc_map_edges, pc_graph = pc_assets["model"], pc_assets["gray"], pc_assets["edges"], pc_assets["graph"]
-                                        pc_map_gray_los = pc_assets.get("gray_los") if pc_assets.get("gray_los") is not None else pc_map_gray
-
-                                        map_pos = best_f_pos
-                                        state["dungeon_map_pos"] = map_pos # 💡 시작 시 강제로 내 좌표를 업데이트 적용!
-                                        state["dungeon_global_path"] = []
-                                        state["current_target_node"], state["hidden_track_node"] = None, None
-                                        state["astar_fail_count"] = 0
                                         
-                                    # 💡 [여기 들여쓰기 교정 완료!]
-                                    # 1회성 풀스캔 끝났는데 보험용 추가 매칭
-                                    if map_pos is None and need_floor_scan:
-                                        map_pos, minimap_processed = get_robust_map_pos(minimap_bgr, pc_map_edges, last_pos=state.get("dungeon_map_pos"), allow_full_scan=allow_full, map_gray=pc_map_gray, is_open_map=is_oak_active)
                                 except Exception: pass
 
                     if map_pos:
