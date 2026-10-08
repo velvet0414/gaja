@@ -1674,13 +1674,14 @@ def _save_settings_internal():
                 "party_max_combat_time": v["party_max_combat_time"].get(),
                 "party_use_mptam": v["party_use_mptam"].get(), "party_mptam_start_pct": v["party_mptam_start_pct"].get(), "party_mptam_stop_pct": v["party_mptam_stop_pct"].get(),
 
-                "party_mptam_tele_use": v["party_mptam_tele_use"].get(), "party_mptam_tele_pct": v["party_mptam_tele_pct"].get(),
+                "party_mptam_tele_use": v["party_mptam_tele_use"].get() if "party_mptam_tele_use" in v else False,
+                "party_mptam_tele_pct": v["party_mptam_tele_pct"].get() if "party_mptam_tele_pct" in v else "12",
 
-                "party_help_call_use": v["party_help_call_use"].get(), "party_help_call_pct": v["party_help_call_pct"].get(),
+                "party_help_call_use": v["party_help_call_use"].get() if "party_help_call_use" in v else True,
+                "party_help_call_pct": v["party_help_call_pct"].get() if "party_help_call_pct" in v else "20",
 
                 "dungeon_name": v["dungeon_name"].get(),
                 "heal_use": v["heal_use"].get(), "heal_pct": v["heal_pct"].get(),
-                "dungeon_name": v["dungeon_name"].get(),
                 "heal_mp_pct": v["heal_mp_pct"].get(),
                 "pot_use": v["pot_use"].get(), "pot_pct": v["pot_pct"].get(),
                 "poison_type": v["poison_type"].get(), "poison_delay": v["poison_delay"].get(), "buff_set": v["buff_set"].get(),
@@ -1688,8 +1689,11 @@ def _save_settings_internal():
                 "use_dec_weight": v["use_dec_weight"].get(), "use_windwalk": v["use_windwalk"].get(),
                 "use_body": v["use_body"].get(), "body_pct": v["body_pct"].get(), "body_stop_pct": v["body_stop_pct"].get(),
                 "use_mptam": v["use_mptam"].get(), "mptam_start_pct": v["mptam_start_pct"].get(), "mptam_stop_pct": v["mptam_stop_pct"].get(),
+                
+                "is_wiz_mptam": v.get("is_wiz_mptam", tk.BooleanVar(value=False)).get() if "is_wiz_mptam" in v else False, # 💡 [버그픽스] 위즈 엠탐 체크박스 상태 영구 저장!
+
                 "use_extra_f10": v["use_extra_f10"].get(), "extra_f10_dur": v["extra_f10_dur"].get(),
-                "use_blue_pot": v["use_blue_pot"].get(), "use_blue_pot_combat": v.get("use_blue_pot_combat", tk.BooleanVar(value=False)).get(), "blue_mp_pct": v["blue_mp_pct"].get(), "blue_cd_min": v["blue_cd_min"].get(),
+                "use_blue_pot": v["use_blue_pot"].get(), "use_blue_pot_combat": v.get("use_blue_pot_combat", tk.BooleanVar(value=False)).get() if "use_blue_pot_combat" in v else False, "blue_mp_pct": v["blue_mp_pct"].get(), "blue_cd_min": v["blue_cd_min"].get(),
                 "tele_hunt_use": v["tele_hunt_use"].get(), "tele_hunt_time": v["tele_hunt_time"].get(),
                 "hp_20_action": v["hp_20_action"].get(), "hp_danger_pct": v["hp_danger_pct"].get(),
                 "abs_return_use": v["abs_return_use"].get(),
@@ -1701,11 +1705,11 @@ def _save_settings_internal():
                 "move_sens": v["move_sens"].get(),
                 "hunt_first": v["hunt_first"].get(),
 
-                "chain_kill": v["chain_kill"].get(),
+                "chain_kill": v.get("chain_kill", tk.BooleanVar(value=False)).get() if "chain_kill" in v else False,
                 "haste_match_rate": v["haste_match_rate"].get(),
-                "zone_tele_nodes": v["zone_tele_nodes"].get(),  # 💡 [추가] GUI에서 설정한 값을 영구 저장!
+                "zone_tele_nodes": v.get("zone_tele_nodes", tk.StringVar(value="120")).get() if "zone_tele_nodes" in v else "120",
 
-                "oak_thresh": v["oak_thresh"].get(),
+                "oak_thresh": v.get("oak_thresh", tk.StringVar(value="127")).get() if "oak_thresh" in v else "127",
 
                 "motion_sensitivity": v["motion_sensitivity"].get(),
                 "gb_count_normal": v["gb_count_normal"].get(),
@@ -1722,6 +1726,9 @@ def _save_settings_internal():
                 "pick_arrow": v["pick_arrow"].get(),
                 "pick_teleport": v["pick_teleport"].get(),
                 "pick_ent": v["pick_ent"].get(),
+                
+                "pick_bluepot": v.get("pick_bluepot", tk.StringVar(value="0")).get() if "pick_bluepot" in v else "0", # 💡 [버그픽스] 파랭이 창고 인출 수량 영구 저장!
+                
                 "use_cc_buff": v["use_cc_buff"].get(),
                 "buff_mp_pct": v["buff_mp_pct"].get(),
 
@@ -4620,28 +4627,36 @@ def ai_commander_worker(target_pc):
                                 elif is_giran:
                                     candidates = [k for k in DUNGEON_ASSETS.keys() if "기란" in k or "기던" in k]
                                 else:
-                                    # 💡 본던 스캔 시 5to6이 최우선으로 검사되도록 리스트 맨 앞으로 뺌
-                                    candidates = ["본던 5to6"] + [k for k in DUNGEON_ASSETS.keys() if ("본던" in k or "gludio" in k.lower()) and k != "본던 5to6"]
+                                    gui_tgt_check = settings.get("dungeon_name", "")
+                                    # 💡 [버그 픽스 1] GUI 사냥터 목표가 6층(6-x)일 때만 '5to6' 맵을 스캔 후보 최우선으로 넣습니다!
+                                    # 5층이나 그 외 층 사냥 시에는 5to6 맵을 리스트에서 배제하여 억지 매칭을 방어합니다.
+                                    if "6-" in gui_tgt_check or "6층" in gui_tgt_check:
+                                        candidates = ["본던 5to6"] + [k for k in DUNGEON_ASSETS.keys() if ("본던" in k or "gludio" in k.lower()) and k != "본던 5to6"]
+                                    else:
+                                        candidates = [k for k in DUNGEON_ASSETS.keys() if ("본던" in k or "gludio" in k.lower()) and k != "본던 5to6"]
 
                                 try:
                                     best_f_name = None
                                     best_f_score = 0.35
                                     best_f_pos = None
 
-                                    current_map_file = DUNGEON_ASSETS.get(active_dungeon, {}).get("map", "")
+                                    # 💡 [버그 픽스 2] 내 현재 층수(active_dungeon)를 무조건 스킵해버리는 치명적 버그 삭제!
+                                    # 동일한 이미지 파일의 중복 스캔만 방지하여 CPU를 최적화합니다.
+                                    tested_map_files = set()
 
                                     for f_name in candidates:
-                                        if f_name == active_dungeon: continue
-
-                                        # 💡 동일한 지도 이미지를 쓰는 구역은 검사 패스 (연산 낭비 방어)
                                         cand_map_file = DUNGEON_ASSETS.get(f_name, {}).get("map", "")
-                                        if current_map_file and current_map_file == cand_map_file:
-                                            if "5to6" not in f_name:
-                                                continue
+                                        
+                                        # 동일한 지도 이미지를 쓰는 구역은 검사 패스 (연산 낭비 방어)
+                                        # 단, 5to6은 특별 취급하여 스캔을 허용합니다.
+                                        if cand_map_file in tested_map_files and "5to6" not in f_name:
+                                            continue
+                                            
+                                        if "5to6" not in f_name:
+                                            tested_map_files.add(cand_map_file)
 
                                         f_assets = get_pc_assets(f_name)
                                         
-                                        # 💡 [핵심 픽스] 본던은 Canny Edge가 아닌 이진화(흑백) 이미지로 스캔해야 제대로 점수가 나옴!
                                         if is_bondon:
                                             f_gray = f_assets.get("gray")
                                             if f_gray is not None and minimap_processed is not None:
@@ -4662,11 +4677,6 @@ def ai_commander_worker(target_pc):
                                                 else: continue
                                             else: continue
 
-                                        # 중복 맵 파일명 스킵 처리 (단 5to6 은 예외)
-                                        if best_f_name and cand_map_file == DUNGEON_ASSETS.get(best_f_name, {}).get("map", ""):
-                                            if "5to6" not in f_name:
-                                                continue
-
                                         if max_val > best_f_score:
                                             best_f_score = max_val
                                             best_f_name = f_name
@@ -4675,9 +4685,6 @@ def ai_commander_worker(target_pc):
                                             true_cy = (h_m // 2) + (1 if is_bondon else 2)
                                             best_f_pos = (max_loc[0] + true_cx, max_loc[1] + true_cy)
                                             
-                                            # 5to6이 1등이면 더 검사할 필요 없이 조기 확정!
-                                            if "5to6" in best_f_name and ("6-" in settings.get("dungeon_name", "") or "6층" in settings.get("dungeon_name", "")):
-                                                break
 
                                     if best_f_name and best_f_pos:
                                         gui_target_dng = settings.get("dungeon_name", "")
