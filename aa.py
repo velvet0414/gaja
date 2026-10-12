@@ -119,7 +119,7 @@ import pythoncom
 import heapq
 
 from ultralytics import YOLO
-YOLO_CONF = 0.50
+YOLO_CONF = 0.53
 
 import socket
 
@@ -10764,13 +10764,13 @@ def ai_commander_worker(target_pc):
                 cv2.rectangle(debug_img, (WEIGHT_ROI_X1, WEIGHT_ROI_Y1), (WEIGHT_ROI_X2, WEIGHT_ROI_Y2), (0, 165, 255), 2)
                 cv2.putText(debug_img, "WT", (WEIGHT_ROI_X1, max(0, WEIGHT_ROI_Y1 - 2)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
 
-                # 👇 [형님 지시사항 적용] 디버그 화면 시각화 좌표 동기화
-                trash_x1, trash_y1 = 607, 45
+                # 👇 [형님 지시사항 적용] 디버그 화면 시각화 좌표 확장 동기화 완료!
+                trash_x1, trash_y1 = 607, 15  # 45 -> 15 로 상향
                 trash_x2, trash_y2 = 765, 355
                 cv2.rectangle(debug_img, (trash_x1, trash_y1), (trash_x2, trash_y2), (0, 255, 255), 1)
                 cv2.putText(debug_img, "TRASH_SCAN", (trash_x1 + 5, trash_y1 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
                 
-                empty_x1, empty_y1 = 607, 120
+                empty_x1, empty_y1 = 607, 40  # 120 -> 40 으로 상향
                 empty_x2, empty_y2 = 765, 355
                 cv2.rectangle(debug_img, (empty_x1, empty_y1), (empty_x2, empty_y2), (255, 200, 0), 1)
                 cv2.putText(debug_img, "EMPTY_SCAN", (empty_x1 + 5, empty_y1 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 0), 1)
@@ -11466,7 +11466,6 @@ def ai_commander_worker(target_pc):
 
                         if fsm == "INV_CLEAN_OPEN":
 
-                            # 👇👇 [형님 솔루션: 인벤 열기 전 GUI 딜레이 설정을 완전히 무시하고 즉시 비상 해독!] 👇👇
                             if state.get("is_poisoned", False):
                                 if curr_time > state.get("antidote_cd", 0):
                                     dprint(key, "🚨 [이중 방어막] 인벤 열기 직전 독 감지! GUI 딜레이 시간을 무시하고 즉시 해독부터 진행합니다.")
@@ -11474,7 +11473,6 @@ def ai_commander_worker(target_pc):
                                     is_party_psn = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
                                     poison_type = settings.get("party_poison_type", "해독제") if is_party_psn else settings.get("poison_type", "해독제")
                                     
-                                    # 혹시 열려있을지 모르는 창을 닫고 F1 탭으로 강제 전환
                                     pico_queues[key].put({"action": "HOLD_KEY", "keycode": 177, "duration": g_val(0.05, 0.10)})
                                     pico_queues[key].put({"action": "WAIT", "delay_min": 0.05, "delay_max": 0.10})
                                     pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.05, 0.10)})
@@ -11485,20 +11483,14 @@ def ai_commander_worker(target_pc):
                                     else:
                                         pico_queues[key].put({"action": "ANTIDOTE", "is_spell": True})
                                     
-                                    # 해독 모션이 끝날 때까지 1.5초 쿨타임 부여 (인벤 오픈 보류)
                                     state["antidote_cd"] = curr_time + 1.5
-                                    
-                                    # 💡 [핵심 버그 방지] GUI 딜레이를 무시하고 즉시 해독했으므로, 일반 사냥루틴의 독 예약 타이머 장부를 완전히 찢어버립니다!
                                     state["poison_history"].clear()
                                     state["is_poisoned"] = False
                                     state["poison_timer"] = 0
                                 
-                                # 💡 독이 시각적으로 완전히 풀릴 때까지 가방을 열지 않고 무한 대기
                                 state["cooldown"] = curr_time + 0.1
                                 continue
-                            # 👆👆 --------------------------------------------------------------------------------- 👆👆
 
-                            # 💡 [추가] 인벤 검사/정리 돌입 전 바디(F7) 누르고 있는 상태면 하드웨어 신호 강제 해제
                             if state.get("body_held", False):
                                 if picos.get(key) and pico_locks.get(key): 
                                     send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0)
@@ -11508,92 +11500,113 @@ def ai_commander_worker(target_pc):
                             tab_dur = g_val(0.05, 0.10)
                             pico_queues[key].put({"action": "HOLD_KEY", "keycode": 179, "duration": tab_dur})
 
+                            # 💡 FSM 초기화 (오인식 픽셀 비교 변수 완전히 삭제!)
                             if INVEN_BLACK_TEMPLATE is not None:
-                                state["target_fsm"] = "INV_CLEAN_SCROLL_DOWN"
+                                state["target_fsm"] = "INV_CLEAN_EVALUATE"
                             else:
                                 state["target_fsm"] = "INV_CLEAN_SCAN"
 
-                            state["inv_scroll_cnt"] = 0
-                            state["inv_cursor_swept"] = False
-
+                            state["inv_clean_last_action"] = "OPEN"
+                            state["inv_up_scrolls"] = 0
+                            state["inv_down_scrolls"] = 0
+                            
                             state["trash_blacklist"] = []
                             state["last_trash_x"] = -1000
                             state["last_trash_y"] = -1000
                             state["last_trash_fail_cnt"] = 0
 
-                            # 🚀 [가속] 인벤토리를 열고 멍때리는 대기 시간 대폭 단축 (기존 0.6~1.0초 -> 0.3~0.5초)
                             state["cooldown"] = curr_time + tab_dur + g_time(0.5, 0.8, key)
                             dprint(key, "🎒 [인벤 정리] 쾌속 모드 온! 인벤을 열고 탐색을 준비합니다.")
 
-                        elif fsm == "INV_CLEAN_SCROLL_DOWN":
-                            if INVEN_BLACK_TEMPLATE is None:
-                                state["target_fsm"] = "INV_CLEAN_SCAN"
-                                continue
-
-                            # 👇 [형님 지시사항 적용] 빈 공간 스캔 영역 (양옆 5px 늘림, 하단 100px 위로 쳐냄)
-                            empty_x1, empty_y1 = 607, 120
-                            empty_x2, empty_y2 = 765, 355
-                            inv_roi = img_bgr[empty_y1:empty_y2, empty_x1:empty_x2]
-                            found_black = False
-
-                            try:
-                                res = cv2.matchTemplate(inv_roi, INVEN_BLACK_TEMPLATE, cv2.TM_CCOEFF_NORMED)
-                                _, max_val, _, _ = cv2.minMaxLoc(res)
-
-                                if max_val >= 0.85:
-                                    found_black = True
-                            except Exception: pass
-
-                            if found_black or state.get("inv_scroll_cnt", 0) >= 15:
-                                dprint(key, "🎒 [인벤 스크롤] 빈 공간(여백) 도달 완료! 밑바닥 최신 쓰레기 스캔을 시작합니다.")
-                                state["target_fsm"] = "INV_CLEAN_SCAN"
-                                state["cooldown"] = curr_time + 0.1 # 🚀 0.3초 대기 -> 0.1초 단축
-                            else:
-                                inv_cx = w - 100
-                                inv_cy = int(h * 0.4)
-
-                                real_cursor = find_cursor_pos(img_bgr, last_pos=(cur_x, cur_y))
-                                if real_cursor:
-                                    cur_x, cur_y = real_cursor[0], real_cursor[1]
-                                    state["cursor_pos"] = [cur_x, cur_y]
-
-                                if cur_x < inv_cx - 60 or cur_x > inv_cx + 40 or cur_y < inv_cy - 60 or cur_y > inv_cy + 60:
-
-                                    tx = inv_cx + random.randint(-50, 30)
-                                    ty = inv_cy + random.randint(-50, 50)
-
-                                    dx, dy = tx - cur_x, ty - cur_y
-                                    dist = math.hypot(dx, dy)
-
-                                    move_dur = 0.15 + 0.05 * math.log2((dist / 20.0) + 1.0) if dist > 0 else 0.1
-                                    # 🚀 [가속] 스크롤을 위해 마우스 치우는 속도 향상
-                                    move_dur = apply_human_variance(move_dur * 0.35)
-
-                                    deltas = generate_human_deltas(dx, dy, duration=move_dur, behavior="NORMAL", key=key)
-                                    pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas})
-                                    state["pico_arrived"] = False
-                                    state["cursor_pos"] = [tx, ty]
-
-                                    state["cooldown"] = curr_time + move_dur + 0.05
-                                    continue
-
-                                cnt = state.get("inv_scroll_cnt", 0)
-                                state["inv_scroll_cnt"] = cnt + 1
-
-                                pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": -5})
-
-                                # 🚀 [가속] 휠 굴린 후 대기시간 단축 (0.15~0.25 -> 0.08~0.12)
-                                state["cooldown"] = curr_time + g_val(0.08, 0.12)
-                                dprint(key, f"🔽 [인벤 스크롤] 템이 꽉 찼습니다. 휠을 아래로 굴립니다. (시도: {cnt+1}/15)")
-
-                        elif fsm == "INV_CLEAN_SCAN":
+                        elif fsm == "INV_CLEAN_EVALUATE":
                             real_cursor = find_cursor_pos(img_bgr, last_pos=(cur_x, cur_y))
                             if real_cursor:
                                 cur_x, cur_y = real_cursor[0], real_cursor[1]
                                 state["cursor_pos"] = [cur_x, cur_y]
 
-                            # 👇 [형님 지시사항 적용] 쓰레기템 스캔 영역 (양옆 5px 늘림, 하단 100px 위로 쳐냄)
-                            trash_x1, trash_y1 = 607, 45
+                            # 빈칸 개수 정밀 카운팅 (💡 형님 지시대로 Y축 120 -> 40 으로 80픽셀 확장!)
+                            empty_count = 0
+                            if INVEN_BLACK_TEMPLATE is not None:
+                                empty_x1, empty_y1 = 607, 40 
+                                empty_x2, empty_y2 = 765, 355
+                                inv_roi = img_bgr[empty_y1:empty_y2, empty_x1:empty_x2].copy()
+                                try:
+                                    res = cv2.matchTemplate(inv_roi, INVEN_BLACK_TEMPLATE, cv2.TM_CCOEFF_NORMED)
+                                    # 💡 [지시 반영] 매칭률을 0.80 으로 빡빡하게 검사!
+                                    locs = np.where(res >= 0.80)
+                                    pts = []
+                                    tmpl_h, tmpl_w = INVEN_BLACK_TEMPLATE.shape[:2]
+                                    for pt in zip(*locs[::-1]):
+                                        cx_pt, cy_pt = pt[0] + tmpl_w//2, pt[1] + tmpl_h//2
+                                        is_dup = False
+                                        for ex, ey in pts:
+                                            if abs(ex - cx_pt) < 15 and abs(ey - cy_pt) < 15:
+                                                is_dup = True
+                                                break
+                                        if not is_dup:
+                                            pts.append((cx_pt, cy_pt))
+                                    empty_count = len(pts)
+                                except Exception: pass
+
+                            state["current_empty_count"] = empty_count
+                            
+                            inv_cx, inv_cy = w - 100, int(h * 0.4)
+                            is_cursor_in_inven = (inv_cx - 60 <= cur_x <= inv_cx + 60) and (inv_cy - 60 <= cur_y <= inv_cy + 60)
+
+                            # 💡 분기 1: 빈칸이 4개를 초과할 때 (즉, 5개 이상일 때) 무조건 위로 스크롤!
+                            if empty_count > 4:
+                                if state.get("inv_up_scrolls", 0) >= 60:
+                                    dprint(key, f"🎒 [분기1] 스크롤 60회 초과! 인벤이 비었거나 최상단입니다. 쓰레기 스캔 시작!")
+                                    state["target_fsm"] = "INV_CLEAN_SCAN"
+                                    state["cooldown"] = curr_time + 0.05
+                                elif state.get("inv_clean_last_action") == "SCROLL_DOWN":
+                                    dprint(key, f"🎒 [인벤 조절] 아래로 내리다 바닥 감지! (현재 빈칸 {empty_count}개). 인벤을 닫습니다.")
+                                    state["target_fsm"] = "INV_CLEAN_CLOSE"
+                                    state["cooldown"] = curr_time + 0.1
+                                else:
+                                    # 마우스가 인벤 바깥에 있다면 먼저 인벤 안쪽으로 옮깁니다.
+                                    if not is_cursor_in_inven:
+                                        dprint(key, f"🎒 [분기1] 발견된 빈칸 {empty_count}개 (기준 4개 초과). 스크롤을 위해 커서를 옮깁니다.")
+                                        tx = inv_cx + random.randint(-15, 15)
+                                        ty = inv_cy + random.randint(-15, 15)
+                                        dx, dy = tx - cur_x, ty - cur_y
+                                        dur = apply_human_variance(0.15 + 0.05 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if math.hypot(dx, dy) > 0 else 0.1) * 0.35
+                                        
+                                        pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)})
+                                        state["pico_arrived"] = False
+                                        state["cursor_pos"] = [tx, ty]
+                                        
+                                        # 마우스 이동 후 다시 평가 상태로 와서 스크롤을 실행
+                                        state["target_fsm"] = "INV_CLEAN_WAIT_HW"
+                                        state["inv_wait_next_fsm"] = "INV_CLEAN_EVALUATE"
+                                        state["cooldown"] = curr_time + dur + 0.05
+                                    else:
+                                        dprint(key, f"🎒 [분기1] 발견된 빈칸 {empty_count}개 (기준 4개 초과). 스크롤을 올립니다. ({state.get('inv_up_scrolls',0)+1}/60)")
+                                        scroll_amount = 3 if state.get("inv_clean_last_action") == "OPEN" else 1
+                                        pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": scroll_amount})
+                                        state["inv_clean_last_action"] = "SCROLL_UP"
+                                        state["inv_up_scrolls"] = state.get("inv_up_scrolls", 0) + 1
+                                        state["inv_down_scrolls"] = 0
+                                        
+                                        state["target_fsm"] = "INV_CLEAN_WAIT_HW"
+                                        state["inv_wait_next_fsm"] = "INV_CLEAN_EVALUATE"
+                                        state["cooldown"] = curr_time + g_val(0.12, 0.18)
+                            else:
+                                # 💡 분기 2: 빈칸이 4개 이하일 때 (정상적으로 위쪽 템이 차있는 상태이므로 스캔 돌입)
+                                dprint(key, f"🎒 [분기2] 실제 발견된 빈칸: {empty_count}개 (기준 충족). 쓰레기 스캔 돌입!")
+                                state["inv_up_scrolls"] = 0
+                                state["target_fsm"] = "INV_CLEAN_SCAN"
+                                state["cooldown"] = curr_time + 0.05
+
+                        elif fsm == "INV_CLEAN_SCAN":
+                            real_cursor = find_cursor_pos(img_bgr, last_pos=(cur_x, cur_y))
+                       
+                            if real_cursor:
+                                cur_x, cur_y = real_cursor[0], real_cursor[1]
+                                state["cursor_pos"] = [cur_x, cur_y]
+
+                            # 👇 [지시 반영] 쓰레기 스캔 Y축 30px 위로 확장 (45 -> 15)
+                            trash_x1, trash_y1 = 607, 15
                             trash_x2, trash_y2 = 765, 355
                             inv_roi_x1 = trash_x1
                             inv_roi = img_bgr[trash_y1:trash_y2, trash_x1:trash_x2].copy()
@@ -11615,7 +11628,6 @@ def ai_commander_worker(target_pc):
                                         else: res = cv2.matchTemplate(inv_roi, template, cv2.TM_CCOEFF_NORMED)
 
                                         _, max_val, _, max_loc = cv2.minMaxLoc(res)
-
                                         target_threshold = 0.92 if "bichi" in tmpl_name else 0.85
 
                                         if max_val >= target_threshold:
@@ -11645,10 +11657,8 @@ def ai_commander_worker(target_pc):
 
                                             dx, dy = tx - cur_x, ty - cur_y
                                             dist = math.hypot(dx, dy)
-                                            dur = 0.15 + 0.05 * math.log2((dist / 20.0) + 1.0) if dist > 0 else 0.1
                                             
-                                            # 🚀 [가속] 쓰레기를 조준하는 마우스 속도를 대폭 증가! (0.55 -> 0.35)
-                                            dur = apply_human_variance(dur * 0.35)
+                                            dur = apply_human_variance(0.15 + 0.05 * math.log2((dist / 20.0) + 1.0) if dist > 0 else 0.1) * 0.35
 
                                             deltas = generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)
                                             pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas})
@@ -11657,10 +11667,10 @@ def ai_commander_worker(target_pc):
 
                                             pico_queues[key].put({"action": "TRASH_DELETE"})
 
-                                            state["inv_cursor_swept"] = False
-                                            state["target_fsm"] = "INV_CLEAN_WAIT_DELETE"
+                                            state["target_fsm"] = "INV_CLEAN_WAIT_HW" 
+                                            state["inv_clean_last_action"] = "DELETE"
+                                            state["inv_wait_next_fsm"] = "INV_CLEAN_EVALUATE"
                                             
-                                            # 🚀 [가속] 매크로 전송 직후 쓸데없는 대기시간 단축 (0.10~0.15 -> 0.04~0.08)
                                             state["cooldown"] = curr_time + dur + g_time(0.04, 0.08, key)
 
                                             retry_str = f" ({state['last_trash_fail_cnt']}차 시도)" if state.get('last_trash_fail_cnt', 0) > 1 else ""
@@ -11670,49 +11680,55 @@ def ai_commander_worker(target_pc):
                                     except Exception: pass
 
                             if not found:
-
-                                if not state.get("inv_cursor_swept", False):
-                                    dx_center = char_screen_cx - cur_x
-                                    dy_center = char_screen_cy - cur_y
-
-                                    if dx_center == 0 and dy_center == 0:
-                                        base_angle = random.uniform(0, 2 * math.pi)
-                                    else:
-                                        base_angle = math.atan2(dy_center, dx_center)
-
-                                    angle = base_angle + random.uniform(-0.5, 0.5)
-                                    dist_move = random.uniform(180, 220)
-
-                                    safe_tx = int(max(0, min(w, cur_x + math.cos(angle) * dist_move)))
-                                    safe_ty = int(max(0, min(h, cur_y + math.sin(angle) * dist_move)))
-
-                                    dx, dy = safe_tx - cur_x, safe_ty - cur_y
-                                    dist = math.hypot(dx, dy)
-                                    dur = 0.15 + 0.05 * math.log2((dist / 20.0) + 1.0) if dist > 0 else 0.1
-
-                                    # 🚀 [가속] 가려진 툴팁 치우는 마우스 속도 증가
-                                    dur = apply_human_variance(dur * 0.45)
-                                    deltas = generate_human_deltas(dx, dy, duration=dur, behavior="PATROL", key=key)
-                                    pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas})
-                                    state["pico_arrived"] = False
-                                    state["cursor_pos"] = [safe_tx, safe_ty]
-
-                                    state["inv_cursor_swept"] = True
-                                    state["cooldown"] = curr_time + dur + g_val(0.15, 0.20)
-                                    dprint(key, "🎒 [인벤 정리] 스캔 실패. 툴팁에 가려진 템 확인을 위해 커서를 중앙 방향으로 스윽 치웁니다.")
-                                else:
-                                    dprint(key, "🎒 [인벤 정리] 최종 확인 완료! 쓰레기가 없습니다. 인벤을 닫습니다.")
+                                # 지울 템이 없을 때
+                                empty_count = state.get("current_empty_count", 0)
+                                is_cursor_in_inven = (inv_cx - 60 <= cur_x <= inv_cx + 60) and (inv_cy - 60 <= cur_y <= inv_cy + 60)
+                                
+                                # 💡 정리 완료 조건: 쓰레기가 없는데 빈칸이 4개를 초과(5개 이상) 발견되면 바닥이거나 템이 없는 상태이므로 정리 끝!
+                                if empty_count > 4:
+                                    dprint(key, f"🎒 [정리 완료] 스캔 완료! 남은 쓰레기 없고, 현재 화면 빈칸 {empty_count}개 확인. 인벤 닫습니다.")
                                     state["target_fsm"] = "INV_CLEAN_CLOSE"
                                     state["cooldown"] = curr_time + g_val(0.10, 0.15)
+                                else:
+                                    if state.get("inv_down_scrolls", 0) >= 60:
+                                        dprint(key, "🎒 [인벤 정리 종료] 스크롤 다운 60회 한계. 더 이상 지울게 없으니 인벤을 닫습니다.")
+                                        state["target_fsm"] = "INV_CLEAN_CLOSE"
+                                        state["cooldown"] = curr_time + g_val(0.10, 0.15)
+                                    else:
+                                        # 내리기 전 마우스가 인벤 바깥에 있다면 먼저 인벤 안쪽으로 옮깁니다.
+                                        if not is_cursor_in_inven:
+                                            dprint(key, "🎒 [인벤 스캔] 현재 화면에 지울 템 없음. 스크롤을 위해 커서를 옮깁니다.")
+                                            tx = inv_cx + random.randint(-15, 15)
+                                            ty = inv_cy + random.randint(-15, 15)
+                                            dx, dy = tx - cur_x, ty - cur_y
+                                            dur = apply_human_variance(0.15 + 0.05 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if dist > 0 else 0.1) * 0.35
+                                            
+                                            pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)})
+                                            state["pico_arrived"] = False
+                                            state["cursor_pos"] = [tx, ty]
+                                            
+                                            state["target_fsm"] = "INV_CLEAN_WAIT_HW"
+                                            state["inv_wait_next_fsm"] = "INV_CLEAN_SCAN" # 다시 SCAN으로 돌아와서 스크롤 시도
+                                            state["cooldown"] = curr_time + dur + 0.05
+                                        else:
+                                            dprint(key, "🎒 [인벤 스캔] 지울 템 확인 불가. 아래로 1줄 스크롤합니다.")
+                                            pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": -1})
+                                            state["inv_clean_last_action"] = "SCROLL_DOWN"
+                                            state["inv_down_scrolls"] = state.get("inv_down_scrolls", 0) + 1
+                                            
+                                            state["target_fsm"] = "INV_CLEAN_WAIT_HW"
+                                            state["inv_wait_next_fsm"] = "INV_CLEAN_EVALUATE" 
+                                            state["cooldown"] = curr_time + g_val(0.12, 0.18)
 
-                        elif fsm == "INV_CLEAN_WAIT_DELETE":
-
+                        elif fsm == "INV_CLEAN_WAIT_HW":
                             if pico_queues[key].empty() and not state.get("hw_busy", False):
-                                state["target_fsm"] = "INV_CLEAN_SCAN"
-
-                                # 🚀 [멍때림 제거] 아이템이 지워진 후 AI가 다음 템을 찾을 때까지 멍때리는 시간을 0.6초에서 0.2초 미만으로 날려버림!
-                                state["cooldown"] = curr_time + g_val(0.35, 0.45)
-                                dprint(key, "🎒 [인벤 정리] 삭제 조작 완료! 즉시 다음 쓰레기를 찾습니다!")
+                                next_fsm = state.pop("inv_wait_next_fsm", "INV_CLEAN_EVALUATE")
+                                state["target_fsm"] = next_fsm 
+                                state["cooldown"] = curr_time + g_val(0.05, 0.10)
+                                
+                                last_action = state.get("inv_clean_last_action")
+                                if last_action == "DELETE" and next_fsm == "INV_CLEAN_EVALUATE":
+                                    dprint(key, "🎒 [하드웨어 대기 종료] 삭제 조작 완료! 빈칸 개수 재평가를 실시합니다.")
                             else:
                                 state["cooldown"] = curr_time + 0.05
 
@@ -11728,7 +11744,6 @@ def ai_commander_worker(target_pc):
 
                             state["inv_close_grace_time"] = curr_time + 1.5
                             
-                            # 🚀 [가속] 인벤 닫고 사냥 복귀 대기시간 단축
                             state["cooldown"] = curr_time + tab_dur + g_time(0.25, 0.35, key)
                             dprint(key, f"🎒 [인벤 정리 완료] 성공적으로 인벤을 닫고 이전 로직({next_fsm})으로 쾌속 복귀합니다.")
 
