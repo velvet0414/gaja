@@ -5234,16 +5234,23 @@ def ai_commander_worker(target_pc):
                             else:
                                 state["cooldown"] = curr_time + 0.2
 
-                    # 이용권 오류 후 ok2.png 클릭 -> 바탕화면 로딩 대기 후 13.png 탐색(7~10초 대기 모드)
+                    # 이용권 오류 후 ok2.png 클릭 -> 3초 대기 후 무조건 바탕화면 가기(Win+D) 단계로 이동
                     elif current_fsm == "CERTI_TICKET_OK2_FIND":
                         pos_ok2 = find_certi_img("ok2.png", th=0.82)
                         if pos_ok2:
-                            dprint(key, f"🔎 [이용권 오류 종료] 'ok2.png' 발견({pos_ok2[0]}, {pos_ok2[1]})! 원클릭 후 바탕화면 13.png 대기 모드로 복귀합니다.")
+                            dprint(key, f"🔎 [이용권 오류 종료] 'ok2.png' 발견({pos_ok2[0]}, {pos_ok2[1]})! 원클릭 후 3초 뒤 바탕화면(Win+D) 이동을 실행합니다.")
                             state["certi_13_wait_mode"] = "TICKET" # 13.png 발견 시 7~10초 대기
-                            state["certi_next_desktop_time"] = 0.0
-                            start_certi_move_and_action(pos_ok2[0], pos_ok2[1], next_fsm="CERTI_STEP_13_FIND", double=False, post_wait=3.0, desc="ok2.png 클릭(바탕화면 복귀)")
+                            start_certi_move_and_action(pos_ok2[0], pos_ok2[1], next_fsm="CERTI_TICKET_GOTO_DESKTOP", double=False, post_wait=3.0, desc="ok2.png 클릭(퍼플 종료 대기)")
                         else:
                             state["cooldown"] = curr_time + 0.2
+
+                    # 이용권 오류 종료 3초 후: 퍼플(런처) 화면을 내리기 위해 무조건 바탕화면 가기(Win+D) 입력 후 13.png 재시도
+                    elif current_fsm == "CERTI_TICKET_GOTO_DESKTOP":
+                        dprint(key, "🖥️ [이용권 오류 바탕화면 복귀] 3초 경과! 퍼플 창을 내리기 위해 바탕화면 가기(Win+D)를 실행 후 13.png를 찾습니다!")
+                        pico_queues[key].put({"action": "HOME_MACRO"})
+                        state["certi_next_desktop_time"] = curr_time + g_val(2.0, 3.0)
+                        state["target_fsm"] = "CERTI_STEP_13_FIND"
+                        state["cooldown"] = curr_time + 1.5
 
                     # 17단계: 17.png 감지되면 커서 이동 후 더블클릭으로 게임 입장 -> dragon.png 감시
                     elif current_fsm == "CERTI_STEP_17_FIND":
