@@ -3359,34 +3359,42 @@ def pico_worker_thread(key):
 
             elif action == "CERTI_CLICK":
                 is_double = cmd.get("double", False)
-                h_sleep(0.05, 0.09)
+                h_sleep(0.06, 0.12)
                 send_mouse_click(p_serial, p_lock, 1, 1)
-                h_sleep(0.055, 0.085)
+                # 💡 [인간화] 마우스 클릭 체공(Hold) 시간을 50~125ms 범위로 넓게 분산
+                h_sleep(0.050, 0.125)
                 send_mouse_click(p_serial, p_lock, 1, 0)
                 if is_double:
-                    h_sleep(0.05, 0.08)
+                    h_sleep(0.055, 0.105)
                     send_mouse_click(p_serial, p_lock, 1, 1)
-                    h_sleep(0.055, 0.085)
+                    h_sleep(0.048, 0.110)
                     send_mouse_click(p_serial, p_lock, 1, 0)
-                h_sleep(0.15, 0.25)
+                h_sleep(0.18, 0.32)
 
             elif action == "TYPE_STRING":
                 text_val = str(cmd.get("text", ""))
                 clear_first = cmd.get("clear_first", False)
                 press_enter = cmd.get("press_enter", False)
+                allow_typo = cmd.get("allow_typo", True)
+
+                # 인간화된 단일 키 탭 함수 (고정 76ms 탈피 -> 45~115ms 가변 체공)
+                def human_key_tap(kcode):
+                    send_keyboard_key(p_serial, p_lock, kcode, 1)
+                    h_sleep(0.045, 0.115)
+                    send_keyboard_key(p_serial, p_lock, kcode, 0)
 
                 # 기존 입력칸 내용 지우기 옵션 (Ctrl + A -> Backspace)
                 if clear_first:
                     send_keyboard_key(p_serial, p_lock, 128, 1) # Ctrl DOWN
-                    h_sleep(0.04, 0.08)
+                    h_sleep(0.05, 0.10)
                     send_keyboard_key(p_serial, p_lock, 97, 1)  # 'a' DOWN
-                    h_sleep(0.05, 0.09)
+                    h_sleep(0.05, 0.10)
                     send_keyboard_key(p_serial, p_lock, 97, 0)  # 'a' UP
-                    h_sleep(0.04, 0.08)
+                    h_sleep(0.04, 0.09)
                     send_keyboard_key(p_serial, p_lock, 128, 0) # Ctrl UP
-                    h_sleep(0.08, 0.14)
-                    k_tap(178) # Backspace
                     h_sleep(0.10, 0.18)
+                    human_key_tap(178) # Backspace
+                    h_sleep(0.12, 0.22)
 
                 shift_char_map = {
                     '!': ord('1'), '@': ord('2'), '#': ord('3'), '$': ord('4'), '%': ord('5'),
@@ -3395,37 +3403,90 @@ def pico_worker_thread(key):
                     '<': ord(','), '>': ord('.'), '?': ord('/'), '{': ord('['), '}': ord(']'), '|': ord('\\')
                 }
 
-                for ch in text_val:
+                # ⌨️ 실제 물리 키보드(QWERTY) 기준 주변 인접 키 맵핑
+                QWERTY_ADJACENT_MAP = {
+                    'q': 'wa12', 'w': 'qeas23', 'e': 'wrsd34', 'r': 'etdf45', 't': 'ryfg56',
+                    'y': 'tugh67', 'u': 'yijh78', 'i': 'uokj89', 'o': 'iplk90', 'p': 'ol0',
+                    'a': 'qwsz', 's': 'awedxz', 'd': 'serfcx', 'f': 'drtgvc', 'g': 'ftyhbv',
+                    'h': 'gyujnb', 'j': 'huikmn', 'k': 'jiolm', 'l': 'kop',
+                    'z': 'asx', 'x': 'zsdc', 'c': 'xdfv', 'v': 'cfgb', 'b': 'vghn', 'n': 'bhjm', 'm': 'njk',
+                    '1': '2q', '2': '13qw', '3': '24we', '4': '35er', '5': '46rt',
+                    '6': '57ty', '7': '68yu', '8': '79ui', '9': '80io', '0': '9op'
+                }
+
+                step_since_check = 0
+                typo_count = 0
+                max_typos = 2 # 한 입력란 당 최대 오타 2회 제한
+                prev_ch = None
+
+                for idx_c, ch in enumerate(text_val):
                     if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
                         break
 
+                    # 🧠 [마디 호흡(Chunking)] 영문<->숫자 전환, '@', '.' 앞뒤, 전화번호 마디마다 미세 멈칫함 부여
+                    if prev_ch is not None:
+                        is_type_switch = (prev_ch.isalpha() != ch.isalpha()) and (prev_ch.isalnum() and ch.isalnum())
+                        is_special_boundary = (ch in ['@', '.'] or prev_ch in ['@', '.'])
+                        is_phone_chunk = text_val.isdigit() and idx_c in [3, 7]
+                        if is_type_switch or is_special_boundary or is_phone_chunk:
+                            h_sleep(0.16, 0.35)
+
+                    # 🎯 [인접 키 오타 & 백스페이스 교정] 매 2번의 키 입력마다 20% 확률로 주변 키 오타 발생
+                    step_since_check += 1
+                    ch_low = ch.lower()
+                    if allow_typo and typo_count < max_typos and step_since_check >= 2 and ch_low in QWERTY_ADJACENT_MAP:
+                        step_since_check = 0
+                        if random.random() < 0.20:
+                            wrong_ch = random.choice(QWERTY_ADJACENT_MAP[ch_low])
+                            typo_count += 1
+                            dprint(key, f"✍️ [인간화 오타 연출] '{ch}' 입력 중 인접 키 '{wrong_ch}' 오타 발생 ➔ 백스페이스 수정!")
+
+                            # 1) 잘못된 주변 키 입력
+                            human_key_tap(ord(wrong_ch))
+                            # 2) 사람이 오타를 눈으로 인지하는 시간 (0.18 ~ 0.38초)
+                            h_sleep(0.18, 0.38)
+                            if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                                break
+                            # 3) Backspace(178)로 지우기
+                            human_key_tap(178)
+                            # 4) 지운 후 원래 키로 손가락을 고쳐 잡는 시간 (0.10 ~ 0.22초)
+                            h_sleep(0.10, 0.22)
+                            # 직후 최소 1글자는 더 치고 나서 다음 2타 카운트가 돌도록 -1 세팅
+                            step_since_check = -1
+
+                    # 실제 목표 글자 입력
                     if ch in shift_char_map:
                         base_k = shift_char_map[ch]
                         send_keyboard_key(p_serial, p_lock, 129, 1) # Shift DOWN
-                        h_sleep(0.04, 0.08)
+                        h_sleep(0.05, 0.11)
                         send_keyboard_key(p_serial, p_lock, base_k, 1)
-                        h_sleep(0.05, 0.09)
+                        h_sleep(0.045, 0.105)
                         send_keyboard_key(p_serial, p_lock, base_k, 0)
-                        h_sleep(0.04, 0.08)
+                        h_sleep(0.04, 0.09)
                         send_keyboard_key(p_serial, p_lock, 129, 0) # Shift UP
                     elif 'A' <= ch <= 'Z':
                         kcode = ord(ch.lower())
                         send_keyboard_key(p_serial, p_lock, 129, 1) # Shift DOWN
-                        h_sleep(0.04, 0.08)
+                        h_sleep(0.05, 0.11)
                         send_keyboard_key(p_serial, p_lock, kcode, 1)
-                        h_sleep(0.05, 0.09)
+                        h_sleep(0.045, 0.105)
                         send_keyboard_key(p_serial, p_lock, kcode, 0)
-                        h_sleep(0.04, 0.08)
+                        h_sleep(0.04, 0.09)
                         send_keyboard_key(p_serial, p_lock, 129, 0) # Shift UP
                     else:
-                        k_tap(ord(ch))
+                        human_key_tap(ord(ch))
 
-                    # 글자 간 가우스 난수 타건 간격
-                    h_sleep(0.05, 0.12)
+                    prev_ch = ch
+
+                    # 글자 간 기본 타건 간격 (가변 리듬: 가끔 15% 확률로 살짝 느린 타건 섞기)
+                    if random.random() < 0.15:
+                        h_sleep(0.13, 0.24)
+                    else:
+                        h_sleep(0.055, 0.135)
 
                 if press_enter:
-                    h_sleep(0.18, 0.30)
-                    k_tap(176) # Enter 키 입력
+                    h_sleep(0.22, 0.42)
+                    human_key_tap(176) # Enter 키 입력
                     h_sleep(0.20, 0.35)
 
             elif action == "CLOSE_TAB":
@@ -4834,10 +4895,10 @@ def ai_commander_worker(target_pc):
                     else:
                         cur_cx, cur_cy = state.get("cursor_pos", [400, 300])
 
-                    # 💡 15.png 등 초소형 타겟(use_jitter=False)은 지터 0으로 완전 고정, 일반 타겟은 ±1px
+                    # 💡 15.png 등 초소형 타겟(use_jitter=False)은 지터 0 고정, 일반 웹 버튼/입력칸은 자연스러운 가우시안 탄착군(가로 ±8px, 세로 ±2px) 적용
                     if use_jitter:
-                        fx = int(max(5, min(w - 5, tx + random.randint(-1, 1))))
-                        fy = int(max(5, min(h - 5, ty + random.randint(-1, 1))))
+                        fx = int(max(5, min(w - 5, tx + int(round(g_val(-8, 8))))))
+                        fy = int(max(5, min(h - 5, ty + int(round(g_val(-2, 2))))))
                     else:
                         fx = int(max(5, min(w - 5, tx)))
                         fy = int(max(5, min(h - 5, ty)))
@@ -4897,13 +4958,14 @@ def ai_commander_worker(target_pc):
                         state["target_fsm"] = "CERTI_STEP_1_FIND"
                         state["cooldown"] = curr_time + 1.5
 
-                    # 공통: 마우스 도착 확인 -> 정밀 보정(최대 4회) -> 클릭 -> (타이핑 단계면 좌측 150~200px 회피) -> 타이핑
+                    # 공통: 마우스 도착 확인 -> 자연스러운 1회 보정(초소형 타겟만 3회) -> 클릭 -> 제자리 자연 타이핑
                     elif current_fsm == "CERTI_MOVE_VERIFY":
                         if state.pop("special_ack_arrived", False) or curr_time > state.get("certi_ack_timeout", 0):
                             tx, ty = state.get("certi_target_pos", (400, 300))
                             t_text = state.get("certi_type_text")
                             strict_aim = state.get("certi_strict_aim", False)
-                            allow_err = 1.5 if strict_aim else 3.0
+                            allow_err = 1.5 if strict_aim else 8.0
+                            max_corr = 3 if strict_aim else 1
 
                             need_correction = False
                             real_c = find_cursor_pos(img_bgr, last_pos=(tx, ty), allow_full_scan=True, is_certi_mode=True)
@@ -4911,7 +4973,7 @@ def ai_commander_worker(target_pc):
                                 state["cursor_pos"] = list(real_c)
                                 state["real_cursor_pos"] = list(real_c)
                                 err_dist = math.hypot(tx - real_c[0], ty - real_c[1])
-                                if err_dist > allow_err and state.get("certi_corr_cnt", 0) < 4:
+                                if err_dist > allow_err and state.get("certi_corr_cnt", 0) < max_corr:
                                     need_correction = True
                                     corr_dx = tx - real_c[0]
                                     corr_dy = ty - real_c[1]
@@ -4925,7 +4987,7 @@ def ai_commander_worker(target_pc):
                                     state["certi_corr_cnt"] = state.get("certi_corr_cnt", 0) + 1
                                     state["certi_ack_timeout"] = curr_time + dur_c + 1.0
                                     state["cooldown"] = curr_time + 0.05
-                                    dprint(key, f"🎯 [커서 정밀보정] 목표({tx},{ty})와 실제({real_c[0]},{real_c[1]}) 오차 {err_dist:.1f}px ➔ 재조준({state['certi_corr_cnt']}/4)")
+                                    dprint(key, f"🎯 [커서 미세보정] 목표({tx},{ty})와 실제({real_c[0]},{real_c[1]}) 오차 {err_dist:.1f}px ➔ 1회 자연 보정")
 
                             if not need_correction:
                                 is_dbl = state.get("certi_click_double", False)
@@ -4937,29 +4999,12 @@ def ai_commander_worker(target_pc):
                                 # 1) 목표 지점 클릭
                                 pico_queues[key].put({"action": "CERTI_CLICK", "double": is_dbl})
 
-                                # 2) 타이핑 단계(계정, 메일, 전번)는 클릭 직후 좌측(45도 범위 내 랜덤) 150~200px로 커서를 빼내어 화살표 모양 복구 후 타이핑!
+                                # 2) 타이핑 단계: 부자연스러운 좌측 급발진 회피 없이 마우스를 그대로 두고 손이 키보드로 가는 시간(0.22~0.40초) 대기 후 타이핑!
                                 if t_text is not None:
-                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.08, "delay_max": 0.14})
-
-                                    evade_deg = g_val(157.5, 202.5)
-                                    evade_rad = math.radians(evade_deg)
-                                    evade_dist = g_val(150.0, 200.0)
-
-                                    park_tx = int(max(10, min(w - 10, tx + math.cos(evade_rad) * evade_dist)))
-                                    park_ty = int(max(10, min(h - 10, ty + math.sin(evade_rad) * evade_dist)))
-                                    park_dx = park_tx - tx
-                                    park_dy = park_ty - ty
-
-                                    dur_p = apply_human_variance(0.08 + 0.035 * math.log2((math.hypot(park_dx, park_dy) / 20.0) + 1.0))
-                                    deltas_p = generate_human_deltas(park_dx, park_dy, duration=dur_p, behavior="NORMAL", key=key)
-                                    if deltas_p:
-                                        pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas_p})
-
-                                    state["cursor_pos"] = [park_tx, park_ty]
-
-                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.15, "delay_max": 0.25})
-                                    pico_queues[key].put({"action": "TYPE_STRING", "text": t_text, "clear_first": False, "press_enter": p_enter})
-                                    dprint(key, f"↖️ [{desc_str}] 클릭 후 좌측({evade_deg:.1f}도, {evade_dist:.0f}px) 커서 복구 ➔ 타이핑{'+엔터' if p_enter else ''} 전송 완료!")
+                                    state["cursor_pos"] = [tx, ty]
+                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.22, "delay_max": 0.40})
+                                    pico_queues[key].put({"action": "TYPE_STRING", "text": t_text, "clear_first": False, "press_enter": p_enter, "allow_typo": True})
+                                    dprint(key, f"⌨️ [{desc_str}] 클릭 후 제자리 인간화 타이핑(인접키 오타/교정 포함){'+엔터' if p_enter else ''} 전송 완료!")
                                 else:
                                     dprint(key, f"✅ [{desc_str}] 커서 안착 및 클릭{'(더블)' if is_dbl else ''} 명령 전송 완료! ➔ 다음: {next_fsm_val}")
 
@@ -4986,11 +5031,11 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.2
 
-                    # 3단계: 3.png 매칭되면 원클릭 -> 좌측 150~200px 커서 회피 -> 계정명 입력 후 엔터 -> 5단계(5.png)로 직행
+                    # 3단계: 3.png 매칭되면 원클릭 -> 계정명 인간화 타이핑(오타/백스페이스 포함) 후 엔터 -> 5단계(5.png)로 직행
                     elif current_fsm == "CERTI_STEP_3_FIND":
                         pos = find_certi_img("3.png", th=0.82)
                         if pos:
-                            dprint(key, f"🔎 [인증 3단계] '3.png' 발견({pos[0]}, {pos[1]})! 원클릭 ➔ 커서 좌측 회피 ➔ 계정명({curr_acc_id}) 입력 후 엔터!")
+                            dprint(key, f"🔎 [인증 3단계] '3.png' 발견({pos[0]}, {pos[1]})! 원클릭 ➔ 계정명({curr_acc_id}) 인간화 입력 후 엔터!")
                             start_certi_move_and_action(
                                 pos[0], pos[1],
                                 next_fsm="CERTI_STEP_5_FIND",
@@ -5002,13 +5047,13 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.2
 
-                    # 5단계: 5.png 감지 시 커서 움직이지 않고 그대로 비번 입력 후 엔터 (6.png 패스 -> 7.png 이동)
+                    # 5단계: 5.png 감지 시 커서 움직이지 않고 그대로 비번 입력 후 엔터 (비번은 잠금 방지를 위해 allow_typo=False)
                     elif current_fsm == "CERTI_STEP_5_FIND":
                         pos = find_certi_img("5.png", th=0.82)
                         if pos:
                             dprint(key, "🔎 [인증 5단계] '5.png' 감지 완료! 커서 이동 없이 즉시 비밀번호 입력 후 엔터를 칩니다.")
-                            pico_queues[key].put({"action": "WAIT", "delay_min": 0.15, "delay_max": 0.25})
-                            pico_queues[key].put({"action": "TYPE_STRING", "text": curr_acc_pw, "clear_first": False, "press_enter": True})
+                            pico_queues[key].put({"action": "WAIT", "delay_min": 0.22, "delay_max": 0.38})
+                            pico_queues[key].put({"action": "TYPE_STRING", "text": curr_acc_pw, "clear_first": False, "press_enter": True, "allow_typo": False})
                             state["target_fsm"] = "CERTI_STEP_7_FIND"
                             state["cooldown"] = curr_time + 0.8
                         else:
