@@ -4732,6 +4732,12 @@ def ai_commander_worker(target_pc):
                                 else:
                                     state["backup_target_fsm_before_certi"] = "IDLE"
                                 
+                                # 🔄 만약 커서 가림 때문에 DEATH_RESTART가 먼저 터져 버프가 0으로 날아갔었다면 즉시 원상복구!
+                                if prev_fsm.startswith("DEATH") and "pre_death_buff_backup" in state:
+                                    for bk_k, bk_v in state["pre_death_buff_backup"].items():
+                                        state[bk_k] = bk_v
+                                    dprint(key, "♻️ [버프 타이머 복원] 사망 오인식으로 초기화되었던 모든 버프/헤이 타이머를 완벽히 되살렸습니다!")
+
                                 # ⏸️ [버프 일시정지 & 계열마법 0초 초기화]
                                 state["buff_element_time"] = 0.0 # F2>F6 요정 계열마법은 재접속 시 증발하므로 0으로 초기화
                                 freeze_keys = ["windwalk", "shield", "holy", "enchant", "blessed", "dex", "decrease", "extra_f10", "light", "blue_pot"]
@@ -6703,6 +6709,24 @@ def ai_commander_worker(target_pc):
                                     click_x = death_roi_x1 + max_loc_death[0] + tmpl_w // 2
                                     click_y = death_roi_y1 + max_loc_death[1] + tmpl_h // 2
                                     state["death_btn_pos"] = (click_x, click_y)
+
+                                    # 💡 [인증 오인식 대비 백업] 만약 커서가 치워진 직후 인증창(certi.png)으로 판명되면 복구하기 위해 백업!
+                                    state["pre_death_buff_backup"] = {
+                                        "last_haste_time": state.get("last_haste_time", 0.0),
+                                        "real_buff_time": state.get("real_buff_time", 0.0),
+                                        "is_real_buff_received": state.get("is_real_buff_received", False),
+                                        "used_gangchol": state.get("used_gangchol", False),
+                                        "buff_shield_time": state.get("buff_shield_time", 0.0),
+                                        "buff_holy_time": state.get("buff_holy_time", 0.0),
+                                        "buff_enchant_time": state.get("buff_enchant_time", 0.0),
+                                        "buff_blessed_time": state.get("buff_blessed_time", 0.0),
+                                        "buff_dex_time": state.get("buff_dex_time", 0.0),
+                                        "buff_decrease_time": state.get("buff_decrease_time", 0.0),
+                                        "buff_windwalk_time": state.get("buff_windwalk_time", 0.0),
+                                        "buff_extra_f10_time": state.get("buff_extra_f10_time", 0.0),
+                                        "buff_light_time": state.get("buff_light_time", 0.0),
+                                        "buff_blue_pot_time": state.get("buff_blue_pot_time", 0.0)
+                                    }
 
                                     state["last_haste_time"] = 0.0; state["used_gangchol"] = False; state["buff_shield_time"] = 0.0; state["buff_holy_time"] = 0.0; state["buff_enchant_time"] = 0.0; state["buff_blessed_time"] = 0.0
                                     state["buff_element_time"] = 0.0; state["buff_dex_time"] = 0.0; state["buff_decrease_time"] = 0.0; state["buff_windwalk_time"] = 0.0; state["buff_extra_f10_time"] = 0.0
@@ -11292,6 +11316,9 @@ def ai_commander_worker(target_pc):
                                                 state["last_haste_time"] = curr_time
                                                 state["is_real_buff_received"] = True
                                                 state["real_buff_time"] = curr_time
+                                                # 💡 [핵심 픽스] 아랫줄에서 '버프 기록 없음(0.0)'으로 오판하지 않도록 지역 변수도 즉시 동기화!
+                                                last_haste = curr_time
+                                                time_since_buff = 0.0
 
                                         else:
                                             state["haste_visible_start"] = 0
