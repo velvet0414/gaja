@@ -3728,15 +3728,19 @@ def pico_worker_thread(key):
                     h_sleep(0.20, 0.35)
 
             elif action == "CLOSE_TAB":
-                # 크롬 현재 탭 닫기 (Ctrl + W)
+                # 크롬 창 전체 완전 종료 (Ctrl + Shift + W)
                 send_keyboard_key(p_serial, p_lock, 128, 1) # Ctrl DOWN
+                h_sleep(0.04, 0.08)
+                send_keyboard_key(p_serial, p_lock, 129, 1) # Shift DOWN
                 h_sleep(0.04, 0.08)
                 send_keyboard_key(p_serial, p_lock, 119, 1) # 'w' DOWN
                 h_sleep(0.06, 0.10)
                 send_keyboard_key(p_serial, p_lock, 119, 0) # 'w' UP
                 h_sleep(0.04, 0.08)
+                send_keyboard_key(p_serial, p_lock, 129, 0) # Shift UP
+                h_sleep(0.04, 0.08)
                 send_keyboard_key(p_serial, p_lock, 128, 0) # Ctrl UP
-                h_sleep(0.25, 0.40)
+                h_sleep(0.60, 0.85) # 크롬 프로세스가 완전히 죽을 때까지 넉넉히 대기
 
             elif action == "OPEN_MINIMAP":
                 # 인게임 접속 후 미니맵 켜기 (Ctrl + M) 및 F1 탭 정렬
