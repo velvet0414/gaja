@@ -118,6 +118,72 @@ import win32com.client
 import pythoncom
 import heapq
 
+import base64
+import urllib.request
+
+# 💡 여기에 발급받으신 Gemini API 키를 입력하세요. (무료버전인 Gemini 1.5 Flash 사용 권장)
+GEMINI_API_KEY = "여기에_제미나이_API_KEY를_입력하세요"
+
+def analyze_captcha_with_gemini(img_bgr):
+    """
+    제미나이 Flash API를 호출하여 캡차의 정답 타일 중심 좌표 리스트를 반환합니다.
+    크롬 배너 밀림 현상을 무시하기 위해 화면 전체 픽셀 절대 좌표로 직접 리턴받습니다.
+    """
+    if GEMINI_API_KEY == "여기에_제미나이_API_KEY를_입력하세요":
+        print("⚠️ [제미나이 오류] API 키가 입력되지 않았습니다! 코드 상단에 GEMINI_API_KEY를 세팅해주세요.")
+        return []
+        
+    try:
+        import cv2
+        _, buffer = cv2.imencode('.jpg', img_bgr)
+        img_base64 = base64.b64encode(buffer).decode('utf-8')
+        
+        # 구글 리캡차 클릭을 유도하는 강력한 프롬프트
+        prompt = """
+        You are an expert at solving Google reCAPTCHA image challenges.
+        Look at the uploaded image. It contains a reCAPTCHA grid (3x3 or 4x4) and a prompt text (e.g. "Select all squares with crosswalks").
+        Find all grid tiles containing that target object.
+        Return the exact X, Y center pixel coordinates for each matching tile based on the full image size.
+        Format the result strictly as a JSON array of objects with "x" and "y" keys. 
+        Example: [{"x": 300, "y": 450}, {"x": 400, "y": 450}]
+        Do not output any markdown formatting, just the JSON string.
+        If there are no matching tiles, return an empty array [].
+        """
+        
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inline_data": {
+                            "mime_type": "image/jpeg",
+                            "data": img_base64
+                        }
+                    }
+                ]
+            }],
+            "generationConfig": {
+                "temperature": 0.1,
+                "response_mime_type": "application/json"
+            }
+        }
+        
+        req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=15) as response:
+            result_json = json.loads(response.read().decode('utf-8'))
+            text_resp = result_json['candidates'][0]['content']['parts'][0]['text']
+            
+            # JSON 파싱 (마크다운 백틱 찌꺼기 방어)
+            text_resp = text_resp.replace("```json", "").replace("```", "").strip()
+            coordinates = json.loads(text_resp)
+            return [(int(item['x']), int(item['y'])) for item in coordinates]
+            
+    except Exception as e:
+        print(f"⚠️ Gemini 캡차 판독 중 예외 발생: {e}")
+        return []
+
 from ultralytics import YOLO
 YOLO_CONF = 0.53
 
@@ -1966,6 +2032,16 @@ try:
         globals()["certi_color"] = cv2.imread("qq/certi/certi.png", cv2.IMREAD_COLOR)
         globals()["certi_mask"] = None
 except: globals()["certi_color"], globals()["certi_mask"] = None, None
+
+try:
+    _t2_path = "qq/certi/ticket2.png" if os.path.exists("qq/certi/ticket2.png") else "qq/ticket2.png"
+    ticket2_bgra = cv2.imread(_t2_path, cv2.IMREAD_UNCHANGED)
+    if ticket2_bgra is not None and len(ticket2_bgra.shape) == 3 and ticket2_bgra.shape[2] == 4:
+        globals()["ticket2_color"], globals()["ticket2_mask"] = ticket2_bgra[:, :, :3], ticket2_bgra[:, :, 3]
+    else:
+        globals()["ticket2_color"] = cv2.imread(_t2_path, cv2.IMREAD_COLOR)
+        globals()["ticket2_mask"] = None
+except: globals()["ticket2_color"], globals()["ticket2_mask"] = None, None
 # 👆👆 -----------------------------------------------------------------
 
 for v in HOTKEY_IMGS_MAP.values():
@@ -2531,95 +2607,133 @@ def find_cursor_pos(img_bgr, last_pos=None, check_circle=False, allow_full_scan=
     targets = []
     
     # ==============================================================================
-    # 🔐 [인증 추가 2-최적화] 인증 모드(is_certi_mode=True)일 때만 윈도우 커서를 리스트 맨 앞에 '추가' 장전!
+    # 🔐 [인증 모드 전용 커서 격리] 웹/바탕화면에서는 인게임 칼/포탈 커서를 철저히 배제하여 오매칭 원천 차단!
     if is_certi_mode:
-        if globals().get("cursor3_color") is not None and globals().get("cursor3_mask") is not None:
+        if globals().get("cursor3_color") is not None:
             targets.append((globals().get("cursor3_color"), globals().get("cursor3_mask"), 2, 2))
-        if globals().get("cursor4_color") is not None and globals().get("cursor4_mask") is not None:
+        if globals().get("cursor4_color") is not None:
             targets.append((globals().get("cursor4_color"), globals().get("cursor4_mask"), 2, 2))
+        # 웹 전용("WEB")이 아닐 때만(인게임 로그인/종료 팝업 단계) 기본 손가락 커서 보조 추가
+        if is_certi_mode != "WEB" and cursor_color is not None and cursor_mask is not None:
+            targets.append((cursor_color, cursor_mask, 5, 5))
+    else:
+        # ⚔️ [일반 사냥 모드] 기존 인게임 커서 장전
+        if cursor_color is not None and cursor_mask is not None: targets.append((cursor_color, cursor_mask, 5, 5))
+        
+        if globals().get("cursor_portal_color") is not None and globals().get("cursor_portal_mask") is not None:
+            targets.append((globals().get("cursor_portal_color"), globals().get("cursor_portal_mask"), 5, 5))
+
+        if globals().get("cursor2_color") is not None and globals().get("cursor2_mask") is not None:
+            try:
+                hp_roi = img_bgr[HP_Y_START:HP_Y_END, HP_X1:HP_X2]
+                hsv = cv2.cvtColor(hp_roi, cv2.COLOR_BGR2HSV)
+                mask_stone = cv2.inRange(hsv, (0, 0, 55), (180, 60, 87))
+
+                kernel_hp = np.ones((5, 1), np.uint8)
+                mask_stone = cv2.morphologyEx(mask_stone, cv2.MORPH_CLOSE, kernel_hp)
+                col_sums = np.sum(mask_stone > 0, axis=0)
+
+                is_cursed = False
+                for x in range(len(col_sums) - 1):
+                    if col_sums[x] >= 3 and col_sums[x+1] >= 5:
+                        is_cursed = True
+                        break
+
+                if is_cursed:
+                    targets.append((globals().get("cursor2_color"), globals().get("cursor2_mask"), 5, 5))
+            except: pass
+
+        if img_sword is not None and img_sword_mask is not None: targets.append((img_sword, img_sword_mask, 12, 12))
+        if check_circle and img_circle is not None and img_circle_mask is not None: targets.append((img_circle, img_circle_mask, 12, 12))
     # ==============================================================================
-
-    # ⚔️ [기본 유지] 인게임 커서들은 인증 모드든 사냥 모드든 항상 무조건 장전!
-    if cursor_color is not None and cursor_mask is not None: targets.append((cursor_color, cursor_mask, 5, 5))
-    
-    if globals().get("cursor_portal_color") is not None and globals().get("cursor_portal_mask") is not None:
-        targets.append((globals().get("cursor_portal_color"), globals().get("cursor_portal_mask"), 5, 5))
-
-    if globals().get("cursor2_color") is not None and globals().get("cursor2_mask") is not None:
-        try:
-            hp_roi = img_bgr[HP_Y_START:HP_Y_END, HP_X1:HP_X2]
-            hsv = cv2.cvtColor(hp_roi, cv2.COLOR_BGR2HSV)
-            mask_stone = cv2.inRange(hsv, (0, 0, 55), (180, 60, 87))
-
-            kernel_hp = np.ones((5, 1), np.uint8)
-            mask_stone = cv2.morphologyEx(mask_stone, cv2.MORPH_CLOSE, kernel_hp)
-            col_sums = np.sum(mask_stone > 0, axis=0)
-
-            is_cursed = False
-            for x in range(len(col_sums) - 1):
-                if col_sums[x] >= 3 and col_sums[x+1] >= 5:
-                    is_cursed = True
-                    break
-
-            if is_cursed:
-                targets.append((globals().get("cursor2_color"), globals().get("cursor2_mask"), 5, 5))
-        except: pass
-
-    if img_sword is not None and img_sword_mask is not None: targets.append((img_sword, img_sword_mask, 12, 12))
-    if check_circle and img_circle is not None and img_circle_mask is not None: targets.append((img_circle, img_circle_mask, 12, 12))
 
     if not targets: return None
     
     h, w = img_bgr.shape[:2]
-
     search_w = w
-
     safe_bgr = img_bgr.copy()
+
+    # 💡 흰색 웹페이지 배경(대비 없는 평탄한 영역)을 커서로 착각하는 현상 방어 필터
+    def is_valid_cursor_patch(src_img, px, py, tw, th):
+        if not is_certi_mode:
+            return True
+        patch = src_img[py:py+th, px:px+tw]
+        if patch.size == 0:
+            return False
+        # 실제 커서는 흰색 내부와 검은색 테두리가 공존하므로 표준편차(대비)가 높음 (하얀 웹 배경은 0에 가까움)
+        return float(np.std(patch)) >= 18.0
+
+    local_err_limit = 0.07 if is_certi_mode else 0.20
+    full_err_limit = 0.06 if is_certi_mode else 0.12
 
     if last_pos:
         lx, ly = last_pos; pad = 90
         x1, y1 = max(0, int(lx) - pad), max(0, int(ly) - pad)
         x2, y2 = min(search_w, int(lx) + pad), min(h, int(ly) + pad)
         if x2 > x1 and y2 > y1:
-
             roi = safe_bgr[y1:y2, x1:x2]
             if roi.shape[0] > 10 and roi.shape[1] > 10:
                 best_error = float('inf'); best_pos = None
                 for template, mask, hx, hy in targets:
                     try:
-                        res = cv2.matchTemplate(roi, template, cv2.TM_SQDIFF_NORMED, mask=mask)
-                        min_val, _, min_loc, _ = cv2.minMaxLoc(res)
+                        th_t, tw_t = template.shape[:2]
+                        if mask is not None:
+                            res = cv2.matchTemplate(roi, template, cv2.TM_SQDIFF_NORMED, mask=mask)
+                            min_val, _, min_loc, _ = cv2.minMaxLoc(res)
+                        else:
+                            res = cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED)
+                            _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                            min_val = 1.0 - max_val
+                            min_loc = max_loc
 
-                        if min_val <= 0.20: return (min_loc[0] + x1 + hx, min_loc[1] + y1 + hy)
+                        if not is_valid_cursor_patch(roi, min_loc[0], min_loc[1], tw_t, th_t):
+                            continue
+
+                        if min_val <= local_err_limit: return (min_loc[0] + x1 + hx, min_loc[1] + y1 + hy)
                         if min_val < best_error:
                             best_error = min_val
                             best_pos = (min_loc[0] + x1 + hx, min_loc[1] + y1 + hy)
                     except: continue
 
-                if best_error <= 0.20: return best_pos
+                if best_error <= local_err_limit: return best_pos
 
     if not allow_full_scan: return None
 
-    t_str = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    print(f"[{t_str}] ⚠️ [SYSTEM] 90px 반경 커서 이탈 감지! 전체 화면 풀스캔 가동 중...")
+    if not is_certi_mode:
+        t_str = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        print(f"[{t_str}] ⚠️ [SYSTEM] 90px 반경 커서 이탈 감지! 전체 화면 풀스캔 가동 중...")
 
     search_img = safe_bgr[:, :search_w]
     best_error = float('inf'); best_pos = None
     for template, mask, hx, hy in targets:
         try:
-            res = cv2.matchTemplate(search_img, template, cv2.TM_SQDIFF_NORMED, mask=mask)
-            min_val, _, min_loc, _ = cv2.minMaxLoc(res)
+            th_t, tw_t = template.shape[:2]
+            if mask is not None:
+                res = cv2.matchTemplate(search_img, template, cv2.TM_SQDIFF_NORMED, mask=mask)
+                min_val, _, min_loc, _ = cv2.minMaxLoc(res)
+            else:
+                res = cv2.matchTemplate(search_img, template, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                min_val = 1.0 - max_val
+                min_loc = max_loc
 
-            if min_val <= 0.12:
-                print(f"[{t_str}] ✅ [SYSTEM] 자가 치유 성공! 커서 복구 완료 (오차: {min_val*100:.1f}%)")
+            if not is_valid_cursor_patch(search_img, min_loc[0], min_loc[1], tw_t, th_t):
+                continue
+
+            if min_val <= full_err_limit:
+                if not is_certi_mode:
+                    t_str = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                    print(f"[{t_str}] ✅ [SYSTEM] 자가 치유 성공! 커서 복구 완료 (오차: {min_val*100:.1f}%)")
                 return (min_loc[0] + hx, min_loc[1] + hy)
             if min_val < best_error:
                 best_error = min_val
                 best_pos = (min_loc[0] + hx, min_loc[1] + hy)
         except: continue
 
-    if best_error <= 0.12:
-        print(f"[{t_str}] ✅ [SYSTEM] 자가 치유 성공! 커서 복구 완료 (오차: {best_error*100:.1f}%)")
+    if best_error <= full_err_limit:
+        if not is_certi_mode:
+            t_str = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            print(f"[{t_str}] ✅ [SYSTEM] 자가 치유 성공! 커서 복구 완료 (오차: {best_error*100:.1f}%)")
         return best_pos
 
     return None
@@ -2693,6 +2807,10 @@ def generate_human_deltas(target_dx, target_dy, duration=None, behavior="NORMAL"
         duration *= g_val(0.6, 0.8)
         overshoot_prob = 0.0
         noise_mult = g_val(0.2, 0.3)
+    elif behavior == "CERTI":
+        # 💡 [웹 인증 전용] 우측 이동 시 발생하던 50% 오버슈트(지나침)를 0%로 차단하여 1:1 칼영점 유지
+        overshoot_prob = 0.0
+        noise_mult = g_val(0.2, 0.35)
     elif behavior == "NORMAL":
         dist_factor = max(0.0, min(1.0, (distance - 30.0) / 90.0))
         if target_dx > 0: base_prob = g_val(0.45, 0.55)
@@ -3375,26 +3493,19 @@ def pico_worker_thread(key):
                 text_val = str(cmd.get("text", ""))
                 clear_first = cmd.get("clear_first", False)
                 press_enter = cmd.get("press_enter", False)
-                allow_typo = cmd.get("allow_typo", True)
-
-                # 인간화된 단일 키 탭 함수 (고정 76ms 탈피 -> 45~115ms 가변 체공)
-                def human_key_tap(kcode):
-                    send_keyboard_key(p_serial, p_lock, kcode, 1)
-                    h_sleep(0.045, 0.115)
-                    send_keyboard_key(p_serial, p_lock, kcode, 0)
 
                 # 기존 입력칸 내용 지우기 옵션 (Ctrl + A -> Backspace)
                 if clear_first:
                     send_keyboard_key(p_serial, p_lock, 128, 1) # Ctrl DOWN
-                    h_sleep(0.05, 0.10)
+                    h_sleep(0.04, 0.08)
                     send_keyboard_key(p_serial, p_lock, 97, 1)  # 'a' DOWN
-                    h_sleep(0.05, 0.10)
+                    h_sleep(0.05, 0.09)
                     send_keyboard_key(p_serial, p_lock, 97, 0)  # 'a' UP
-                    h_sleep(0.04, 0.09)
+                    h_sleep(0.04, 0.08)
                     send_keyboard_key(p_serial, p_lock, 128, 0) # Ctrl UP
+                    h_sleep(0.08, 0.14)
+                    k_tap(178) # Backspace
                     h_sleep(0.10, 0.18)
-                    human_key_tap(178) # Backspace
-                    h_sleep(0.12, 0.22)
 
                 shift_char_map = {
                     '!': ord('1'), '@': ord('2'), '#': ord('3'), '$': ord('4'), '%': ord('5'),
@@ -3403,90 +3514,37 @@ def pico_worker_thread(key):
                     '<': ord(','), '>': ord('.'), '?': ord('/'), '{': ord('['), '}': ord(']'), '|': ord('\\')
                 }
 
-                # ⌨️ 실제 물리 키보드(QWERTY) 기준 주변 인접 키 맵핑
-                QWERTY_ADJACENT_MAP = {
-                    'q': 'wa12', 'w': 'qeas23', 'e': 'wrsd34', 'r': 'etdf45', 't': 'ryfg56',
-                    'y': 'tugh67', 'u': 'yijh78', 'i': 'uokj89', 'o': 'iplk90', 'p': 'ol0',
-                    'a': 'qwsz', 's': 'awedxz', 'd': 'serfcx', 'f': 'drtgvc', 'g': 'ftyhbv',
-                    'h': 'gyujnb', 'j': 'huikmn', 'k': 'jiolm', 'l': 'kop',
-                    'z': 'asx', 'x': 'zsdc', 'c': 'xdfv', 'v': 'cfgb', 'b': 'vghn', 'n': 'bhjm', 'm': 'njk',
-                    '1': '2q', '2': '13qw', '3': '24we', '4': '35er', '5': '46rt',
-                    '6': '57ty', '7': '68yu', '8': '79ui', '9': '80io', '0': '9op'
-                }
-
-                step_since_check = 0
-                typo_count = 0
-                max_typos = 2 # 한 입력란 당 최대 오타 2회 제한
-                prev_ch = None
-
-                for idx_c, ch in enumerate(text_val):
+                for ch in text_val:
                     if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
                         break
 
-                    # 🧠 [마디 호흡(Chunking)] 영문<->숫자 전환, '@', '.' 앞뒤, 전화번호 마디마다 미세 멈칫함 부여
-                    if prev_ch is not None:
-                        is_type_switch = (prev_ch.isalpha() != ch.isalpha()) and (prev_ch.isalnum() and ch.isalnum())
-                        is_special_boundary = (ch in ['@', '.'] or prev_ch in ['@', '.'])
-                        is_phone_chunk = text_val.isdigit() and idx_c in [3, 7]
-                        if is_type_switch or is_special_boundary or is_phone_chunk:
-                            h_sleep(0.16, 0.35)
-
-                    # 🎯 [인접 키 오타 & 백스페이스 교정] 매 2번의 키 입력마다 20% 확률로 주변 키 오타 발생
-                    step_since_check += 1
-                    ch_low = ch.lower()
-                    if allow_typo and typo_count < max_typos and step_since_check >= 2 and ch_low in QWERTY_ADJACENT_MAP:
-                        step_since_check = 0
-                        if random.random() < 0.20:
-                            wrong_ch = random.choice(QWERTY_ADJACENT_MAP[ch_low])
-                            typo_count += 1
-                            dprint(key, f"✍️ [인간화 오타 연출] '{ch}' 입력 중 인접 키 '{wrong_ch}' 오타 발생 ➔ 백스페이스 수정!")
-
-                            # 1) 잘못된 주변 키 입력
-                            human_key_tap(ord(wrong_ch))
-                            # 2) 사람이 오타를 눈으로 인지하는 시간 (0.18 ~ 0.38초)
-                            h_sleep(0.18, 0.38)
-                            if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
-                                break
-                            # 3) Backspace(178)로 지우기
-                            human_key_tap(178)
-                            # 4) 지운 후 원래 키로 손가락을 고쳐 잡는 시간 (0.10 ~ 0.22초)
-                            h_sleep(0.10, 0.22)
-                            # 직후 최소 1글자는 더 치고 나서 다음 2타 카운트가 돌도록 -1 세팅
-                            step_since_check = -1
-
-                    # 실제 목표 글자 입력
                     if ch in shift_char_map:
                         base_k = shift_char_map[ch]
                         send_keyboard_key(p_serial, p_lock, 129, 1) # Shift DOWN
-                        h_sleep(0.05, 0.11)
+                        h_sleep(0.04, 0.08)
                         send_keyboard_key(p_serial, p_lock, base_k, 1)
-                        h_sleep(0.045, 0.105)
+                        h_sleep(0.05, 0.09)
                         send_keyboard_key(p_serial, p_lock, base_k, 0)
-                        h_sleep(0.04, 0.09)
+                        h_sleep(0.04, 0.08)
                         send_keyboard_key(p_serial, p_lock, 129, 0) # Shift UP
                     elif 'A' <= ch <= 'Z':
                         kcode = ord(ch.lower())
                         send_keyboard_key(p_serial, p_lock, 129, 1) # Shift DOWN
-                        h_sleep(0.05, 0.11)
+                        h_sleep(0.04, 0.08)
                         send_keyboard_key(p_serial, p_lock, kcode, 1)
-                        h_sleep(0.045, 0.105)
+                        h_sleep(0.05, 0.09)
                         send_keyboard_key(p_serial, p_lock, kcode, 0)
-                        h_sleep(0.04, 0.09)
+                        h_sleep(0.04, 0.08)
                         send_keyboard_key(p_serial, p_lock, 129, 0) # Shift UP
                     else:
-                        human_key_tap(ord(ch))
+                        k_tap(ord(ch))
 
-                    prev_ch = ch
-
-                    # 글자 간 기본 타건 간격 (가변 리듬: 가끔 15% 확률로 살짝 느린 타건 섞기)
-                    if random.random() < 0.15:
-                        h_sleep(0.13, 0.24)
-                    else:
-                        h_sleep(0.055, 0.135)
+                    # 글자 간 가우스 난수 타건 간격
+                    h_sleep(0.05, 0.12)
 
                 if press_enter:
-                    h_sleep(0.22, 0.42)
-                    human_key_tap(176) # Enter 키 입력
+                    h_sleep(0.18, 0.30)
+                    k_tap(176) # Enter 키 입력
                     h_sleep(0.20, 0.35)
 
             elif action == "CLOSE_TAB":
@@ -4556,7 +4614,7 @@ def clear_movements_only(q_obj):
         for item in q_obj.queue:
             action = item.get("action")
 
-            if action in ["ESCAPE", "TELEPORT", "HEAL", "POTION", "ANTIDOTE", "SWEEP_START", "SWEEP_STOP", "BUFF_COMBO", "BODY_TO_MIND", "HOLD_KEY", "SHIFT_SPACE", "SHIFT_CLICK_BRAKE", "MOUSE_WHEEL", "WAIT", "SPECIAL_ACK"]:
+            if action in ["ESCAPE", "TELEPORT", "HEAL", "POTION", "ANTIDOTE", "SWEEP_START", "SWEEP_STOP", "BUFF_COMBO", "BODY_TO_MIND", "HOLD_KEY", "SHIFT_SPACE", "SHIFT_CLICK_BRAKE", "MOUSE_WHEEL", "WAIT", "SPECIAL_ACK", "OPEN_MINIMAP", "HOME_MACRO", "CERTI_CLICK", "TYPE_STRING", "CLOSE_TAB"]:
                 criticals.append(item)
             else:
                 if action in ["HOVER", "ATTACK", "SINGLE_ATTACK"]:
@@ -4730,12 +4788,16 @@ def ai_commander_worker(target_pc):
 
             if state.get("is_hunt_active", False) and not state.get("is_paused", False) and not is_certi_mode:
                 
-                # 💡 [Deep Think 방어막] 우측에 Restart창이 떠서 사망 의심이 켜지면 쿨타임 무시하고 인증창부터 최우선 팩트 체크!
+                # 💡 [Deep Think 방어막] 우측에 Restart창이 떠서 사망 의심이 켜지면 쿨타임 무시하고 인증창/이용시간만료창부터 최우선 팩트 체크!
                 is_death_suspected = (state.get("death_detect_start", 0) > 0) or current_fsm.startswith("DEATH_RESTART")
                 
                 if is_death_suspected or curr_time > state.get("next_certi_check", 0):
                     state["next_certi_check"] = curr_time + 1.0 
                     
+                    detected_popup_type = None
+                    detected_val = 0.0
+
+                    # 1) certi.png 검사
                     c_color = globals().get("certi_color")
                     c_mask = globals().get("certi_mask")
                     if c_color is not None:
@@ -4744,78 +4806,100 @@ def ai_commander_worker(target_pc):
                                 res_c = cv2.matchTemplate(img_bgr, c_color, cv2.TM_CCORR_NORMED, mask=cv2.merge([c_mask]*3))
                             else:
                                 res_c = cv2.matchTemplate(img_bgr, c_color, cv2.TM_CCOEFF_NORMED)
-                            
                             _, max_val_c, _, _ = cv2.minMaxLoc(res_c)
-                            
-                            # 💡 진입 조건: 90% 일치 시 발동!
                             if max_val_c >= 0.90:
-                                dprint(key, f"🚨 [인증 최우선 감지] certi.png ({max_val_c*100:.1f}%) 포착! 죽음(Restart) 오발동을 캔슬하고 인증 모드로 진입합니다!")
-                                
-                                # 💀 1. 사망 감지 타이머 및 변수 완전 폭파 (사망 로직 무효화)
-                                state["death_detect_start"] = 0 
-                                state["last_death_val"] = 0.0
-                                state["town_thread_running"] = False
-
-                                state["abort_macro"] = True
-                                with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                                clear_movements_only(pico_queues[key])
-                                pico_queues[key].put({"action": "FORCE_RELEASE"})
-                                
-                                if state.get("sweep_active", False):
-                                    pico_queues[key].put({"action": "SWEEP_STOP"})
-                                    state["sweep_active"] = False
-                                if state.get("body_held", False):
-                                    if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], 200, 0)
-                                    state["body_held"] = False
-                                
-                                state["is_attacking"] = False
-                                state["arrow_is_firing"] = False
-                                state["has_fired_arrow"] = False
-                                state["arrow_empty_timer"] = 0.0 # 💡 바탕화면에서 F1(윈도우 도움말 엣지) 켜짐 원천 차단!
-                                state["is_pulling"] = False
-                                state["loot_state"] = "IDLE"
-                                
-                                # 📌 2. 인증 진입 전 상태 정밀 백업 (마을 정비 중이었으면 무조건 창고 이동부터 재시작하도록 저장)
-                                prev_fsm = str(state.get("target_fsm", "IDLE"))
-                                was_town_maint = (
-                                    prev_fsm.startswith("TOWN_MAINT") or
-                                    prev_fsm == "SHUTDOWN_WAIT" or
-                                    prev_fsm.startswith("WEAPON_REPAIR") or
-                                    state.get("town_thread_running", False) or
-                                    (prev_fsm.startswith("INV_CLEAN") and str(state.get("inv_clean_done_next_fsm", "")).startswith("TOWN_MAINT")) or
-                                    (prev_fsm.startswith("HK_HEAL") and str(state.get("hk_return_fsm", "")).startswith("TOWN_MAINT")) or
-                                    (prev_fsm.startswith("BUFFING") and str(state.get("buff_return_fsm", "")).startswith("TOWN_MAINT"))
-                                )
-                                if was_town_maint:
-                                    state["backup_target_fsm_before_certi"] = "TOWN_MAINT_WH_GO"
-                                elif prev_fsm in ["PARTY_WAIT", "PARTY_ACTIVE_STANDBY"]:
-                                    state["backup_target_fsm_before_certi"] = prev_fsm
-                                else:
-                                    state["backup_target_fsm_before_certi"] = "IDLE"
-                                
-                                # 🔄 만약 커서 가림 때문에 DEATH_RESTART가 먼저 터져 버프가 0으로 날아갔었다면 즉시 원상복구!
-                                if prev_fsm.startswith("DEATH") and "pre_death_buff_backup" in state:
-                                    for bk_k, bk_v in state["pre_death_buff_backup"].items():
-                                        state[bk_k] = bk_v
-                                    dprint(key, "♻️ [버프 타이머 복원] 사망 오인식으로 초기화되었던 모든 버프/헤이 타이머를 완벽히 되살렸습니다!")
-
-                                # ⏸️ [버프 일시정지 & 계열마법 0초 초기화]
-                                state["buff_element_time"] = 0.0 # F2>F6 요정 계열마법은 재접속 시 증발하므로 0으로 초기화
-                                freeze_keys = ["windwalk", "shield", "holy", "enchant", "blessed", "dex", "decrease", "extra_f10", "light", "blue_pot"]
-                                state["certi_frozen_buffs"] = {
-                                    bk: max(0.0, state.get(f"buff_{bk}_time", 0.0) - curr_time)
-                                    for bk in freeze_keys
-                                }
-                                state["certi_haste_elapsed"] = (curr_time - state["last_haste_time"]) if state.get("last_haste_time", 0.0) > 0.0 else None
-                                state["certi_real_buff_elapsed"] = (curr_time - state["real_buff_time"]) if state.get("real_buff_time", 0.0) > 0.0 else None
-                                save_buff_times(ai_states)
-                                dprint(key, "⏸️ [버프 타이머 동결] 모든 버프 잔여시간 일시정지 완료! (계열마법 F2>F6은 0초로 리셋)")
-
-                                state["target_fsm"] = "CERTI_GOTO_DESKTOP" # 무적 인증 FSM 돌입
-                                current_fsm = "CERTI_GOTO_DESKTOP"
-                                state["cooldown"] = curr_time + 0.5
-                                is_certi_mode = True
+                                detected_popup_type = "CERTI"
+                                detected_val = max_val_c
                         except: pass
+
+                    # 2) ticket2.png (인게임 이용시간 만료 팝업) 검사 (90% 일치 시 발동)
+                    if detected_popup_type is None:
+                        t2_color = globals().get("ticket2_color")
+                        t2_mask = globals().get("ticket2_mask")
+                        if t2_color is not None:
+                            try:
+                                if t2_mask is not None:
+                                    res_t2 = cv2.matchTemplate(img_bgr, t2_color, cv2.TM_CCORR_NORMED, mask=cv2.merge([t2_mask]*3))
+                                else:
+                                    res_t2 = cv2.matchTemplate(img_bgr, t2_color, cv2.TM_CCOEFF_NORMED)
+                                _, max_val_t2, _, _ = cv2.minMaxLoc(res_t2)
+                                if max_val_t2 >= 0.90:
+                                    detected_popup_type = "TICKET2"
+                                    detected_val = max_val_t2
+                            except: pass
+
+                    if detected_popup_type is not None:
+                        # 💀 1. 사망 감지 타이머 및 변수 완전 폭파 (사망 로직 무효화)
+                        state["death_detect_start"] = 0 
+                        state["last_death_val"] = 0.0
+                        state["town_thread_running"] = False
+
+                        state["abort_macro"] = True
+                        with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                        clear_movements_only(pico_queues[key])
+                        pico_queues[key].put({"action": "FORCE_RELEASE"})
+                        
+                        if state.get("sweep_active", False):
+                            pico_queues[key].put({"action": "SWEEP_STOP"})
+                            state["sweep_active"] = False
+                        if state.get("body_held", False):
+                            if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], 200, 0)
+                            state["body_held"] = False
+                        
+                        state["is_attacking"] = False
+                        state["arrow_is_firing"] = False
+                        state["has_fired_arrow"] = False
+                        state["arrow_empty_timer"] = 0.0 # 💡 바탕화면에서 F1(윈도우 도움말 엣지) 켜짐 원천 차단!
+                        state["is_pulling"] = False
+                        state["loot_state"] = "IDLE"
+                        
+                        # 📌 2. 진입 전 상태 정밀 백업 (마을 정비 중이었으면 무조건 창고 이동부터 재시작하도록 저장)
+                        prev_fsm = str(state.get("target_fsm", "IDLE"))
+                        was_town_maint = (
+                            prev_fsm.startswith("TOWN_MAINT") or
+                            prev_fsm == "SHUTDOWN_WAIT" or
+                            prev_fsm.startswith("WEAPON_REPAIR") or
+                            state.get("town_thread_running", False) or
+                            (prev_fsm.startswith("INV_CLEAN") and str(state.get("inv_clean_done_next_fsm", "")).startswith("TOWN_MAINT")) or
+                            (prev_fsm.startswith("HK_HEAL") and str(state.get("hk_return_fsm", "")).startswith("TOWN_MAINT")) or
+                            (prev_fsm.startswith("BUFFING") and str(state.get("buff_return_fsm", "")).startswith("TOWN_MAINT"))
+                        )
+                        if was_town_maint:
+                            state["backup_target_fsm_before_certi"] = "TOWN_MAINT_WH_GO"
+                        elif prev_fsm in ["PARTY_WAIT", "PARTY_ACTIVE_STANDBY"]:
+                            state["backup_target_fsm_before_certi"] = prev_fsm
+                        else:
+                            state["backup_target_fsm_before_certi"] = "IDLE"
+                        
+                        # 🔄 만약 커서 가림 때문에 DEATH_RESTART가 먼저 터져 버프가 0으로 날아갔었다면 즉시 원상복구!
+                        if prev_fsm.startswith("DEATH") and "pre_death_buff_backup" in state:
+                            for bk_k, bk_v in state["pre_death_buff_backup"].items():
+                                state[bk_k] = bk_v
+                            dprint(key, "♻️ [버프 타이머 복원] 사망 오인식으로 초기화되었던 모든 버프/헤이 타이머를 완벽히 되살렸습니다!")
+
+                        # ⏸️ [버프 일시정지 & 계열마법 0초 초기화]
+                        state["buff_element_time"] = 0.0 # F2>F6 요정 계열마법은 재접속 시 증발하므로 0으로 초기화
+                        freeze_keys = ["windwalk", "shield", "holy", "enchant", "blessed", "dex", "decrease", "extra_f10", "light", "blue_pot"]
+                        state["certi_frozen_buffs"] = {
+                            bk: max(0.0, state.get(f"buff_{bk}_time", 0.0) - curr_time)
+                            for bk in freeze_keys
+                        }
+                        state["certi_haste_elapsed"] = (curr_time - state["last_haste_time"]) if state.get("last_haste_time", 0.0) > 0.0 else None
+                        state["certi_real_buff_elapsed"] = (curr_time - state["real_buff_time"]) if state.get("real_buff_time", 0.0) > 0.0 else None
+                        save_buff_times(ai_states)
+                        dprint(key, "⏸️ [버프 타이머 동결] 모든 버프 잔여시간 일시정지 완료! (계열마법 F2>F6은 0초로 리셋)")
+
+                        if detected_popup_type == "CERTI":
+                            dprint(key, f"🚨 [인증 최우선 감지] certi.png ({detected_val*100:.1f}%) 포착! 죽음(Restart) 오발동을 캔슬하고 인증 모드로 진입합니다!")
+                            state["target_fsm"] = "CERTI_GOTO_DESKTOP"
+                            current_fsm = "CERTI_GOTO_DESKTOP"
+                        else:
+                            dprint(key, f"🚨 [이용시간 만료 감지] ticket2.png ({detected_val*100:.1f}%) 포착! ok2 ➔ quit 클릭 후 바탕화면 13.png 재접속 단계로 직행합니다!")
+                            state["target_fsm"] = "CERTI_FIND_OK2_FIRST"
+                            current_fsm = "CERTI_FIND_OK2_FIRST"
+
+                        state["cooldown"] = curr_time + 0.5
+                        is_certi_mode = True
 
             # 🚨 [방어막 가동] 인증 모드에 진입했다면 인게임 처리 일절 스킵
             if is_certi_mode:
@@ -4885,9 +4969,18 @@ def ai_commander_worker(target_pc):
                         pass
                     return None
 
-                # 🎯 목표 좌표로 마우스 이동 예약 (도착 후 영점 검증 -> 클릭 -> 타이핑 연계)
+                # 🎯 목표 좌표로 마우스 이동 예약 (웹 화면 오인식 방어 + 무오버슈트 CERTI 궤적 적용)
                 def start_certi_move_and_action(tx, ty, next_fsm, double=False, type_text=None, press_enter=False, use_jitter=True, post_wait=0.5, desc=""):
-                    real_c = find_cursor_pos(img_bgr, last_pos=state.get("cursor_pos", [400, 300]), allow_full_scan=True, is_certi_mode=True)
+                    web_fsms = {
+                        "CERTI_STEP_2_FIND", "CERTI_STEP_3_FIND", "CERTI_STEP_5_FIND",
+                        "CERTI_STEP_7_FIND", "CERTI_STEP_8_FIND", "CERTI_STEP_8_BRANCH",
+                        "CERTI_CAPTCHA_SOLVE", "CERTI_CAPTCHA_SCROLL", "CERTI_WAIT_SUC", "CERTI_STEP_12_FIND"
+                    }
+                    is_web_step = (current_fsm in web_fsms)
+                    c_mode = "WEB" if is_web_step else True
+
+                    # 웹 내부에서는 풀스캔 오매칭을 막고 반경 90px 내 확실한 커서만 인정하며, I자/손모양 변신 시 직전 논리 좌표를 100% 신뢰
+                    real_c = find_cursor_pos(img_bgr, last_pos=state.get("cursor_pos", [400, 300]), allow_full_scan=(not is_web_step), is_certi_mode=c_mode)
                     if real_c:
                         cur_cx, cur_cy = real_c[0], real_c[1]
                         state["cursor_pos"] = [cur_cx, cur_cy]
@@ -4895,9 +4988,9 @@ def ai_commander_worker(target_pc):
                     else:
                         cur_cx, cur_cy = state.get("cursor_pos", [400, 300])
 
-                    # 💡 15.png 등 초소형 타겟(use_jitter=False)은 지터 0 고정, 일반 웹 버튼/입력칸은 자연스러운 가우시안 탄착군(가로 ±8px, 세로 ±2px) 적용
+                    # 💡 15.png 등 초소형 타겟(use_jitter=False)은 지터 0 고정, 일반 웹 버튼/입력칸은 중심부(가로 ±3px, 세로 ±2px) 타격
                     if use_jitter:
-                        fx = int(max(5, min(w - 5, tx + int(round(g_val(-8, 8))))))
+                        fx = int(max(5, min(w - 5, tx + int(round(g_val(-3, 3))))))
                         fy = int(max(5, min(h - 5, ty + int(round(g_val(-2, 2))))))
                     else:
                         fx = int(max(5, min(w - 5, tx)))
@@ -4907,7 +5000,8 @@ def ai_commander_worker(target_pc):
                     dist = math.hypot(dx, dy)
                     dur = apply_human_variance(0.08 + 0.035 * math.log2((dist / 20.0) + 1.0) if dist > 0 else 0.08) * 1.2
 
-                    deltas = generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)
+                    # 💡 behavior="CERTI"로 우측 오버슈트 편향을 원천 차단
+                    deltas = generate_human_deltas(dx, dy, duration=dur, behavior="CERTI", key=key)
                     if deltas:
                         pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas})
                     pico_queues[key].put({"action": "SPECIAL_ACK"})
@@ -4915,6 +5009,7 @@ def ai_commander_worker(target_pc):
                     state["special_ack_arrived"] = False
                     state["pico_arrived"] = False
                     state["cursor_pos"] = [fx, fy]
+                    state["real_cursor_pos"] = [fx, fy]
 
                     state["certi_target_pos"] = (fx, fy)
                     state["certi_click_double"] = double
@@ -4958,36 +5053,35 @@ def ai_commander_worker(target_pc):
                         state["target_fsm"] = "CERTI_STEP_1_FIND"
                         state["cooldown"] = curr_time + 1.5
 
-                    # 공통: 마우스 도착 확인 -> 자연스러운 1회 보정(초소형 타겟만 3회) -> 클릭 -> 제자리 자연 타이핑
+                    # 공통: 마우스 도착 확인 -> (초소형 15.png 타겟만 정밀 보정 / 웹 버튼은 I자·손모양 변신 오보정 방지를 위해 즉시 타격)
                     elif current_fsm == "CERTI_MOVE_VERIFY":
                         if state.pop("special_ack_arrived", False) or curr_time > state.get("certi_ack_timeout", 0):
                             tx, ty = state.get("certi_target_pos", (400, 300))
                             t_text = state.get("certi_type_text")
                             strict_aim = state.get("certi_strict_aim", False)
-                            allow_err = 1.5 if strict_aim else 8.0
-                            max_corr = 3 if strict_aim else 1
 
                             need_correction = False
-                            real_c = find_cursor_pos(img_bgr, last_pos=(tx, ty), allow_full_scan=True, is_certi_mode=True)
-                            if real_c:
-                                state["cursor_pos"] = list(real_c)
-                                state["real_cursor_pos"] = list(real_c)
-                                err_dist = math.hypot(tx - real_c[0], ty - real_c[1])
-                                if err_dist > allow_err and state.get("certi_corr_cnt", 0) < max_corr:
-                                    need_correction = True
-                                    corr_dx = tx - real_c[0]
-                                    corr_dy = ty - real_c[1]
-                                    dur_c = apply_human_variance(0.06 + 0.03 * math.log2((err_dist / 20.0) + 1.0))
-                                    deltas_c = generate_human_deltas(corr_dx, corr_dy, duration=dur_c, behavior="NORMAL", key=key)
-                                    if deltas_c:
-                                        pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas_c})
-                                    pico_queues[key].put({"action": "SPECIAL_ACK"})
-                                    state["special_ack_arrived"] = False
-                                    state["cursor_pos"] = [tx, ty]
-                                    state["certi_corr_cnt"] = state.get("certi_corr_cnt", 0) + 1
-                                    state["certi_ack_timeout"] = curr_time + dur_c + 1.0
-                                    state["cooldown"] = curr_time + 0.05
-                                    dprint(key, f"🎯 [커서 미세보정] 목표({tx},{ty})와 실제({real_c[0]},{real_c[1]}) 오차 {err_dist:.1f}px ➔ 1회 자연 보정")
+                            if strict_aim:
+                                real_c = find_cursor_pos(img_bgr, last_pos=(tx, ty), allow_full_scan=False, is_certi_mode=True)
+                                if real_c:
+                                    state["cursor_pos"] = list(real_c)
+                                    state["real_cursor_pos"] = list(real_c)
+                                    err_dist = math.hypot(tx - real_c[0], ty - real_c[1])
+                                    if err_dist > 1.5 and state.get("certi_corr_cnt", 0) < 3:
+                                        need_correction = True
+                                        corr_dx = tx - real_c[0]
+                                        corr_dy = ty - real_c[1]
+                                        dur_c = apply_human_variance(0.06 + 0.03 * math.log2((err_dist / 20.0) + 1.0))
+                                        deltas_c = generate_human_deltas(corr_dx, corr_dy, duration=dur_c, behavior="CERTI", key=key)
+                                        if deltas_c:
+                                            pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas_c})
+                                        pico_queues[key].put({"action": "SPECIAL_ACK"})
+                                        state["special_ack_arrived"] = False
+                                        state["cursor_pos"] = [tx, ty]
+                                        state["certi_corr_cnt"] = state.get("certi_corr_cnt", 0) + 1
+                                        state["certi_ack_timeout"] = curr_time + dur_c + 1.0
+                                        state["cooldown"] = curr_time + 0.05
+                                        dprint(key, f"🎯 [초소형 타겟 정밀보정] 목표({tx},{ty})와 실제({real_c[0]},{real_c[1]}) 오차 {err_dist:.1f}px ➔ 재조준")
 
                             if not need_correction:
                                 is_dbl = state.get("certi_click_double", False)
@@ -5077,16 +5171,19 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.2
 
-                    # 8클릭 후 분기점: fail.png (서브계정 전환) vs [9.png(메일) or 10.png(전번) 점수 비교 판독]
+                    # 8클릭 후 분기점: fail.png (서브계정 전환) vs 캡차 감지 vs [9.png(메일) or 10.png(전번) 점수 비교 판독]
                     elif current_fsm == "CERTI_STEP_8_BRANCH":
-                        # =========================================================================
-                        # 🚨 [추후 수정할 분기점 표기] 8.png 클릭 후 fail.png 감지 시 서브계정 인증 시도
-                        # =========================================================================
                         fail_pos = find_certi_img("fail.png", th=0.82)
+                        captcha_pos = find_certi_img("captcha.png", th=0.80) # 💡 캡차창 인식용 이미지 추가
+
                         if fail_pos:
                             dprint(key, "⚠️ [인증 분기점 - fail.png 감지] 인증 한도 초과(fail.png)가 포착되었습니다! (추후 서브계정 전환 로직 연결 예정)")
-                            # TODO: 마지막 단계에서 서브 계정(auth_sub1 ~ sub3)으로 스위칭하여 재시도하는 로직이 들어갈 자리입니다.
                             state["cooldown"] = curr_time + 1.0
+                        elif captcha_pos:
+                            dprint(key, "🚨 [인증 분기점 - 캡차 감지] 리캡차 화면이 나타났습니다! 제미나이 캡차 돌파 로직으로 진입합니다.")
+                            state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
+                            state["captcha_scroll_cnt"] = 0
+                            state["cooldown"] = curr_time + 0.5
                         else:
                             # 🟢 [정상 루트] 9.png(메일)와 10.png(전번)를 둘 다 스캔하여 90%(0.90) 이상 중 더 높은 점수로 결정
                             prev_box = state.get("certi_last_box")
@@ -5125,6 +5222,89 @@ def ai_commander_worker(target_pc):
                             else:
                                 state["certi_last_box"] = prev_box
                                 state["cooldown"] = curr_time + 0.2
+
+                    # =========================================================================
+                    # 🤖 [새로 추가된 캡차 전용 로직 (제미나이 연동 + 스크롤 + 확인 클릭)]
+                    # =========================================================================
+                    elif current_fsm == "CERTI_CAPTCHA_SOLVE":
+                        # 💡 [핵심 픽스 1] 마우스가 이미 움직이고 있을 때는 제미나이를 중복 호출하지 않도록 방어막 추가!
+                        is_hw_busy = state.get("hw_busy", False) or not pico_queues[key].empty()
+                        if not is_hw_busy:
+                            dprint(key, "🤖 [캡차 판독] 제미나이 API로 캡차 이미지를 분석하여 클릭할 타일을 찾습니다...")
+                            
+                            click_targets = analyze_captcha_with_gemini(img_bgr)
+                            
+                            if click_targets:
+                                dprint(key, f"🎯 [캡차 타격] 제미나이가 {len(click_targets)}개의 정답 타일을 찾았습니다! 순차적으로 클릭합니다.")
+                                
+                                cur_x, cur_y = state.get("cursor_pos", [400, 300])
+                                total_move_dur = 0.0
+                                for tx, ty in click_targets:
+                                    dx = tx - cur_x
+                                    dy = ty - cur_y
+                                    dur = apply_human_variance(0.12 + 0.04 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if math.hypot(dx, dy) > 0 else 0.1)
+                                    
+                                    pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)})
+                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.05, "delay_max": 0.1})
+                                    pico_queues[key].put({"action": "CERTI_CLICK", "double": False})
+                                    cur_x, cur_y = tx, ty
+                                    
+                                    # 💡 각 타일당 걸리는 예상 소요시간 누적 (이동 + 대기 + 클릭)
+                                    total_move_dur += (dur + 0.075 + 0.25)
+                                    
+                                state["cursor_pos"] = [cur_x, cur_y]
+                                
+                                # 💡 [핵심 픽스 2] 물리적 마우스 타격이 완전히 끝난 시점부터 + 4.5초를 대기하도록 타이머를 더욱 정밀하게 보정
+                                dprint(key, f"⏳ [동적 타일 대기] 물리 타격({total_move_dur:.1f}초) 및 타일 갱신 대기(4.5초) 후 재검사합니다...")
+                                state["captcha_wait_timer"] = curr_time + total_move_dur + 4.5
+                                state["target_fsm"] = "CERTI_CAPTCHA_WAIT_RECHECK"
+                                state["cooldown"] = curr_time + 0.5
+                            else:
+                                dprint(key, "✅ [판독 완료] 더 이상 클릭할 타일이 없습니다. 확인(confirm.png) 버튼을 찾기 위해 스크롤을 시도합니다.")
+                                state["captcha_scroll_cnt"] = 0
+                                state["target_fsm"] = "CERTI_CAPTCHA_SCROLL"
+                                state["cooldown"] = curr_time + 0.2
+                        else:
+                            state["cooldown"] = curr_time + 0.1
+
+                    elif current_fsm == "CERTI_CAPTCHA_WAIT_RECHECK":
+                        is_hw_busy = state.get("hw_busy", False) or not pico_queues[key].empty()
+                        if not is_hw_busy and curr_time > state.get("captcha_wait_timer", 0):
+                            dprint(key, "🔄 [이미지 갱신 완료] 다시 제미나이를 호출하여 추가된 타일이 있는지 확인합니다.")
+                            state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
+                            state["cooldown"] = curr_time + 0.1
+                        else:
+                            state["cooldown"] = curr_time + 0.1
+
+                    elif current_fsm == "CERTI_CAPTCHA_SCROLL":
+                        pos_confirm = find_certi_img("confirm.png", th=0.82)
+                        
+                        if pos_confirm:
+                            dprint(key, f"✅ [캡차 제출] 'confirm.png' 발견({pos_confirm[0]}, {pos_confirm[1]})! 클릭하여 캡차를 제출합니다.")
+                            state["captcha_scroll_cnt"] = 0
+                            # 💡 클릭 후 다시 8번 분기점(fail/9번/10번/캡차재등장)으로 돌아가 인증 통과 여부를 무한 팩트체크합니다.
+                            start_certi_move_and_action(
+                                pos_confirm[0], pos_confirm[1], 
+                                next_fsm="CERTI_STEP_8_BRANCH", 
+                                double=False, 
+                                post_wait=3.0, 
+                                desc="confirm.png 클릭 (캡차 제출)"
+                            )
+                        else:
+                            if state.get("captcha_scroll_cnt", 0) < 5:
+                                # 💡 [핵심 픽스 3] 마우스를 굳이 중앙으로 옮기지 않고, 마지막에 타일을 눌렀던 캡차 창 안쪽 위치에서 곧바로 휠을 내립니다. (오작동 방지)
+                                dprint(key, "🔽 [캡차 스크롤] 확인 버튼이 안 보입니다. 현재 위치에서 휠 스크롤을 내립니다.")
+                                
+                                pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": -5})
+                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.4, "delay_max": 0.6})
+                                
+                                state["captcha_scroll_cnt"] = state.get("captcha_scroll_cnt", 0) + 1
+                                state["cooldown"] = curr_time + 1.0
+                            else:
+                                dprint(key, "🚨 [캡차 오류] 스크롤을 여러 번 내렸으나 확인 버튼을 찾을 수 없습니다. 다시 판독 모드로 돌아갑니다.")
+                                state["captcha_scroll_cnt"] = 0
+                                state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
+                                state["cooldown"] = curr_time + 1.0
 
                     # 11단계: suc.png 감지되면 인증 성공 -> Ctrl+W로 현재 웹페이지 닫고 12.png 탐색으로 이동
                     elif current_fsm == "CERTI_WAIT_SUC":
@@ -5312,46 +5492,57 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.2
 
-                    # 최종 접속 확인 단계: dragon.png 감지 시 Ctrl+M으로 미니맵 켜고 인증 이전 상태로 복귀!
+                    # 최종 접속 확인 단계: dragon.png 감지 시 Ctrl+M으로 미니맵을 먼저 확실하게 켠 뒤 복귀! (ticket2.png 팝업 감시 병행)
                     elif current_fsm == "CERTI_WAIT_DRAGON":
-                        pos_dragon = find_certi_img("dragon.png", th=0.82)
-                        if pos_dragon:
-                            dprint(key, "🐉 [게임 접속 성공] 'dragon.png' 감지 완료! Ctrl+M을 눌러 미니맵을 켜고 이전 상태로 복귀합니다!")
-                            pico_queues[key].put({"action": "WAIT", "delay_min": 0.5, "delay_max": 0.8})
-                            pico_queues[key].put({"action": "OPEN_MINIMAP"})
-
-                            # ▶️ [버프 타이머 일시정지 해제 & 계열마법 0초 확정 저장]
-                            state["buff_element_time"] = 0.0
-                            state.pop("certi_frozen_buffs", None)
-                            state.pop("certi_haste_elapsed", None)
-                            state.pop("certi_real_buff_elapsed", None)
-                            save_buff_times(ai_states)
-                            dprint(key, "▶️ [버프 타이머 재개] 동결되었던 버프 시간이 다시 흐릅니다! (계열마법 F2>F6은 즉시 재시전 대기)")
-
-                            # 인게임 복귀를 위한 맵/커서/생존 타이머 안전 초기화
-                            state["dungeon_map_pos"] = None
-                            state["dungeon_last_map_pos"] = None
-                            state["dungeon_global_path"] = []
-                            state["certi_last_box"] = None
-                            state["was_manual_mode"] = True # 다음 프레임에 인게임 커서 영점 및 HP/MP 버퍼 자동 동기화
-
-                            restore_fsm = state.get("backup_target_fsm_before_certi", "IDLE")
-                            if restore_fsm == "TOWN_MAINT_WH_GO":
-                                dprint(key, "🏭 [마을 정비 복귀] 인증 전 마을 정비 모드였으므로, 꼬임 방지를 위해 창고 이동(TOWN_MAINT_WH_GO)부터 다시 시작합니다!")
-                                state["wh_target"] = 1
-                                state["pick_retry_cnt"] = 0
-                                state.pop("found_items_history", None)
-                                state["town_thread_running"] = False
-                                state["town_inv_cleaned_once"] = False
-                                state["town_wh_visited_for_weight"] = False
-                                state["target_fsm"] = "TOWN_MAINT_WH_GO"
-                            else:
-                                dprint(key, f"⚔️ [사냥 모드 복귀] 인증 전 사냥 상태({restore_fsm})로 즉시 복귀합니다!")
-                                state["target_fsm"] = restore_fsm
-
-                            state["cooldown"] = curr_time + 2.0
-                        else:
+                        pos_t2 = find_certi_img("ticket2.png", th=0.90) or find_certi_img("qq/ticket2.png", th=0.90)
+                        if pos_t2:
+                            dprint(key, "🚨 [접속 직후 ticket2.png 감지] 이용시간 만료 팝업 포착! ok2 ➔ quit 클릭 후 13.png 재접속 단계로 이동합니다!")
+                            state["target_fsm"] = "CERTI_FIND_OK2_FIRST"
                             state["cooldown"] = curr_time + 0.3
+                        else:
+                            pos_dragon = find_certi_img("dragon.png", th=0.82)
+                            if pos_dragon:
+                                dprint(key, "🐉 [게임 접속 성공] 'dragon.png' 감지 완료! 최우선으로 Ctrl+M을 눌러 미니맵부터 오픈합니다!")
+                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.5, "delay_max": 0.8})
+                                pico_queues[key].put({"action": "OPEN_MINIMAP"})
+                                # 💡 피코가 Ctrl+M과 F1을 끝까지 다 누를 때까지 인증 모드에서 대기(큐 증발 및 계열마법 새치기 원천 차단)
+                                state["target_fsm"] = "CERTI_DRAGON_MINIMAP_WAIT"
+                                state["cooldown"] = curr_time + 1.8
+                            else:
+                                state["cooldown"] = curr_time + 0.3
+
+                    # 미니맵 오픈(Ctrl+M -> F1) 물리적 타건 완료 후 사냥/정비 상태 최종 복귀
+                    elif current_fsm == "CERTI_DRAGON_MINIMAP_WAIT":
+                        # ▶️ [버프 타이머 일시정지 해제 & 계열마법 0초 확정 저장]
+                        state["buff_element_time"] = 0.0
+                        state.pop("certi_frozen_buffs", None)
+                        state.pop("certi_haste_elapsed", None)
+                        state.pop("certi_real_buff_elapsed", None)
+                        save_buff_times(ai_states)
+                        dprint(key, "🗺️ [미니맵 오픈 완료 & 버프 타이머 재개] 미니맵(Ctrl+M) 활성화 완료! 이제 이전 상태로 복귀하며 계열마법(F2>F6)을 시전합니다.")
+
+                        # 인게임 복귀를 위한 맵/커서/생존 타이머 안전 초기화
+                        state["dungeon_map_pos"] = None
+                        state["dungeon_last_map_pos"] = None
+                        state["dungeon_global_path"] = []
+                        state["certi_last_box"] = None
+                        state["was_manual_mode"] = True # 다음 프레임에 인게임 커서 영점 및 HP/MP 버퍼 자동 동기화
+
+                        restore_fsm = state.get("backup_target_fsm_before_certi", "IDLE")
+                        if restore_fsm == "TOWN_MAINT_WH_GO":
+                            dprint(key, "🏭 [마을 정비 복귀] 인증 전 마을 정비 모드였으므로, 꼬임 방지를 위해 창고 이동(TOWN_MAINT_WH_GO)부터 다시 시작합니다!")
+                            state["wh_target"] = 1
+                            state["pick_retry_cnt"] = 0
+                            state.pop("found_items_history", None)
+                            state["town_thread_running"] = False
+                            state["town_inv_cleaned_once"] = False
+                            state["town_wh_visited_for_weight"] = False
+                            state["target_fsm"] = "TOWN_MAINT_WH_GO"
+                        else:
+                            dprint(key, f"⚔️ [사냥 모드 복귀] 인증 전 사냥 상태({restore_fsm})로 즉시 복귀합니다!")
+                            state["target_fsm"] = restore_fsm
+
+                        state["cooldown"] = curr_time + 0.5
 
                     elif current_fsm == "CERTI_CURSOR_SYNC":
                         state["target_fsm"] = "CERTI_STEP_1_FIND"
