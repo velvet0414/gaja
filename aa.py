@@ -237,6 +237,186 @@ def send_to_cc(action, **kwargs):
     except:
         return False
 
+# ==============================================================================
+# 🌐 [내장 멀티 프록시 엔진] 미니컴 우회 크롬(sub.png) 전용 프록시 서버 및 회선 스위칭
+# ==============================================================================
+# 💡 "DIRECT"는 현재 이 중앙컴의 인터넷 회선(예: 211.217.49.47)으로 직접 나가는 1순위 우회 회선입니다.
+# 💡 내일 다른 중앙컴들의 회선을 추가로 물리시면 ["DIRECT", "다른중앙컴IP1", "다른중앙컴IP2"] 처럼 이어서 적어주세요.
+PROXY_EXIT_SERVERS = [
+    "DIRECT"
+]
+
+PROXY_DIRECT_EXIT_PORT = 31280
+MINI_PROXY_PORTS = {
+    "미니1": 31281, "미니2": 31282, "미니3": 31283, "미니4": 31284
+}
+CURRENT_PROXY_EXIT_IDX = {
+    "미니1": 0, "미니2": 0, "미니3": 0, "미니4": 0
+}
+
+def _proxy_pipe_sockets(s1, s2):
+    try:
+        while True:
+            data = s1.recv(8192)
+            if not data:
+                break
+            s2.sendall(data)
+    except Exception:
+        pass
+    finally:
+        try: s1.close()
+        except Exception: pass
+        try: s2.close()
+        except Exception: pass
+
+def _handle_proxy_client(client_sock, exit_target="DIRECT"):
+    remote_sock = None
+    try:
+        client_sock.settimeout(10.0)
+        try: client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except Exception: pass
+
+        # 1) 다른 중앙컴 회선(IP)으로 프록시 체이닝(토스)하는 경우
+        if exit_target and exit_target.upper() not in ["DIRECT", "LOCAL", "127.0.0.1", "LOCALHOST"]:
+            if ":" in exit_target:
+                ehost, eport = exit_target.rsplit(":", 1)
+                eport = int(eport)
+            else:
+                ehost, eport = exit_target.strip(), PROXY_DIRECT_EXIT_PORT
+
+            remote_sock = socket.create_connection((ehost, eport), timeout=8.0)
+            try: remote_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except Exception: pass
+            client_sock.settimeout(None)
+            remote_sock.settimeout(None)
+            threading.Thread(target=_proxy_pipe_sockets, args=(client_sock, remote_sock), daemon=True).start()
+            _proxy_pipe_sockets(remote_sock, client_sock)
+            return
+
+        # 2) 현재 중앙컴의 인터넷 회선(DIRECT)으로 직접 나가는 경우
+        req_data = b""
+        while b"\r\n\r\n" not in req_data and len(req_data) < 16384:
+            chunk = client_sock.recv(4096)
+            if not chunk:
+                break
+            req_data += chunk
+
+        if not req_data:
+            client_sock.close()
+            return
+
+        first_line = req_data.split(b"\r\n", 1)[0].decode("latin-1", errors="ignore")
+        parts = first_line.split(" ")
+        if len(parts) < 2:
+            client_sock.close()
+            return
+
+        method, target = parts[0].upper(), parts[1]
+
+        if method == "CONNECT":
+            # HTTPS 터널링 요청 처리
+            if ":" in target:
+                host, port_str = target.rsplit(":", 1)
+                port = int(port_str)
+            else:
+                host, port = target, 443
+
+            remote_sock = socket.create_connection((host, port), timeout=8.0)
+            try: remote_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except Exception: pass
+            client_sock.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            client_sock.settimeout(None)
+            remote_sock.settimeout(None)
+            threading.Thread(target=_proxy_pipe_sockets, args=(client_sock, remote_sock), daemon=True).start()
+            _proxy_pipe_sockets(remote_sock, client_sock)
+        else:
+            # 일반 HTTP 요청 처리
+            host = ""
+            port = 80
+            for line in req_data.split(b"\r\n")[1:]:
+                if not line:
+                    break
+                if line.lower().startswith(b"host:"):
+                    h_val = line.split(b":", 1)[1].strip().decode("latin-1", errors="ignore")
+                    if ":" in h_val:
+                        host, p_s = h_val.rsplit(":", 1)
+                        port = int(p_s)
+                    else:
+                        host = h_val
+                    break
+
+            if not host and "://" in target:
+                rest = target.split("://", 1)[1].split("/", 1)[0]
+                if ":" in rest:
+                    host, p_s = rest.rsplit(":", 1)
+                    port = int(p_s)
+                else:
+                    host = rest
+
+            if not host:
+                client_sock.close()
+                return
+
+            remote_sock = socket.create_connection((host, port), timeout=8.0)
+            try: remote_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except Exception: pass
+            remote_sock.sendall(req_data)
+            client_sock.settimeout(None)
+            remote_sock.settimeout(None)
+            threading.Thread(target=_proxy_pipe_sockets, args=(client_sock, remote_sock), daemon=True).start()
+            _proxy_pipe_sockets(remote_sock, client_sock)
+
+    except Exception:
+        try: client_sock.close()
+        except Exception: pass
+        if remote_sock:
+            try: remote_sock.close()
+            except Exception: pass
+
+def _start_proxy_listener(bind_port, pc_key=None):
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        srv.bind(("0.0.0.0", bind_port))
+        srv.listen(64)
+    except Exception:
+        try: srv.close()
+        except Exception: pass
+        return
+
+    if pc_key:
+        print(f"🌐 [우회 프록시 개통] {pc_key} 전용 크롬 우회 포트({bind_port}) 오픈 완료!")
+    else:
+        print(f"🌐 [중앙컴 출구 개통] 공통 프록시 출구 포트({bind_port}) 오픈 완료!")
+
+    while True:
+        try:
+            c_sock, _ = srv.accept()
+            if pc_key is None:
+                exit_t = "DIRECT"
+            else:
+                idx = CURRENT_PROXY_EXIT_IDX.get(pc_key, 0)
+                if idx < 0 or idx >= len(PROXY_EXIT_SERVERS):
+                    idx = 0
+                exit_t = PROXY_EXIT_SERVERS[idx]
+            threading.Thread(target=_handle_proxy_client, args=(c_sock, exit_t), daemon=True).start()
+        except Exception:
+            time.sleep(0.05)
+
+def _proxy_bootstrap_worker():
+    while not globals().get("TARGET_PC_KEY"):
+        time.sleep(0.1)
+    my_k = globals().get("TARGET_PC_KEY")
+    # 1) 중앙컴 공통 출구 포트(31280) 오픈 시도 (4개 프로세스 중 최초 1개만 바인딩됨)
+    threading.Thread(target=_start_proxy_listener, args=(PROXY_DIRECT_EXIT_PORT, None), daemon=True).start()
+    # 2) 내 미니컴 전용 우회 입구 포트(31281~31284) 오픈
+    my_proxy_port = MINI_PROXY_PORTS.get(my_k)
+    if my_proxy_port:
+        threading.Thread(target=_start_proxy_listener, args=(my_proxy_port, my_k), daemon=True).start()
+
+threading.Thread(target=_proxy_bootstrap_worker, daemon=True).start()
+# ==============================================================================
+
 import socket
 import threading
 import json
@@ -5041,7 +5221,7 @@ def ai_commander_worker(target_pc):
                 # 하드웨어가 타이핑/이동 중이면 끝날 때까지 대기 (단, CERTI_MOVE_VERIFY는 ACK 체크를 위해 통과)
                 is_hw_working = state.get("hw_busy", False) or not pico_queues[key].empty()
 
-                # ⏱️ [웹 인증 10초 타임아웃 워치독] 2.png 감지 단계부터 다음 이미지를 10초 이상 못 찾으면 크롬 닫고 1.png부터 재시작!
+                # ⏱️ [웹 인증 10초 타임아웃 워치독] 2.png 감지 단계부터 다음 이미지를 10초 이상 못 찾으면 크롬 닫고 다시 시작!
                 web_timeout_fsms = {
                     "CERTI_STEP_2_FIND", "CERTI_STEP_3_FIND", "CERTI_STEP_5_FIND",
                     "CERTI_STEP_7_FIND", "CERTI_STEP_8_FIND", "CERTI_STEP_8_BRANCH",
@@ -5051,7 +5231,8 @@ def ai_commander_worker(target_pc):
                     state["certi_web_last_fsm"] = current_fsm
                     state["certi_web_step_start"] = curr_time
                 elif curr_time - state.get("certi_web_step_start", curr_time) >= 10.0:
-                    dprint(key, f"⏰ [웹 인증 10초 타임아웃] '{current_fsm}' 단계에서 10초간 다음 이미지를 찾지 못했습니다! 크롬 창을 닫고(Ctrl+W) 1.png부터 다시 시작합니다.")
+                    icon_label = "sub.png(우회)" if state.get("certi_use_sub", False) else "1.png(기본)"
+                    dprint(key, f"⏰ [웹 인증 10초 타임아웃] '{current_fsm}' 단계에서 10초간 다음 이미지를 찾지 못했습니다! 크롬 창을 닫고(Ctrl+W) {icon_label}부터 다시 시작합니다.")
                     pico_queues[key].put({"action": "CLOSE_TAB"})
                     state["certi_web_last_fsm"] = None
                     state["certi_web_step_start"] = curr_time
@@ -5064,8 +5245,11 @@ def ai_commander_worker(target_pc):
 
                     # 0단계: 바탕화면 전환 (Win + D)
                     if current_fsm == "CERTI_GOTO_DESKTOP":
-                        dprint(key, "🖥️ [인증 시작] 바탕화면 가기(Win+D) 피코 타건 시전!")
-                        state["certi_account_idx"] = 0 # 0: 내 계정부터 시작
+                        dprint(key, "🖥️ [인증 시작] 바탕화면 가기(Win+D) 피코 타건 시전! (1차: 기본 1.png 시도)")
+                        state["certi_account_idx"] = 0     # 무조건 내 계정(auth_main) 사용
+                        state["certi_use_sub"] = False     # 1차 시도는 기본 크롬(1.png)
+                        state["certi_proxy_idx"] = 0       # 프록시 출구 번호 초기화
+                        CURRENT_PROXY_EXIT_IDX[key] = 0
                         state["certi_last_box"] = None
                         state["certi_done_logged"] = False
                         pico_queues[key].put({"action": "HOME_MACRO"})
@@ -5126,12 +5310,24 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.03
 
-                    # 1단계: 바탕화면에서 1.png 찾아 이동 후 더블클릭 (인증 웹창 열기)
+                    # 1단계: 바탕화면에서 1.png(기본) 또는 sub.png(프록시 우회) 찾아 이동 후 더블클릭
                     elif current_fsm == "CERTI_STEP_1_FIND":
-                        pos = find_certi_img("1.png", th=0.82)
+                        use_sub_now = state.get("certi_use_sub", False)
+                        if use_sub_now:
+                            pos = find_certi_img("sub.png", th=0.82) or find_certi_img("qq/sub.png", th=0.82)
+                            target_icon_name = "sub.png"
+                        else:
+                            pos = find_certi_img("1.png", th=0.82)
+                            target_icon_name = "1.png"
+
                         if pos:
-                            dprint(key, f"🔎 [인증 1단계] 바탕화면 '1.png' 발견({pos[0]}, {pos[1]})! 이동 후 더블클릭합니다.")
-                            start_certi_move_and_action(pos[0], pos[1], next_fsm="CERTI_STEP_2_FIND", double=True, desc="1.png 웹창 열기")
+                            if use_sub_now:
+                                p_idx = state.get("certi_proxy_idx", 0)
+                                exit_name = PROXY_EXIT_SERVERS[p_idx] if p_idx < len(PROXY_EXIT_SERVERS) else "DIRECT"
+                                dprint(key, f"🔎 [우회 인증 1단계] 바탕화면 'sub.png' 발견({pos[0]}, {pos[1]})! [프록시 출구 #{p_idx+1}: {exit_name}] 회선으로 더블클릭합니다.")
+                            else:
+                                dprint(key, f"🔎 [인증 1단계] 바탕화면 '1.png' 발견({pos[0]}, {pos[1]})! 이동 후 더블클릭합니다.")
+                            start_certi_move_and_action(pos[0], pos[1], next_fsm="CERTI_STEP_2_FIND", double=True, desc=f"{target_icon_name} 웹창 열기")
                         else:
                             state["cooldown"] = curr_time + 0.2
 
@@ -5190,14 +5386,44 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.2
 
-                    # 8클릭 후 분기점: fail.png (서브계정 전환) vs 캡차 감지 vs [9.png(메일) or 10.png(전번) 점수 비교 판독]
+                    # 8클릭 후 분기점: fail.png (프록시 우회 크롬 sub.png 전환) vs 캡차 감지 vs [9.png(메일) or 10.png(전번) 점수 비교 판독]
                     elif current_fsm == "CERTI_STEP_8_BRANCH":
                         fail_pos = find_certi_img("fail.png", th=0.82)
                         captcha_pos = find_certi_img("captcha.png", th=0.80) # 💡 캡차창 인식용 이미지 추가
 
                         if fail_pos:
-                            dprint(key, "⚠️ [인증 분기점 - fail.png 감지] 인증 한도 초과(fail.png)가 포착되었습니다! (추후 서브계정 전환 로직 연결 예정)")
-                            state["cooldown"] = curr_time + 1.0
+                            # 🚨 [핵심] fail.png 감지 시 즉시 Ctrl+W로 창을 닫고 바탕화면의 sub.png(프록시 우회 크롬)로 재시도!
+                            pico_queues[key].put({"action": "WAIT", "delay_min": 0.2, "delay_max": 0.35})
+                            pico_queues[key].put({"action": "CLOSE_TAB"})
+
+                            if not state.get("certi_use_sub", False):
+                                state["certi_use_sub"] = True
+                                state["certi_proxy_idx"] = 0
+                                CURRENT_PROXY_EXIT_IDX[key] = 0
+                                exit_name = PROXY_EXIT_SERVERS[0] if PROXY_EXIT_SERVERS else "DIRECT"
+                                dprint(key, f"⚠️ [인증 한도 초과 - fail.png 감지] 기본 회선(1.png) 한도 초과! 창을 닫고(Ctrl+W) 우회 크롬 'sub.png' [출구 #1: {exit_name}]로 즉시 전환합니다!")
+                                state["certi_web_last_fsm"] = None
+                                state["certi_last_box"] = None
+                                state["target_fsm"] = "CERTI_STEP_1_FIND"
+                                state["cooldown"] = curr_time + 1.2
+                            else:
+                                next_p_idx = state.get("certi_proxy_idx", 0) + 1
+                                if next_p_idx < len(PROXY_EXIT_SERVERS):
+                                    state["certi_proxy_idx"] = next_p_idx
+                                    CURRENT_PROXY_EXIT_IDX[key] = next_p_idx
+                                    exit_name = PROXY_EXIT_SERVERS[next_p_idx]
+                                    dprint(key, f"🔄 [우회 회선 변경 - fail.png 감지] 이전 프록시 회선도 한도 초과! 다음 프록시 회선 [출구 #{next_p_idx+1}: {exit_name}]으로 변경 후 'sub.png'를 다시 실행합니다!")
+                                    state["certi_web_last_fsm"] = None
+                                    state["certi_last_box"] = None
+                                    state["target_fsm"] = "CERTI_STEP_1_FIND"
+                                    state["cooldown"] = curr_time + 1.2
+                                else:
+                                    dprint(key, f"🚨 [모든 우회 회선 소진] 등록된 모든 프록시 회선({len(PROXY_EXIT_SERVERS)}개)에서도 fail.png가 떴습니다! 보호를 위해 일시정지합니다.")
+                                    pc_num_str = current_pc_num if current_pc_num else "1"
+                                    threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 {key} 인증 회선 모두 소진",), daemon=True).start()
+                                    state["is_paused"] = True
+                                    state["target_fsm"] = "IDLE"
+                                    state["cooldown"] = curr_time + 1.0
                         elif captcha_pos:
                             dprint(key, "🚨 [인증 분기점 - 캡차 감지] 리캡차 화면이 나타났습니다! 제미나이 캡차 돌파 로직으로 진입합니다.")
                             state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
