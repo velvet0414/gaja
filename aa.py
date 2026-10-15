@@ -5041,6 +5041,25 @@ def ai_commander_worker(target_pc):
                 # 하드웨어가 타이핑/이동 중이면 끝날 때까지 대기 (단, CERTI_MOVE_VERIFY는 ACK 체크를 위해 통과)
                 is_hw_working = state.get("hw_busy", False) or not pico_queues[key].empty()
 
+                # ⏱️ [웹 인증 10초 타임아웃 워치독] 2.png 감지 단계부터 다음 이미지를 10초 이상 못 찾으면 크롬 닫고 1.png부터 재시작!
+                web_timeout_fsms = {
+                    "CERTI_STEP_2_FIND", "CERTI_STEP_3_FIND", "CERTI_STEP_5_FIND",
+                    "CERTI_STEP_7_FIND", "CERTI_STEP_8_FIND", "CERTI_STEP_8_BRANCH",
+                    "CERTI_WAIT_SUC"
+                }
+                if current_fsm not in web_timeout_fsms or is_hw_working or state.get("certi_web_last_fsm") != current_fsm:
+                    state["certi_web_last_fsm"] = current_fsm
+                    state["certi_web_step_start"] = curr_time
+                elif curr_time - state.get("certi_web_step_start", curr_time) >= 10.0:
+                    dprint(key, f"⏰ [웹 인증 10초 타임아웃] '{current_fsm}' 단계에서 10초간 다음 이미지를 찾지 못했습니다! 크롬 창을 닫고(Ctrl+W) 1.png부터 다시 시작합니다.")
+                    pico_queues[key].put({"action": "CLOSE_TAB"})
+                    state["certi_web_last_fsm"] = None
+                    state["certi_web_step_start"] = curr_time
+                    state["certi_last_box"] = None
+                    state["target_fsm"] = "CERTI_STEP_1_FIND"
+                    state["cooldown"] = curr_time + 1.2
+                    continue
+
                 if curr_time >= state.get("cooldown", 0) and (not is_hw_working or current_fsm == "CERTI_MOVE_VERIFY"):
 
                     # 0단계: 바탕화면 전환 (Win + D)
