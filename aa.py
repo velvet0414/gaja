@@ -5669,15 +5669,22 @@ def ai_commander_worker(target_pc):
                                 state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
                                 state["cooldown"] = curr_time + 1.0
 
-                    # 11단계: suc.png 감지되면 인증 성공 -> Ctrl+W로 현재 웹페이지 닫고 12.png 탐색으로 이동
+                    # 11단계: suc.png 감지되면 인증 성공 -> 웹페이지 닫고 12.png(또는 게임이 꺼진 상태면 13.png 직행) 탐색으로 이동
                     elif current_fsm == "CERTI_WAIT_SUC":
                         pos_suc = find_certi_img("suc.png", th=0.82)
                         if pos_suc:
-                            dprint(key, "✅ [웹 인증 성공] 'suc.png' 감지 완료! Ctrl+W를 눌러 웹페이지를 닫고 12.png를 찾습니다.")
                             pico_queues[key].put({"action": "WAIT", "delay_min": 0.2, "delay_max": 0.35})
                             pico_queues[key].put({"action": "CLOSE_TAB"})
-                            state["target_fsm"] = "CERTI_STEP_12_FIND"
-                            state["cooldown"] = curr_time + 1.0
+                            if state.pop("certi_from_closed_game", False):
+                                dprint(key, "✅ [웹 인증 성공 - 신규 접속 모드] 'suc.png' 감지 완료! 게임이 꺼져 있는 상태이므로 12.png(기존창 종료)를 생략하고 즉시 13.png(게임 실행)로 직행합니다!")
+                                state["certi_13_wait_mode"] = "CLOSED_START"
+                                state["certi_next_desktop_time"] = 0.0
+                                state["target_fsm"] = "CERTI_STEP_13_FIND"
+                                state["cooldown"] = curr_time + 1.2
+                            else:
+                                dprint(key, "✅ [웹 인증 성공] 'suc.png' 감지 완료! 웹페이지를 닫고 12.png를 찾습니다.")
+                                state["target_fsm"] = "CERTI_STEP_12_FIND"
+                                state["cooldown"] = curr_time + 1.0
                         else:
                             state["cooldown"] = curr_time + 0.2
 
@@ -5718,9 +5725,9 @@ def ai_commander_worker(target_pc):
                             if w_mode == "TICKET":
                                 wait_sec = g_val(7.0, 10.0)
                                 dprint(key, f"⏳ [이용권 오류 후 재실행 대기] '13.png' 감지 완료! {wait_sec:.1f}초(7~10초) 대기 후 더블클릭합니다.")
-                            elif w_mode == "RETRY_1MIN":
-                                wait_sec = g_val(1.0, 2.0)
-                                dprint(key, f"🔄 [1분 무응답 재실행] '13.png' 감지 완료! {wait_sec:.1f}초 뒤 즉시 다시 더블클릭합니다.")
+                            elif w_mode in ["RETRY_1MIN", "CLOSED_START"]:
+                                wait_sec = g_val(1.5, 2.5)
+                                dprint(key, f"🚀 [게임 즉시 실행 대기] 바탕화면 '13.png' 감지 완료! {wait_sec:.1f}초 뒤 더블클릭하여 게임을 실행합니다.")
                             else:
                                 wait_sec = g_val(10.0, 20.0)
                                 dprint(key, f"⏳ [게임 재실행 대기] 바탕화면 '13.png' 감지 완료! 바로 실행하지 않고 {wait_sec:.1f}초(10~20초) 대기합니다.")
@@ -5890,6 +5897,7 @@ def ai_commander_worker(target_pc):
                         state["dungeon_global_path"] = []
                         state["certi_last_box"] = None
                         state["was_manual_mode"] = True # 다음 프레임에 인게임 커서 영점 및 HP/MP 버퍼 자동 동기화
+                        state["post_certi_poison_fast_until"] = curr_time + 10.0 # 💡 인증 후 재접속 직후 10초간 독 감지 시 딜레이 없이 즉시 해독
 
                         restore_fsm = state.get("backup_target_fsm_before_certi", "IDLE")
                         if restore_fsm == "TOWN_MAINT_WH_GO":
@@ -7230,7 +7238,10 @@ def ai_commander_worker(target_pc):
             total_p_frames = len(state["poison_history"])
             true_p_frames = sum(1 for p in state["poison_history"] if p[1])
 
-            if total_p_frames > 0:
+            if curr_time < state.get("post_certi_poison_fast_until", 0.0):
+                # 💡 인증 후 재접속 직후에는 1.5초 누적 대기를 생략하고 초록색 피통 감지 즉시 독 상태로 판정!
+                is_poisoned = bool(raw_poison)
+            elif total_p_frames > 0:
                 history_span = state["poison_history"][-1][0] - state["poison_history"][0][0]
 
                 if history_span >= 1.5:
@@ -13782,15 +13793,19 @@ def ai_commander_worker(target_pc):
 
                     if is_poisoned:
                         if state.get("poison_timer", 0) == 0:
-                            try: p_delay = float(settings.get("poison_delay", 5.5))
-                            except: p_delay = 5.5
+                            if curr_time < state.get("post_certi_poison_fast_until", 0.0):
+                                state["poison_timer"] = curr_time - 0.01
+                                dprint(key, "🚨 [인증 복귀 즉시 해독] 재접속 직후 독 감염 상태 확인! GUI 딜레이를 무시하고 즉시 해독합니다!")
+                            else:
+                                try: p_delay = float(settings.get("poison_delay", 5.5))
+                                except: p_delay = 5.5
 
-                            adjusted_delay = max(0.1, p_delay - 2.0)
+                                adjusted_delay = max(0.1, p_delay - 2.0)
 
-                            state["poison_timer"] = curr_time + g_time(adjusted_delay, adjusted_delay + 1.2, key)
-                            dprint(key, f"🧪 [독 확정] 2초 누적 검증 완료! 환불 적용하여 약 {adjusted_delay:.1f}초 뒤 해독합니다.")
+                                state["poison_timer"] = curr_time + g_time(adjusted_delay, adjusted_delay + 1.2, key)
+                                dprint(key, f"🧪 [독 확정] 2초 누적 검증 완료! 환불 적용하여 약 {adjusted_delay:.1f}초 뒤 해독합니다.")
 
-                        elif curr_time > state["poison_timer"] and curr_time > state.get("antidote_cd", 0):
+                        if curr_time > state["poison_timer"] and curr_time > state.get("antidote_cd", 0):
 
                             poison_type = settings.get("poison_type", "해독제")
 
@@ -24997,6 +25012,62 @@ for i, pc in enumerate(MINI_PCS):
         threading.Thread(target=_worker, daemon=True).start()
 
     tk.Button(auth_btn_frame, text="⚡ 미니컴 sub 아이콘 자동생성", font=("맑은 고딕", 8, "bold"), bg="#00838F", fg="white", relief="flat", command=lambda k=key: create_sub_shortcut_on_mini(k)).pack(side="left", fill="x", expand=True, padx=2)
+
+    auth_launch_frame = tk.Frame(tab_auth, bg=BG_PANEL)
+    auth_launch_frame.pack(side="top", fill="x", padx=10, pady=(2, 4))
+
+    def start_manual_certi_and_launch(target_key=key):
+        if not picos.get(target_key):
+            print(f"❌ [{target_key}] 피코가 연결되어 있지 않습니다!")
+            return
+
+        global active_manual_target
+        if active_manual_target == target_key:
+            toggle_manual(None)
+
+        # 사냥이 꺼져 있다면 사냥 가동 상태로 전환
+        if not ai_states.get(target_key, {}).get("is_hunt_active", False):
+            toggle_individual_hunt(target_key)
+
+        st = ai_states[target_key]
+        curr_t = time.time()
+
+        # 바탕화면에서 F1 키 등이 눌리지 않도록 기존 큐 즉시 초기화
+        st["abort_macro"] = True
+        with pico_queues[target_key].mutex:
+            pico_queues[target_key].queue.clear()
+        pico_queues[target_key].put({"action": "FORCE_RELEASE"})
+
+        st["is_paused"] = False
+        st["is_attacking"] = False
+        st["arrow_is_firing"] = False
+        st["has_fired_arrow"] = False
+        st["arrow_empty_timer"] = 0.0
+        st["is_pulling"] = False
+        st["loot_state"] = "IDLE"
+        st["death_detect_start"] = 0
+
+        # 버프 타이머 동결 및 재접속 후 계열마법(F2>F6) 시전 예약
+        st["buff_element_time"] = 0.0
+        freeze_keys = ["windwalk", "shield", "holy", "enchant", "blessed", "dex", "decrease", "extra_f10", "light", "blue_pot"]
+        st["certi_frozen_buffs"] = {
+            bk: max(0.0, st.get(f"buff_{bk}_time", 0.0) - curr_t)
+            for bk in freeze_keys
+        }
+        st["certi_haste_elapsed"] = (curr_t - st["last_haste_time"]) if st.get("last_haste_time", 0.0) > 0.0 else None
+        st["certi_real_buff_elapsed"] = (curr_t - st["real_buff_time"]) if st.get("real_buff_time", 0.0) > 0.0 else None
+        save_buff_times(ai_states)
+
+        # 게임이 꺼진 상태에서 시작했음을 표시 (suc.png 이후 12.png 생략하고 13.png로 직행)
+        st["certi_from_closed_game"] = True
+        st["backup_target_fsm_before_certi"] = "IDLE"
+        st["target_fsm"] = "CERTI_GOTO_DESKTOP"
+        st["backup_target_fsm"] = "CERTI_GOTO_DESKTOP"
+        st["cooldown"] = curr_t + 0.2
+
+        dprint(target_key, "🚀 [수동 인증 & 게임접속 가동] 게임 미실행 상태에서 웹 인증(1.png/sub.png) 후 게임 자동 접속(13.png) 시퀀스를 시작합니다!")
+
+    tk.Button(auth_launch_frame, text="🚀 웹 인증 ➔ 게임 자동접속 시작 (게임 꺼진 상태용)", font=("맑은 고딕", 8, "bold"), bg="#E65100", fg="white", relief="flat", pady=3, command=lambda k=key: start_manual_certi_and_launch(k)).pack(side="top", fill="x", expand=True, padx=2)
     # =============================================================
 
     bottom_frame = tk.Frame(col_frame, bg=BG_PANEL)
