@@ -256,12 +256,13 @@ CENTRAL_TAILSCALE_MAP = {
     "13": "100.73.27.56",    # home (작업 및 테스트용 중앙13번)
 }
 
+CENTRAL_ORDER = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"]
 PROXY_DIRECT_EXIT_PORT = 31280
 MINI_PROXY_PORTS = {
     "미니1": 31281, "미니2": 31282, "미니3": 31283, "미니4": 31284
 }
-CURRENT_PROXY_EXIT_IDX = {
-    "미니1": 0, "미니2": 0, "미니3": 0, "미니4": 0
+CURRENT_PROXY_TARGET_NUM = {
+    "미니1": None, "미니2": None, "미니3": None, "미니4": None
 }
 ALIVE_OTHER_PROXIES = []
 _LAST_PROXY_LOG_TIME = 0.0
@@ -281,28 +282,52 @@ def _get_my_local_ips():
         pass
     return ips
 
-def get_other_central_proxy_ips():
-    """현재 실제로 31280 포트가 열려 있는(살아있는) 타 중앙컴 리스트를 우선 반환합니다."""
-    if ALIVE_OTHER_PROXIES:
-        return list(ALIVE_OTHER_PROXIES)
+def get_my_central_num():
+    """내 중앙컴의 테일스케일 IP(또는 GUI 컴 번호)를 기반으로 내 중앙컴 번호(1~13)를 정확히 반환합니다."""
     my_ips = _get_my_local_ips()
-    my_num = str(globals().get("current_pc_num", "")).strip()
-    other_list = []
     for c_num, ts_ip in CENTRAL_TAILSCALE_MAP.items():
-        if c_num == my_num or ts_ip in my_ips:
-            continue
-        other_list.append((c_num, ts_ip))
-    return other_list
+        if ts_ip in my_ips:
+            return c_num
+    gui_num = str(globals().get("current_pc_num", "1")).strip()
+    if gui_num in CENTRAL_TAILSCALE_MAP:
+        return gui_num
+    return "1"
+
+def get_next_central_in_order(curr_c_num):
+    """
+    현재 중앙컴 번호(curr_c_num)의 '다음 번호(+1)'부터 순차적으로 돌며
+    살아있는 다음 중앙컴 번호를 반환합니다. 한 바퀴를 다 돌면 내 중앙컴 번호(my_num)로 복귀합니다.
+    """
+    my_num = get_my_central_num()
+    curr_str = str(curr_c_num).strip()
+    if curr_str not in CENTRAL_ORDER:
+        curr_str = my_num
+
+    start_idx = CENTRAL_ORDER.index(curr_str)
+    alive_nums = {c_num for c_num, _ in ALIVE_OTHER_PROXIES}
+    total_cnt = len(CENTRAL_ORDER)
+
+    for step in range(1, total_cnt + 1):
+        cand_num = CENTRAL_ORDER[(start_idx + step) % total_cnt]
+        if cand_num == my_num:
+            return my_num
+        # 백그라운드 생존 리스트에 있거나(켜져 있는 중앙컴), 아직 스캔 전이면 선택
+        if not alive_nums or cand_num in alive_nums:
+            return cand_num
+
+    return my_num
 
 def _proxy_health_checker_thread():
     """5초마다 백그라운드에서 31280 포트가 열린 다른 중앙컴을 미리 체크하여 접속 딜레이를 0초로 만듭니다."""
     global ALIVE_OTHER_PROXIES
     while True:
-        my_ips = _get_my_local_ips()
-        my_num = str(globals().get("current_pc_num", "")).strip()
+        my_num = get_my_central_num()
         alive_temp = []
-        for c_num, ts_ip in CENTRAL_TAILSCALE_MAP.items():
-            if c_num == my_num or ts_ip in my_ips:
+        for c_num in CENTRAL_ORDER:
+            if c_num == my_num:
+                continue
+            ts_ip = CENTRAL_TAILSCALE_MAP.get(c_num)
+            if not ts_ip:
                 continue
             try:
                 s = socket.create_connection((ts_ip, PROXY_DIRECT_EXIT_PORT), timeout=0.4)
@@ -336,20 +361,39 @@ def _handle_proxy_client(client_sock, is_exit_server=False, pc_key=None):
         try: client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except Exception: pass
 
-        # 1) 미니컴 전용 입구(31281~31284)로 들어온 경우 -> 살아있는 타 중앙컴(31280)으로 0초 토스!
+        # 1) 미니컴 전용 입구(31281~31284)로 들어온 경우 -> 지정된 순번의 타 중앙컴(31280)으로 토스!
         if not is_exit_server:
             now_t = time.time()
-            alive_list = list(ALIVE_OTHER_PROXIES)
-            if alive_list:
-                idx = CURRENT_PROXY_EXIT_IDX.get(pc_key, 0) if pc_key else 0
-                c_num, ehost = alive_list[idx % len(alive_list)]
+            my_num = get_my_central_num()
+            target_num = CURRENT_PROXY_TARGET_NUM.get(pc_key) if pc_key else None
+            if not target_num or target_num == my_num or target_num not in CENTRAL_TAILSCALE_MAP:
+                target_num = get_next_central_in_order(my_num)
+                if pc_key:
+                    CURRENT_PROXY_TARGET_NUM[pc_key] = target_num
+
+            # 지정된 타 중앙컴부터 시작해 만약 꺼져 있으면 +1 다음 번호로 즉시 연결
+            start_idx = CENTRAL_ORDER.index(target_num) if target_num in CENTRAL_ORDER else 0
+            total_cnt = len(CENTRAL_ORDER)
+            for offset in range(total_cnt):
+                cand_num = CENTRAL_ORDER[(start_idx + offset) % total_cnt]
+                if cand_num == my_num:
+                    continue
+                ehost = CENTRAL_TAILSCALE_MAP.get(cand_num)
+                if not ehost:
+                    continue
                 try:
                     remote_sock = socket.create_connection((ehost, PROXY_DIRECT_EXIT_PORT), timeout=1.5)
+                    if offset > 0 and pc_key:
+                        CURRENT_PROXY_TARGET_NUM[pc_key] = cand_num
+                        if pc_key in ai_states:
+                            ai_states[pc_key]["certi_curr_central"] = cand_num
                     if now_t - _LAST_PROXY_LOG_TIME > 3.0:
-                        print(f"🔗 [프록시 우회 연결] {pc_key} 크롬 ➔ [{c_num}번 중앙컴({ehost})] 회선으로 정상 연결됨!")
+                        print(f"🔗 [프록시 우회 연결] {pc_key} 크롬 ➔ [{cand_num}번 중앙컴({ehost})] 회선으로 정상 연결됨!")
                         _LAST_PROXY_LOG_TIME = now_t
+                    break
                 except Exception:
                     remote_sock = None
+                    continue
 
             if remote_sock is not None:
                 try: remote_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -2051,7 +2095,7 @@ def _save_settings_internal():
                 "auth_delay_end_min": v["auth_delay_end_min"].get().strip() if "auth_delay_end_min" in v else "58",
                 "auth_delay_sec": v["auth_delay_sec"].get().strip() if "auth_delay_sec" in v else "180",
 
-                "certi_main_ban_until": st.get("certi_main_ban_until", saved_settings.get(k, {}).get("certi_main_ban_until", 0.0)),
+                "certi_curr_central": st.get("certi_curr_central", saved_settings.get(k, {}).get("certi_curr_central", "")),
                 "accum_hunt_time": st.get("accum_hunt_time", 0.0),
                 "fatigue_mult": st.get("fatigue_mult", 1.0),
                 "next_fatigue_target": st.get("next_fatigue_target", 0.0)
@@ -5326,24 +5370,30 @@ def ai_commander_worker(target_pc):
                     # 0단계: 바탕화면 전환 (Win + D)
                     elif current_fsm == "CERTI_GOTO_DESKTOP":
                         state["certi_account_idx"] = 0     # 무조건 내 계정(auth_main) 사용
-                        state["certi_proxy_tried_cnt"] = 0 # 이번 인증 내 프록시 순환 횟수 초기화
+                        state["certi_fail_streak"] = 0     # 이번 인증 내 연속 실패 횟수 초기화
                         state["certi_last_box"] = None
                         state["certi_done_logged"] = False
 
-                        # 미니컴 자체 IP(1.png) 16시간 패스 타이머 확인 (매크로 재실행 시에도 유지)
-                        ban_until = max(
-                            float(state.get("certi_main_ban_until", 0.0)),
-                            float(saved_settings.get(key, {}).get("certi_main_ban_until", 0.0))
-                        )
-                        state["certi_main_ban_until"] = ban_until
+                        my_num = get_my_central_num()
+                        saved_c = str(state.get("certi_curr_central") or saved_settings.get(key, {}).get("certi_curr_central") or "").strip()
+                        if saved_c not in CENTRAL_ORDER:
+                            saved_c = my_num
 
-                        if curr_time < ban_until:
-                            rem_h = (ban_until - curr_time) / 3600.0
-                            state["certi_use_sub"] = True
-                            dprint(key, f"🖥️ [인증 시작 - 본인IP 16시간 패스중] 자체 IP(1.png) 쿨타임이 {rem_h:.1f}시간 남았습니다! 1.png를 건너뛰고 즉시 'sub.png'로 직행합니다!")
-                        else:
+                        # 만약 이전에 저장된 타 중앙컴이 현재 꺼져 있다면 다음 켜진 순번으로 자동 보정
+                        alive_nums = {c_n for c_n, _ in ALIVE_OTHER_PROXIES}
+                        if saved_c != my_num and alive_nums and saved_c not in alive_nums:
+                            saved_c = get_next_central_in_order(saved_c)
+
+                        state["certi_curr_central"] = saved_c
+
+                        if saved_c == my_num:
                             state["certi_use_sub"] = False
-                            dprint(key, "🖥️ [인증 시작] 바탕화면 가기(Win+D) 피코 타건 시전! (1차: 기본 1.png 시도)")
+                            dprint(key, f"🖥️ [인증 시작 - 본인컴({my_num}번) 회선] 바탕화면(Win+D) 이동 후 기본 '1.png'로 인증을 시작합니다! (fail 발생 전까지 유지)")
+                        else:
+                            state["certi_use_sub"] = True
+                            CURRENT_PROXY_TARGET_NUM[key] = saved_c
+                            c_ip = CENTRAL_TAILSCALE_MAP.get(saved_c, "")
+                            dprint(key, f"🖥️ [인증 시작 - {saved_c}번 중앙컴({c_ip}) 고정 유지] fail 발생 전까지 [{saved_c}번 중앙컴] 프록시('sub.png')를 계속 사용합니다!")
 
                         pico_queues[key].put({"action": "HOME_MACRO"})
                         state["target_fsm"] = "CERTI_STEP_1_FIND"
@@ -5403,7 +5453,7 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.03
 
-                    # 1단계: 바탕화면에서 1.png(기본) 또는 sub.png(타 중앙컴 프록시 우회) 찾아 이동 후 더블클릭
+                    # 1단계: 바탕화면에서 1.png(본인 회선) 또는 sub.png(타 중앙컴 순차 프록시) 찾아 이동 후 더블클릭
                     elif current_fsm == "CERTI_STEP_1_FIND":
                         use_sub_now = state.get("certi_use_sub", False)
                         if use_sub_now:
@@ -5415,16 +5465,13 @@ def ai_commander_worker(target_pc):
 
                         if pos:
                             if use_sub_now:
-                                other_srvs = get_other_central_proxy_ips()
-                                p_idx = CURRENT_PROXY_EXIT_IDX.get(key, 0)
-                                if other_srvs and p_idx < len(other_srvs):
-                                    c_num, c_ip = other_srvs[p_idx]
-                                    exit_label = f"{c_num}번 중앙컴({c_ip})"
-                                else:
-                                    exit_label = "예비 회선"
-                                dprint(key, f"🔎 [우회 인증 1단계] 바탕화면 'sub.png' 발견({pos[0]}, {pos[1]})! 내 중앙컴을 패스하고 [{exit_label}] 회선으로 더블클릭합니다.")
+                                t_num = CURRENT_PROXY_TARGET_NUM.get(key) or state.get("certi_curr_central") or get_next_central_in_order(get_my_central_num())
+                                CURRENT_PROXY_TARGET_NUM[key] = t_num
+                                t_ip = CENTRAL_TAILSCALE_MAP.get(t_num, "")
+                                dprint(key, f"🔎 [우회 인증 1단계] 바탕화면 'sub.png' 발견({pos[0]}, {pos[1]})! [{t_num}번 중앙컴({t_ip})] 회선으로 더블클릭합니다.")
                             else:
-                                dprint(key, f"🔎 [인증 1단계] 바탕화면 '1.png' 발견({pos[0]}, {pos[1]})! 이동 후 더블클릭합니다.")
+                                my_num = get_my_central_num()
+                                dprint(key, f"🔎 [인증 1단계] 바탕화면 '1.png' 발견({pos[0]}, {pos[1]})! 본인({my_num}번 중앙컴) 회선으로 더블클릭합니다.")
                             start_certi_move_and_action(pos[0], pos[1], next_fsm="CERTI_STEP_2_FIND", double=True, desc=f"{target_icon_name} 웹창 열기")
                         else:
                             state["cooldown"] = curr_time + 0.2
@@ -5490,58 +5537,49 @@ def ai_commander_worker(target_pc):
                         captcha_pos = find_certi_img("captcha.png", th=0.80) # 💡 캡차창 인식용 이미지 추가
 
                         if fail_pos:
-                            # 🚨 [핵심] fail.png 감지 시 즉시 창 전체 종료(Ctrl+Shift+W) 후, 16시간 동안 자체 IP(1.png) 패스 및 타 중앙컴 프록시(sub.png)로 직행!
+                            # 🚨 [핵심] fail.png 감지 시 즉시 창 전체 종료(Ctrl+Shift+W) 후, (현재 중앙컴 번호 + 1) 다음 순번으로 이동!
                             pico_queues[key].put({"action": "WAIT", "delay_min": 0.2, "delay_max": 0.35})
                             pico_queues[key].put({"action": "CLOSE_TAB"})
 
-                            other_srvs = get_other_central_proxy_ips()
-                            total_other = len(other_srvs)
-
+                            my_num = get_my_central_num()
+                            prev_c = str(state.get("certi_curr_central") or my_num).strip()
                             if not state.get("certi_use_sub", False):
-                                # 1.png(자체 IP) 실패 -> 향후 16시간(57,600초) 동안 1.png 시도 금지 기록 및 영구 저장
-                                state["certi_main_ban_until"] = curr_time + (16.0 * 3600.0)
+                                prev_c = my_num
+
+                            streak = state.get("certi_fail_streak", 0) + 1
+                            state["certi_fail_streak"] = streak
+                            max_lines = (len(ALIVE_OTHER_PROXIES) + 1) if ALIVE_OTHER_PROXIES else len(CENTRAL_ORDER)
+
+                            if streak >= max_lines:
+                                dprint(key, f"🚨 [모든 회선 소진] 본인 회선 및 가용한 모든 타 중앙컴 회선({max_lines}개)을 한 바퀴 다 돌았으나 모두 fail.png가 떴습니다! 일시정지합니다.")
+                                pc_num_str = current_pc_num if current_pc_num else my_num
+                                threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 {key} 인증 회선 모두 소진",), daemon=True).start()
+                                state["is_paused"] = True
+                                state["target_fsm"] = "IDLE"
+                                state["cooldown"] = curr_time + 1.0
+                            else:
+                                next_c = get_next_central_in_order(prev_c)
+                                state["certi_curr_central"] = next_c
                                 if key not in saved_settings:
                                     saved_settings[key] = {}
-                                saved_settings[key]["certi_main_ban_until"] = state["certi_main_ban_until"]
+                                saved_settings[key]["certi_curr_central"] = next_c
                                 save_settings()
 
-                                state["certi_use_sub"] = True
-                                state["certi_proxy_tried_cnt"] = 0
-                                curr_p_idx = CURRENT_PROXY_EXIT_IDX.get(key, 0) % max(1, total_other)
-                                CURRENT_PROXY_EXIT_IDX[key] = curr_p_idx
-                                state["certi_proxy_idx"] = curr_p_idx
-
-                                if total_other > 0:
-                                    c_num, c_ip = other_srvs[curr_p_idx]
-                                    exit_label = f"{c_num}번 중앙컴({c_ip})"
+                                if next_c == my_num:
+                                    # 12(또는 13)까지 돌고 다시 내 중앙컴 차례로 돌아온 경우 -> 본인 IP(1.png)로 복귀!
+                                    state["certi_use_sub"] = False
+                                    dprint(key, f"🔄 [순번 한 바퀴 완료 ➔ 본인IP 복귀] {prev_c}번 중앙컴 한도 초과! 순환을 마치고 다시 본인({my_num}번 중앙컴) '1.png' 회선으로 전환합니다!")
                                 else:
-                                    exit_label = "DIRECT"
-                                dprint(key, f"⚠️ [자체IP 한도초과 - 16시간 패스 설정] 기본 회선(1.png) fail.png 감지! 향후 16시간 동안 1.png를 패스하고 [{exit_label}] 프록시('sub.png')로 전환합니다!")
+                                    # 다음 번호(+1) 타 중앙컴 프록시(sub.png)로 이동!
+                                    state["certi_use_sub"] = True
+                                    CURRENT_PROXY_TARGET_NUM[key] = next_c
+                                    next_ip = CENTRAL_TAILSCALE_MAP.get(next_c, "")
+                                    dprint(key, f"🔄 [다음 순번 중앙컴 이동] {prev_c}번 회선 fail.png 감지! 다음 순번인 [{next_c}번 중앙컴({next_ip})] 프록시('sub.png')로 전환합니다!")
+
                                 state["certi_web_last_fsm"] = None
                                 state["certi_last_box"] = None
                                 state["target_fsm"] = "CERTI_STEP_1_FIND"
                                 state["cooldown"] = curr_time + 1.2
-                            else:
-                                tried_cnt = state.get("certi_proxy_tried_cnt", 0) + 1
-                                state["certi_proxy_tried_cnt"] = tried_cnt
-
-                                if total_other > 0 and tried_cnt < total_other:
-                                    next_p_idx = (CURRENT_PROXY_EXIT_IDX.get(key, 0) + 1) % total_other
-                                    state["certi_proxy_idx"] = next_p_idx
-                                    CURRENT_PROXY_EXIT_IDX[key] = next_p_idx
-                                    c_num, c_ip = other_srvs[next_p_idx]
-                                    dprint(key, f"🔄 [타 중앙컴 회선 변경 ({tried_cnt}/{total_other})] 이전 프록시도 한도 초과! 다음 [{c_num}번 중앙컴({c_ip})] 회선으로 변경 후 'sub.png'를 재실행합니다!")
-                                    state["certi_web_last_fsm"] = None
-                                    state["certi_last_box"] = None
-                                    state["target_fsm"] = "CERTI_STEP_1_FIND"
-                                    state["cooldown"] = curr_time + 1.2
-                                else:
-                                    dprint(key, f"🚨 [모든 우회 회선 소진] 가용한 모든 타 중앙컴 회선({total_other}개)에서도 fail.png가 떴습니다! 보호를 위해 일시정지합니다.")
-                                    pc_num_str = current_pc_num if current_pc_num else "1"
-                                    threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 {key} 인증 회선 모두 소진",), daemon=True).start()
-                                    state["is_paused"] = True
-                                    state["target_fsm"] = "IDLE"
-                                    state["cooldown"] = curr_time + 1.0
                         elif captcha_pos:
                             dprint(key, "🚨 [인증 분기점 - 캡차 감지] 리캡차 화면이 나타났습니다! 제미나이 캡차 돌파 로직으로 진입합니다.")
                             state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
