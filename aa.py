@@ -238,13 +238,23 @@ def send_to_cc(action, **kwargs):
         return False
 
 # ==============================================================================
-# 🌐 [내장 멀티 프록시 엔진] 미니컴 우회 크롬(sub.png) 전용 프록시 서버 및 회선 스위칭
+# 🌐 [12대 중앙컴 테일스케일 프록시 풀] 내 중앙컴은 자동 패스 & 타 중앙컴 회선 자동 로테이션
 # ==============================================================================
-# 💡 "DIRECT"는 현재 이 중앙컴의 인터넷 회선(예: 211.217.49.47)으로 직접 나가는 1순위 우회 회선입니다.
-# 💡 내일 다른 중앙컴들의 회선을 추가로 물리시면 ["DIRECT", "다른중앙컴IP1", "다른중앙컴IP2"] 처럼 이어서 적어주세요.
-PROXY_EXIT_SERVERS = [
-    "DIRECT"
-]
+CENTRAL_TAILSCALE_MAP = {
+    "1":  "100.106.98.27",   # no1
+    "2":  "100.102.199.44",  # no2
+    "3":  "100.102.229.12",  # no3
+    "4":  "100.117.6.55",    # no4
+    "5":  "100.82.40.120",   # no5
+    "6":  "100.111.124.91",  # no6
+    "7":  "100.118.150.90",  # no7
+    "8":  "100.99.116.37",   # no8
+    "9":  "100.110.17.117",  # no9
+    "10": "100.93.134.45",   # no10-2
+    "11": "100.66.194.109",  # no11
+    "12": "100.74.191.120",  # no12
+    "13": "100.73.27.56",    # home (작업 및 테스트용 중앙13번)
+}
 
 PROXY_DIRECT_EXIT_PORT = 31280
 MINI_PROXY_PORTS = {
@@ -253,6 +263,55 @@ MINI_PROXY_PORTS = {
 CURRENT_PROXY_EXIT_IDX = {
     "미니1": 0, "미니2": 0, "미니3": 0, "미니4": 0
 }
+ALIVE_OTHER_PROXIES = []
+_LAST_PROXY_LOG_TIME = 0.0
+
+def _get_my_local_ips():
+    ips = {"127.0.0.1"}
+    try:
+        _, _, host_ips = socket.gethostbyname_ex(socket.gethostname())
+        for ip in host_ips:
+            ips.add(ip)
+    except Exception:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ips.add(info[4][0])
+    except Exception:
+        pass
+    return ips
+
+def get_other_central_proxy_ips():
+    """현재 실제로 31280 포트가 열려 있는(살아있는) 타 중앙컴 리스트를 우선 반환합니다."""
+    if ALIVE_OTHER_PROXIES:
+        return list(ALIVE_OTHER_PROXIES)
+    my_ips = _get_my_local_ips()
+    my_num = str(globals().get("current_pc_num", "")).strip()
+    other_list = []
+    for c_num, ts_ip in CENTRAL_TAILSCALE_MAP.items():
+        if c_num == my_num or ts_ip in my_ips:
+            continue
+        other_list.append((c_num, ts_ip))
+    return other_list
+
+def _proxy_health_checker_thread():
+    """5초마다 백그라운드에서 31280 포트가 열린 다른 중앙컴을 미리 체크하여 접속 딜레이를 0초로 만듭니다."""
+    global ALIVE_OTHER_PROXIES
+    while True:
+        my_ips = _get_my_local_ips()
+        my_num = str(globals().get("current_pc_num", "")).strip()
+        alive_temp = []
+        for c_num, ts_ip in CENTRAL_TAILSCALE_MAP.items():
+            if c_num == my_num or ts_ip in my_ips:
+                continue
+            try:
+                s = socket.create_connection((ts_ip, PROXY_DIRECT_EXIT_PORT), timeout=0.4)
+                s.close()
+                alive_temp.append((c_num, ts_ip))
+            except Exception:
+                pass
+        ALIVE_OTHER_PROXIES = alive_temp
+        time.sleep(5.0)
 
 def _proxy_pipe_sockets(s1, s2):
     try:
@@ -269,31 +328,43 @@ def _proxy_pipe_sockets(s1, s2):
         try: s2.close()
         except Exception: pass
 
-def _handle_proxy_client(client_sock, exit_target="DIRECT"):
+def _handle_proxy_client(client_sock, is_exit_server=False, pc_key=None):
+    global _LAST_PROXY_LOG_TIME
     remote_sock = None
     try:
         client_sock.settimeout(10.0)
         try: client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except Exception: pass
 
-        # 1) 다른 중앙컴 회선(IP)으로 프록시 체이닝(토스)하는 경우
-        if exit_target and exit_target.upper() not in ["DIRECT", "LOCAL", "127.0.0.1", "LOCALHOST"]:
-            if ":" in exit_target:
-                ehost, eport = exit_target.rsplit(":", 1)
-                eport = int(eport)
+        # 1) 미니컴 전용 입구(31281~31284)로 들어온 경우 -> 살아있는 타 중앙컴(31280)으로 0초 토스!
+        if not is_exit_server:
+            now_t = time.time()
+            alive_list = list(ALIVE_OTHER_PROXIES)
+            if alive_list:
+                idx = CURRENT_PROXY_EXIT_IDX.get(pc_key, 0) if pc_key else 0
+                c_num, ehost = alive_list[idx % len(alive_list)]
+                try:
+                    remote_sock = socket.create_connection((ehost, PROXY_DIRECT_EXIT_PORT), timeout=1.5)
+                    if now_t - _LAST_PROXY_LOG_TIME > 3.0:
+                        print(f"🔗 [프록시 우회 연결] {pc_key} 크롬 ➔ [{c_num}번 중앙컴({ehost})] 회선으로 정상 연결됨!")
+                        _LAST_PROXY_LOG_TIME = now_t
+                except Exception:
+                    remote_sock = None
+
+            if remote_sock is not None:
+                try: remote_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except Exception: pass
+                client_sock.settimeout(None)
+                remote_sock.settimeout(None)
+                threading.Thread(target=_proxy_pipe_sockets, args=(client_sock, remote_sock), daemon=True).start()
+                _proxy_pipe_sockets(remote_sock, client_sock)
+                return
             else:
-                ehost, eport = exit_target.strip(), PROXY_DIRECT_EXIT_PORT
+                if now_t - _LAST_PROXY_LOG_TIME > 3.0:
+                    print(f"🔗 [프록시 직결 모드] 현재 켜져 있는 타 중앙컴(31280)이 없어 내 중앙컴 회선으로 즉시 연결합니다!")
+                    _LAST_PROXY_LOG_TIME = now_t
 
-            remote_sock = socket.create_connection((ehost, eport), timeout=8.0)
-            try: remote_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            except Exception: pass
-            client_sock.settimeout(None)
-            remote_sock.settimeout(None)
-            threading.Thread(target=_proxy_pipe_sockets, args=(client_sock, remote_sock), daemon=True).start()
-            _proxy_pipe_sockets(remote_sock, client_sock)
-            return
-
-        # 2) 현재 중앙컴의 인터넷 회선(DIRECT)으로 직접 나가는 경우
+        # 2) 내 중앙컴 회선으로 직접 외부 웹사이트 접속!
         req_data = b""
         while b"\r\n\r\n" not in req_data and len(req_data) < 16384:
             chunk = client_sock.recv(4096)
@@ -314,7 +385,6 @@ def _handle_proxy_client(client_sock, exit_target="DIRECT"):
         method, target = parts[0].upper(), parts[1]
 
         if method == "CONNECT":
-            # HTTPS 터널링 요청 처리
             if ":" in target:
                 host, port_str = target.rsplit(":", 1)
                 port = int(port_str)
@@ -330,7 +400,6 @@ def _handle_proxy_client(client_sock, exit_target="DIRECT"):
             threading.Thread(target=_proxy_pipe_sockets, args=(client_sock, remote_sock), daemon=True).start()
             _proxy_pipe_sockets(remote_sock, client_sock)
         else:
-            # 일반 HTTP 요청 처리
             host = ""
             port = 80
             for line in req_data.split(b"\r\n")[1:]:
@@ -384,22 +453,16 @@ def _start_proxy_listener(bind_port, pc_key=None):
         except Exception: pass
         return
 
+    is_exit = (pc_key is None)
     if pc_key:
-        print(f"🌐 [우회 프록시 개통] {pc_key} 전용 크롬 우회 포트({bind_port}) 오픈 완료!")
+        print(f"🌐 [우회 입구 개통] {pc_key} 전용 크롬 우회 포트({bind_port}) 오픈 완료!")
     else:
-        print(f"🌐 [중앙컴 출구 개통] 공통 프록시 출구 포트({bind_port}) 오픈 완료!")
+        print(f"🌐 [중앙컴 출구 개통] 타 중앙컴 지원용 프록시 출구 포트({bind_port}) 오픈 완료!")
 
     while True:
         try:
             c_sock, _ = srv.accept()
-            if pc_key is None:
-                exit_t = "DIRECT"
-            else:
-                idx = CURRENT_PROXY_EXIT_IDX.get(pc_key, 0)
-                if idx < 0 or idx >= len(PROXY_EXIT_SERVERS):
-                    idx = 0
-                exit_t = PROXY_EXIT_SERVERS[idx]
-            threading.Thread(target=_handle_proxy_client, args=(c_sock, exit_t), daemon=True).start()
+            threading.Thread(target=_handle_proxy_client, args=(c_sock, is_exit, pc_key), daemon=True).start()
         except Exception:
             time.sleep(0.05)
 
@@ -407,9 +470,8 @@ def _proxy_bootstrap_worker():
     while not globals().get("TARGET_PC_KEY"):
         time.sleep(0.1)
     my_k = globals().get("TARGET_PC_KEY")
-    # 1) 중앙컴 공통 출구 포트(31280) 오픈 시도 (4개 프로세스 중 최초 1개만 바인딩됨)
+    threading.Thread(target=_proxy_health_checker_thread, daemon=True).start()
     threading.Thread(target=_start_proxy_listener, args=(PROXY_DIRECT_EXIT_PORT, None), daemon=True).start()
-    # 2) 내 미니컴 전용 우회 입구 포트(31281~31284) 오픈
     my_proxy_port = MINI_PROXY_PORTS.get(my_k)
     if my_proxy_port:
         threading.Thread(target=_start_proxy_listener, args=(my_proxy_port, my_k), daemon=True).start()
@@ -1978,27 +2040,18 @@ def _save_settings_internal():
                 "use_cc_buff": v["use_cc_buff"].get(),
                 "buff_mp_pct": v["buff_mp_pct"].get(),
 
-                # 👇 [버그픽스] 웹 인증 릴레이(품앗이) 계정/비번/메일/전번 영구 저장 👇
+                # 👇 웹 인증 내 계정 및 특정 시간대 딜레이 설정 영구 저장 👇
                 "auth_main_id": v["auth_main_id"].get().strip() if "auth_main_id" in v else "",
                 "auth_main_pw": v["auth_main_pw"].get().strip() if "auth_main_pw" in v else "",
                 "auth_main_email": v["auth_main_email"].get().strip() if "auth_main_email" in v else "",
                 "auth_main_phone": v["auth_main_phone"].get().strip() if "auth_main_phone" in v else "",
 
-                "auth_sub1_id": v["auth_sub1_id"].get().strip() if "auth_sub1_id" in v else "",
-                "auth_sub1_pw": v["auth_sub1_pw"].get().strip() if "auth_sub1_pw" in v else "",
-                "auth_sub1_email": v["auth_sub1_email"].get().strip() if "auth_sub1_email" in v else "",
-                "auth_sub1_phone": v["auth_sub1_phone"].get().strip() if "auth_sub1_phone" in v else "",
+                "auth_delay_use": v["auth_delay_use"].get() if "auth_delay_use" in v else False,
+                "auth_delay_start_min": v["auth_delay_start_min"].get().strip() if "auth_delay_start_min" in v else "55",
+                "auth_delay_end_min": v["auth_delay_end_min"].get().strip() if "auth_delay_end_min" in v else "58",
+                "auth_delay_sec": v["auth_delay_sec"].get().strip() if "auth_delay_sec" in v else "180",
 
-                "auth_sub2_id": v["auth_sub2_id"].get().strip() if "auth_sub2_id" in v else "",
-                "auth_sub2_pw": v["auth_sub2_pw"].get().strip() if "auth_sub2_pw" in v else "",
-                "auth_sub2_email": v["auth_sub2_email"].get().strip() if "auth_sub2_email" in v else "",
-                "auth_sub2_phone": v["auth_sub2_phone"].get().strip() if "auth_sub2_phone" in v else "",
-
-                "auth_sub3_id": v["auth_sub3_id"].get().strip() if "auth_sub3_id" in v else "",
-                "auth_sub3_pw": v["auth_sub3_pw"].get().strip() if "auth_sub3_pw" in v else "",
-                "auth_sub3_email": v["auth_sub3_email"].get().strip() if "auth_sub3_email" in v else "",
-                "auth_sub3_phone": v["auth_sub3_phone"].get().strip() if "auth_sub3_phone" in v else "",
-
+                "certi_main_ban_until": st.get("certi_main_ban_until", saved_settings.get(k, {}).get("certi_main_ban_until", 0.0)),
                 "accum_hunt_time": st.get("accum_hunt_time", 0.0),
                 "fatigue_mult": st.get("fatigue_mult", 1.0),
                 "next_fatigue_target": st.get("next_fatigue_target", 0.0)
@@ -2474,26 +2527,16 @@ for pc in MINI_PCS:
         "use_cc_buff": tk.BooleanVar(value=pc_set.get("use_cc_buff", True)),
         "buff_mp_pct": tk.StringVar(value=pc_set.get("buff_mp_pct", "50")),
 
-        # 👇 [추가] 웹 인증 릴레이(품앗이) 변수 (계정/비번/메일/전번) 👇
+        # 👇 웹 인증 내 계정 및 특정 시간대 딜레이 변수 👇
         "auth_main_id": tk.StringVar(value=pc_set.get("auth_main_id", "")),
         "auth_main_pw": tk.StringVar(value=pc_set.get("auth_main_pw", "")),
         "auth_main_email": tk.StringVar(value=pc_set.get("auth_main_email", "")),
         "auth_main_phone": tk.StringVar(value=pc_set.get("auth_main_phone", "")),
 
-        "auth_sub1_id": tk.StringVar(value=pc_set.get("auth_sub1_id", "")),
-        "auth_sub1_pw": tk.StringVar(value=pc_set.get("auth_sub1_pw", "")),
-        "auth_sub1_email": tk.StringVar(value=pc_set.get("auth_sub1_email", "")),
-        "auth_sub1_phone": tk.StringVar(value=pc_set.get("auth_sub1_phone", "")),
-
-        "auth_sub2_id": tk.StringVar(value=pc_set.get("auth_sub2_id", "")),
-        "auth_sub2_pw": tk.StringVar(value=pc_set.get("auth_sub2_pw", "")),
-        "auth_sub2_email": tk.StringVar(value=pc_set.get("auth_sub2_email", "")),
-        "auth_sub2_phone": tk.StringVar(value=pc_set.get("auth_sub2_phone", "")),
-
-        "auth_sub3_id": tk.StringVar(value=pc_set.get("auth_sub3_id", "")),
-        "auth_sub3_pw": tk.StringVar(value=pc_set.get("auth_sub3_pw", "")),
-        "auth_sub3_email": tk.StringVar(value=pc_set.get("auth_sub3_email", "")),
-        "auth_sub3_phone": tk.StringVar(value=pc_set.get("auth_sub3_phone", ""))
+        "auth_delay_use": tk.BooleanVar(value=pc_set.get("auth_delay_use", False)),
+        "auth_delay_start_min": tk.StringVar(value=str(pc_set.get("auth_delay_start_min", "55"))),
+        "auth_delay_end_min": tk.StringVar(value=str(pc_set.get("auth_delay_end_min", "58"))),
+        "auth_delay_sec": tk.StringVar(value=str(pc_set.get("auth_delay_sec", "180")))
     }
 
 current_settings = {}
@@ -5074,9 +5117,29 @@ def ai_commander_worker(target_pc):
                         dprint(key, "⏸️ [버프 타이머 동결] 모든 버프 잔여시간 일시정지 완료! (계열마법 F2>F6은 0초로 리셋)")
 
                         if detected_popup_type == "CERTI":
-                            dprint(key, f"🚨 [인증 최우선 감지] certi.png ({detected_val*100:.1f}%) 포착! 죽음(Restart) 오발동을 캔슬하고 인증 모드로 진입합니다!")
-                            state["target_fsm"] = "CERTI_GOTO_DESKTOP"
-                            current_fsm = "CERTI_GOTO_DESKTOP"
+                            use_delay = settings.get("auth_delay_use", False)
+                            start_m = int(settings.get("auth_delay_start_min", 55)) % 60
+                            end_m = int(settings.get("auth_delay_end_min", 58)) % 60
+                            delay_s = float(settings.get("auth_delay_sec", 180.0))
+
+                            now_dt = datetime.datetime.now()
+                            curr_m = now_dt.minute
+                            if start_m <= end_m:
+                                is_in_time_range = (start_m <= curr_m <= end_m)
+                            else:
+                                is_in_time_range = (curr_m >= start_m or curr_m <= end_m)
+
+                            if use_delay and is_in_time_range and delay_s > 0:
+                                final_delay = g_val(max(1.0, delay_s - 2.0), delay_s + 2.0)
+                                state["certi_delay_until"] = curr_time + final_delay
+                                state["certi_delay_log_time"] = curr_time
+                                dprint(key, f"⏳ [특정시간 인증 딜레이 발동] 현재 시각({now_dt.strftime('%H:%M:%S')})이 매시 {start_m}~{end_m}분 구간입니다! {final_delay:.1f}초 대기 후 인증을 시작합니다!")
+                                state["target_fsm"] = "CERTI_DELAY_WAIT"
+                                current_fsm = "CERTI_DELAY_WAIT"
+                            else:
+                                dprint(key, f"🚨 [인증 최우선 감지] certi.png ({detected_val*100:.1f}%) 포착! 죽음(Restart) 오발동을 캔슬하고 인증 모드로 진입합니다!")
+                                state["target_fsm"] = "CERTI_GOTO_DESKTOP"
+                                current_fsm = "CERTI_GOTO_DESKTOP"
                         else:
                             dprint(key, f"🚨 [이용시간 만료 감지] ticket2.png ({detected_val*100:.1f}%) 포착! ok2 ➔ quit 클릭 후 바탕화면 13.png 재접속 단계로 직행합니다!")
                             state["target_fsm"] = "CERTI_FIND_OK2_FIRST"
@@ -5247,15 +5310,41 @@ def ai_commander_worker(target_pc):
 
                 if curr_time >= state.get("cooldown", 0) and (not is_hw_working or current_fsm == "CERTI_MOVE_VERIFY"):
 
+                    # 0-0단계: 특정 현실시간 연타 인증 방지 딜레이 대기
+                    if current_fsm == "CERTI_DELAY_WAIT":
+                        rem_sec = state.get("certi_delay_until", 0.0) - curr_time
+                        if rem_sec <= 0:
+                            dprint(key, "⏰ [인증 딜레이 종료] 설정된 대기 시간이 경과했습니다! 이제 바탕화면(Win+D)으로 나가 인증을 시작합니다.")
+                            state["target_fsm"] = "CERTI_GOTO_DESKTOP"
+                            state["cooldown"] = curr_time + 0.1
+                        else:
+                            if curr_time - state.get("certi_delay_log_time", 0.0) >= 10.0:
+                                dprint(key, f"⏳ [인증 대기 중] 연타 인증 방지 딜레이 작동 중... (남은 시간: {rem_sec:.0f}초)")
+                                state["certi_delay_log_time"] = curr_time
+                            state["cooldown"] = curr_time + 0.5
+
                     # 0단계: 바탕화면 전환 (Win + D)
-                    if current_fsm == "CERTI_GOTO_DESKTOP":
-                        dprint(key, "🖥️ [인증 시작] 바탕화면 가기(Win+D) 피코 타건 시전! (1차: 기본 1.png 시도)")
+                    elif current_fsm == "CERTI_GOTO_DESKTOP":
                         state["certi_account_idx"] = 0     # 무조건 내 계정(auth_main) 사용
-                        state["certi_use_sub"] = False     # 1차 시도는 기본 크롬(1.png)
-                        state["certi_proxy_idx"] = 0       # 프록시 출구 번호 초기화
-                        CURRENT_PROXY_EXIT_IDX[key] = 0
+                        state["certi_proxy_tried_cnt"] = 0 # 이번 인증 내 프록시 순환 횟수 초기화
                         state["certi_last_box"] = None
                         state["certi_done_logged"] = False
+
+                        # 미니컴 자체 IP(1.png) 16시간 패스 타이머 확인 (매크로 재실행 시에도 유지)
+                        ban_until = max(
+                            float(state.get("certi_main_ban_until", 0.0)),
+                            float(saved_settings.get(key, {}).get("certi_main_ban_until", 0.0))
+                        )
+                        state["certi_main_ban_until"] = ban_until
+
+                        if curr_time < ban_until:
+                            rem_h = (ban_until - curr_time) / 3600.0
+                            state["certi_use_sub"] = True
+                            dprint(key, f"🖥️ [인증 시작 - 본인IP 16시간 패스중] 자체 IP(1.png) 쿨타임이 {rem_h:.1f}시간 남았습니다! 1.png를 건너뛰고 즉시 'sub.png'로 직행합니다!")
+                        else:
+                            state["certi_use_sub"] = False
+                            dprint(key, "🖥️ [인증 시작] 바탕화면 가기(Win+D) 피코 타건 시전! (1차: 기본 1.png 시도)")
+
                         pico_queues[key].put({"action": "HOME_MACRO"})
                         state["target_fsm"] = "CERTI_STEP_1_FIND"
                         state["cooldown"] = curr_time + 1.5
@@ -5314,7 +5403,7 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.03
 
-                    # 1단계: 바탕화면에서 1.png(기본) 또는 sub.png(프록시 우회) 찾아 이동 후 더블클릭
+                    # 1단계: 바탕화면에서 1.png(기본) 또는 sub.png(타 중앙컴 프록시 우회) 찾아 이동 후 더블클릭
                     elif current_fsm == "CERTI_STEP_1_FIND":
                         use_sub_now = state.get("certi_use_sub", False)
                         if use_sub_now:
@@ -5326,9 +5415,14 @@ def ai_commander_worker(target_pc):
 
                         if pos:
                             if use_sub_now:
-                                p_idx = state.get("certi_proxy_idx", 0)
-                                exit_name = PROXY_EXIT_SERVERS[p_idx] if p_idx < len(PROXY_EXIT_SERVERS) else "DIRECT"
-                                dprint(key, f"🔎 [우회 인증 1단계] 바탕화면 'sub.png' 발견({pos[0]}, {pos[1]})! [프록시 출구 #{p_idx+1}: {exit_name}] 회선으로 더블클릭합니다.")
+                                other_srvs = get_other_central_proxy_ips()
+                                p_idx = CURRENT_PROXY_EXIT_IDX.get(key, 0)
+                                if other_srvs and p_idx < len(other_srvs):
+                                    c_num, c_ip = other_srvs[p_idx]
+                                    exit_label = f"{c_num}번 중앙컴({c_ip})"
+                                else:
+                                    exit_label = "예비 회선"
+                                dprint(key, f"🔎 [우회 인증 1단계] 바탕화면 'sub.png' 발견({pos[0]}, {pos[1]})! 내 중앙컴을 패스하고 [{exit_label}] 회선으로 더블클릭합니다.")
                             else:
                                 dprint(key, f"🔎 [인증 1단계] 바탕화면 '1.png' 발견({pos[0]}, {pos[1]})! 이동 후 더블클릭합니다.")
                             start_certi_move_and_action(pos[0], pos[1], next_fsm="CERTI_STEP_2_FIND", double=True, desc=f"{target_icon_name} 웹창 열기")
@@ -5396,33 +5490,53 @@ def ai_commander_worker(target_pc):
                         captcha_pos = find_certi_img("captcha.png", th=0.80) # 💡 캡차창 인식용 이미지 추가
 
                         if fail_pos:
-                            # 🚨 [핵심] fail.png 감지 시 즉시 Ctrl+W로 창을 닫고 바탕화면의 sub.png(프록시 우회 크롬)로 재시도!
+                            # 🚨 [핵심] fail.png 감지 시 즉시 창 전체 종료(Ctrl+Shift+W) 후, 16시간 동안 자체 IP(1.png) 패스 및 타 중앙컴 프록시(sub.png)로 직행!
                             pico_queues[key].put({"action": "WAIT", "delay_min": 0.2, "delay_max": 0.35})
                             pico_queues[key].put({"action": "CLOSE_TAB"})
 
+                            other_srvs = get_other_central_proxy_ips()
+                            total_other = len(other_srvs)
+
                             if not state.get("certi_use_sub", False):
+                                # 1.png(자체 IP) 실패 -> 향후 16시간(57,600초) 동안 1.png 시도 금지 기록 및 영구 저장
+                                state["certi_main_ban_until"] = curr_time + (16.0 * 3600.0)
+                                if key not in saved_settings:
+                                    saved_settings[key] = {}
+                                saved_settings[key]["certi_main_ban_until"] = state["certi_main_ban_until"]
+                                save_settings()
+
                                 state["certi_use_sub"] = True
-                                state["certi_proxy_idx"] = 0
-                                CURRENT_PROXY_EXIT_IDX[key] = 0
-                                exit_name = PROXY_EXIT_SERVERS[0] if PROXY_EXIT_SERVERS else "DIRECT"
-                                dprint(key, f"⚠️ [인증 한도 초과 - fail.png 감지] 기본 회선(1.png) 한도 초과! 창을 닫고(Ctrl+W) 우회 크롬 'sub.png' [출구 #1: {exit_name}]로 즉시 전환합니다!")
+                                state["certi_proxy_tried_cnt"] = 0
+                                curr_p_idx = CURRENT_PROXY_EXIT_IDX.get(key, 0) % max(1, total_other)
+                                CURRENT_PROXY_EXIT_IDX[key] = curr_p_idx
+                                state["certi_proxy_idx"] = curr_p_idx
+
+                                if total_other > 0:
+                                    c_num, c_ip = other_srvs[curr_p_idx]
+                                    exit_label = f"{c_num}번 중앙컴({c_ip})"
+                                else:
+                                    exit_label = "DIRECT"
+                                dprint(key, f"⚠️ [자체IP 한도초과 - 16시간 패스 설정] 기본 회선(1.png) fail.png 감지! 향후 16시간 동안 1.png를 패스하고 [{exit_label}] 프록시('sub.png')로 전환합니다!")
                                 state["certi_web_last_fsm"] = None
                                 state["certi_last_box"] = None
                                 state["target_fsm"] = "CERTI_STEP_1_FIND"
                                 state["cooldown"] = curr_time + 1.2
                             else:
-                                next_p_idx = state.get("certi_proxy_idx", 0) + 1
-                                if next_p_idx < len(PROXY_EXIT_SERVERS):
+                                tried_cnt = state.get("certi_proxy_tried_cnt", 0) + 1
+                                state["certi_proxy_tried_cnt"] = tried_cnt
+
+                                if total_other > 0 and tried_cnt < total_other:
+                                    next_p_idx = (CURRENT_PROXY_EXIT_IDX.get(key, 0) + 1) % total_other
                                     state["certi_proxy_idx"] = next_p_idx
                                     CURRENT_PROXY_EXIT_IDX[key] = next_p_idx
-                                    exit_name = PROXY_EXIT_SERVERS[next_p_idx]
-                                    dprint(key, f"🔄 [우회 회선 변경 - fail.png 감지] 이전 프록시 회선도 한도 초과! 다음 프록시 회선 [출구 #{next_p_idx+1}: {exit_name}]으로 변경 후 'sub.png'를 다시 실행합니다!")
+                                    c_num, c_ip = other_srvs[next_p_idx]
+                                    dprint(key, f"🔄 [타 중앙컴 회선 변경 ({tried_cnt}/{total_other})] 이전 프록시도 한도 초과! 다음 [{c_num}번 중앙컴({c_ip})] 회선으로 변경 후 'sub.png'를 재실행합니다!")
                                     state["certi_web_last_fsm"] = None
                                     state["certi_last_box"] = None
                                     state["target_fsm"] = "CERTI_STEP_1_FIND"
                                     state["cooldown"] = curr_time + 1.2
                                 else:
-                                    dprint(key, f"🚨 [모든 우회 회선 소진] 등록된 모든 프록시 회선({len(PROXY_EXIT_SERVERS)}개)에서도 fail.png가 떴습니다! 보호를 위해 일시정지합니다.")
+                                    dprint(key, f"🚨 [모든 우회 회선 소진] 가용한 모든 타 중앙컴 회선({total_other}개)에서도 fail.png가 떴습니다! 보호를 위해 일시정지합니다.")
                                     pc_num_str = current_pc_num if current_pc_num else "1"
                                     threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 {key} 인증 회선 모두 소진",), daemon=True).start()
                                     state["is_paused"] = True
@@ -22730,26 +22844,16 @@ def sync_gui_vars():
                 "use_cc_buff": gui_vars[k]["use_cc_buff"].get(),
                 "buff_mp_pct": buff_mp_pct_val,
 
-                # 👇 [추가] 웹 인증 릴레이용 데이터 저장 (계정/비번/메일/전번) 👇
+                # 👇 웹 인증 내 계정 및 특정 시간대 딜레이 실시간 연동 👇
                 "auth_main_id": gui_vars[k]["auth_main_id"].get().strip(),
                 "auth_main_pw": gui_vars[k]["auth_main_pw"].get().strip(),
                 "auth_main_email": gui_vars[k]["auth_main_email"].get().strip(),
                 "auth_main_phone": gui_vars[k]["auth_main_phone"].get().strip(),
 
-                "auth_sub1_id": gui_vars[k]["auth_sub1_id"].get().strip(),
-                "auth_sub1_pw": gui_vars[k]["auth_sub1_pw"].get().strip(),
-                "auth_sub1_email": gui_vars[k]["auth_sub1_email"].get().strip(),
-                "auth_sub1_phone": gui_vars[k]["auth_sub1_phone"].get().strip(),
-
-                "auth_sub2_id": gui_vars[k]["auth_sub2_id"].get().strip(),
-                "auth_sub2_pw": gui_vars[k]["auth_sub2_pw"].get().strip(),
-                "auth_sub2_email": gui_vars[k]["auth_sub2_email"].get().strip(),
-                "auth_sub2_phone": gui_vars[k]["auth_sub2_phone"].get().strip(),
-
-                "auth_sub3_id": gui_vars[k]["auth_sub3_id"].get().strip(),
-                "auth_sub3_pw": gui_vars[k]["auth_sub3_pw"].get().strip(),
-                "auth_sub3_email": gui_vars[k]["auth_sub3_email"].get().strip(),
-                "auth_sub3_phone": gui_vars[k]["auth_sub3_phone"].get().strip()
+                "auth_delay_use": gui_vars[k]["auth_delay_use"].get(),
+                "auth_delay_start_min": int(safe_float(gui_vars[k]["auth_delay_start_min"], 55.0)),
+                "auth_delay_end_min": int(safe_float(gui_vars[k]["auth_delay_end_min"], 58.0)),
+                "auth_delay_sec": safe_float(gui_vars[k]["auth_delay_sec"], 180.0)
             }
 
             if k in ai_states and k in btn_dict:
@@ -24737,20 +24841,162 @@ for i, pc in enumerate(MINI_PCS):
 
         auth_entries_list.extend([ent_id, ent_pw, ent_email, ent_phone])
 
-    # 내 계정 및 서브 1~3계정 UI 생성
+    # 내 계정 UI 생성 (불필요한 서브 1~3 입력란 제거 완료)
     make_auth_block(auth_frame, "내 계정", "#B2FF59", vars_dict["auth_main_id"], vars_dict["auth_main_pw"], vars_dict["auth_main_email"], vars_dict["auth_main_phone"])
-    ttk.Separator(auth_frame, orient="horizontal").pack(fill="x", padx=5, pady=3)
-    make_auth_block(auth_frame, "서브 1", "#4FC3F7", vars_dict["auth_sub1_id"], vars_dict["auth_sub1_pw"], vars_dict["auth_sub1_email"], vars_dict["auth_sub1_phone"])
-    ttk.Separator(auth_frame, orient="horizontal").pack(fill="x", padx=5, pady=2)
-    make_auth_block(auth_frame, "서브 2", "#4FC3F7", vars_dict["auth_sub2_id"], vars_dict["auth_sub2_pw"], vars_dict["auth_sub2_email"], vars_dict["auth_sub2_phone"])
-    ttk.Separator(auth_frame, orient="horizontal").pack(fill="x", padx=5, pady=2)
-    make_auth_block(auth_frame, "서브 3", "#4FC3F7", vars_dict["auth_sub3_id"], vars_dict["auth_sub3_pw"], vars_dict["auth_sub3_email"], vars_dict["auth_sub3_phone"])
 
-    # 하단 설명 문구 및 추후 버튼용 예비 공간
-    tk.Label(tab_auth, text="※ IP 인증 한도 초과 시, 서브 계정으로 스위칭하여 품앗이 인증을 시도합니다.", font=("맑은 고딕", 8), bg=BG_PANEL, fg="#9E9E9E", anchor="w").pack(side="top", fill="x", padx=12, pady=3)
+    # ⏱️ 특정 현실시간 연타 인증 방지 딜레이 설정 UI
+    delay_frame = tk.LabelFrame(tab_auth, text=" ⏱️ 연타 인증 방지 (특정 현실시간 딜레이 설정) ", font=("맑은 고딕", 9, "bold"), bg=BG_PANEL, fg="#4FC3F7", bd=1)
+    delay_frame.pack(side="top", fill="x", padx=10, pady=(4, 4))
+
+    d_row1 = tk.Frame(delay_frame, bg=BG_PANEL)
+    d_row1.pack(side="top", fill="x", padx=5, pady=(4, 2))
+    tk.Checkbutton(d_row1, text="특정 시간대 인증 딜레이 사용", variable=vars_dict["auth_delay_use"], bg=BG_PANEL, fg="#B2FF59", selectcolor="#3E3E42", activebackground=BG_PANEL, activeforeground="#B2FF59", font=("맑은 고딕", 8, "bold")).pack(side="left")
+
+    d_row2 = tk.Frame(delay_frame, bg=BG_PANEL)
+    d_row2.pack(side="top", fill="x", padx=5, pady=(2, 6))
+    tk.Label(d_row2, text="▶ 매 시간", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(2, 2))
+    tk.Entry(d_row2, textvariable=vars_dict["auth_delay_start_min"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=1)
+    tk.Label(d_row2, text="분 ~", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=1)
+    tk.Entry(d_row2, textvariable=vars_dict["auth_delay_end_min"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=1)
+    tk.Label(d_row2, text="분 감지 시  |  대기:", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(1, 2))
+    tk.Entry(d_row2, textvariable=vars_dict["auth_delay_sec"], width=5, justify="center", bg="#3E3E42", fg="#FFD54F", insertbackground="white", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=1)
+    tk.Label(d_row2, text="초 후 인증", bg=BG_PANEL, fg="#FFD54F", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(2, 0))
+
+    # 하단 설명 문구 및 미니컴 sub 바로가기 원클릭 자동생성 UI
+    tk.Label(tab_auth, text="※ IP 인증 한도 초과 시, 타 중앙컴 프록시(sub.png)로 자동 우회합니다.", font=("맑은 고딕", 8), bg=BG_PANEL, fg="#9E9E9E", anchor="w").pack(side="top", fill="x", padx=12, pady=2)
     
     auth_btn_frame = tk.Frame(tab_auth, bg=BG_PANEL)
     auth_btn_frame.pack(side="top", fill="x", padx=10, pady=3)
+
+    def _detect_central_lan_ip():
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            real_lan_ip = s.getsockname()[0]
+            s.close()
+            if real_lan_ip and not real_lan_ip.startswith("100.") and not real_lan_ip.startswith("127."):
+                return real_lan_ip
+        except Exception:
+            pass
+        return "192.168.0.141"
+
+    proxy_host_ip_var = tk.StringVar(value=_detect_central_lan_ip())
+    tk.Label(auth_btn_frame, text="내 중앙컴IP:", bg=BG_PANEL, fg="#4FC3F7", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(2, 2))
+    tk.Entry(auth_btn_frame, textvariable=proxy_host_ip_var, width=13, justify="center", bg="#3E3E42", fg="white", insertbackground="white", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(0, 4))
+
+    def create_sub_shortcut_on_mini(target_key=key):
+        p_serial = picos.get(target_key)
+        p_lock = pico_locks.get(target_key)
+        if not p_serial:
+            print(f"❌ [{target_key}] 피코가 연결되어 있지 않습니다!")
+            return
+
+        host_ip = proxy_host_ip_var.get().strip()
+        port_map = {"미니1": 31281, "미니2": 31282, "미니3": 31283, "미니4": 31284}
+        my_port = port_map.get(target_key, 31281)
+
+        def _worker():
+            print(f"\n⚡ [{target_key}] 바탕화면 'sub' 우회 크롬 아이콘 자동 생성을 시작합니다! (프록시: {host_ip}:{my_port})")
+
+            # 진행 중인 매크로 큐를 비우고 모든 눌린 키 상태를 깨끗하게 초기화
+            with pico_queues[target_key].mutex:
+                pico_queues[target_key].queue.clear()
+            reset_hw_key_states(p_serial)
+
+            shift_map = {
+                '!': ord('1'), '@': ord('2'), '#': ord('3'), '$': ord('4'), '%': ord('5'),
+                '^': ord('6'), '&': ord('7'), '*': ord('8'), '(': ord('9'), ')': ord('0'),
+                '_': ord('-'), '+': ord('='), '~': ord('`'), ':': ord(';'), '"': ord("'"),
+                '<': ord(','), '>': ord('.'), '?': ord('/'), '{': ord('['), '}': ord(']'), '|': ord('\\')
+            }
+
+            def _tap(kcode, hold=0.055, wait=0.055):
+                # is_manual=False를 사용하여 동일 키 연속 입력 시 물리 간격(enforce_physical_interval)을 100% 보장
+                send_keyboard_key(p_serial, p_lock, kcode, 1, is_manual=False)
+                time.sleep(hold)
+                send_keyboard_key(p_serial, p_lock, kcode, 0, is_manual=False)
+                time.sleep(wait)
+
+            def _safe_type(text_str):
+                for ch in text_str:
+                    if ch in shift_map:
+                        base_k = shift_map[ch]
+                        send_keyboard_key(p_serial, p_lock, 129, 1, is_manual=False) # Shift DOWN
+                        time.sleep(0.055)
+                        send_keyboard_key(p_serial, p_lock, base_k, 1, is_manual=False)
+                        time.sleep(0.055)
+                        send_keyboard_key(p_serial, p_lock, base_k, 0, is_manual=False)
+                        time.sleep(0.055)
+                        send_keyboard_key(p_serial, p_lock, 129, 0, is_manual=False) # Shift UP
+                        time.sleep(0.065) # 다음 숫자/글자에 Shift가 절대 묻지 않도록 충분한 해제 대기
+                    elif 'A' <= ch <= 'Z':
+                        kcode = ord(ch.lower())
+                        send_keyboard_key(p_serial, p_lock, 129, 1, is_manual=False)
+                        time.sleep(0.055)
+                        send_keyboard_key(p_serial, p_lock, kcode, 1, is_manual=False)
+                        time.sleep(0.055)
+                        send_keyboard_key(p_serial, p_lock, kcode, 0, is_manual=False)
+                        time.sleep(0.055)
+                        send_keyboard_key(p_serial, p_lock, 129, 0, is_manual=False)
+                        time.sleep(0.065)
+                    else:
+                        _tap(ord(ch), hold=0.050, wait=0.045)
+
+            # 1) 바탕화면 보기 (Win + D)
+            send_keyboard_key(p_serial, p_lock, 131, 1, is_manual=False)
+            time.sleep(0.06)
+            _tap(100, hold=0.06, wait=0.06)
+            send_keyboard_key(p_serial, p_lock, 131, 0, is_manual=False)
+            time.sleep(0.8)
+
+            # 2) 실행 창 열기 (Win + R)
+            send_keyboard_key(p_serial, p_lock, 131, 1, is_manual=False)
+            time.sleep(0.06)
+            _tap(114, hold=0.06, wait=0.06)
+            send_keyboard_key(p_serial, p_lock, 131, 0, is_manual=False)
+            time.sleep(0.8)
+
+            _tap(178, hold=0.05, wait=0.1) # Backspace
+            _safe_type("cmd")
+            _tap(176, hold=0.06, wait=1.2) # Enter 후 1.2초 대기
+
+            # 만약 미니컴이 한글('가') 상태여서 오류 팝업이 떴다면 스페이스로 닫고 한/영 전환 후 재실행
+            scr_chk = latest_frames.get(target_key)
+            need_ime_fix = False
+            if scr_chk is not None:
+                try:
+                    run_roi = cv2.cvtColor(scr_chk[420:550, 20:350], cv2.COLOR_BGR2GRAY)
+                    if float(np.mean(run_roi)) > 170.0:
+                        need_ime_fix = True
+                except Exception:
+                    pass
+
+            if need_ime_fix:
+                print(f"🔄 [{target_key}] 미니컴 한글('가') 입력 상태 감지! 영문('A')으로 자동 전환 후 cmd를 다시 엽니다.")
+                _tap(32, hold=0.06, wait=0.35)  # Space (오류 팝업 닫기)
+                _tap(178, hold=0.05, wait=0.15) # Backspace
+                _tap(235, hold=0.06, wait=0.25) # 한/영 키 전환
+                _safe_type("cmd")
+                _tap(176, hold=0.06, wait=1.2)  # Enter
+
+            # 3) 열린 cmd 창에서 불필요한 대문자를 모두 제거한 압축 파워쉘 명령어로 'sub.lnk' 생성 후 종료
+            ps_cmd = (
+                f'powershell -noprofile -command "'
+                f'$w=new-object -com wscript.shell;'
+                f'$s=$w.createshortcut($w.specialfolders(\'desktop\')+\'\\sub.lnk\');'
+                f'$c=\'c:\\program files\\google\\chrome\\application\\chrome.exe\';'
+                f'$s.targetpath=$c;'
+                f'$s.arguments=\'--proxy-server={host_ip}:{my_port} https://store.plaync.com/store/linclassic?locale=ko-kr\';'
+                f'$s.iconlocation=$c+\',4\';'
+                f'$s.save()" && exit'
+            )
+            _safe_type(ps_cmd)
+            _tap(176, hold=0.07, wait=0.5)
+            print(f"✅ [{target_key}] 바탕화면에 황금색 크롬 'sub' 바로가기 생성 완료! ({host_ip}:{my_port})")
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    tk.Button(auth_btn_frame, text="⚡ 미니컴 sub 아이콘 자동생성", font=("맑은 고딕", 8, "bold"), bg="#00838F", fg="white", relief="flat", command=lambda k=key: create_sub_shortcut_on_mini(k)).pack(side="left", fill="x", expand=True, padx=2)
     # =============================================================
 
     bottom_frame = tk.Frame(col_frame, bg=BG_PANEL)
