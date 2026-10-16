@@ -4939,6 +4939,7 @@ check_attack_cursor = patched_check_attack_cursor
 def ai_commander_worker(target_pc):
     import os
     import threading
+    import datetime
 
     # 👇👇 [여기서부터 복사해서 추가] 👇👇
     def check_zone_match(gui_name, json_name):
@@ -5161,10 +5162,14 @@ def ai_commander_worker(target_pc):
                         dprint(key, "⏸️ [버프 타이머 동결] 모든 버프 잔여시간 일시정지 완료! (계열마법 F2>F6은 0초로 리셋)")
 
                         if detected_popup_type == "CERTI":
-                            use_delay = settings.get("auth_delay_use", False)
-                            start_m = int(settings.get("auth_delay_start_min", 55)) % 60
-                            end_m = int(settings.get("auth_delay_end_min", 58)) % 60
-                            delay_s = float(settings.get("auth_delay_sec", 180.0))
+                            import datetime
+                            try:
+                                use_delay = bool(settings.get("auth_delay_use", False))
+                                start_m = int(float(settings.get("auth_delay_start_min", 55))) % 60
+                                end_m = int(float(settings.get("auth_delay_end_min", 58))) % 60
+                                delay_s = float(settings.get("auth_delay_sec", 180.0))
+                            except Exception:
+                                use_delay, start_m, end_m, delay_s = False, 55, 58, 180.0
 
                             now_dt = datetime.datetime.now()
                             curr_m = now_dt.minute
