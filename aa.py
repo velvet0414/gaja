@@ -125,12 +125,13 @@ import urllib.request
 _K_PART1 = "QVEuQWI4Uk42SUowQ2dGQ2g2ZndwcVA4SG51"
 _K_PART2 = "ZDNUbXZIY2NueWFuaXFrMUY0WTVzUEpyOFE="
 GEMINI_API_KEY = base64.b64decode(_K_PART1 + _K_PART2).decode("utf-8")
-GEMINI_CAPTCHA_MODELS = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
+GEMINI_CAPTCHA_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"]
 
 def analyze_captcha_with_gemini(img_bgr):
     """
-    제미나이 3.8 Flash API를 호출하여 캡차의 정답 타일 중심 좌표 리스트를 반환합니다.
-    이미 체크 표시(선택됨)된 타일은 중복 클릭하지 않도록 필터링합니다.
+    제미나이 API를 호출하여 캡차의 정답 타일 중심 좌표 리스트를 반환합니다.
+    제미나이의 네이티브 0~1000 정규화 박스(box_2d) 및 격자(Grid) 행/열 좌표를 결합하여
+    파이썬에서 정확한 화면 픽셀(w x h) 중심점을 계산합니다.
     """
     if not GEMINI_API_KEY or GEMINI_API_KEY == "여기에_제미나이_API_KEY를_입력하세요":
         print("⚠️ [제미나이 오류] API 키가 입력되지 않았습니다!")
@@ -139,18 +140,27 @@ def analyze_captcha_with_gemini(img_bgr):
     try:
         import cv2
         h, w = img_bgr.shape[:2]
-        _, buffer = cv2.imencode('.jpg', img_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        _, buffer = cv2.imencode('.jpg', img_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
         img_base64 = base64.b64encode(buffer).decode('utf-8')
 
-        prompt = f"""
-        You are an expert at solving Google reCAPTCHA image challenges on an {w}x{h} pixel screen.
-        1. Read the instruction text in the blue header banner of the reCAPTCHA popup (in Korean or English, e.g., 소화전, 신호등, 횡단보도, 자전거, 버스, 자동차, 계단, 굴뚝, 오토바이, 다리, 트랙터).
-        2. Examine the 3x3 or 4x4 image grid below the header.
-        3. Find all grid tiles that contain the target object AND are NOT already selected (ignore tiles that already have a blue checkmark overlay).
-        4. Return the exact center (x, y) pixel coordinates of each matching unselected tile based on the full {w}x{h} image resolution.
-        Format the output strictly as a JSON array of objects with integer "x" and "y" keys.
-        Example: [{{"x": 330, "y": 310}}, {{"x": 420, "y": 310}}]
-        If no unselected tiles match the target object, return [].
+        prompt = """
+        You are an expert at solving Google reCAPTCHA v2 image challenges.
+        1. Read the target object instruction in the blue header banner (e.g., 소화전, 신호등, 횡단보도, 자전거, 버스, 자동차, 계단, 굴뚝, 오토바이, 다리, 트랙터, 야자수, 산 또는 언덕, 주차 미터기, 보트, 택시).
+        2. Identify whether the photo grid below the blue banner is a 3x3 grid (9 tiles) or a 4x4 grid (16 tiles).
+        3. Find the bounding box of the ENTIRE photo grid area (all 9 or 16 tiles combined, excluding the blue header and bottom button bar) as `grid_box_2d`: [ymin, xmin, ymax, xmax] normalized to 0-1000.
+        4. Find all tiles that contain the target object (or part of it) AND do NOT already have a blue checkmark overlay.
+        5. For each matching unselected tile, provide its 1-based `row` (1 to 3 or 4, top to bottom), 1-based `col` (1 to 3 or 4, left to right), and its individual `box_2d`: [ymin, xmin, ymax, xmax] normalized to 0-1000.
+
+        Return strictly a JSON object in this exact format:
+        {
+          "target_name": "소화전",
+          "grid_size": 3,
+          "grid_box_2d": [ymin, xmin, ymax, xmax],
+          "tiles": [
+            {"row": 1, "col": 2, "box_2d": [ymin, xmin, ymax, xmax]}
+          ]
+        }
+        If no unselected tiles match, return {"target_name": "", "grid_size": 3, "grid_box_2d": [0,0,0,0], "tiles": []}.
         """
 
         payload = {
@@ -174,24 +184,88 @@ def analyze_captcha_with_gemini(img_bgr):
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        body_bytes = json.dumps(payload).encode('utf-8')
 
         for model_name in GEMINI_CAPTCHA_MODELS:
             try:
+                req_payload = dict(payload)
+                req_gen_cfg = dict(payload["generationConfig"])
+                # 💡 gemini-2.5 모델의 기본 추론(Thinking) 토큰 생성을 0으로 꺼서 30초 지연 및 요금 폭탄 원천 차단!
+                if "2.5" in model_name:
+                    req_gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
+                req_payload["generationConfig"] = req_gen_cfg
+                body_bytes = json.dumps(req_payload).encode('utf-8')
+
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
                 req = urllib.request.Request(url, data=body_bytes, headers={'Content-Type': 'application/json'})
                 with urllib.request.urlopen(req, timeout=15, context=ctx) as response:
                     result_json = json.loads(response.read().decode('utf-8'))
                     text_resp = result_json['candidates'][0]['content']['parts'][0]['text']
                     text_resp = text_resp.replace("```json", "").replace("```", "").strip()
-                    coordinates = json.loads(text_resp)
+                    data = json.loads(text_resp)
+
                     valid_coords = []
-                    if isinstance(coordinates, list):
-                        for item in coordinates:
-                            if isinstance(item, dict) and 'x' in item and 'y' in item:
-                                cx = int(max(10, min(w - 10, int(item['x']))))
-                                cy = int(max(10, min(h - 10, int(item['y']))))
-                                valid_coords.append((cx, cy))
+                    if isinstance(data, dict):
+                        grid_size = int(data.get("grid_size", 3))
+                        if grid_size not in [3, 4]:
+                            grid_size = 3
+                        g_box = data.get("grid_box_2d", [0, 0, 0, 0])
+                        tiles = data.get("tiles", [])
+                        target_label = data.get("target_name", "타겟")
+
+                        has_valid_gbox = (
+                            isinstance(g_box, list) and len(g_box) == 4 and
+                            (g_box[2] - g_box[0]) > 150 and (g_box[3] - g_box[1]) > 150
+                        )
+                        if has_valid_gbox:
+                            gy1 = (float(g_box[0]) / 1000.0) * h
+                            gx1 = (float(g_box[1]) / 1000.0) * w
+                            gy2 = (float(g_box[2]) / 1000.0) * h
+                            gx2 = (float(g_box[3]) / 1000.0) * w
+                            cell_w = (gx2 - gx1) / float(grid_size)
+                            cell_h = (gy2 - gy1) / float(grid_size)
+
+                        seen_cells = set()
+                        for item in tiles:
+                            if not isinstance(item, dict):
+                                continue
+                            r_idx = int(item.get("row", 0))
+                            c_idx = int(item.get("col", 0))
+                            t_box = item.get("box_2d", [])
+
+                            if (r_idx, c_idx) in seen_cells and r_idx > 0 and c_idx > 0:
+                                continue
+                            seen_cells.add((r_idx, c_idx))
+
+                            cx_box, cy_box = None, None
+                            if isinstance(t_box, list) and len(t_box) == 4 and (t_box[2] > t_box[0]) and (t_box[3] > t_box[1]):
+                                cy_box = ((float(t_box[0]) + float(t_box[2])) / 2000.0) * h
+                                cx_box = ((float(t_box[1]) + float(t_box[3])) / 2000.0) * w
+
+                            cx_grid, cy_grid = None, None
+                            if has_valid_gbox and (1 <= r_idx <= grid_size) and (1 <= c_idx <= grid_size):
+                                cx_grid = gx1 + (c_idx - 0.5) * cell_w
+                                cy_grid = gy1 + (r_idx - 0.5) * cell_h
+
+                            # 개별 타일 박스와 격자 등분 좌표를 교차 검증하여 정중앙 산출
+                            if cx_box is not None and cx_grid is not None:
+                                if math.hypot(cx_box - cx_grid, cy_box - cy_grid) <= 45.0:
+                                    final_cx = int(round(cx_box * 0.6 + cx_grid * 0.4))
+                                    final_cy = int(round(cy_box * 0.6 + cy_grid * 0.4))
+                                else:
+                                    final_cx = int(round(cx_grid))
+                                    final_cy = int(round(cy_grid))
+                            elif cx_box is not None:
+                                final_cx, final_cy = int(round(cx_box)), int(round(cy_box))
+                            elif cx_grid is not None:
+                                final_cx, final_cy = int(round(cx_grid)), int(round(cy_grid))
+                            else:
+                                continue
+
+                            final_cx = int(max(10, min(w - 10, final_cx)))
+                            final_cy = int(max(10, min(h - 10, final_cy)))
+                            valid_coords.append((final_cx, final_cy))
+                            print(f"   📍 [캡차 좌표 산출] 제시어:{target_label} ({grid_size}x{grid_size}) ➔ {r_idx}행 {c_idx}열 : 픽셀({final_cx}, {final_cy})")
+
                     return valid_coords
             except Exception as inner_e:
                 print(f"⚠️ [{model_name}] 캡차 API 호출 예외 (다음 백업 모델 시도): {inner_e}")
@@ -201,7 +275,6 @@ def analyze_captcha_with_gemini(img_bgr):
     except Exception as e:
         print(f"⚠️ Gemini 캡차 판독 중 치명적 예외 발생: {e}")
         return []
-
 from ultralytics import YOLO
 YOLO_CONF = 0.53
 
@@ -3063,8 +3136,8 @@ def find_cursor_pos(img_bgr, last_pos=None, check_circle=False, allow_full_scan=
         # 실제 커서는 흰색 내부와 검은색 테두리가 공존하므로 표준편차(대비)가 높음 (하얀 웹 배경은 0에 가까움)
         return float(np.std(patch)) >= 18.0
 
-    local_err_limit = 0.07 if is_certi_mode else 0.20
-    full_err_limit = 0.06 if is_certi_mode else 0.12
+    local_err_limit = 0.12 if is_certi_mode else 0.20
+    full_err_limit = 0.10 if is_certi_mode else 0.12
 
     if last_pos:
         lx, ly = last_pos; pad = 90
@@ -5450,18 +5523,27 @@ def ai_commander_worker(target_pc):
                         pass
                     return None
 
+                # 🔎 captcha.png ~ captcha10.png 자동 통합 스캔 헬퍼 함수 (폴더에 있는 파일만 자동 검사)
+                def find_any_captcha_img(th=0.75):
+                    for idx in range(1, 11):
+                        fname = "captcha.png" if idx == 1 else f"captcha{idx}.png"
+                        pos = find_certi_img(fname, th=th)
+                        if pos:
+                            return pos
+                    return None
+
                 # 🎯 목표 좌표로 마우스 이동 예약 (웹 화면 오인식 방어 + 무오버슈트 CERTI 궤적 적용)
                 def start_certi_move_and_action(tx, ty, next_fsm, double=False, type_text=None, press_enter=False, use_jitter=True, post_wait=0.5, desc=""):
                     web_fsms = {
                         "CERTI_STEP_2_FIND", "CERTI_STEP_3_FIND", "CERTI_STEP_5_FIND",
                         "CERTI_STEP_7_FIND", "CERTI_STEP_8_FIND", "CERTI_STEP_8_BRANCH",
-                        "CERTI_CAPTCHA_SOLVE", "CERTI_CAPTCHA_SCROLL", "CERTI_WAIT_SUC", "CERTI_STEP_12_FIND"
+                        "CERTI_CAPTCHA_SOLVE", "CERTI_CAPTCHA_CLICK_NEXT", "CERTI_CAPTCHA_SCROLL", "CERTI_WAIT_SUC", "CERTI_STEP_12_FIND"
                     }
                     is_web_step = (current_fsm in web_fsms)
                     c_mode = "WEB" if is_web_step else True
 
-                    # 웹 내부에서는 풀스캔 오매칭을 막고 반경 90px 내 확실한 커서만 인정하며, I자/손모양 변신 시 직전 논리 좌표를 100% 신뢰
-                    real_c = find_cursor_pos(img_bgr, last_pos=state.get("cursor_pos", [400, 300]), allow_full_scan=(not is_web_step), is_certi_mode=c_mode)
+                    # 1차로 반경 90px 내 커서를 우선 탐색하고, 이탈 시 전체 화면 스캔으로 실제 영점을 복구
+                    real_c = find_cursor_pos(img_bgr, last_pos=state.get("cursor_pos", [400, 300]), allow_full_scan=True, is_certi_mode=c_mode)
                     if real_c:
                         cur_cx, cur_cy = real_c[0], real_c[1]
                         state["cursor_pos"] = [cur_cx, cur_cy]
@@ -5561,7 +5643,7 @@ def ai_commander_worker(target_pc):
                             resume_fsm, resume_desc = "CERTI_STEP_8_BRANCH", "메일/전화번호 입력(9.png/10.png)"
                         elif find_certi_img("fail.png", th=0.82):
                             resume_fsm, resume_desc = "CERTI_STEP_8_BRANCH", "인증 한도 초과(fail.png)"
-                        elif find_certi_img("captcha.png", th=0.80) or find_certi_img("captcha2.png", th=0.80) or find_certi_img("captcha3.png", th=0.80):
+                        elif find_any_captcha_img(th=0.75):
                             state["captcha_is_scrolled_down"] = False
                             state["captcha_scroll_cnt"] = 0
                             state["captcha_test_round"] = 1
@@ -5733,12 +5815,12 @@ def ai_commander_worker(target_pc):
 
                             need_correction = False
                             if strict_aim:
-                                real_c = find_cursor_pos(img_bgr, last_pos=(tx, ty), allow_full_scan=False, is_certi_mode=True)
+                                real_c = find_cursor_pos(img_bgr, last_pos=(tx, ty), allow_full_scan=True, is_certi_mode=True)
                                 if real_c:
                                     state["cursor_pos"] = list(real_c)
                                     state["real_cursor_pos"] = list(real_c)
                                     err_dist = math.hypot(tx - real_c[0], ty - real_c[1])
-                                    if err_dist > 1.5 and state.get("certi_corr_cnt", 0) < 3:
+                                    if err_dist > 2.0 and state.get("certi_corr_cnt", 0) < 3:
                                         need_correction = True
                                         corr_dx = tx - real_c[0]
                                         corr_dy = ty - real_c[1]
@@ -5752,7 +5834,7 @@ def ai_commander_worker(target_pc):
                                         state["certi_corr_cnt"] = state.get("certi_corr_cnt", 0) + 1
                                         state["certi_ack_timeout"] = curr_time + dur_c + 1.0
                                         state["cooldown"] = curr_time + 0.05
-                                        dprint(key, f"🎯 [초소형 타겟 정밀보정] 목표({tx},{ty})와 실제({real_c[0]},{real_c[1]}) 오차 {err_dist:.1f}px ➔ 재조준")
+                                        dprint(key, f"🎯 [타겟 정밀 영점보정] 목표({tx},{ty})와 실제({real_c[0]},{real_c[1]}) 오차 {err_dist:.1f}px ➔ 재조준({state['certi_corr_cnt']}/3)")
 
                             if not need_correction:
                                 is_dbl = state.get("certi_click_double", False)
@@ -5824,36 +5906,46 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.2
 
-                    # 5단계: 5.png 감지 시 비번 입력 후 엔터 / 🚨 만약 3단계 계정 입력+엔터 직후 캡차가 떴다면 즉시 캡차 돌파 돌입!
+                    # 5단계: 🚨 캡차 최우선(0순위) 검사 -> 캡차가 없을 때만 5.png(비밀번호 입력) 진행!
                     elif current_fsm == "CERTI_STEP_5_FIND":
-                        pos = find_certi_img("5.png", th=0.82)
-                        if pos:
-                            dprint(key, "🔎 [인증 5단계] '5.png' 감지 완료! 커서 이동 없이 즉시 비밀번호 입력 후 엔터를 칩니다.")
-                            pico_queues[key].put({"action": "WAIT", "delay_min": 0.22, "delay_max": 0.38})
-                            pico_queues[key].put({"action": "TYPE_STRING", "text": curr_acc_pw, "clear_first": False, "press_enter": True, "allow_typo": False})
-                            state["target_fsm"] = "CERTI_STEP_7_FIND"
-                            state["cooldown"] = curr_time + 0.8
+                        captcha_pos_3 = find_any_captcha_img(th=0.75)
+                        if captcha_pos_3:
+                            dprint(key, "🚨 [3단계 계정입력 직후 캡차 감지] 리캡차 화면 포착! 커서 이동/스크롤 없이 최초 화면 그대로 판독에 돌입합니다.")
+                            state["captcha_return_fsm"] = "CERTI_STEP_5_FIND"
+                            state["captcha_test_round"] = 1
+                            state["captcha_is_scrolled_down"] = False
+                            state["captcha_scroll_cnt"] = 0
+                            state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
+                            state["cooldown"] = curr_time + 0.5
                         else:
-                            captcha_pos_3 = find_certi_img("captcha.png", th=0.80) or find_certi_img("captcha2.png", th=0.80) or find_certi_img("captcha3.png", th=0.80)
-                            if captcha_pos_3:
-                                dprint(key, "🚨 [3단계 계정입력 직후 캡차 감지] 리캡차 화면이 떴습니다! 커서 이동/스크롤 없이 최초 화면 그대로 제미나이 판독에 돌입합니다.")
-                                state["captcha_return_fsm"] = "CERTI_STEP_5_FIND"
-                                state["captcha_test_round"] = 1
-                                state["captcha_is_scrolled_down"] = False
-                                state["captcha_scroll_cnt"] = 0
-                                state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
-                                state["cooldown"] = curr_time + 0.5
+                            pos = find_certi_img("5.png", th=0.82)
+                            if pos:
+                                dprint(key, "🔎 [인증 5단계] '5.png' 감지 완료! 커서 이동 없이 즉시 비밀번호 입력 후 엔터를 칩니다.")
+                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.22, "delay_max": 0.38})
+                                pico_queues[key].put({"action": "TYPE_STRING", "text": curr_acc_pw, "clear_first": False, "press_enter": True, "allow_typo": False})
+                                state["target_fsm"] = "CERTI_STEP_7_FIND"
+                                state["cooldown"] = curr_time + 0.8
                             else:
                                 state["cooldown"] = curr_time + 0.2
 
-                    # 7단계: 로그인 후 7.png 보이면 커서 옮긴 후 원클릭
+                    # 7단계: 로그인 후 7.png 보이면 커서 옮긴 후 원클릭 (비번 입력 직후 뒤늦게 뜬 캡차도 방어)
                     elif current_fsm == "CERTI_STEP_7_FIND":
-                        pos = find_certi_img("7.png", th=0.82)
-                        if pos:
-                            dprint(key, f"🔎 [인증 7단계] 로그인 완료 '7.png' 발견({pos[0]}, {pos[1]})! 이동 후 원클릭합니다.")
-                            start_certi_move_and_action(pos[0], pos[1], next_fsm="CERTI_STEP_8_FIND", double=False, desc="7.png 클릭")
+                        captcha_pos_7 = find_any_captcha_img(th=0.75)
+                        if captcha_pos_7:
+                            dprint(key, "🚨 [로그인 단계 캡차 감지] 리캡차 화면 포착! 캡차 돌파 로직으로 진입합니다.")
+                            state["captcha_return_fsm"] = "CERTI_STEP_7_FIND"
+                            state["captcha_test_round"] = 1
+                            state["captcha_is_scrolled_down"] = False
+                            state["captcha_scroll_cnt"] = 0
+                            state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
+                            state["cooldown"] = curr_time + 0.5
                         else:
-                            state["cooldown"] = curr_time + 0.2
+                            pos = find_certi_img("7.png", th=0.82)
+                            if pos:
+                                dprint(key, f"🔎 [인증 7단계] 로그인 완료 '7.png' 발견({pos[0]}, {pos[1]})! 이동 후 원클릭합니다.")
+                                start_certi_move_and_action(pos[0], pos[1], next_fsm="CERTI_STEP_8_FIND", double=False, desc="7.png 클릭")
+                            else:
+                                state["cooldown"] = curr_time + 0.2
 
                     # 8단계: 8.png 감지되면 커서 옮긴 후 원클릭 -> 분기점(CERTI_STEP_8_BRANCH)으로 이동
                     elif current_fsm == "CERTI_STEP_8_FIND":
@@ -5867,7 +5959,7 @@ def ai_commander_worker(target_pc):
                     # 8클릭 후 분기점: fail.png (IP 반납 후 +1 다음 중앙컴 이동) vs 캡차 감지 vs [9.png(메일) or 10.png(전번)]
                     elif current_fsm == "CERTI_STEP_8_BRANCH":
                         fail_pos = find_certi_img("fail.png", th=0.82)
-                        captcha_pos = find_certi_img("captcha.png", th=0.80) or find_certi_img("captcha2.png", th=0.80) or find_certi_img("captcha3.png", th=0.80)
+                        captcha_pos = find_any_captcha_img(th=0.75)
 
                         if fail_pos:
                             # 🚨 fail.png 감지 -> 현재 중앙컴 IP 사용권 즉시 반납 후 다음 순번(+1) 중앙컴으로 이동!
@@ -5982,48 +6074,67 @@ def ai_commander_worker(target_pc):
                                 state["cooldown"] = curr_time + 1.1
                                 continue
 
-                            dprint(key, f"🤖 [캡차 {round_num}회차 판독] 현재 화면 그대로 Gemini 3.8 Flash에 전송하여 정답 타일을 분석합니다...")
+                            dprint(key, f"🤖 [캡차 {round_num}회차 판독] 현재 화면 그대로 Gemini에 전송하여 정답 타일을 분석합니다...")
                             click_targets = analyze_captcha_with_gemini(img_bgr)
 
-                            real_c = find_cursor_pos(img_bgr, last_pos=state.get("cursor_pos", [400, 300]), allow_full_scan=False, is_certi_mode="WEB")
-                            if real_c:
-                                cur_x, cur_y = real_c[0], real_c[1]
-                                state["cursor_pos"] = [cur_x, cur_y]
-                            else:
-                                cur_x, cur_y = state.get("cursor_pos", [400, 300])
-
-                            total_move_dur = 0.0
                             if click_targets:
-                                dprint(key, f"🎯 [캡차 {round_num}회차 타격] 제미나이가 {len(click_targets)}개의 타일을 선택했습니다! 순차 클릭 후 스크롤을 내립니다.")
-                                for tx, ty in click_targets:
-                                    dx = tx - cur_x
-                                    dy = ty - cur_y
-                                    dist = math.hypot(dx, dy)
-                                    dur = apply_human_variance(0.10 + 0.035 * math.log2((dist / 20.0) + 1.0) if dist > 0 else 0.08)
-
-                                    pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(dx, dy, duration=dur, behavior="CERTI", key=key)})
-                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.06, "delay_max": 0.12})
-                                    pico_queues[key].put({"action": "CERTI_CLICK", "double": False})
-                                    cur_x, cur_y = tx, ty
-                                    total_move_dur += (dur + 0.09 + 0.25)
-
-                                state["cursor_pos"] = [cur_x, cur_y]
+                                dprint(key, f"🎯 [캡차 {round_num}회차 타격] 총 {len(click_targets)}개의 타일을 1개씩 영점 검증하며 순차 클릭합니다!")
+                                state["captcha_target_queue"] = list(click_targets)
+                                state["captcha_scroll_cnt"] = 0
+                                state["target_fsm"] = "CERTI_CAPTCHA_CLICK_NEXT"
+                                state["cooldown"] = curr_time + 0.05
                             else:
                                 dprint(key, f"⏭️ [캡차 {round_num}회차 - 해당 타일 없음] 클릭할 타일이 없어 캡차 창 안쪽으로 커서를 옮긴 뒤 스크롤을 내립니다.")
+                                real_c = find_cursor_pos(img_bgr, last_pos=state.get("cursor_pos", [400, 300]), allow_full_scan=True, is_certi_mode="WEB")
+                                if real_c:
+                                    cur_x, cur_y = real_c[0], real_c[1]
+                                    state["cursor_pos"] = [cur_x, cur_y]
+                                else:
+                                    cur_x, cur_y = state.get("cursor_pos", [400, 300])
+
                                 tx, ty = 400 + int(round(g_val(-15, 15))), 320 + int(round(g_val(-15, 15)))
                                 dx, dy = tx - cur_x, ty - cur_y
                                 dist = math.hypot(dx, dy)
+                                total_move_dur = 0.0
                                 if dist > 15:
                                     dur = apply_human_variance(0.10 + 0.035 * math.log2((dist / 20.0) + 1.0))
                                     pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(dx, dy, duration=dur, behavior="CERTI", key=key)})
                                     state["cursor_pos"] = [tx, ty]
                                     total_move_dur += dur
 
-                            state["captcha_scroll_cnt"] = 0
-                            state["target_fsm"] = "CERTI_CAPTCHA_SCROLL"
-                            state["cooldown"] = curr_time + total_move_dur + 0.4
+                                state["captcha_scroll_cnt"] = 0
+                                state["target_fsm"] = "CERTI_CAPTCHA_SCROLL"
+                                state["cooldown"] = curr_time + total_move_dur + 0.4
                         else:
                             state["cooldown"] = curr_time + 0.1
+
+                    # 🎯 캡차 타일 1개씩 폐루프(도착 확인 + 영점 재보정) 순차 타격
+                    elif current_fsm == "CERTI_CAPTCHA_CLICK_NEXT":
+                        is_hw_busy = state.get("hw_busy", False) or not pico_queues[key].empty()
+                        if not is_hw_busy:
+                            t_queue = state.get("captcha_target_queue", [])
+                            if t_queue:
+                                tx, ty = t_queue.pop(0)
+                                state["captcha_target_queue"] = t_queue
+                                rem_cnt = len(t_queue)
+                                # 각 타일 중심에서 ±2px 이내의 미세 가우시안 오프셋만 부여하고 use_jitter=False(strict_aim=True)로 칼영점 검증!
+                                safe_tx = int(max(10, min(w - 10, tx + int(round(g_val(-2, 2))))))
+                                safe_ty = int(max(10, min(h - 10, ty + int(round(g_val(-2, 2))))))
+                                start_certi_move_and_action(
+                                    safe_tx, safe_ty,
+                                    next_fsm="CERTI_CAPTCHA_CLICK_NEXT",
+                                    double=False,
+                                    use_jitter=False,
+                                    post_wait=g_val(0.28, 0.42),
+                                    desc=f"캡차 타일 정밀클릭({safe_tx},{safe_ty} / 남은타일:{rem_cnt}개)"
+                                )
+                            else:
+                                dprint(key, "✅ [캡차 타일 클릭 완료] 모든 정답 타일 클릭을 마쳤습니다! 스크롤 다운 단계로 이동합니다.")
+                                state["captcha_scroll_cnt"] = 0
+                                state["target_fsm"] = "CERTI_CAPTCHA_SCROLL"
+                                state["cooldown"] = curr_time + g_val(0.35, 0.50)
+                        else:
+                            state["cooldown"] = curr_time + 0.05
 
                     # 스크롤 다운 후 확인(confirm.png) 또는 건너뛰기(skip.png) 클릭
                     elif current_fsm == "CERTI_CAPTCHA_SCROLL":
@@ -6090,7 +6201,7 @@ def ai_commander_worker(target_pc):
                                     continue
 
                             # 3) 여전히 캡차 창이 남아있는 경우 -> 2회차, 3회차, 4회차 연속 테스트 즉시 반복!
-                            if find_certi_img("captcha.png", th=0.80) or find_certi_img("captcha2.png", th=0.80) or find_certi_img("captcha3.png", th=0.80):
+                            if find_any_captcha_img(th=0.75):
                                 next_round = state.get("captcha_test_round", 1) + 1
                                 state["captcha_test_round"] = next_round
                                 if next_round <= 8:
