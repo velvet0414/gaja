@@ -127,11 +127,23 @@ _K_PART2 = "ZDNUbXZIY2NueWFuaXFrMUY0WTVzUEpyOFE="
 GEMINI_API_KEY = base64.b64decode(_K_PART1 + _K_PART2).decode("utf-8")
 GEMINI_CAPTCHA_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"]
 
-def analyze_captcha_with_gemini(img_bgr):
+# 📐 [PlayNC 캡차 실측 고정 격자 좌표계 (800x600 프로젝터 화면 기준)]
+# - 3x3 타일 영역: 가로 X = 262 ~ 532 (폭 270px), 세로 Y = 277 ~ 547 (상단 스크롤 기준)
+# - 스크롤이 내려가 있을 때 파란 배너 하단(by2) 위치에 맞춰 Y좌표를 자동 보정합니다.
+def get_plaync_tile_center(row_1based, col_1based, grid_size=3, banner_bottom_y=272):
+    gx1, gx2 = 262.0, 532.0
+    gy1 = float(banner_bottom_y) + 5.0
+    grid_w = gx2 - gx1  # 270px
+    cell_step = grid_w / float(grid_size)
+
+    cx = int(round(gx1 + (col_1based - 0.5) * cell_step))
+    cy = int(round(gy1 + (row_1based - 0.5) * cell_step))
+    return cx, cy
+
+def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
     """
-    제미나이 API를 호출하여 캡차의 정답 타일 중심 좌표 리스트를 반환합니다.
-    제미나이의 네이티브 0~1000 정규화 박스(box_2d) 및 격자(Grid) 행/열 좌표를 결합하여
-    파이썬에서 정확한 화면 픽셀(w x h) 중심점을 계산합니다.
+    캡차 영역(x:250~550, y:150~560)만 깨끗하게 크롭하여 Gemini에 전송하고,
+    정답 타일의 (행, 열) 번호만 받아서 PlayNC 실측 고정 픽셀 좌표로 100% 정확하게 변환합니다.
     """
     if not GEMINI_API_KEY or GEMINI_API_KEY == "여기에_제미나이_API_KEY를_입력하세요":
         print("⚠️ [제미나이 오류] API 키가 입력되지 않았습니다!")
@@ -140,27 +152,33 @@ def analyze_captcha_with_gemini(img_bgr):
     try:
         import cv2
         h, w = img_bgr.shape[:2]
-        _, buffer = cv2.imencode('.jpg', img_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+
+        # 💡 800x600 전체 화면 대신 캡차 팝업 영역만 확대 크롭하여 AI 판독률 극대화!
+        crop_x1, crop_y1 = max(0, 250), max(0, 155)
+        crop_x2, crop_y2 = min(w, 550), min(h, 560)
+        captcha_crop = img_bgr[crop_y1:crop_y2, crop_x1:crop_x2]
+
+        _, buffer = cv2.imencode('.jpg', captcha_crop, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
         img_base64 = base64.b64encode(buffer).decode('utf-8')
 
         prompt = """
-        You are an expert at solving Google reCAPTCHA v2 image challenges.
-        1. Read the target object instruction in the blue header banner (e.g., 소화전, 신호등, 횡단보도, 자전거, 버스, 자동차, 계단, 굴뚝, 오토바이, 다리, 트랙터, 야자수, 산 또는 언덕, 주차 미터기, 보트, 택시).
-        2. Identify whether the photo grid below the blue banner is a 3x3 grid (9 tiles) or a 4x4 grid (16 tiles).
-        3. Find the bounding box of the ENTIRE photo grid area (all 9 or 16 tiles combined, excluding the blue header and bottom button bar) as `grid_box_2d`: [ymin, xmin, ymax, xmax] normalized to 0-1000.
-        4. Find all tiles that contain the target object (or part of it) AND do NOT already have a blue checkmark overlay.
-        5. For each matching unselected tile, provide its 1-based `row` (1 to 3 or 4, top to bottom), 1-based `col` (1 to 3 or 4, left to right), and its individual `box_2d`: [ymin, xmin, ymax, xmax] normalized to 0-1000.
-
-        Return strictly a JSON object in this exact format:
+        You are solving a Google reCAPTCHA v2 image challenge.
+        1. Read the Korean target object name in the blue top banner (e.g., 자동차, 버스, 소화전, 신호등, 횡단보도, 자전거, 오토바이, 계단, 굴뚝, 트랙터, 다리, 야자수, 보트, 산 또는 언덕).
+        2. Determine if the image grid below the blue banner is 3x3 (9 tiles) or 4x4 (16 tiles).
+        3. Inspect every tile carefully by row (1 = top row, increasing downwards) and col (1 = leftmost column, increasing rightwards).
+        4. Select all tiles that contain the target object AND do NOT already have a blue checkmark on the top-left corner.
+        Return strictly a JSON object:
         {
-          "target_name": "소화전",
+          "target": "자동차",
           "grid_size": 3,
-          "grid_box_2d": [ymin, xmin, ymax, xmax],
           "tiles": [
-            {"row": 1, "col": 2, "box_2d": [ymin, xmin, ymax, xmax]}
+            {"row": 1, "col": 1},
+            {"row": 1, "col": 3},
+            {"row": 3, "col": 1},
+            {"row": 3, "col": 2}
           ]
         }
-        If no unselected tiles match, return {"target_name": "", "grid_size": 3, "grid_box_2d": [0,0,0,0], "tiles": []}.
+        If no unselected tiles match, return {"target": "", "grid_size": 3, "tiles": []}.
         """
 
         payload = {
@@ -189,7 +207,6 @@ def analyze_captcha_with_gemini(img_bgr):
             try:
                 req_payload = dict(payload)
                 req_gen_cfg = dict(payload["generationConfig"])
-                # 💡 gemini-2.5 모델의 기본 추론(Thinking) 토큰 생성을 0으로 꺼서 30초 지연 및 요금 폭탄 원천 차단!
                 if "2.5" in model_name:
                     req_gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
                 req_payload["generationConfig"] = req_gen_cfg
@@ -197,7 +214,7 @@ def analyze_captcha_with_gemini(img_bgr):
 
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
                 req = urllib.request.Request(url, data=body_bytes, headers={'Content-Type': 'application/json'})
-                with urllib.request.urlopen(req, timeout=15, context=ctx) as response:
+                with urllib.request.urlopen(req, timeout=12, context=ctx) as response:
                     result_json = json.loads(response.read().decode('utf-8'))
                     text_resp = result_json['candidates'][0]['content']['parts'][0]['text']
                     text_resp = text_resp.replace("```json", "").replace("```", "").strip()
@@ -208,63 +225,20 @@ def analyze_captcha_with_gemini(img_bgr):
                         grid_size = int(data.get("grid_size", 3))
                         if grid_size not in [3, 4]:
                             grid_size = 3
-                        g_box = data.get("grid_box_2d", [0, 0, 0, 0])
+                        target_label = data.get("target", "타겟")
                         tiles = data.get("tiles", [])
-                        target_label = data.get("target_name", "타겟")
 
-                        has_valid_gbox = (
-                            isinstance(g_box, list) and len(g_box) == 4 and
-                            (g_box[2] - g_box[0]) > 150 and (g_box[3] - g_box[1]) > 150
-                        )
-                        if has_valid_gbox:
-                            gy1 = (float(g_box[0]) / 1000.0) * h
-                            gx1 = (float(g_box[1]) / 1000.0) * w
-                            gy2 = (float(g_box[2]) / 1000.0) * h
-                            gx2 = (float(g_box[3]) / 1000.0) * w
-                            cell_w = (gx2 - gx1) / float(grid_size)
-                            cell_h = (gy2 - gy1) / float(grid_size)
-
-                        seen_cells = set()
+                        seen = set()
                         for item in tiles:
                             if not isinstance(item, dict):
                                 continue
                             r_idx = int(item.get("row", 0))
                             c_idx = int(item.get("col", 0))
-                            t_box = item.get("box_2d", [])
-
-                            if (r_idx, c_idx) in seen_cells and r_idx > 0 and c_idx > 0:
-                                continue
-                            seen_cells.add((r_idx, c_idx))
-
-                            cx_box, cy_box = None, None
-                            if isinstance(t_box, list) and len(t_box) == 4 and (t_box[2] > t_box[0]) and (t_box[3] > t_box[1]):
-                                cy_box = ((float(t_box[0]) + float(t_box[2])) / 2000.0) * h
-                                cx_box = ((float(t_box[1]) + float(t_box[3])) / 2000.0) * w
-
-                            cx_grid, cy_grid = None, None
-                            if has_valid_gbox and (1 <= r_idx <= grid_size) and (1 <= c_idx <= grid_size):
-                                cx_grid = gx1 + (c_idx - 0.5) * cell_w
-                                cy_grid = gy1 + (r_idx - 0.5) * cell_h
-
-                            # 개별 타일 박스와 격자 등분 좌표를 교차 검증하여 정중앙 산출
-                            if cx_box is not None and cx_grid is not None:
-                                if math.hypot(cx_box - cx_grid, cy_box - cy_grid) <= 45.0:
-                                    final_cx = int(round(cx_box * 0.6 + cx_grid * 0.4))
-                                    final_cy = int(round(cy_box * 0.6 + cy_grid * 0.4))
-                                else:
-                                    final_cx = int(round(cx_grid))
-                                    final_cy = int(round(cy_grid))
-                            elif cx_box is not None:
-                                final_cx, final_cy = int(round(cx_box)), int(round(cy_box))
-                            elif cx_grid is not None:
-                                final_cx, final_cy = int(round(cx_grid)), int(round(cy_grid))
-                            else:
-                                continue
-
-                            final_cx = int(max(10, min(w - 10, final_cx)))
-                            final_cy = int(max(10, min(h - 10, final_cy)))
-                            valid_coords.append((final_cx, final_cy))
-                            print(f"   📍 [캡차 좌표 산출] 제시어:{target_label} ({grid_size}x{grid_size}) ➔ {r_idx}행 {c_idx}열 : 픽셀({final_cx}, {final_cy})")
+                            if (1 <= r_idx <= grid_size) and (1 <= c_idx <= grid_size) and (r_idx, c_idx) not in seen:
+                                seen.add((r_idx, c_idx))
+                                cx, cy = get_plaync_tile_center(r_idx, c_idx, grid_size=grid_size, banner_bottom_y=banner_bottom_y)
+                                valid_coords.append((cx, cy))
+                                print(f"   📍 [캡차 타일 확정] 제시어:{target_label} ({grid_size}x{grid_size}) ➔ {r_idx}행 {c_idx}열 ➔ 고정픽셀({cx}, {cy})")
 
                     return valid_coords
             except Exception as inner_e:
@@ -6063,40 +6037,55 @@ def ai_commander_worker(target_pc):
                         if not is_hw_busy:
                             round_num = state.get("captcha_test_round", 1)
 
-                            # 2회차 이상에서 화면이 아래로 내려가 있다면 먼저 스크롤을 위로 올려 상단 제시어(제목)를 노출시킴!
+                            # 💡 커서가 캡차 박스(x:260~530, y:170~540) 바깥에 있으면 휠 스크롤이 안 먹히므로 내부로 먼저 이동!
+                            real_c = find_cursor_pos(img_bgr, last_pos=state.get("cursor_pos", [400, 300]), allow_full_scan=True, is_certi_mode="WEB")
+                            cur_x, cur_y = real_c if real_c else state.get("cursor_pos", [400, 300])
+                            state["cursor_pos"] = [cur_x, cur_y]
+
+                            # 2회차 이상에서 화면이 아래로 내려가 있다면 커서를 캡차 안쪽에 두고 위로 스크롤!
                             if state.get("captcha_is_scrolled_down", False):
-                                dprint(key, f"🔼 [캡차 {round_num}회차 - 스크롤 업] 상단 제시어(제목)와 사진을 보기 위해 스크롤을 위로 올립니다.")
+                                dprint(key, f"🔼 [캡차 {round_num}회차 - 스크롤 업] 상단 제시어 확인을 위해 캡차 내부에서 스크롤을 위로 올립니다.")
+                                if not (280 <= cur_x <= 510 and 200 <= cur_y <= 500):
+                                    tx, ty = 397 + int(round(g_val(-15, 15))), 350 + int(round(g_val(-15, 15)))
+                                    dur_m = apply_human_variance(0.10 + 0.035 * math.log2((math.hypot(tx - cur_x, ty - cur_y) / 20.0) + 1.0))
+                                    pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(tx - cur_x, ty - cur_y, duration=dur_m, behavior="CERTI", key=key)})
+                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.10, "delay_max": 0.18})
+                                    state["cursor_pos"] = [tx, ty]
+
                                 pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": 5})
-                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.25, "delay_max": 0.35})
-                                pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": 5})
-                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.5, "delay_max": 0.7})
+                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.45, "delay_max": 0.65})
                                 state["captcha_is_scrolled_down"] = False
-                                state["cooldown"] = curr_time + 1.1
+                                state["cooldown"] = curr_time + 0.8
                                 continue
 
-                            dprint(key, f"🤖 [캡차 {round_num}회차 판독] 현재 화면 그대로 Gemini에 전송하여 정답 타일을 분석합니다...")
-                            click_targets = analyze_captcha_with_gemini(img_bgr)
+                            # 🔎 파란색 제시어 배너 하단 Y좌표(banner_bottom_y) 실시간 측정 (상단 스크롤 시 약 272, 하단 스크롤 시 약 250)
+                            banner_bottom_y = 272
+                            try:
+                                hsv_cap = cv2.cvtColor(img_bgr[155:290, 260:535], cv2.COLOR_BGR2HSV)
+                                mask_b = cv2.inRange(hsv_cap, np.array([100, 140, 150]), np.array([125, 255, 255]))
+                                row_sums = np.sum(mask_b > 0, axis=1)
+                                valid_rows = np.where(row_sums > 100)[0]
+                                if len(valid_rows) > 0:
+                                    banner_bottom_y = 155 + int(valid_rows[-1])
+                            except Exception:
+                                banner_bottom_y = 272
+
+                            dprint(key, f"🤖 [캡차 {round_num}회차 판독] 배너 하단(Y:{banner_bottom_y}) 기준 크롭 이미지를 전송하여 정답 칸을 분석합니다...")
+                            click_targets = analyze_captcha_with_gemini(img_bgr, banner_bottom_y=banner_bottom_y)
 
                             if click_targets:
-                                dprint(key, f"🎯 [캡차 {round_num}회차 타격] 총 {len(click_targets)}개의 타일을 1개씩 영점 검증하며 순차 클릭합니다!")
+                                dprint(key, f"🎯 [캡차 {round_num}회차 타격] 총 {len(click_targets)}개의 타일을 고정 격자 좌표로 순차 클릭합니다!")
                                 state["captcha_target_queue"] = list(click_targets)
                                 state["captcha_scroll_cnt"] = 0
                                 state["target_fsm"] = "CERTI_CAPTCHA_CLICK_NEXT"
                                 state["cooldown"] = curr_time + 0.05
                             else:
-                                dprint(key, f"⏭️ [캡차 {round_num}회차 - 해당 타일 없음] 클릭할 타일이 없어 캡차 창 안쪽으로 커서를 옮긴 뒤 스크롤을 내립니다.")
-                                real_c = find_cursor_pos(img_bgr, last_pos=state.get("cursor_pos", [400, 300]), allow_full_scan=True, is_certi_mode="WEB")
-                                if real_c:
-                                    cur_x, cur_y = real_c[0], real_c[1]
-                                    state["cursor_pos"] = [cur_x, cur_y]
-                                else:
-                                    cur_x, cur_y = state.get("cursor_pos", [400, 300])
-
-                                tx, ty = 400 + int(round(g_val(-15, 15))), 320 + int(round(g_val(-15, 15)))
+                                dprint(key, f"⏭️ [캡차 {round_num}회차 - 해당 타일 없음] 캡차 박스 중앙으로 커서를 옮긴 뒤 스크롤을 내립니다.")
+                                tx, ty = 397 + int(round(g_val(-10, 10))), 380 + int(round(g_val(-10, 10)))
                                 dx, dy = tx - cur_x, ty - cur_y
                                 dist = math.hypot(dx, dy)
                                 total_move_dur = 0.0
-                                if dist > 15:
+                                if dist > 10:
                                     dur = apply_human_variance(0.10 + 0.035 * math.log2((dist / 20.0) + 1.0))
                                     pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(dx, dy, duration=dur, behavior="CERTI", key=key)})
                                     state["cursor_pos"] = [tx, ty]
