@@ -2271,6 +2271,7 @@ def _save_settings_internal():
                 "auth_main_phone": v["auth_main_phone"].get().strip() if "auth_main_phone" in v else "",
 
                 "auth_delay_use": v["auth_delay_use"].get() if "auth_delay_use" in v else False,
+                "auth_auto_captcha": v["auth_auto_captcha"].get() if "auth_auto_captcha" in v else False,
                 "auth_delay_start_min": v["auth_delay_start_min"].get().strip() if "auth_delay_start_min" in v else "55",
                 "auth_delay_end_min": v["auth_delay_end_min"].get().strip() if "auth_delay_end_min" in v else "58",
                 "auth_delay_sec": v["auth_delay_sec"].get().strip() if "auth_delay_sec" in v else "180",
@@ -2758,6 +2759,7 @@ for pc in MINI_PCS:
         "auth_main_phone": tk.StringVar(value=pc_set.get("auth_main_phone", "")),
 
         "auth_delay_use": tk.BooleanVar(value=pc_set.get("auth_delay_use", False)),
+        "auth_auto_captcha": tk.BooleanVar(value=pc_set.get("auth_auto_captcha", False)),
         "auth_delay_start_min": tk.StringVar(value=str(pc_set.get("auth_delay_start_min", "55"))),
         "auth_delay_end_min": tk.StringVar(value=str(pc_set.get("auth_delay_end_min", "58"))),
         "auth_delay_sec": tk.StringVar(value=str(pc_set.get("auth_delay_sec", "180")))
@@ -5609,25 +5611,15 @@ def ai_commander_worker(target_pc):
                     if current_fsm == "CERTI_AUTO_RESUME_SCAN":
                         resume_fsm = None
                         resume_desc = ""
+                        auto_cap_on = settings.get("auth_auto_captcha", False)
 
-                        # 1) 웹 브라우저 단계 화면 검사 (가장 구체적인 완료/입력 단계부터 역순 스캔)
+                        # 1) 웹 브라우저 완료/입력 단계 우선 검사 (캡차 잔상보다 실제 다음 단계 버튼을 최우선으로 확인!)
                         if find_certi_img("suc.png", th=0.82):
                             resume_fsm, resume_desc = "CERTI_WAIT_SUC", "웹 인증 완료(suc.png)"
-                        elif find_certi_img("9.png", th=0.88) or find_certi_img("10.png", th=0.88):
+                        elif find_certi_img("9.png", th=0.80) or find_certi_img("10.png", th=0.80):
                             resume_fsm, resume_desc = "CERTI_STEP_8_BRANCH", "메일/전화번호 입력(9.png/10.png)"
                         elif find_certi_img("fail.png", th=0.82):
                             resume_fsm, resume_desc = "CERTI_STEP_8_BRANCH", "인증 한도 초과(fail.png)"
-                        elif find_any_captcha_img(th=0.75):
-                            state["captcha_is_scrolled_down"] = False
-                            state["captcha_scroll_cnt"] = 0
-                            state["captcha_test_round"] = 1
-                            prev_f = state.get("certi_fsm_before_manual", "")
-                            state["captcha_return_fsm"] = "CERTI_STEP_5_FIND" if prev_f in ["CERTI_STEP_3_FIND", "CERTI_STEP_5_FIND"] else "CERTI_STEP_8_BRANCH"
-                            resume_fsm, resume_desc = "CERTI_CAPTCHA_SOLVE", "리캡차 판독 화면(captcha.png)"
-                        elif find_certi_img("confirm.png", th=0.80) or find_certi_img("skip.png", th=0.80):
-                            state["captcha_is_scrolled_down"] = True
-                            state["captcha_scroll_cnt"] = 0
-                            resume_fsm, resume_desc = "CERTI_CAPTCHA_SCROLL", "리캡차 하단 확인/건너뛰기(confirm/skip)"
                         elif find_certi_img("8.png", th=0.82):
                             resume_fsm, resume_desc = "CERTI_STEP_8_FIND", "웹 8단계 확인 버튼(8.png)"
                         elif find_certi_img("7.png", th=0.82):
@@ -5638,15 +5630,32 @@ def ai_commander_worker(target_pc):
                             resume_fsm, resume_desc = "CERTI_STEP_3_FIND", "웹 3단계 계정 입력(3.png)"
                         elif find_certi_img("2.png", th=0.82):
                             resume_fsm, resume_desc = "CERTI_STEP_2_FIND", "웹 2단계 로그인 버튼(2.png)"
+                        elif find_any_captcha_img(th=0.75):
+                            prev_f = state.get("certi_fsm_before_manual", "")
+                            if not state.get("captcha_return_fsm"):
+                                state["captcha_return_fsm"] = "CERTI_STEP_5_FIND" if prev_f in ["CERTI_STEP_3_FIND", "CERTI_STEP_5_FIND"] else "CERTI_STEP_8_BRANCH"
+                            if auto_cap_on:
+                                state["captcha_is_scrolled_down"] = False
+                                state["captcha_scroll_cnt"] = 0
+                                state["captcha_test_round"] = 1
+                                resume_fsm, resume_desc = "CERTI_CAPTCHA_SOLVE", "리캡차 자동 판독 화면(captcha.png)"
+                            else:
+                                resume_fsm, resume_desc = "CERTI_CAPTCHA_MANUAL_WAIT", "리캡차 수동 대기 화면(captcha.png)"
+                        elif find_certi_img("confirm.png", th=0.80) or find_certi_img("skip.png", th=0.80):
+                            if auto_cap_on:
+                                state["captcha_is_scrolled_down"] = True
+                                state["captcha_scroll_cnt"] = 0
+                                resume_fsm, resume_desc = "CERTI_CAPTCHA_SCROLL", "리캡차 하단 확인/건너뛰기(confirm/skip)"
+                            else:
+                                resume_fsm, resume_desc = "CERTI_CAPTCHA_MANUAL_WAIT", "리캡차 수동 확인 대기(confirm/skip)"
 
-                        # 2) 게임 종료 팝업 / 런처 실행 / 인게임 재접속 단계 검사
+                        # 2) 게임 종료 팝업 / 런처 실행 / 인게임 재접속 단계 검사 (바탕화면 작업표시줄 12.png 오인식 배제)
                         if resume_fsm is None:
                             has_ok2 = find_certi_img("ok2.png", th=0.82) is not None
                             has_quit = find_certi_img("quit.png", th=0.82) is not None
                             has_dragon = find_certi_img("dragon.png", th=0.82) is not None
 
                             if has_ok2:
-                                # 인게임(dragon.png 공존)에서 뜬 ok2면 기존창 종료 루트로, 런처에서 뜬 ok2면 이용권 오류 루트로 분기
                                 if has_dragon or find_certi_img("certi.png", th=0.85) or find_certi_img("ticket2.png", th=0.85):
                                     resume_fsm, resume_desc = "CERTI_FIND_OK2_FIRST", "인게임 팝업 확인(ok2.png)"
                                 else:
@@ -5675,27 +5684,50 @@ def ai_commander_worker(target_pc):
                             web_stage_set = {
                                 "CERTI_STEP_2_FIND", "CERTI_STEP_3_FIND", "CERTI_STEP_5_FIND",
                                 "CERTI_STEP_7_FIND", "CERTI_STEP_8_FIND", "CERTI_STEP_8_BRANCH",
-                                "CERTI_CAPTCHA_SOLVE", "CERTI_CAPTCHA_SCROLL", "CERTI_WAIT_SUC"
+                                "CERTI_CAPTCHA_SOLVE", "CERTI_CAPTCHA_CLICK_NEXT", "CERTI_CAPTCHA_SCROLL",
+                                "CERTI_CAPTCHA_AFTER_CONFIRM", "CERTI_CAPTCHA_MANUAL_WAIT", "CERTI_WAIT_SUC"
                             }
-                            # 이미 웹 인증 단계를 지나 게임 실행/접속 단계로 넘어온 상태라면 점유 중이던 IP 사용권 즉시 반납!
                             if resume_fsm not in web_stage_set:
                                 release_central_ip_lock_async(key)
 
                             dprint(key, f"✅ [화면 자동 인식 성공] 현재 화면이 [{resume_desc}] 단계로 확인되었습니다! ({resume_fsm})부터 자동 진행합니다!")
                             state["certi_web_last_fsm"] = None
+                            state["certi_web_step_start"] = curr_time
                             state["target_fsm"] = resume_fsm
-                            state["cooldown"] = curr_time + 0.3
+                            state["cooldown"] = curr_time + 0.25
                         else:
-                            # 페이지 로딩 중일 수 있으므로 최대 4.0초간은 웹/게임 화면을 계속 탐색
-                            if curr_time - state.get("certi_resume_scan_start", curr_time) < 4.0:
-                                state["cooldown"] = curr_time + 0.25
+                            # 페이지 전환/로딩 중일 수 있으므로 최대 3.5초간은 스캔 유지
+                            if curr_time - state.get("certi_resume_scan_start", curr_time) < 3.5:
+                                state["cooldown"] = curr_time + 0.2
                             else:
-                                # 4초가 지나도 웹/게임 창이 없다면 바탕화면 상태 -> 수동 개입 직전 단계(certi_fsm_before_manual)를 기준으로 스마트 복귀
+                                # 💡 [핵심 버그 픽스] 웹 인증/캡차 도중 수동 개입했다가 복귀한 경우에는 절대 바탕화면(Win+D / 12.png / 13.png)으로 튀지 않고 직전 웹 단계로 복귀!
                                 prev_f = state.get("certi_fsm_before_manual", "CERTI_GOTO_DESKTOP")
                                 pre_web_set = {"CERTI_DELAY_WAIT", "CERTI_GOTO_DESKTOP", "CERTI_WAIT_IP_LOCK", "CERTI_STEP_1_FIND"}
+                                web_progress_set = {
+                                    "CERTI_STEP_2_FIND", "CERTI_STEP_3_FIND", "CERTI_STEP_5_FIND",
+                                    "CERTI_STEP_7_FIND", "CERTI_STEP_8_FIND", "CERTI_STEP_8_BRANCH",
+                                    "CERTI_CAPTCHA_SOLVE", "CERTI_CAPTCHA_CLICK_NEXT", "CERTI_CAPTCHA_SCROLL",
+                                    "CERTI_CAPTCHA_AFTER_CONFIRM", "CERTI_CAPTCHA_MANUAL_WAIT", "CERTI_WAIT_SUC"
+                                }
+                                is_desktop_visible = (
+                                    find_certi_img("13.png", th=0.82) is not None or
+                                    find_certi_img("1.png", th=0.82) is not None or
+                                    find_certi_img("sub.png", th=0.82) is not None
+                                )
+
                                 if prev_f in pre_web_set:
                                     dprint(key, "🖥️ [바탕화면 복귀 감지] 웹 진입 전 단계였으므로 1.png/sub.png 실행 단계로 복귀합니다.")
                                     state["target_fsm"] = "CERTI_WAIT_IP_LOCK"
+                                elif prev_f in web_progress_set and not is_desktop_visible:
+                                    # 캡차 수동 해결 직후 로딩 중이라면 캡차 복귀 지점(5단계 또는 8단계 분기)으로 안전하게 이어감!
+                                    if prev_f.startswith("CERTI_CAPTCHA"):
+                                        fallback_web_fsm = state.get("captcha_return_fsm", "CERTI_STEP_8_BRANCH")
+                                    else:
+                                        fallback_web_fsm = prev_f
+                                    dprint(key, f"🌐 [웹 단계 연속 진행] 브라우저 화면 유지 확인! 바탕화면으로 나가지 않고 [{fallback_web_fsm}] 단계를 이어갑니다.")
+                                    state["certi_web_last_fsm"] = None
+                                    state["certi_web_step_start"] = curr_time
+                                    state["target_fsm"] = fallback_web_fsm
                                 else:
                                     release_central_ip_lock_async(key)
                                     if find_certi_img("12.png", th=0.82) and not state.get("certi_from_closed_game", False):
@@ -5706,7 +5738,54 @@ def ai_commander_worker(target_pc):
                                         state["certi_13_wait_mode"] = "CLOSED_START"
                                         state["certi_next_desktop_time"] = 0.0
                                         state["target_fsm"] = "CERTI_STEP_13_FIND"
-                                state["cooldown"] = curr_time + 0.5
+                                state["cooldown"] = curr_time + 0.3
+
+                    # ⏸️ 캡차 수동 해결 대기 모드 (GUI '캡차자동(AI)' 체크 해제 시 작동)
+                    elif current_fsm == "CERTI_CAPTCHA_MANUAL_WAIT":
+                        ret_fsm = state.get("captcha_return_fsm", "CERTI_STEP_8_BRANCH")
+                        # 만약 대기 중 사용자가 GUI에서 '캡차자동(AI)' 체크박스를 켜면 즉시 자동 해독으로 전환!
+                        if settings.get("auth_auto_captcha", False):
+                            dprint(key, "🤖 [캡차 자동모드 전환] GUI 캡차자동(AI) 체크 감지! 즉시 자동 판독 모드로 전환합니다.")
+                            state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
+                            state["cooldown"] = curr_time + 0.2
+                        # 사람이 캡차를 다 풀고 확인을 눌러 다음 단계 화면이 떴는지 실시간 감시!
+                        elif find_certi_img("suc.png", th=0.82):
+                            dprint(key, "🎉 [수동 캡차 후 완료 감지] 'suc.png' 확인! 완료 처리 단계로 넘어갑니다.")
+                            state["certi_web_last_fsm"] = None
+                            state["target_fsm"] = "CERTI_WAIT_SUC"
+                            state["cooldown"] = curr_time + 0.1
+                        elif find_certi_img("fail.png", th=0.82) or find_certi_img("9.png", th=0.80) or find_certi_img("10.png", th=0.80):
+                            dprint(key, "🎉 [수동 캡차 돌파 확인] 다음 인증 화면(9.png/10.png/fail.png) 등장 확인! 자동으로 이어갑니다.")
+                            state["certi_web_last_fsm"] = None
+                            state["certi_web_step_start"] = curr_time
+                            state["target_fsm"] = "CERTI_STEP_8_BRANCH"
+                            state["cooldown"] = curr_time + 0.1
+                        elif ret_fsm == "CERTI_STEP_5_FIND" and find_certi_img("5.png", th=0.82):
+                            dprint(key, "🎉 [3단계 수동 캡차 돌파 확인] 비밀번호 입력창(5.png) 등장 확인! 자동으로 비밀번호를 입력합니다.")
+                            state["certi_web_last_fsm"] = None
+                            state["certi_web_step_start"] = curr_time
+                            state["target_fsm"] = "CERTI_STEP_5_FIND"
+                            state["cooldown"] = curr_time + 0.1
+                        elif ret_fsm == "CERTI_STEP_7_FIND" and find_certi_img("7.png", th=0.82):
+                            dprint(key, "🎉 [로그인 수동 캡차 돌파 확인] '7.png' 등장 확인! 자동으로 이어갑니다.")
+                            state["certi_web_last_fsm"] = None
+                            state["certi_web_step_start"] = curr_time
+                            state["target_fsm"] = "CERTI_STEP_7_FIND"
+                            state["cooldown"] = curr_time + 0.1
+                        elif find_certi_img("8.png", th=0.82) and not find_any_captcha_img(th=0.75):
+                            dprint(key, "🎉 [수동 캡차 종료 확인] '8.png' 화면 확인! 자동으로 이어갑니다.")
+                            state["certi_web_last_fsm"] = None
+                            state["certi_web_step_start"] = curr_time
+                            state["target_fsm"] = "CERTI_STEP_8_FIND"
+                            state["cooldown"] = curr_time + 0.1
+                        else:
+                            # 15초마다 음성 알림 반복
+                            if curr_time - state.get("captcha_tts_last_time", 0.0) >= 15.0:
+                                pc_num_str = current_pc_num if current_pc_num else get_my_central_num()
+                                threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 {key} 캡차 대기중",), daemon=True).start()
+                                state["captcha_tts_last_time"] = curr_time
+                                dprint(key, "🔔 [캡차 수동 대기 중] 화면을 클릭해 캡차를 푼 뒤 [`] 키를 누르시면 자동으로 이어갑니다.")
+                            state["cooldown"] = curr_time + 0.3
 
                     # 0-0단계: 특정 현실시간 연타 인증 방지 딜레이 대기
                     elif current_fsm == "CERTI_DELAY_WAIT":
@@ -5884,21 +5963,32 @@ def ai_commander_worker(target_pc):
                     elif current_fsm == "CERTI_STEP_5_FIND":
                         captcha_pos_3 = find_any_captcha_img(th=0.75)
                         if captcha_pos_3:
-                            dprint(key, "🚨 [3단계 계정입력 직후 캡차 감지] 리캡차 화면 포착! 커서 이동/스크롤 없이 최초 화면 그대로 판독에 돌입합니다.")
                             state["captcha_return_fsm"] = "CERTI_STEP_5_FIND"
                             state["captcha_test_round"] = 1
                             state["captcha_is_scrolled_down"] = False
                             state["captcha_scroll_cnt"] = 0
-                            state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
+                            if settings.get("auth_auto_captcha", False):
+                                dprint(key, "🚨 [3단계 계정입력 직후 캡차 감지] 리캡차 화면 포착! 자동 해독 모드로 돌입합니다.")
+                                state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
+                            else:
+                                dprint(key, "🚨 [3단계 캡차 감지 - 수동 대기] 캡차 자동해제가 꺼져 있어 음성 알림 후 수동 해결을 대기합니다!")
+                                pc_num_str = current_pc_num if current_pc_num else get_my_central_num()
+                                threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 {key} 캡차 발생",), daemon=True).start()
+                                state["captcha_tts_last_time"] = curr_time
+                                state["target_fsm"] = "CERTI_CAPTCHA_MANUAL_WAIT"
                             state["cooldown"] = curr_time + 0.5
                         else:
                             pos = find_certi_img("5.png", th=0.82)
                             if pos:
-                                dprint(key, "🔎 [인증 5단계] '5.png' 감지 완료! 커서 이동 없이 즉시 비밀번호 입력 후 엔터를 칩니다.")
-                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.22, "delay_max": 0.38})
-                                pico_queues[key].put({"action": "TYPE_STRING", "text": curr_acc_pw, "clear_first": False, "press_enter": True, "allow_typo": False})
-                                state["target_fsm"] = "CERTI_STEP_7_FIND"
-                                state["cooldown"] = curr_time + 0.8
+                                dprint(key, f"🔎 [인증 5단계] '5.png' 발견({pos[0]}, {pos[1]})! 원클릭하여 포커스 확보 후 비밀번호 입력 + 엔터!")
+                                start_certi_move_and_action(
+                                    pos[0], pos[1],
+                                    next_fsm="CERTI_STEP_7_FIND",
+                                    double=False,
+                                    type_text=curr_acc_pw,
+                                    press_enter=True,
+                                    desc="5.png 비밀번호 클릭+입력+엔터"
+                                )
                             else:
                                 state["cooldown"] = curr_time + 0.2
 
@@ -5906,12 +5996,19 @@ def ai_commander_worker(target_pc):
                     elif current_fsm == "CERTI_STEP_7_FIND":
                         captcha_pos_7 = find_any_captcha_img(th=0.75)
                         if captcha_pos_7:
-                            dprint(key, "🚨 [로그인 단계 캡차 감지] 리캡차 화면 포착! 캡차 돌파 로직으로 진입합니다.")
                             state["captcha_return_fsm"] = "CERTI_STEP_7_FIND"
                             state["captcha_test_round"] = 1
                             state["captcha_is_scrolled_down"] = False
                             state["captcha_scroll_cnt"] = 0
-                            state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
+                            if settings.get("auth_auto_captcha", False):
+                                dprint(key, "🚨 [로그인 단계 캡차 감지] 리캡차 화면 포착! 캡차 자동 돌파 로직으로 진입합니다.")
+                                state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
+                            else:
+                                dprint(key, "🚨 [로그인 단계 캡차 감지 - 수동 대기] 캡차 자동해제가 꺼져 있어 음성 알림 후 수동 해결을 대기합니다!")
+                                pc_num_str = current_pc_num if current_pc_num else get_my_central_num()
+                                threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 {key} 캡차 발생",), daemon=True).start()
+                                state["captcha_tts_last_time"] = curr_time
+                                state["target_fsm"] = "CERTI_CAPTCHA_MANUAL_WAIT"
                             state["cooldown"] = curr_time + 0.5
                         else:
                             pos = find_certi_img("7.png", th=0.82)
@@ -5981,15 +6078,22 @@ def ai_commander_worker(target_pc):
                                 state["cooldown"] = curr_time + 1.2
 
                         elif captcha_pos:
-                            dprint(key, "🚨 [8단계 인증 분기 - 캡차 감지] 리캡차 화면이 떴습니다! 커서 이동/스크롤 없이 최초 화면 그대로 제미나이 판독에 돌입합니다.")
                             state["captcha_return_fsm"] = "CERTI_STEP_8_BRANCH"
                             state["captcha_test_round"] = 1
                             state["captcha_is_scrolled_down"] = False
                             state["captcha_scroll_cnt"] = 0
-                            state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
+                            if settings.get("auth_auto_captcha", False):
+                                dprint(key, "🚨 [8단계 인증 분기 - 캡차 감지] 리캡차 화면이 떴습니다! 제미나이 자동 판독에 돌입합니다.")
+                                state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
+                            else:
+                                dprint(key, "🚨 [8단계 캡차 감지 - 수동 대기] 캡차 자동해제가 꺼져 있어 음성 알림 후 수동 해결을 대기합니다!")
+                                pc_num_str = current_pc_num if current_pc_num else get_my_central_num()
+                                threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 {key} 캡차 발생",), daemon=True).start()
+                                state["captcha_tts_last_time"] = curr_time
+                                state["target_fsm"] = "CERTI_CAPTCHA_MANUAL_WAIT"
                             state["cooldown"] = curr_time + 0.5
                         else:
-                            # 🟢 [정상 루트] 9.png(메일)와 10.png(전번)를 둘 다 스캔하여 90%(0.90) 이상 중 더 높은 점수로 결정
+                            # 🟢 [정상 루트] 9.png(메일)와 10.png(전번)를 둘 다 스캔하여 80%(0.80) 이상 중 더 높은 점수로 결정 (기존 0.90 멍때림 해소)
                             prev_box = state.get("certi_last_box")
 
                             pos_9 = find_certi_img("9.png", th=0.0)
@@ -6000,7 +6104,7 @@ def ai_commander_worker(target_pc):
                             box_10 = state.get("certi_last_box") if pos_10 else None
                             score_10 = box_10[5] if box_10 else 0.0
 
-                            if max(score_9, score_10) >= 0.90:
+                            if max(score_9, score_10) >= 0.80:
                                 if score_9 >= score_10 and pos_9:
                                     state["certi_last_box"] = box_9
                                     dprint(key, f"🔎 [인증 9/10 비교] 9.png({score_9*100:.1f}%) vs 10.png({score_10*100:.1f}%) ➔ '9.png(메일)' 선택! 메일({curr_acc_email}) 입력 + 엔터!")
@@ -23407,6 +23511,7 @@ def sync_gui_vars():
                 "auth_main_phone": gui_vars[k]["auth_main_phone"].get().strip(),
 
                 "auth_delay_use": gui_vars[k]["auth_delay_use"].get(),
+                "auth_auto_captcha": gui_vars[k]["auth_auto_captcha"].get() if "auth_auto_captcha" in gui_vars[k] else False,
                 "auth_delay_start_min": int(safe_float(gui_vars[k]["auth_delay_start_min"], 55.0)),
                 "auth_delay_end_min": int(safe_float(gui_vars[k]["auth_delay_end_min"], 58.0)),
                 "auth_delay_sec": safe_float(gui_vars[k]["auth_delay_sec"], 180.0)
@@ -25407,6 +25512,7 @@ for i, pc in enumerate(MINI_PCS):
     d_row1 = tk.Frame(delay_frame, bg=BG_PANEL)
     d_row1.pack(side="top", fill="x", padx=5, pady=(4, 2))
     tk.Checkbutton(d_row1, text="특정 시간대 인증 딜레이 사용", variable=vars_dict["auth_delay_use"], bg=BG_PANEL, fg="#B2FF59", selectcolor="#3E3E42", activebackground=BG_PANEL, activeforeground="#B2FF59", font=("맑은 고딕", 8, "bold")).pack(side="left")
+    tk.Checkbutton(d_row1, text="캡차자동(AI)", variable=vars_dict["auth_auto_captcha"], bg=BG_PANEL, fg="#FFD54F", selectcolor="#3E3E42", activebackground=BG_PANEL, activeforeground="#FFD54F", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(10, 0))
 
     d_row2 = tk.Frame(delay_frame, bg=BG_PANEL)
     d_row2.pack(side="top", fill="x", padx=5, pady=(2, 6))
