@@ -5980,15 +5980,11 @@ def ai_commander_worker(target_pc):
                         else:
                             pos = find_certi_img("5.png", th=0.82)
                             if pos:
-                                dprint(key, f"🔎 [인증 5단계] '5.png' 발견({pos[0]}, {pos[1]})! 원클릭하여 포커스 확보 후 비밀번호 입력 + 엔터!")
-                                start_certi_move_and_action(
-                                    pos[0], pos[1],
-                                    next_fsm="CERTI_STEP_7_FIND",
-                                    double=False,
-                                    type_text=curr_acc_pw,
-                                    press_enter=True,
-                                    desc="5.png 비밀번호 클릭+입력+엔터"
-                                )
+                                dprint(key, "🔎 [인증 5단계] '5.png' 감지 완료! 커서 이동 없이 즉시 비밀번호 입력 후 엔터를 칩니다.")
+                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.22, "delay_max": 0.38})
+                                pico_queues[key].put({"action": "TYPE_STRING", "text": curr_acc_pw, "clear_first": False, "press_enter": True, "allow_typo": False})
+                                state["target_fsm"] = "CERTI_STEP_7_FIND"
+                                state["cooldown"] = curr_time + 0.8
                             else:
                                 state["cooldown"] = curr_time + 0.2
 
