@@ -25579,6 +25579,7 @@ for i, pc in enumerate(MINI_PCS):
             pico_queues[target_key].queue.clear()
         pico_queues[target_key].put({"action": "FORCE_RELEASE"})
 
+        st["was_manual_in_certi"] = False
         st["is_paused"] = False
         st["is_attacking"] = False
         st["arrow_is_firing"] = False
@@ -25608,8 +25609,83 @@ for i, pc in enumerate(MINI_PCS):
 
         dprint(target_key, "🚀 [수동 인증 & 게임접속 가동] 게임 미실행 상태에서 웹 인증(1.png/sub.png) 후 게임 자동 접속(13.png) 시퀀스를 시작합니다!")
 
-    tk.Button(auth_launch_frame, text="🚀 웹 인증 ➔ 게임 자동접속 시작 (게임 꺼진 상태용)", font=("맑은 고딕", 8, "bold"), bg="#E65100", fg="white", relief="flat", pady=3, command=lambda k=key: start_manual_certi_and_launch(k)).pack(side="top", fill="x", expand=True, padx=2)
-    # =============================================================
+    def start_game_launch_from_step13(target_key=key):
+        if not picos.get(target_key):
+            print(f"❌ [{target_key}] 피코가 연결되어 있지 않습니다!")
+            return
+
+        global active_manual_target
+        if active_manual_target == target_key:
+            toggle_manual(None)
+
+        st = ai_states.get(target_key, {})
+        was_already_certi = str(st.get("target_fsm", "")).startswith("CERTI_") or str(st.get("backup_target_fsm", "")).startswith("CERTI_")
+
+        # 사냥이 꺼져 있다면 사냥 가동 상태로 전환
+        if not st.get("is_hunt_active", False):
+            toggle_individual_hunt(target_key)
+
+        st = ai_states[target_key]
+        curr_t = time.time()
+
+        # 점유 중이던 중앙컴 IP 사용권이 남아있다면 즉시 반납
+        release_central_ip_lock_async(target_key)
+
+        # 바탕화면에서 F1 키 등이 눌리지 않도록 기존 큐 즉시 초기화
+        st["abort_macro"] = True
+        with pico_queues[target_key].mutex:
+            pico_queues[target_key].queue.clear()
+        clear_movements_only(pico_queues[target_key])
+        pico_queues[target_key].put({"action": "FORCE_RELEASE"})
+
+        # 수동 개입 자동스캔(CERTI_AUTO_RESUME_SCAN)과 충돌하지 않도록 플래그 초기화
+        st["was_manual_in_certi"] = False
+        st["certi_web_last_fsm"] = None
+        st["certi_last_box"] = None
+
+        st["is_paused"] = False
+        st["is_attacking"] = False
+        st["arrow_is_firing"] = False
+        st["has_fired_arrow"] = False
+        st["arrow_empty_timer"] = 0.0
+        st["is_pulling"] = False
+        st["loot_state"] = "IDLE"
+        st["death_detect_start"] = 0
+
+        # 기존 인증 진입 시 동결된 버프가 없을 때만 새로 동결 (계열마법 F2>F6은 재접속 시 0초 리셋)
+        st["buff_element_time"] = 0.0
+        if "certi_frozen_buffs" not in st:
+            freeze_keys = ["windwalk", "shield", "holy", "enchant", "blessed", "dex", "decrease", "extra_f10", "light", "blue_pot"]
+            st["certi_frozen_buffs"] = {
+                bk: max(0.0, st.get(f"buff_{bk}_time", 0.0) - curr_t)
+                for bk in freeze_keys
+            }
+            st["certi_haste_elapsed"] = (curr_t - st["last_haste_time"]) if st.get("last_haste_time", 0.0) > 0.0 else None
+            st["certi_real_buff_elapsed"] = (curr_t - st["real_buff_time"]) if st.get("real_buff_time", 0.0) > 0.0 else None
+            save_buff_times(ai_states)
+
+        # 바탕화면 커서 영점 사전 동기화
+        scr_now = latest_frames.get(target_key)
+        if scr_now is not None:
+            real_c = find_cursor_pos(scr_now, last_pos=st.get("cursor_pos", [400, 300]), allow_full_scan=True, is_certi_mode=True)
+            if real_c:
+                st["cursor_pos"] = [real_c[0], real_c[1]]
+                st["real_cursor_pos"] = [real_c[0], real_c[1]]
+
+        if not was_already_certi or "backup_target_fsm_before_certi" not in st:
+            st["backup_target_fsm_before_certi"] = "IDLE"
+
+        # 13.png 발견 시 1.5~2.5초(가우스 난수) 후 즉시 더블클릭, 미발견 시 즉시 Win+D 호출하도록 설정
+        st["certi_13_wait_mode"] = "CLOSED_START"
+        st["certi_next_desktop_time"] = 0.0
+        st["target_fsm"] = "CERTI_STEP_13_FIND"
+        st["backup_target_fsm"] = "CERTI_STEP_13_FIND"
+        st["cooldown"] = curr_t + 0.2
+
+        dprint(target_key, "🎮 [수동인증 완료 ➔ 13.png 접속 가동] 바탕화면에서 '13.png' 단계부터 게임 자동 접속 시퀀스를 시작합니다!")
+
+    tk.Button(auth_launch_frame, text="🚀 웹인증 ➔ 게임접속", font=("맑은 고딕", 8, "bold"), bg="#E65100", fg="white", relief="flat", pady=3, command=lambda k=key: start_manual_certi_and_launch(k)).pack(side="left", fill="x", expand=True, padx=(2, 2))
+    tk.Button(auth_launch_frame, text="🎮 게임접속 (13.png~)", font=("맑은 고딕", 8, "bold"), bg="#2E7D32", fg="white", relief="flat", pady=3, command=lambda k=key: start_game_launch_from_step13(k)).pack(side="left", fill="x", expand=True, padx=(2, 2))
 
     bottom_frame = tk.Frame(col_frame, bg=BG_PANEL)
     bottom_frame.pack(side="bottom", fill="x")
