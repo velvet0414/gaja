@@ -5617,6 +5617,105 @@ def ai_commander_worker(target_pc):
                     state["cooldown"] = curr_time + 1.2
                     continue
 
+                # 🔄 [14단계 이후 클릭 미스 5초 역추적 워치독]
+                # 다음 단계로 못 넘어간 채 5초 이상 머물러 있으면, 커서를 옆으로 치운 뒤 이전 단계 이미지가 남아있는지 확인하여 재클릭합니다.
+                post13_retry_map = {
+                    "CERTI_FIND_QUIT": {
+                        "curr_imgs": ["quit.png"],
+                        "prev_list": [("ok2.png", "CERTI_FIND_OK2_FIRST")]
+                    },
+                    "CERTI_STEP_15_FIND": {
+                        "curr_imgs": ["15.png"],
+                        "prev_list": [("14.png", "CERTI_WAIT_GAME_LAUNCH")]
+                    },
+                    "CERTI_STEP_16_FIND": {
+                        "curr_imgs": ["16.png"],
+                        "prev_list": [("15.png", "CERTI_STEP_15_FIND"), ("14.png", "CERTI_WAIT_GAME_LAUNCH")]
+                    },
+                    "CERTI_AFTER_16_BRANCH": {
+                        "curr_imgs": ["ticket.png", "login.png"],
+                        "prev_list": [("16.png", "CERTI_STEP_16_FIND"), ("15.png", "CERTI_STEP_15_FIND")]
+                    },
+                    "CERTI_TICKET_OK2_FIND": {
+                        "curr_imgs": ["ok2.png"],
+                        "prev_list": [("ticket.png", "CERTI_AFTER_16_BRANCH")]
+                    },
+                    "CERTI_STEP_17_FIND": {
+                        "curr_imgs": ["17.png"],
+                        "prev_list": [("login.png", "CERTI_AFTER_16_BRANCH"), ("16.png", "CERTI_STEP_16_FIND")]
+                    },
+                    "CERTI_WAIT_DRAGON": {
+                        "curr_imgs": ["dragon.png", "ticket2.png"],
+                        "prev_list": [("17.png", "CERTI_STEP_17_FIND"), ("login.png", "CERTI_AFTER_16_BRANCH")]
+                    }
+                }
+
+                if current_fsm not in post13_retry_map:
+                    state["certi_post13_last_fsm"] = None
+                    state["certi_post13_step_start"] = curr_time
+                    state["certi_post13_cursor_moved"] = False
+                else:
+                    if state.get("certi_post13_last_fsm") != current_fsm:
+                        state["certi_post13_last_fsm"] = current_fsm
+                        state["certi_post13_step_start"] = curr_time
+                        state["certi_post13_cursor_moved"] = False
+                    elif not is_hw_working and curr_time >= state.get("cooldown", 0) and (curr_time - state.get("certi_post13_step_start", curr_time) >= 5.0):
+                        retry_info = post13_retry_map[current_fsm]
+                        # 1) 현재 단계에서 찾아야 할 이미지가 이미 떴는지 먼저 확인
+                        curr_target_visible = any(find_certi_img(c_img, th=0.82) is not None for c_img in retry_info["curr_imgs"])
+
+                        if curr_target_visible:
+                            # 커서를 치운 덕분에 현재 단계 이미지가 보이기 시작했다면 타이머만 리셋하고 즉시 아래 본문에서 클릭 진행
+                            state["certi_post13_step_start"] = curr_time
+                            state["certi_post13_cursor_moved"] = False
+                        else:
+                            # 2) 아직 커서를 안 치웠다면 커서가 이전 단계 이미지를 가리고 있을 수 있으므로 옆으로 먼저 이동
+                            if not state.get("certi_post13_cursor_moved", False):
+                                real_c = find_cursor_pos(img_bgr, last_pos=state.get("cursor_pos", [400, 300]), allow_full_scan=True, is_certi_mode=True)
+                                cur_cx, cur_cy = real_c if real_c else state.get("cursor_pos", [400, 300])
+                                state["cursor_pos"] = [cur_cx, cur_cy]
+
+                                offset_x = int(round(g_val(85, 120))) * (-1 if cur_cx > 400 else 1)
+                                offset_y = int(round(g_val(65, 95))) * (-1 if cur_cy > 300 else 1)
+                                evade_tx = int(max(40, min(w - 40, cur_cx + offset_x)))
+                                evade_ty = int(max(40, min(h - 40, cur_cy + offset_y)))
+
+                                dx_ev, dy_ev = evade_tx - cur_cx, evade_ty - cur_cy
+                                dist_ev = math.hypot(dx_ev, dy_ev)
+                                dur_ev = apply_human_variance(0.08 + 0.035 * math.log2((dist_ev / 20.0) + 1.0) if dist_ev > 0 else 0.08)
+
+                                deltas_ev = generate_human_deltas(dx_ev, dy_ev, duration=dur_ev, behavior="CERTI", key=key)
+                                if deltas_ev:
+                                    pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas_ev})
+                                state["cursor_pos"] = [evade_tx, evade_ty]
+                                state["real_cursor_pos"] = [evade_tx, evade_ty]
+                                state["certi_post13_cursor_moved"] = True
+                                state["cooldown"] = curr_time + dur_ev + g_val(0.25, 0.35)
+                                dprint(key, f"👀 [5초 정체 ➔ 커서 회피] '{current_fsm}' 단계 5초 경과! 커서 가림 방지를 위해 마우스를 ({evade_tx}, {evade_ty})로 치운 뒤 이전 이미지를 확인합니다.")
+                                continue
+                            else:
+                                # 3) 커서를 치운 직후 화면에서 이전 단계 이미지가 아직 남아있는지 스캔
+                                found_prev_fsm = None
+                                found_prev_img = None
+                                for p_img, p_fsm in retry_info["prev_list"]:
+                                    if find_certi_img(p_img, th=0.82) is not None:
+                                        found_prev_img = p_img
+                                        found_prev_fsm = p_fsm
+                                        break
+
+                                if found_prev_fsm:
+                                    dprint(key, f"🔄 [클릭 미스 복구] 커서 이동 후에도 이전 단계 이미지('{found_prev_img}')가 화면에 남아있습니다! 이전 단계('{found_prev_fsm}')로 돌아가 다시 클릭합니다!")
+                                    state["target_fsm"] = found_prev_fsm
+                                    state["certi_post13_last_fsm"] = found_prev_fsm
+                                    state["certi_post13_step_start"] = curr_time
+                                    state["certi_post13_cursor_moved"] = False
+                                    state["cooldown"] = curr_time + g_val(0.15, 0.25)
+                                    continue
+                                else:
+                                    # 이전 이미지도 없다면 정상적으로 로딩/화면 전환 중인 상태이므로 타이머만 갱신하고 계속 대기
+                                    state["certi_post13_step_start"] = curr_time
+                                    state["certi_post13_cursor_moved"] = False
+
                 if curr_time >= state.get("cooldown", 0) and (not is_hw_working or current_fsm == "CERTI_MOVE_VERIFY"):
 
                     # 🔍 0-A단계: 수동 모드([`]) 종료 직후 현재 화면을 분석하여 알맞은 단계로 자동 점프!
