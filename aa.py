@@ -25675,7 +25675,7 @@ for i, pc in enumerate(MINI_PCS):
     auth_launch_frame = tk.Frame(tab_auth, bg=BG_PANEL)
     auth_launch_frame.pack(side="top", fill="x", padx=10, pady=(2, 4))
 
-    def start_manual_certi_and_launch(target_key=key):def start_manual_certi_and_launch(target_key=key):
+    def start_manual_certi_and_launch(target_key=key):
         if not picos.get(target_key):
             print(f"❌ [{target_key}] 피코가 연결되어 있지 않습니다!")
             return
