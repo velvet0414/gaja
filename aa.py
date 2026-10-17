@@ -121,15 +121,37 @@ import heapq
 import base64
 import urllib.request
 
-# 💡 발급받으신 유료 Tier 1 Gemini API 키 (깃허브 Secret Scanning 차단 방지용 분할 인코딩) 및 최신 모델 적용 완료
-_K_PART1 = "QVEuQWI4Uk42SUowQ2dGQ2g2ZndwcVA4SG51"
-_K_PART2 = "ZDNUbXZIY2NueWFuaXFrMUY0WTVzUEpyOFE="
-GEMINI_API_KEY = base64.b64decode(_K_PART1 + _K_PART2).decode("utf-8")
-GEMINI_CAPTCHA_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"]
+# 💡 [CapSolver 단독 엔진] 제미나이 완전 제거 & 로컬 제시어 이미지 매칭 + CapSolver API 적용
+CAPSOLVER_API_KEY = "CAP-28B0F321F9019FFB9710F296FAA9AF561F01AABB6D40F8F35F70B8B26DBCE889"
+
+# 제시어 이미지 폴더 및 미등록 배너 자동 수집 폴더 생성
+os.makedirs("qq/certi/words", exist_ok=True)
+os.makedirs("qq/certi/words_unseen", exist_ok=True)
+
+# 🗂️ 파일명 키워드 ➔ CapSolver 공식 객체 코드(Google reCAPTCHA 표준 ID) 매핑 사전
+CAPTCHA_WORD_MAP = {
+    "car":        "/m/0k4j",    # 자동차
+    "traffic":    "/m/015qff",  # 신호등
+    "crosswalk":  "/m/014xcs",  # 횡단보도
+    "hydrant":    "/m/01pns0",  # 소화전
+    "bus":        "/m/01bjv",   # 버스
+    "bicycle":    "/m/0199g",   # 자전거
+    "motorcycle": "/m/04_sv",   # 오토바이
+    "stairs":     "/m/01lynh",  # 계단
+    "chimney":    "/m/01jk_4",  # 굴뚝
+    "tractor":    "/m/013xlm",  # 트랙터
+    "bridge":     "/m/015kr",   # 다리
+    "palm":       "/m/0cdl1",   # 야자수
+    "boat":       "/m/019jd",   # 보트
+    "mountain":   "/m/09d_r",   # 산 또는 언덕
+    "taxi":       "/m/0pg52",   # 택시
+}
+
+_WORD_TEMPLATES_CACHE = {}
+_SAVED_UNSEEN_BANNERS = []  # 중복 저장 방지용 메모리 캐시
+_LAST_CAPTCHA_CALL_TIME = 0.0
 
 # 📐 [PlayNC 캡차 실측 고정 격자 좌표계 (800x600 프로젝터 화면 기준)]
-# - 3x3 타일 영역: 가로 X = 262 ~ 532 (폭 270px), 세로 Y = 277 ~ 547 (상단 스크롤 기준)
-# - 스크롤이 내려가 있을 때 파란 배너 하단(by2) 위치에 맞춰 Y좌표를 자동 보정합니다.
 def get_plaync_tile_center(row_1based, col_1based, grid_size=3, banner_bottom_y=272):
     gx1, gx2 = 262.0, 532.0
     gy1 = float(banner_bottom_y) + 5.0
@@ -140,62 +162,214 @@ def get_plaync_tile_center(row_1based, col_1based, grid_size=3, banner_bottom_y=
     cy = int(round(gy1 + (row_1based - 0.5) * cell_step))
     return cx, cy
 
+def _detect_captcha_question_local(banner_bgr):
+    """qq/certi/words/ 폴더의 제시어 이미지를 OpenCV로 매칭하여 CapSolver 질문 코드를 반환합니다."""
+    if banner_bgr is None or banner_bgr.size == 0:
+        return None, None
+
+    best_code = None
+    best_name = None
+    best_score = 0.0
+
+    for fname in os.listdir("qq/certi/words"):
+        if not fname.lower().endswith((".png", ".jpg")):
+            continue
+        fpath = os.path.join("qq/certi/words", fname)
+
+        # 파일명에서 매핑 키워드 추출 (예: car.png, car2.png -> "car")
+        matched_code = None
+        fname_lower = os.path.splitext(fname)[0].lower()
+        for key_prefix, q_code in CAPTCHA_WORD_MAP.items():
+            if fname_lower.startswith(key_prefix):
+                matched_code = q_code
+                break
+        if not matched_code:
+            continue
+
+        # 템플릿 캐시 로드 (한글 경로 호환)
+        mtime = os.path.getmtime(fpath)
+        cached = _WORD_TEMPLATES_CACHE.get(fpath)
+        if not cached or cached["mtime"] != mtime:
+            try:
+                with open(fpath, "rb") as f:
+                    np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
+                bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
+                if bgra is None:
+                    continue
+                if len(bgra.shape) == 3 and bgra.shape[2] == 4:
+                    cached = {"color": bgra[:, :, :3], "mask": bgra[:, :, 3], "mtime": mtime}
+                else:
+                    cached = {"color": bgra[:, :, :3] if len(bgra.shape) == 3 else bgra, "mask": None, "mtime": mtime}
+                _WORD_TEMPLATES_CACHE[fpath] = cached
+            except Exception:
+                continue
+
+        tmpl = cached["color"]
+        mask = cached["mask"]
+        if banner_bgr.shape[0] < tmpl.shape[0] or banner_bgr.shape[1] < tmpl.shape[1]:
+            continue
+
+        try:
+            if mask is not None:
+                res = cv2.matchTemplate(banner_bgr, tmpl, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask]*3))
+            else:
+                res = cv2.matchTemplate(banner_bgr, tmpl, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(res)
+            if max_val > best_score:
+                best_score = max_val
+                best_code = matched_code
+                best_name = fname
+        except Exception:
+            continue
+
+    if best_score >= 0.82:
+        return best_code, f"{best_name}({best_score*100:.1f}%)"
+    return None, None
+
+def save_unseen_banner_if_needed(img_bgr):
+    """
+    수동/자동 모드 공통: 스크롤이 맨 위에 있어 파란 배너가 잘리지 않았을 때만(bottom_y >= 255),
+    미등록 제시어 배너를 중복 없이 qq/certi/words_unseen/ 폴더에 자동 저장합니다.
+    """
+    global _SAVED_UNSEEN_BANNERS
+    try:
+        hsv_cap = cv2.cvtColor(img_bgr[150:290, 260:535], cv2.COLOR_BGR2HSV)
+        mask_b = cv2.inRange(hsv_cap, np.array([100, 140, 150]), np.array([125, 255, 255]))
+        row_sums = np.sum(mask_b > 0, axis=1)
+        valid_rows = np.where(row_sums > 100)[0]
+        if len(valid_rows) == 0:
+            return None
+
+        top_y = 150 + int(valid_rows[0])
+        bottom_y = 150 + int(valid_rows[-1])
+        # 스크롤이 내려가서 제시어 윗부분이 잘린 상태(bottom_y < 255)면 저장하지 않음
+        if bottom_y < 255 or (bottom_y - top_y) < 85:
+            return None
+
+        h, w = img_bgr.shape[:2]
+        banner_crop = img_bgr[max(0, top_y):min(h, bottom_y), max(0, 260):min(w, 535)]
+        if banner_crop.size == 0:
+            return None
+
+        # 이미 qq/certi/words/ 에 등록된 제시어면 매칭 결과 반환
+        q_code, match_info = _detect_captcha_question_local(banner_crop)
+        if q_code:
+            return (q_code, match_info)
+
+        # 우측 예시 사진을 제외한 좌측 글자 영역(폭 160px) 기준으로 중복 저장 방지 체크
+        text_only_gray = cv2.cvtColor(banner_crop[:, :160], cv2.COLOR_BGR2GRAY)
+        for prev_gray in _SAVED_UNSEEN_BANNERS:
+            if prev_gray.shape == text_only_gray.shape:
+                res = cv2.matchTemplate(text_only_gray, prev_gray, cv2.TM_CCOEFF_NORMED)
+                if cv2.minMaxLoc(res)[1] >= 0.92:
+                    return None
+
+        _SAVED_UNSEEN_BANNERS.append(text_only_gray.copy())
+        if len(_SAVED_UNSEEN_BANNERS) > 30:
+            _SAVED_UNSEEN_BANNERS.pop(0)
+
+        ts_str = datetime.datetime.now().strftime("%H%M%S")
+        unseen_path = f"qq/certi/words_unseen/banner_{ts_str}.png"
+        cv2.imwrite(unseen_path, banner_crop)
+        print(f"📸 [미등록 제시어 자동저장] '{unseen_path}' 저장 완료! (글자만 잘라 qq/certi/words/ 에 넣어주세요)")
+        return None
+    except Exception:
+        return None
+
+def _detect_grid_size_opencv(grid_bgr):
+    """타일 영역(270x270) 내부의 흰색 격자 구분선 위치를 분석해 3x3인지 4x4인지 자동 판별합니다."""
+    try:
+        if grid_bgr is None or grid_bgr.shape[0] < 240 or grid_bgr.shape[1] < 240:
+            return 3
+        gray = cv2.cvtColor(grid_bgr, cv2.COLOR_BGR2GRAY)
+        white_mask = (gray >= 235).astype(np.float32)
+
+        score_3x3 = (
+            np.mean(white_mask[:, 88:93]) + np.mean(white_mask[:, 178:183]) +
+            np.mean(white_mask[88:93, :]) + np.mean(white_mask[178:183, :])
+        ) / 4.0
+        score_4x4 = (
+            np.mean(white_mask[:, 65:70]) + np.mean(white_mask[:, 133:138]) + np.mean(white_mask[:, 200:205]) +
+            np.mean(white_mask[65:70, :]) + np.mean(white_mask[133:138, :]) + np.mean(white_mask[200:205, :])
+        ) / 6.0
+
+        if score_4x4 > score_3x3 and score_4x4 > 0.35:
+            return 4
+        return 3
+    except Exception:
+        return 3
+
+def _is_tile_already_checked(grid_bgr, row_0based, col_0based, grid_size):
+    """해당 타일 좌측 상단에 리캡차 파란색 체크 표시가 이미 있는지 확인하여 중복 클릭(선택 해제)을 방지합니다."""
+    try:
+        gh, gw = grid_bgr.shape[:2]
+        cw, ch = gw / float(grid_size), gh / float(grid_size)
+        x1 = int(col_0based * cw)
+        y1 = int(row_0based * ch)
+        x2 = int(min(gw, x1 + cw * 0.45))
+        y2 = int(min(gh, y1 + ch * 0.45))
+        roi = grid_bgr[y1:y2, x1:x2]
+        if roi.size == 0:
+            return False
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        mask_blue = cv2.inRange(hsv, np.array([100, 150, 150]), np.array([125, 255, 255]))
+        return cv2.countNonZero(mask_blue) >= 28
+    except Exception:
+        return False
+
 def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
     """
-    캡차 영역(x:250~550, y:150~560)만 깨끗하게 크롭하여 Gemini에 전송하고,
-    정답 타일의 (행, 열) 번호만 받아서 PlayNC 실측 고정 픽셀 좌표로 100% 정확하게 변환합니다.
+    [CapSolver 100% 단독 엔진 (기존 호출부 호환을 위해 함수명 유지)]
+    1. OpenCV로 파란 배너(qq/certi/words/) 제시어 이미지 즉시 매칭 (0.01초, 비용 0원)
+    2. 미등록 제시어 발견 시 qq/certi/words_unseen/ 폴더에 배너 이미지 자동 저장
+    3. CapSolver ReCaptchaV2Classification API 단독 호출 -> 고정 격자 픽셀 좌표 변환
     """
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "여기에_제미나이_API_KEY를_입력하세요":
-        print("⚠️ [제미나이 오류] API 키가 입력되지 않았습니다!")
+    global _LAST_CAPTCHA_CALL_TIME
+
+    if not CAPSOLVER_API_KEY or "여기에" in CAPSOLVER_API_KEY:
+        print("⚠️ [CapSolver 오류] API 키가 입력되지 않았습니다!")
         return []
 
+    now_t = time.time()
+    if now_t - _LAST_CAPTCHA_CALL_TIME < 2.5:
+        return []
+    _LAST_CAPTCHA_CALL_TIME = now_t
+
     try:
-        import cv2
         h, w = img_bgr.shape[:2]
 
-        # 💡 800x600 전체 화면 대신 캡차 팝업 영역만 확대 크롭하여 AI 판독률 극대화!
-        crop_x1, crop_y1 = max(0, 250), max(0, 155)
-        crop_x2, crop_y2 = min(w, 550), min(h, 560)
-        captcha_crop = img_bgr[crop_y1:crop_y2, crop_x1:crop_x2]
+        # 1️⃣ 배너 제시어 로컬 매칭 (미등록 제시어면 자동 저장)
+        matched_pair = save_unseen_banner_if_needed(img_bgr)
+        if not matched_pair:
+            bx1, by1 = max(0, 255), max(0, 150)
+            bx2, by2 = min(w, 540), min(h, int(banner_bottom_y) + 5)
+            q_code, m_info = _detect_captcha_question_local(img_bgr[by1:by2, bx1:bx2])
+            if not q_code:
+                print("⚠️ [제시어 미매칭] 'qq/certi/words/'에 일치하는 제시어 이미지가 없어 CapSolver 호출을 건너뜁니다.")
+                return []
+            matched_pair = (q_code, m_info)
 
-        _, buffer = cv2.imencode('.jpg', captcha_crop, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+        question_code, match_info = matched_pair
+
+        # 2️⃣ 3x3 / 4x4 타일 그리드 영역(270x270) 정밀 크롭 및 격자 크기 자동 판별
+        gx1, gx2 = max(0, 262), min(w, 532)
+        gy1 = max(0, int(banner_bottom_y) + 5)
+        gy2 = min(h, gy1 + 270)
+        grid_crop = img_bgr[gy1:gy2, gx1:gx2]
+
+        grid_size = _detect_grid_size_opencv(grid_crop)
+        print(f"🔎 [로컬 제시어 매칭 성공] {match_info} ➔ 코드:{question_code} ({grid_size}x{grid_size} 격자)")
+
+        # 3️⃣ CapSolver API 단독 호출
+        _, buffer = cv2.imencode('.jpg', grid_crop, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
         img_base64 = base64.b64encode(buffer).decode('utf-8')
 
-        prompt = """
-        You are solving a Google reCAPTCHA v2 image challenge.
-        1. Read the Korean target object name in the blue top banner (e.g., 자동차, 버스, 소화전, 신호등, 횡단보도, 자전거, 오토바이, 계단, 굴뚝, 트랙터, 다리, 야자수, 보트, 산 또는 언덕).
-        2. Determine if the image grid below the blue banner is 3x3 (9 tiles) or 4x4 (16 tiles).
-        3. Inspect every tile carefully by row (1 = top row, increasing downwards) and col (1 = leftmost column, increasing rightwards).
-        4. Select all tiles that contain the target object AND do NOT already have a blue checkmark on the top-left corner.
-        Return strictly a JSON object:
-        {
-          "target": "자동차",
-          "grid_size": 3,
-          "tiles": [
-            {"row": 1, "col": 1},
-            {"row": 1, "col": 3},
-            {"row": 3, "col": 1},
-            {"row": 3, "col": 2}
-          ]
-        }
-        If no unselected tiles match, return {"target": "", "grid_size": 3, "tiles": []}.
-        """
-
         payload = {
-            "contents": [{
-                "parts": [
-                    {"text": prompt},
-                    {
-                        "inline_data": {
-                            "mime_type": "image/jpeg",
-                            "data": img_base64
-                        }
-                    }
-                ]
-            }],
-            "generationConfig": {
-                "temperature": 0.0,
-                "response_mime_type": "application/json"
+            "clientKey": CAPSOLVER_API_KEY,
+            "task": {
+                "type": "ReCaptchaV2Classification",
+                "image": img_base64,
+                "question": question_code
             }
         }
 
@@ -203,52 +377,48 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
 
-        for model_name in GEMINI_CAPTCHA_MODELS:
-            try:
-                req_payload = dict(payload)
-                req_gen_cfg = dict(payload["generationConfig"])
-                if "2.5" in model_name:
-                    req_gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
-                req_payload["generationConfig"] = req_gen_cfg
-                body_bytes = json.dumps(req_payload).encode('utf-8')
+        req = urllib.request.Request(
+            "https://api.capsolver.com/createTask",
+            data=json.dumps(payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json'}
+        )
 
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
-                req = urllib.request.Request(url, data=body_bytes, headers={'Content-Type': 'application/json'})
-                with urllib.request.urlopen(req, timeout=12, context=ctx) as response:
-                    result_json = json.loads(response.read().decode('utf-8'))
-                    text_resp = result_json['candidates'][0]['content']['parts'][0]['text']
-                    text_resp = text_resp.replace("```json", "").replace("```", "").strip()
-                    data = json.loads(text_resp)
+        with urllib.request.urlopen(req, timeout=12, context=ctx) as response:
+            res_json = json.loads(response.read().decode('utf-8'))
 
-                    valid_coords = []
-                    if isinstance(data, dict):
-                        grid_size = int(data.get("grid_size", 3))
-                        if grid_size not in [3, 4]:
-                            grid_size = 3
-                        target_label = data.get("target", "타겟")
-                        tiles = data.get("tiles", [])
+        if res_json.get("errorId", 1) != 0:
+            print(f"⚠️ [CapSolver API 오류] {res_json.get('errorCode')}: {res_json.get('errorDescription')}")
+            return []
 
-                        seen = set()
-                        for item in tiles:
-                            if not isinstance(item, dict):
-                                continue
-                            r_idx = int(item.get("row", 0))
-                            c_idx = int(item.get("col", 0))
-                            if (1 <= r_idx <= grid_size) and (1 <= c_idx <= grid_size) and (r_idx, c_idx) not in seen:
-                                seen.add((r_idx, c_idx))
-                                cx, cy = get_plaync_tile_center(r_idx, c_idx, grid_size=grid_size, banner_bottom_y=banner_bottom_y)
-                                valid_coords.append((cx, cy))
-                                print(f"   📍 [캡차 타일 확정] 제시어:{target_label} ({grid_size}x{grid_size}) ➔ {r_idx}행 {c_idx}열 ➔ 고정픽셀({cx}, {cy})")
+        solution = res_json.get("solution", {})
+        objects = solution.get("objects", [])
 
-                    return valid_coords
-            except Exception as inner_e:
-                print(f"⚠️ [{model_name}] 캡차 API 호출 예외 (다음 백업 모델 시도): {inner_e}")
+        valid_coords = []
+        seen = set()
+        for idx in objects:
+            idx_int = int(idx)
+            r_0 = idx_int // grid_size
+            c_0 = idx_int % grid_size
+            if not (0 <= r_0 < grid_size and 0 <= c_0 < grid_size):
+                continue
+            if (r_0, c_0) in seen:
+                continue
+            seen.add((r_0, c_0))
+
+            if _is_tile_already_checked(grid_crop, r_0, c_0, grid_size):
+                print(f"   ⏭️ [체크된 타일 패스] {r_0+1}행 {c_0+1}열은 이미 선택되어 있어 건너뜁니다.")
                 continue
 
-        return []
+            cx, cy = get_plaync_tile_center(r_0 + 1, c_0 + 1, grid_size=grid_size, banner_bottom_y=banner_bottom_y)
+            valid_coords.append((cx, cy))
+            print(f"   📍 [CapSolver 타일 확정] {r_0+1}행 {c_0+1}열 (index:{idx_int}) ➔ 고정픽셀({cx}, {cy})")
+
+        return valid_coords
+
     except Exception as e:
-        print(f"⚠️ Gemini 캡차 판독 중 치명적 예외 발생: {e}")
+        print(f"⚠️ CapSolver 캡차 판독 중 예외 발생: {e}")
         return []
+
 from ultralytics import YOLO
 YOLO_CONF = 0.53
 
@@ -5854,6 +6024,10 @@ def ai_commander_worker(target_pc):
                     # ⏸️ 캡차 수동 해결 대기 모드 (GUI '캡차자동(AI)' 체크 해제 시 작동)
                     elif current_fsm == "CERTI_CAPTCHA_MANUAL_WAIT":
                         ret_fsm = state.get("captcha_return_fsm", "CERTI_STEP_8_BRANCH")
+                        # 📸 캡차자동(AI) 체크 해제 상태에서도 상단 배너가 온전히 보일 때 자동으로 찍어서 보관!
+                        if find_any_captcha_img(th=0.75):
+                            save_unseen_banner_if_needed(img_bgr)
+
                         # 만약 대기 중 사용자가 GUI에서 '캡차자동(AI)' 체크박스를 켜면 즉시 자동 해독으로 전환!
                         if settings.get("auth_auto_captcha", False):
                             dprint(key, "🤖 [캡차 자동모드 전환] GUI 캡차자동(AI) 체크 감지! 즉시 자동 판독 모드로 전환합니다.")
