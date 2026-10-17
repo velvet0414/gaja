@@ -228,52 +228,45 @@ def _detect_captcha_question_local(banner_bgr):
 
 def save_unseen_banner_if_needed(img_bgr):
     """
-    수동/자동 모드 공통: 스크롤이 맨 위에 있어 파란 배너가 잘리지 않았을 때만(bottom_y >= 255),
-    미등록 제시어 배너를 중복 없이 qq/certi/words_unseen/ 폴더에 자동 저장합니다.
+    배너 자르기나 까다로운 위치 조건 없이, 미등록 제시어일 경우
+    미니컴 800x600 화면 전체(img_bgr)를 그대로 qq/certi/words_unseen/ 폴더에 저장합니다.
     """
     global _SAVED_UNSEEN_BANNERS
     try:
-        hsv_cap = cv2.cvtColor(img_bgr[150:290, 260:535], cv2.COLOR_BGR2HSV)
-        mask_b = cv2.inRange(hsv_cap, np.array([100, 140, 150]), np.array([125, 255, 255]))
-        row_sums = np.sum(mask_b > 0, axis=1)
-        valid_rows = np.where(row_sums > 100)[0]
-        if len(valid_rows) == 0:
-            return None
-
-        top_y = 150 + int(valid_rows[0])
-        bottom_y = 150 + int(valid_rows[-1])
-        # 스크롤이 내려가서 제시어 윗부분이 잘린 상태(bottom_y < 255)면 저장하지 않음
-        if bottom_y < 255 or (bottom_y - top_y) < 85:
+        if img_bgr is None or img_bgr.size == 0:
             return None
 
         h, w = img_bgr.shape[:2]
-        banner_crop = img_bgr[max(0, top_y):min(h, bottom_y), max(0, 260):min(w, 535)]
-        if banner_crop.size == 0:
-            return None
-
-        # 이미 qq/certi/words/ 에 등록된 제시어면 매칭 결과 반환
-        q_code, match_info = _detect_captcha_question_local(banner_crop)
+        # 1️⃣ 이미 qq/certi/words/ 에 등록된 제시어인지 상단 영역에서 먼저 매칭 확인
+        search_roi = img_bgr[max(0, 140):min(h, 310), max(0, 240):min(w, 550)]
+        q_code, match_info = _detect_captcha_question_local(search_roi)
         if q_code:
             return (q_code, match_info)
 
-        # 우측 예시 사진을 제외한 좌측 글자 영역(폭 160px) 기준으로 중복 저장 방지 체크
-        text_only_gray = cv2.cvtColor(banner_crop[:, :160], cv2.COLOR_BGR2GRAY)
+        # 2️⃣ 똑같은 화면이 0.3초마다 수백 장 도배되는 것만 방지 (배너 영역 화면 변화 체크)
+        check_patch = cv2.cvtColor(img_bgr[max(0, 160):min(h, 270), max(0, 260):min(w, 430)], cv2.COLOR_BGR2GRAY)
         for prev_gray in _SAVED_UNSEEN_BANNERS:
-            if prev_gray.shape == text_only_gray.shape:
-                res = cv2.matchTemplate(text_only_gray, prev_gray, cv2.TM_CCOEFF_NORMED)
+            if prev_gray.shape == check_patch.shape:
+                res = cv2.matchTemplate(check_patch, prev_gray, cv2.TM_CCOEFF_NORMED)
                 if cv2.minMaxLoc(res)[1] >= 0.92:
                     return None
 
-        _SAVED_UNSEEN_BANNERS.append(text_only_gray.copy())
+        _SAVED_UNSEEN_BANNERS.append(check_patch.copy())
         if len(_SAVED_UNSEEN_BANNERS) > 30:
             _SAVED_UNSEEN_BANNERS.pop(0)
 
-        ts_str = datetime.datetime.now().strftime("%H%M%S")
-        unseen_path = f"qq/certi/words_unseen/banner_{ts_str}.png"
-        cv2.imwrite(unseen_path, banner_crop)
-        print(f"📸 [미등록 제시어 자동저장] '{unseen_path}' 저장 완료! (글자만 잘라 qq/certi/words/ 에 넣어주세요)")
+        # 3️⃣ 자르지 않고 800x600 원본 화면(img_bgr) 전체를 한글 경로 호환 방식으로 저장!
+        now_str = time.strftime("%H%M%S") + f"_{int((time.time() % 1) * 100):02d}"
+        unseen_path = os.path.join("qq", "certi", "words_unseen", f"full_{now_str}.png")
+
+        ok_enc, enc_buf = cv2.imencode(".png", img_bgr)
+        if ok_enc:
+            with open(unseen_path, "wb") as f:
+                f.write(enc_buf.tobytes())
+            print(f"📸 [800x600 전체화면 저장 완료] '{unseen_path}' (제시어 글자만 잘라 qq/certi/words/ 에 넣어주세요)")
         return None
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ [전체화면 자동저장 오류]: {e}")
         return None
 
 def _detect_grid_size_opencv(grid_bgr):
@@ -321,7 +314,7 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
     """
     [CapSolver 100% 단독 엔진 (기존 호출부 호환을 위해 함수명 유지)]
     1. OpenCV로 파란 배너(qq/certi/words/) 제시어 이미지 즉시 매칭 (0.01초, 비용 0원)
-    2. 미등록 제시어 발견 시 qq/certi/words_unseen/ 폴더에 배너 이미지 자동 저장
+    2. 미등록 제시어 발견 시 qq/certi/words_unseen/ 폴더에 800x600 전체 화면 자동 저장
     3. CapSolver ReCaptchaV2Classification API 단독 호출 -> 고정 격자 픽셀 좌표 변환
     """
     global _LAST_CAPTCHA_CALL_TIME
@@ -338,16 +331,11 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
     try:
         h, w = img_bgr.shape[:2]
 
-        # 1️⃣ 배너 제시어 로컬 매칭 (미등록 제시어면 자동 저장)
+        # 1️⃣ 제시어 로컬 매칭 (미등록 제시어면 800x600 전체화면 자동 저장)
         matched_pair = save_unseen_banner_if_needed(img_bgr)
         if not matched_pair:
-            bx1, by1 = max(0, 255), max(0, 150)
-            bx2, by2 = min(w, 540), min(h, int(banner_bottom_y) + 5)
-            q_code, m_info = _detect_captcha_question_local(img_bgr[by1:by2, bx1:bx2])
-            if not q_code:
-                print("⚠️ [제시어 미매칭] 'qq/certi/words/'에 일치하는 제시어 이미지가 없어 CapSolver 호출을 건너뜁니다.")
-                return []
-            matched_pair = (q_code, m_info)
+            print("⚠️ [제시어 미매칭] 'qq/certi/words/'에 일치하는 제시어 이미지가 없어 CapSolver 호출을 건너뜁니다.")
+            return []
 
         question_code, match_info = matched_pair
 
@@ -6024,9 +6012,8 @@ def ai_commander_worker(target_pc):
                     # ⏸️ 캡차 수동 해결 대기 모드 (GUI '캡차자동(AI)' 체크 해제 시 작동)
                     elif current_fsm == "CERTI_CAPTCHA_MANUAL_WAIT":
                         ret_fsm = state.get("captcha_return_fsm", "CERTI_STEP_8_BRANCH")
-                        # 📸 캡차자동(AI) 체크 해제 상태에서도 상단 배너가 온전히 보일 때 자동으로 찍어서 보관!
-                        if find_any_captcha_img(th=0.75):
-                            save_unseen_banner_if_needed(img_bgr)
+                        # 📸 조건 없이 즉시 800x600 전체 화면 저장 함수 호출!
+                        save_unseen_banner_if_needed(img_bgr)
 
                         # 만약 대기 중 사용자가 GUI에서 '캡차자동(AI)' 체크박스를 켜면 즉시 자동 해독으로 전환!
                         if settings.get("auth_auto_captcha", False):
