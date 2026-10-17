@@ -3754,6 +3754,18 @@ def pico_worker_thread(key):
                 continue
             action = cmd.get("action")
 
+            # 🛡️ [바탕화면 엣지(F1) 실행 원천 차단] 인증 모드(CERTI_) 중에는 인게임 F1~F12 단축키 및 사냥/버프 매크로 실행을 하드웨어 직전에서 폐기!
+            curr_fsm_hw = str(ai_states.get(key, {}).get("target_fsm", ""))
+            if curr_fsm_hw.startswith("CERTI_"):
+                if action in ["ESCAPE", "TELEPORT", "TELEPORT_SPAM", "HEAL", "POTION", "BODY_TO_MIND", "ANTIDOTE", "BUFF_COMBO", "SWEEP_START", "TRASH_DELETE"]:
+                    dprint(key, f"🛡️ [인증모드 키 차단] 바탕화면 오작동 방지를 위해 잔여 인게임 명령({action})을 폐기합니다.")
+                    if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                    continue
+                elif action == "HOLD_KEY" and cmd.get("keycode") in [194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205]:
+                    dprint(key, f"🛡️ [인증모드 F키 차단] 바탕화면 엣지(도움말) 실행 방지를 위해 F키(keycode:{cmd.get('keycode')}) 입력을 폐기합니다.")
+                    if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                    continue
+
             if action not in ["HOVER", "SINGLE_ATTACK", "ATTACK", "DRAG_ATTACK", "BODY_TO_MIND", "CUSTOM_MOVE", "POTION", "FORCE_RELEASE", "TRASH_DELETE"]:
                 dprint(key, f"⚡ [HW 전송] 매크로 실행: {action}")
 
@@ -11548,21 +11560,25 @@ def ai_commander_worker(target_pc):
                                 ai_states[key]["cooldown"] = time.time() + 0.1
 
                         except ManualAbort:
-                            dprint(key, "🛑 [정비 스레드 셧다운] 수동 모드 개입(또는 사냥 정지) 확인! 진행 중인 정비 작업을 즉시 멈춥니다.")
-                            # 💡 수동 모드 개입 시 진짜 사냥이 꺼졌을 때만 IDLE, 켜져있다면 TOWN_MAINT 유지
-                            if not ai_states.get(key, {}).get("is_hunt_active", False):
+                            curr_f_abort = str(ai_states.get(key, {}).get("target_fsm", ""))
+                            if curr_f_abort.startswith("CERTI_") or curr_f_abort.startswith("DEATH_RESTART"):
+                                dprint(key, f"🛑 [정비 스레드 양보] 최우선 모드({curr_f_abort}) 진입 확인! 상태를 덮어쓰지 않고 정비 스레드만 즉시 종료합니다.")
+                            elif not ai_states.get(key, {}).get("is_hunt_active", False):
+                                dprint(key, "🛑 [정비 스레드 셧다운] 사냥 정지 확인! IDLE 상태로 전환합니다.")
                                 ai_states[key]["target_fsm"] = "IDLE"
                             else:
+                                dprint(key, "🛑 [정비 스레드 셧다운] 수동 모드 개입 확인! 정비 대기(TOWN_MAINT_START) 상태를 유지합니다.")
                                 ai_states[key]["target_fsm"] = "TOWN_MAINT_START"
 
                         except Exception as e:
                             import traceback
                             traceback.print_exc()
-                            dprint(key, f"❌ 마을 정비 중 에러 발생: {e} (IDLE 튕김 방어 및 3초 대기 후 정비 재시작)")
-                            import time as builtin_time
-                            # 💡 [진짜 원인 픽스 1] 에러 발생 시 사냥(IDLE)으로 던져버리는 최악의 버그 삭제! 안전하게 정비 재시도 모드로 전환.
-                            ai_states[key]["target_fsm"] = "SHUTDOWN_WAIT"
-                            ai_states[key]["shutdown_timer"] = builtin_time.time() + 3.0
+                            curr_f_err = str(ai_states.get(key, {}).get("target_fsm", ""))
+                            if not curr_f_err.startswith("CERTI_") and not curr_f_err.startswith("DEATH_RESTART"):
+                                dprint(key, f"❌ 마을 정비 중 에러 발생: {e} (IDLE 튕김 방어 및 3초 대기 후 정비 재시작)")
+                                import time as builtin_time
+                                ai_states[key]["target_fsm"] = "SHUTDOWN_WAIT"
+                                ai_states[key]["shutdown_timer"] = builtin_time.time() + 3.0
                         finally:
                             ai_states[key]["town_thread_running"] = False
 
@@ -25659,7 +25675,7 @@ for i, pc in enumerate(MINI_PCS):
     auth_launch_frame = tk.Frame(tab_auth, bg=BG_PANEL)
     auth_launch_frame.pack(side="top", fill="x", padx=10, pady=(2, 4))
 
-    def start_manual_certi_and_launch(target_key=key):
+    def start_manual_certi_and_launch(target_key=key):def start_manual_certi_and_launch(target_key=key):
         if not picos.get(target_key):
             print(f"❌ [{target_key}] 피코가 연결되어 있지 않습니다!")
             return
@@ -25675,7 +25691,13 @@ for i, pc in enumerate(MINI_PCS):
         st = ai_states[target_key]
         curr_t = time.time()
 
-        # 바탕화면에서 F1 키 등이 눌리지 않도록 기존 큐 즉시 초기화
+        # 💡 [F1_INIT_VERIFY 경합 원천 차단] 파일 저장보다 먼저 CERTI_ 상태로 즉시 덮어씌워 바탕화면 F1 오발동 방지!
+        st["certi_from_closed_game"] = True
+        st["backup_target_fsm_before_certi"] = "IDLE"
+        st["target_fsm"] = "CERTI_GOTO_DESKTOP"
+        st["backup_target_fsm"] = "CERTI_GOTO_DESKTOP"
+        st["cooldown"] = curr_t + 0.5
+
         st["abort_macro"] = True
         with pico_queues[target_key].mutex:
             pico_queues[target_key].queue.clear()
@@ -25702,13 +25724,6 @@ for i, pc in enumerate(MINI_PCS):
         st["certi_real_buff_elapsed"] = (curr_t - st["real_buff_time"]) if st.get("real_buff_time", 0.0) > 0.0 else None
         save_buff_times(ai_states)
 
-        # 게임이 꺼진 상태에서 시작했음을 표시 (suc.png 이후 12.png 생략하고 13.png로 직행)
-        st["certi_from_closed_game"] = True
-        st["backup_target_fsm_before_certi"] = "IDLE"
-        st["target_fsm"] = "CERTI_GOTO_DESKTOP"
-        st["backup_target_fsm"] = "CERTI_GOTO_DESKTOP"
-        st["cooldown"] = curr_t + 0.2
-
         dprint(target_key, "🚀 [수동 인증 & 게임접속 가동] 게임 미실행 상태에서 웹 인증(1.png/sub.png) 후 게임 자동 접속(13.png) 시퀀스를 시작합니다!")
 
     def start_game_launch_from_step13(target_key=key):
@@ -25730,6 +25745,15 @@ for i, pc in enumerate(MINI_PCS):
         st = ai_states[target_key]
         curr_t = time.time()
 
+        # 💡 [F1_INIT_VERIFY 경합 원천 차단] 가장 먼저 CERTI_STEP_13_FIND로 고정하여 바탕화면 F1 입력을 0ms 만에 차단!
+        if not was_already_certi or "backup_target_fsm_before_certi" not in st:
+            st["backup_target_fsm_before_certi"] = "IDLE"
+        st["certi_13_wait_mode"] = "CLOSED_START"
+        st["certi_next_desktop_time"] = 0.0
+        st["target_fsm"] = "CERTI_STEP_13_FIND"
+        st["backup_target_fsm"] = "CERTI_STEP_13_FIND"
+        st["cooldown"] = curr_t + 0.5
+
         # 점유 중이던 중앙컴 IP 사용권이 남아있다면 즉시 반납
         release_central_ip_lock_async(target_key)
 
@@ -25740,7 +25764,6 @@ for i, pc in enumerate(MINI_PCS):
         clear_movements_only(pico_queues[target_key])
         pico_queues[target_key].put({"action": "FORCE_RELEASE"})
 
-        # 수동 개입 자동스캔(CERTI_AUTO_RESUME_SCAN)과 충돌하지 않도록 플래그 초기화
         st["was_manual_in_certi"] = False
         st["certi_web_last_fsm"] = None
         st["certi_last_box"] = None
@@ -25773,16 +25796,6 @@ for i, pc in enumerate(MINI_PCS):
             if real_c:
                 st["cursor_pos"] = [real_c[0], real_c[1]]
                 st["real_cursor_pos"] = [real_c[0], real_c[1]]
-
-        if not was_already_certi or "backup_target_fsm_before_certi" not in st:
-            st["backup_target_fsm_before_certi"] = "IDLE"
-
-        # 13.png 발견 시 1.5~2.5초(가우스 난수) 후 즉시 더블클릭, 미발견 시 즉시 Win+D 호출하도록 설정
-        st["certi_13_wait_mode"] = "CLOSED_START"
-        st["certi_next_desktop_time"] = 0.0
-        st["target_fsm"] = "CERTI_STEP_13_FIND"
-        st["backup_target_fsm"] = "CERTI_STEP_13_FIND"
-        st["cooldown"] = curr_t + 0.2
 
         dprint(target_key, "🎮 [수동인증 완료 ➔ 13.png 접속 가동] 바탕화면에서 '13.png' 단계부터 게임 자동 접속 시퀀스를 시작합니다!")
 
