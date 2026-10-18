@@ -259,26 +259,115 @@ def save_unseen_banner_if_needed(img_bgr):
         print(f"⚠️ [전체화면 자동저장 오류]: {e}")
         return None
 
-def _detect_grid_size_opencv(grid_bgr):
+def _locate_captcha_banner_and_grid(img_bgr):
+    """
+    예시 사진이나 타일 속 파란 하늘에 절대 속지 않고,
+    파란 배너(bx1,by1,bx2,by2)와 정사각형 타일 영역(gx1,gy1,gx2,gy2)을 정확히 잡아냅니다.
+    """
+    h, w = img_bgr.shape[:2]
+    # 미니컴 800x600 화면에서 리캡차 좌우 X 좌표는 항상 259 ~ 533 (폭 274px)
+    gx1, gx2 = 259, 533
+    by1, by2 = 126, 238
+
     try:
-        h, w = grid_bgr.shape[:2]
-        if h < 240 or w < 240: return 3
+        # 1) 우측 예시 사진(X:430~533)을 피해서 좌측 순수 파란 배너 구간(X:265~415)만 스캔
+        roi_left = img_bgr[85:300, 265:415]
+        hsv_left = cv2.cvtColor(roi_left, cv2.COLOR_BGR2HSV)
+        # 리캡차 순수 배너 파란색(#1A73E8)만 엄격하게 필터링 (타일 속 하늘/바다 색상 배제)
+        mask_b = cv2.inRange(hsv_left, np.array([103, 185, 185]), np.array([117, 255, 255]))
+        row_counts = np.sum(mask_b > 0, axis=1)
+
+        # 위에서부터 스캔하여 파란 배너가 시작되는 첫 줄(by1)과 흰색 구분선 직전 마지막 줄(by2) 탐색
+        in_banner = False
+        start_r, end_r = None, None
+        zero_streak = 0
+        for r_idx, cnt in enumerate(row_counts):
+            if not in_banner:
+                if cnt >= 60:
+                    in_banner = True
+                    start_r = r_idx
+                    end_r = r_idx
+                    zero_streak = 0
+            else:
+                if cnt >= 35:
+                    end_r = r_idx
+                    zero_streak = 0
+                else:
+                    zero_streak += 1
+                    # 배너 아래 흰색 구분선(파란 픽셀이 없는 줄)을 만나면 즉시 중단! (타일 하늘 침범 방지)
+                    if zero_streak >= 3 and (end_r - start_r) >= 70:
+                        break
+
+        if start_r is not None and end_r is not None and (end_r - start_r) >= 70:
+            by1 = 85 + start_r
+            by2 = 85 + end_r
+
+        # 2) 배너 맨 아랫부분(예시 사진 아래쪽의 순수 파란 띠 구간)에서 좌우 X 끝점 미세 보정
+        strip_y1 = max(0, by2 - 8)
+        strip_y2 = min(h, by2)
+        if strip_y2 > strip_y1:
+            hsv_strip = cv2.cvtColor(img_bgr[strip_y1:strip_y2, 230:560], cv2.COLOR_BGR2HSV)
+            mask_s = cv2.inRange(hsv_strip, np.array([103, 185, 185]), np.array([117, 255, 255]))
+            col_counts = np.sum(mask_s > 0, axis=0)
+            valid_c = np.where(col_counts >= max(2, (strip_y2 - strip_y1) // 2))[0]
+            if len(valid_c) > 0:
+                cand_x1 = 230 + int(valid_c[0])
+                cand_x2 = 230 + int(valid_c[-1])
+                if 268 <= (cand_x2 - cand_x1) <= 280:
+                    gx1, gx2 = cand_x1, cand_x2
+    except Exception:
+        pass
+
+    bx1, bx2 = gx1, gx2
+    # 타일 시작점(gy1)은 파란 배너 끝(by2)에서 흰색 구분선(4px) 바로 아래
+    gy1 = by2 + 4
+    grid_w = gx2 - gx1
+    gy2 = min(h, gy1 + grid_w)
+    return (bx1, by1, bx2, by2), (gx1, gy1, gx2, gy2)
+
+def _detect_grid_size_opencv(grid_bgr, banner_bgr=None):
+    """
+    1) 배너 우측 예시 사진 유무 및 2) 타일 내부 흰색 격자선(3등분 vs 4등분)을 분석해
+    3x3인지 4x4인지 정확히 판별합니다.
+    """
+    try:
+        if grid_bgr is None or grid_bgr.shape[0] < 200 or grid_bgr.shape[1] < 200:
+            return 3
+
+        # 1) 배너 우측(예시 사진 자리)이 90% 이상 순수 파란색이면 예시 사진이 없는 4x4 타일일 확률이 매우 높음
+        right_is_solid_blue = False
+        if banner_bgr is not None and banner_bgr.shape[0] > 40 and banner_bgr.shape[1] > 240:
+            bh, bw = banner_bgr.shape[:2]
+            right_roi = banner_bgr[int(bh*0.15):int(bh*0.85), int(bw*0.62):int(bw*0.96)]
+            hsv_r = cv2.cvtColor(right_roi, cv2.COLOR_BGR2HSV)
+            mask_rb = cv2.inRange(hsv_r, np.array([103, 185, 185]), np.array([117, 255, 255]))
+            blue_ratio = cv2.countNonZero(mask_rb) / float(right_roi.shape[0] * right_roi.shape[1])
+            if blue_ratio >= 0.88:
+                right_is_solid_blue = True
+
+        # 2) 타일 영역에서 3x3 구분선(1/3, 2/3 지점)과 4x4 구분선(1/4, 2/4, 3/4 지점)의 밝기 비교
+        gh, gw = grid_bgr.shape[:2]
         gray = cv2.cvtColor(grid_bgr, cv2.COLOR_BGR2GRAY)
-        white_mask = (gray >= 235).astype(np.float32)
+        white_mask = (gray >= 220).astype(np.float32)
 
-        # 💡 동적 폭에 맞춰 격자선 감지 기준 자동 계산
-        step3 = w / 3.0
-        step4 = w / 4.0
-        
-        s3_1, s3_2 = int(step3), int(step3*2)
-        score_3x3 = (np.mean(white_mask[:, s3_1-2:s3_1+3]) + np.mean(white_mask[:, s3_2-2:s3_2+3]) +
-                     np.mean(white_mask[s3_1-2:s3_1+3, :]) + np.mean(white_mask[s3_2-2:s3_2+3, :])) / 4.0
-                     
-        s4_1, s4_2, s4_3 = int(step4), int(step4*2), int(step4*3)
-        score_4x4 = (np.mean(white_mask[:, s4_1-2:s4_1+3]) + np.mean(white_mask[:, s4_2-2:s4_2+3]) + np.mean(white_mask[:, s4_3-2:s4_3+3]) +
-                     np.mean(white_mask[s4_1-2:s4_1+3, :]) + np.mean(white_mask[s4_2-2:s4_2+3, :]) + np.mean(white_mask[s4_3-2:s4_3+3, :])) / 6.0
+        def line_score(pos, is_col=True):
+            p = int(round(pos))
+            if is_col:
+                strip = white_mask[:, max(0, p-2):min(gw, p+3)]
+                return float(np.mean( np.max(strip, axis=1) ))
+            else:
+                strip = white_mask[max(0, p-2):min(gh, p+3), :]
+                return float(np.mean( np.max(strip, axis=0) ))
 
-        if score_4x4 > score_3x3 and score_4x4 > 0.35:
+        score_3x3 = (line_score(gw/3.0, True) + line_score(gw*2.0/3.0, True) +
+                     line_score(gh/3.0, False) + line_score(gh*2.0/3.0, False)) / 4.0
+
+        score_4x4 = (line_score(gw/4.0, True) + line_score(gw*2.0/4.0, True) + line_score(gw*3.0/4.0, True) +
+                     line_score(gh/4.0, False) + line_score(gh*2.0/4.0, False) + line_score(gh*3.0/4.0, False)) / 6.0
+
+        if right_is_solid_blue and score_4x4 >= 0.45:
+            return 4
+        if score_4x4 > score_3x3 + 0.08 and score_4x4 >= 0.60:
             return 4
         return 3
     except Exception:
@@ -316,7 +405,7 @@ def _save_captcha_debug_image(img_bgr, banner_rect, grid_rect, match_str, grid_s
 
         cv2.rectangle(dbg, (5, 5), (790, 65), (0, 0, 0), -1)
         cv2.putText(dbg, f"WORD: {match_str} | GRID: {grid_size}x{grid_size}", (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
-        cv2.putText(dbg, f"STATUS: {status_text} | TARGETS: {valid_coords}", (12, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+        cv2.putText(dbg, f"STATUS: {status_text} | TARGETS: {valid_coords}", (12, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 255, 255), 2)
 
         now_str = time.strftime("%H%M%S") + f"_{int((time.time() % 1) * 100):02d}"
         dbg_path = os.path.join("qq", "certi", "debug_log", f"cap_dbg_{now_str}.png")
@@ -340,35 +429,8 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
     _LAST_CAPTCHA_CALL_TIME = now_t
 
     try:
-        h, w = img_bgr.shape[:2]
-        
-        # 1️⃣ 파란색 배너 및 타일 영역 동적 추적 엔진 (X, Y 좌표 1픽셀 오차 완벽 차단)
-        gx1, gx2 = max(0, 240), min(w, 550)
-        gy1 = max(0, int(banner_bottom_y) + 3)
-        gy2 = min(h, gy1 + 270)
-        bx1, by1, bx2, by2 = gx1, max(0, 90), gx2, gy1
-        
-        try:
-            # 주소표시줄 아래 전체를 스캔하여 파란색 배너의 정확한 테두리 추출
-            hsv_cap = cv2.cvtColor(img_bgr[90:350, 200:600], cv2.COLOR_BGR2HSV)
-            mask_b = cv2.inRange(hsv_cap, np.array([95, 80, 80]), np.array([135, 255, 255]))
-            row_sums = np.sum(mask_b > 0, axis=1)
-            col_sums = np.sum(mask_b > 0, axis=0)
-            
-            valid_rows = np.where(row_sums > 30)[0]
-            valid_cols = np.where(col_sums > 30)[0]
-            
-            if len(valid_rows) > 0 and len(valid_cols) > 0:
-                by1 = 90 + int(valid_rows[0])
-                banner_bottom_y = 90 + int(valid_rows[-1])
-                gx1 = 200 + int(valid_cols[0])
-                gx2 = 200 + int(valid_cols[-1])
-                
-                bx1, bx2, by2 = gx1, gx2, banner_bottom_y
-                gy1 = banner_bottom_y + 3
-                gy2 = gy1 + (gx2 - gx1) # 💡 리캡차 타일은 정사각형이므로 가로폭과 동일하게 세팅!
-        except Exception:
-            pass
+        # 1️⃣ 흔들림 없는 고정밀 배너 & 타일 영역 계산
+        (bx1, by1, bx2, by2), (gx1, gy1, gx2, gy2) = _locate_captcha_banner_and_grid(img_bgr)
 
         search_roi = img_bgr[by1:by2, bx1:bx2]
         question_code, match_info = _detect_captcha_question_local(search_roi)
@@ -379,12 +441,15 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
             _save_captcha_debug_image(img_bgr, (bx1, by1, bx2, by2), (gx1, gy1, gx2, gy2), match_info, 3, [], "WORD_MISS")
             return []
 
-        # 2️⃣ 오차 0%의 동적 크롭 영역 전송
+        # 2️⃣ 3x3 / 4x4 판별 후 CapSolver 표준 해상도(3x3 -> 300x300, 4x4 -> 450x450)로 리사이즈!
         grid_crop = img_bgr[gy1:gy2, gx1:gx2]
-        grid_size = _detect_grid_size_opencv(grid_crop)
-        print(f"🔎 [로컬 제시어 매칭 성공] {match_info} ➔ 캡솔버 제시어 코드:{question_code} ({grid_size}x{grid_size} 격자)")
+        grid_size = _detect_grid_size_opencv(grid_crop, banner_bgr=search_roi)
+        target_res = 450 if grid_size == 4 else 300
+        grid_for_api = cv2.resize(grid_crop, (target_res, target_res), interpolation=cv2.INTER_CUBIC)
 
-        _, buffer = cv2.imencode('.jpg', grid_crop, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+        print(f"🔎 [로컬 제시어 매칭 성공] {match_info} ➔ 코드:{question_code} ({grid_size}x{grid_size} 격자, {target_res}x{target_res} 변환 전송)")
+
+        _, buffer = cv2.imencode('.jpg', grid_for_api, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
         img_base64 = base64.b64encode(buffer).decode('utf-8')
 
         payload = {
@@ -421,7 +486,9 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
         valid_coords = []
         seen = set()
         grid_w = gx2 - gx1
-        cell_step = grid_w / float(grid_size)
+        grid_h = gy2 - gy1
+        cell_w = grid_w / float(grid_size)
+        cell_h = grid_h / float(grid_size)
 
         for idx in objects:
             idx_int = int(idx)
@@ -437,13 +504,14 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
                 print(f"   ⏭️ [체크된 타일 패스] {r_0+1}행 {c_0+1}열은 이미 선택되어 있어 건너뜁니다.")
                 continue
 
-            cx = int(round(gx1 + (c_0 + 0.5) * cell_step))
-            cy = int(round(gy1 + (r_0 + 0.5) * cell_step))
-            
+            cx = int(round(gx1 + (c_0 + 0.5) * cell_w))
+            cy = int(round(gy1 + (r_0 + 0.5) * cell_h))
+
             valid_coords.append((cx, cy))
             print(f"   📍 [CapSolver 타일 확정] {r_0+1}행 {c_0+1}열 (index:{idx_int}) ➔ 고정픽셀({cx}, {cy})")
 
-        _save_captcha_debug_image(img_bgr, (bx1, by1, bx2, by2), (gx1, gy1, gx2, gy2), match_info, grid_size, valid_coords, f"OK(tiles:{objects})")
+        status_label = f"OK(tiles:{objects})" if objects else f"EMPTY(sol:{solution})"
+        _save_captcha_debug_image(img_bgr, (bx1, by1, bx2, by2), (gx1, gy1, gx2, gy2), match_info, grid_size, valid_coords, status_label)
         return valid_coords
 
     except Exception as e:
@@ -2414,6 +2482,8 @@ def _save_settings_internal():
                 "party_help_call_pct": v["party_help_call_pct"].get() if "party_help_call_pct" in v else "20",
                 "use_m_elf_pk": v["use_m_elf_pk"].get() if "use_m_elf_pk" in v else False,
                 "use_m_wiz_pk": v["use_m_wiz_pk"].get() if "use_m_wiz_pk" in v else False,
+                "m_elf_conf": v["m_elf_conf"].get().strip() if "m_elf_conf" in v else "70",
+                "m_wiz_conf": v["m_wiz_conf"].get().strip() if "m_wiz_conf" in v else "70",
 
                 "dungeon_name": v["dungeon_name"].get(),
                 "heal_use": v["heal_use"].get(), "heal_pct": v["heal_pct"].get(),
@@ -2890,6 +2960,8 @@ for pc in MINI_PCS:
         "party_help_call_pct": tk.StringVar(value=pc_set.get("party_help_call_pct", "20")),
         "use_m_elf_pk": tk.BooleanVar(value=pc_set.get("use_m_elf_pk", False)),
         "use_m_wiz_pk": tk.BooleanVar(value=pc_set.get("use_m_wiz_pk", False)),
+        "m_elf_conf": tk.StringVar(value=str(pc_set.get("m_elf_conf", "70"))),
+        "m_wiz_conf": tk.StringVar(value=str(pc_set.get("m_wiz_conf", "70"))),
 
         "dungeon_name": tk.StringVar(value=pc_set.get("dungeon_name", "개미굴 6층")),
         "heal_use": tk.BooleanVar(value=pc_set.get("heal_use", True)),
@@ -15462,7 +15534,11 @@ def ai_commander_worker(target_pc):
                                 cv2.rectangle(yolo_img, (px1, py1), (px2, py2), (0, 0, 0), -1)
                         # 👆👆 ------------------------------------- 👆👆
 
-                        results = pc_model.predict(source=yolo_img, conf=YOLO_CONF, half=True, verbose=False)
+                        m_elf_conf_th = max(0.10, min(0.99, float(settings.get("m_elf_conf", 70.0)) / 100.0))
+                        m_wiz_conf_th = max(0.10, min(0.99, float(settings.get("m_wiz_conf", 70.0)) / 100.0))
+                        min_predict_conf = min(YOLO_CONF, m_elf_conf_th, m_wiz_conf_th)
+
+                        results = pc_model.predict(source=yolo_img, conf=min_predict_conf, half=True, verbose=False)
 
                         G_MOB_CLASS_ID = 5
                         BEAST_MOB_CLASS_ID = 6
@@ -15476,7 +15552,15 @@ def ai_commander_worker(target_pc):
                         use_m_wiz_pk = settings.get("use_m_wiz_pk", False)
 
                         for box in results[0].boxes:
-                            cls_id = int(box.cls[0]); x1_box, y1_box, x2_box, y2_box = map(int, box.xyxy[0])
+                            cls_id = int(box.cls[0]); conf_val = float(box.conf[0])
+                            if cls_id == M_ELF_CLASS_ID:
+                                if conf_val < m_elf_conf_th: continue
+                            elif cls_id == M_WIZ_CLASS_ID:
+                                if conf_val < m_wiz_conf_th: continue
+                            else:
+                                if conf_val < YOLO_CONF: continue
+
+                            x1_box, y1_box, x2_box, y2_box = map(int, box.xyxy[0])
                             is_pk_target_cls = (use_m_elf_pk and cls_id == M_ELF_CLASS_ID) or (use_m_wiz_pk and cls_id == M_WIZ_CLASS_ID)
 
                             if cls_id in [0, 5, 6] or (is_bondon_yolo and cls_id == AVOID_CLASS_ID) or is_pk_target_cls:
@@ -23847,6 +23931,8 @@ def sync_gui_vars():
 
             p_help_call_use_val = gui_vars[k]["party_help_call_use"].get() if "party_help_call_use" in gui_vars[k] else True
             p_help_call_pct_val = safe_float(gui_vars[k]["party_help_call_pct"], 20.0) if "party_help_call_pct" in gui_vars[k] else 20.0
+            m_elf_conf_val = safe_float(gui_vars[k]["m_elf_conf"], 70.0) if "m_elf_conf" in gui_vars[k] else 70.0
+            m_wiz_conf_val = safe_float(gui_vars[k]["m_wiz_conf"], 70.0) if "m_wiz_conf" in gui_vars[k] else 70.0
 
             # --- [버그 수정] 체크박스의 실제 상태를 읽어서 내부 변수에 반영하도록 역전 ---
             _use_hunt = gui_vars[k]["use_party_hunt"].get()
@@ -23927,6 +24013,8 @@ def sync_gui_vars():
                 "party_help_call_pct": p_help_call_pct_val,
                 "use_m_elf_pk": gui_vars[k]["use_m_elf_pk"].get() if "use_m_elf_pk" in gui_vars[k] else False,
                 "use_m_wiz_pk": gui_vars[k]["use_m_wiz_pk"].get() if "use_m_wiz_pk" in gui_vars[k] else False,
+                "m_elf_conf": m_elf_conf_val,
+                "m_wiz_conf": m_wiz_conf_val,
 
                 "buff_set": gui_vars[k]["buff_set"].get(),
                 "combat_buff": gui_vars[k]["combat_buff"].get(),
@@ -24676,9 +24764,15 @@ for i, pc in enumerate(MINI_PCS):
 
     p_pk_frame = tk.Frame(tab_party, bg=BG_PANEL)
     p_pk_frame.pack(side="top", fill="x", padx=2, pady=(0, 2))
-    tk.Label(p_pk_frame, text="■ 적대PK:", bg=BG_PANEL, fg="#FF5252", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0, 4))
-    tk.Checkbutton(p_pk_frame, text="남요정PK", variable=vars_dict["use_m_elf_pk"], bg=BG_PANEL, fg="#FF5252", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(0, 6))
-    tk.Checkbutton(p_pk_frame, text="남법사PK", variable=vars_dict["use_m_wiz_pk"], bg=BG_PANEL, fg="#4FC3F7", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
+    tk.Label(p_pk_frame, text="■ 적대PK:", bg=BG_PANEL, fg="#FF5252", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0, 2))
+    tk.Checkbutton(p_pk_frame, text="남요정", variable=vars_dict["use_m_elf_pk"], bg=BG_PANEL, fg="#FF5252", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
+    tk.Entry(p_pk_frame, textvariable=vars_dict["m_elf_conf"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
+    tk.Label(p_pk_frame, text="%", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(0, 4))
+
+    tk.Label(p_pk_frame, text="|", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(0, 4))
+    tk.Checkbutton(p_pk_frame, text="남법사", variable=vars_dict["use_m_wiz_pk"], bg=BG_PANEL, fg="#4FC3F7", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
+    tk.Entry(p_pk_frame, textvariable=vars_dict["m_wiz_conf"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
+    tk.Label(p_pk_frame, text="%", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=0)
 
     hp_top_frame = tk.Frame(tab1, bg=BG_PANEL)
     hp_top_frame.pack(side="top", fill="x", padx=2, pady=(0, 2))
