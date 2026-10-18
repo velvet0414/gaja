@@ -128,7 +128,7 @@ CAPSOLVER_API_KEY = "CAP-28B0F321F9019FFB9710F296FAA9AF561F01AABB6D40F8F35F70B8B
 os.makedirs("qq/certi/words", exist_ok=True)
 os.makedirs("qq/certi/words_unseen", exist_ok=True)
 
-# 🗂️ 파일명 키워드 ➔ CapSolver 공식 객체 코드(Google reCAPTCHA 표준 ID) 매핑 사전
+# 🗂️ 파일명 키워드 ➔ CapSolver 공식 영문 지시어 매핑 사전
 CAPTCHA_WORD_MAP = {
     "car":        "/m/0k4j",    # 자동차
     "traffic":    "/m/015qff",  # 신호등
@@ -141,30 +141,20 @@ CAPTCHA_WORD_MAP = {
     "chimney":    "/m/01jk_4",  # 굴뚝
     "tractor":    "/m/013xlm",  # 트랙터
     "bridge":     "/m/015kr",   # 다리
-    "pier":       "/m/015kr",   # 교각
+    "pier":       "/m/015kr",   # 교각 (다리와 동일)
     "palm":       "/m/0cdl1",   # 야자수
     "boat":       "/m/019jd",   # 보트
     "mountain":   "/m/09d_r",   # 산 또는 언덕
     "taxi":       "/m/0pg52",   # 택시
-    "parking":    "/m/015qbp",  # 주차요금정산기 (주차 미터기)
+    "parking":    "/m/015qbp",  # 주차요금정산기
 }
 
 _WORD_TEMPLATES_CACHE = {}
 _SAVED_UNSEEN_BANNERS = []  # 중복 저장 방지용 메모리 캐시
 _LAST_CAPTCHA_CALL_TIME = 0.0
 
-# 📐 [PlayNC 캡차 실측 고정 격자 좌표계 (800x600 프로젝터 화면 기준)]
 def get_plaync_tile_center(row_1based, col_1based, grid_size=3, banner_bottom_y=272):
-    gx1, gx2 = 262.0, 532.0
-    gy1 = float(banner_bottom_y) + 5.0
-    grid_w = gx2 - gx1  # 270px
-    cell_step = grid_w / float(grid_size)
-
-    cx = int(round(gx1 + (col_1based - 0.5) * cell_step))
-    cy = int(round(gy1 + (row_1based - 0.5) * cell_step))
-    return cx, cy
-
-os.makedirs("qq/certi/debug_log", exist_ok=True)
+    pass # 동적 계산으로 대체되어 더이상 사용하지 않음
 
 def _detect_captcha_question_local(banner_bgr):
     """
@@ -211,7 +201,6 @@ def _detect_captcha_question_local(banner_bgr):
                 continue
 
         base_gray = cached["gray"]
-        # 💡 수동 캡처 시 발생할 수 있는 미세 배율 차이(90% ~ 110%)까지 모두 스캔!
         for scale in (1.0, 0.95, 1.05, 0.90, 1.10):
             th_s = max(5, int(round(base_gray.shape[0] * scale)))
             tw_s = max(5, int(round(base_gray.shape[1] * scale)))
@@ -229,7 +218,6 @@ def _detect_captcha_question_local(banner_bgr):
                 continue
 
     info_str = f"{best_name}({best_score*100:.1f}%)"
-    # 임계값을 0.75로 완화하여 폰트 안티앨리어싱 차이에도 100% 매칭되도록 보정
     if best_score >= 0.75:
         return best_code, info_str
     return None, info_str
@@ -247,7 +235,7 @@ def save_unseen_banner_if_needed(img_bgr):
         if q_code:
             return (q_code, match_info)
 
-        check_patch = cv2.cvtColor(img_bgr[max(0, 160):min(h, 270), max(0, 260):min(w, 430)], cv2.COLOR_BGR2GRAY)
+        check_patch = cv2.cvtColor(img_bgr[max(0, 100):min(h, 250), max(0, 260):min(w, 430)], cv2.COLOR_BGR2GRAY)
         for prev_gray in _SAVED_UNSEEN_BANNERS:
             if prev_gray.shape == check_patch.shape:
                 res = cv2.matchTemplate(check_patch, prev_gray, cv2.TM_CCOEFF_NORMED)
@@ -273,19 +261,22 @@ def save_unseen_banner_if_needed(img_bgr):
 
 def _detect_grid_size_opencv(grid_bgr):
     try:
-        if grid_bgr is None or grid_bgr.shape[0] < 240 or grid_bgr.shape[1] < 240:
-            return 3
+        h, w = grid_bgr.shape[:2]
+        if h < 240 or w < 240: return 3
         gray = cv2.cvtColor(grid_bgr, cv2.COLOR_BGR2GRAY)
         white_mask = (gray >= 235).astype(np.float32)
 
-        score_3x3 = (
-            np.mean(white_mask[:, 88:93]) + np.mean(white_mask[:, 178:183]) +
-            np.mean(white_mask[88:93, :]) + np.mean(white_mask[178:183, :])
-        ) / 4.0
-        score_4x4 = (
-            np.mean(white_mask[:, 65:70]) + np.mean(white_mask[:, 133:138]) + np.mean(white_mask[:, 200:205]) +
-            np.mean(white_mask[65:70, :]) + np.mean(white_mask[133:138, :]) + np.mean(white_mask[200:205, :])
-        ) / 6.0
+        # 💡 동적 폭에 맞춰 격자선 감지 기준 자동 계산
+        step3 = w / 3.0
+        step4 = w / 4.0
+        
+        s3_1, s3_2 = int(step3), int(step3*2)
+        score_3x3 = (np.mean(white_mask[:, s3_1-2:s3_1+3]) + np.mean(white_mask[:, s3_2-2:s3_2+3]) +
+                     np.mean(white_mask[s3_1-2:s3_1+3, :]) + np.mean(white_mask[s3_2-2:s3_2+3, :])) / 4.0
+                     
+        s4_1, s4_2, s4_3 = int(step4), int(step4*2), int(step4*3)
+        score_4x4 = (np.mean(white_mask[:, s4_1-2:s4_1+3]) + np.mean(white_mask[:, s4_2-2:s4_2+3]) + np.mean(white_mask[:, s4_3-2:s4_3+3]) +
+                     np.mean(white_mask[s4_1-2:s4_1+3, :]) + np.mean(white_mask[s4_2-2:s4_2+3, :]) + np.mean(white_mask[s4_3-2:s4_3+3, :])) / 6.0
 
         if score_4x4 > score_3x3 and score_4x4 > 0.35:
             return 4
@@ -350,10 +341,34 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
 
     try:
         h, w = img_bgr.shape[:2]
-        bx1, by1, bx2, by2 = max(0, 240), max(0, 90), min(w, 550), min(h, 290)
-        gx1, gx2 = max(0, 262), min(w, 532)
-        gy1 = max(0, int(banner_bottom_y) + 5)
+        
+        # 1️⃣ 파란색 배너 및 타일 영역 동적 추적 엔진 (X, Y 좌표 1픽셀 오차 완벽 차단)
+        gx1, gx2 = max(0, 240), min(w, 550)
+        gy1 = max(0, int(banner_bottom_y) + 3)
         gy2 = min(h, gy1 + 270)
+        bx1, by1, bx2, by2 = gx1, max(0, 90), gx2, gy1
+        
+        try:
+            # 주소표시줄 아래 전체를 스캔하여 파란색 배너의 정확한 테두리 추출
+            hsv_cap = cv2.cvtColor(img_bgr[90:350, 200:600], cv2.COLOR_BGR2HSV)
+            mask_b = cv2.inRange(hsv_cap, np.array([95, 80, 80]), np.array([135, 255, 255]))
+            row_sums = np.sum(mask_b > 0, axis=1)
+            col_sums = np.sum(mask_b > 0, axis=0)
+            
+            valid_rows = np.where(row_sums > 30)[0]
+            valid_cols = np.where(col_sums > 30)[0]
+            
+            if len(valid_rows) > 0 and len(valid_cols) > 0:
+                by1 = 90 + int(valid_rows[0])
+                banner_bottom_y = 90 + int(valid_rows[-1])
+                gx1 = 200 + int(valid_cols[0])
+                gx2 = 200 + int(valid_cols[-1])
+                
+                bx1, bx2, by2 = gx1, gx2, banner_bottom_y
+                gy1 = banner_bottom_y + 3
+                gy2 = gy1 + (gx2 - gx1) # 💡 리캡차 타일은 정사각형이므로 가로폭과 동일하게 세팅!
+        except Exception:
+            pass
 
         search_roi = img_bgr[by1:by2, bx1:bx2]
         question_code, match_info = _detect_captcha_question_local(search_roi)
@@ -364,9 +379,10 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
             _save_captcha_debug_image(img_bgr, (bx1, by1, bx2, by2), (gx1, gy1, gx2, gy2), match_info, 3, [], "WORD_MISS")
             return []
 
+        # 2️⃣ 오차 0%의 동적 크롭 영역 전송
         grid_crop = img_bgr[gy1:gy2, gx1:gx2]
         grid_size = _detect_grid_size_opencv(grid_crop)
-        print(f"🔎 [로컬 제시어 매칭 성공] {match_info} ➔ 코드:{question_code} ({grid_size}x{grid_size} 격자)")
+        print(f"🔎 [로컬 제시어 매칭 성공] {match_info} ➔ 캡솔버 제시어 코드:{question_code} ({grid_size}x{grid_size} 격자)")
 
         _, buffer = cv2.imencode('.jpg', grid_crop, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
         img_base64 = base64.b64encode(buffer).decode('utf-8')
@@ -404,6 +420,9 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
 
         valid_coords = []
         seen = set()
+        grid_w = gx2 - gx1
+        cell_step = grid_w / float(grid_size)
+
         for idx in objects:
             idx_int = int(idx)
             r_0 = idx_int // grid_size
@@ -418,7 +437,9 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
                 print(f"   ⏭️ [체크된 타일 패스] {r_0+1}행 {c_0+1}열은 이미 선택되어 있어 건너뜁니다.")
                 continue
 
-            cx, cy = get_plaync_tile_center(r_0 + 1, c_0 + 1, grid_size=grid_size, banner_bottom_y=banner_bottom_y)
+            cx = int(round(gx1 + (c_0 + 0.5) * cell_step))
+            cy = int(round(gy1 + (r_0 + 0.5) * cell_step))
+            
             valid_coords.append((cx, cy))
             print(f"   📍 [CapSolver 타일 확정] {r_0+1}행 {c_0+1}열 (index:{idx_int}) ➔ 고정픽셀({cx}, {cy})")
 
@@ -2391,6 +2412,8 @@ def _save_settings_internal():
 
                 "party_help_call_use": v["party_help_call_use"].get() if "party_help_call_use" in v else True,
                 "party_help_call_pct": v["party_help_call_pct"].get() if "party_help_call_pct" in v else "20",
+                "use_m_elf_pk": v["use_m_elf_pk"].get() if "use_m_elf_pk" in v else False,
+                "use_m_wiz_pk": v["use_m_wiz_pk"].get() if "use_m_wiz_pk" in v else False,
 
                 "dungeon_name": v["dungeon_name"].get(),
                 "heal_use": v["heal_use"].get(), "heal_pct": v["heal_pct"].get(),
@@ -2865,6 +2888,8 @@ for pc in MINI_PCS:
 
         "party_help_call_use": tk.BooleanVar(value=pc_set.get("party_help_call_use", True)),
         "party_help_call_pct": tk.StringVar(value=pc_set.get("party_help_call_pct", "20")),
+        "use_m_elf_pk": tk.BooleanVar(value=pc_set.get("use_m_elf_pk", False)),
+        "use_m_wiz_pk": tk.BooleanVar(value=pc_set.get("use_m_wiz_pk", False)),
 
         "dungeon_name": tk.StringVar(value=pc_set.get("dungeon_name", "개미굴 6층")),
         "heal_use": tk.BooleanVar(value=pc_set.get("heal_use", True)),
@@ -4076,7 +4101,8 @@ def pico_worker_thread(key):
                     k_tap(KEY_ANTIDOTE)
 
             elif action == "PVP_OFF":
-
+                send_keyboard_key(p_serial, p_lock, 129, 0)
+                h_sleep(0.03, 0.05)
                 k_tap(128)
                 h_sleep(0.12, 0.18)
                 k_tap(128)
@@ -5002,7 +5028,13 @@ def check_attack_cursor(img_bgr, cx, cy, check_maintain=False, pc_key=None, **kw
             else:
                 if circle_err <= (0.30 + margin): is_attack_cursor = True
 
-        if check_purple_name(img_bgr, cx, cy):
+        is_m_elf_targeting = False
+        if pc_key and pc_key in ai_states:
+            st_chk = ai_states[pc_key]
+            if st_chk.get("next_is_m_elf", False) or st_chk.get("current_is_m_elf", False) or (str(st_chk.get("target_fsm", "")) == "HEINE_GMOB_VERIFY" and st_chk.get("switch_target_type") == "MELF"):
+                is_m_elf_targeting = True
+
+        if not is_m_elf_targeting and check_purple_name(img_bgr, cx, cy):
             is_party_mode = False
             if pc_key:
                 settings_data = current_settings.get(pc_key, {})
@@ -12605,7 +12637,17 @@ def ai_commander_worker(target_pc):
 
                     continue
 
-                if is_pvp_mode and curr_time > state.get("pvp_off_cd", 0):
+                if is_pvp_mode:
+                    state["pvp_on_cmd_cd"] = 0.0
+
+                is_m_elf_pk_active = (settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False)) and (
+                    state.get("current_is_m_elf", False) or
+                    state.get("next_is_m_elf", False) or
+                    (str(state.get("target_fsm", "")) == "HEINE_GMOB_VERIFY" and state.get("switch_target_type") == "MELF") or
+                    any(getattr(m, "is_m_elf", False) for m in mobs)
+                )
+
+                if is_pvp_mode and not is_m_elf_pk_active and curr_time > state.get("pvp_off_cd", 0):
 
                     if state.get("perc_pvp", 0) == 0:
                         delay = g_val(0.15, 0.30)
@@ -13043,7 +13085,7 @@ def ai_commander_worker(target_pc):
 
                 fsm_for_pk = str(state.get("target_fsm", ""))
                 is_currently_looting = (state.get("loot_state") != "IDLE") or fsm_for_pk.startswith("LOOT") or state.get("sweep_active", False)
-                is_currently_combat = (fsm_for_pk == "COMBAT") or state.get("is_attacking", False) or state.get("arrow_is_firing", False)
+                is_currently_combat = (fsm_for_pk == "COMBAT") or state.get("is_attacking", False) or state.get("arrow_is_firing", False) or state.get("current_is_m_elf", False) or state.get("next_is_m_elf", False)
 
                 if is_currently_combat:
                     active_pk_threshold = 999.0
@@ -14997,7 +15039,7 @@ def ai_commander_worker(target_pc):
 
                     is_fighting_for_exp = state.get("target_fsm") in active_combat_fsms or state.get("is_attacking", False) or state.get("arrow_is_firing", False)
 
-                    if is_fighting_for_exp and exp_did_change:
+                    if is_fighting_for_exp and exp_did_change and not state.get("current_is_m_elf", False):
                         state["last_exp_time"] = curr_time
                         state["last_real_kill_time"] = curr_time
 
@@ -15157,6 +15199,7 @@ def ai_commander_worker(target_pc):
                                 state["target_fsm"] = "IDLE"
                                 
                             state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
+                            state["current_is_m_elf"] = False; state["next_is_m_elf"] = False
                     else:
                         time_since_arrow = curr_time - state.get("last_arrow_change_time", curr_time)
 
@@ -15176,6 +15219,7 @@ def ai_commander_worker(target_pc):
                                     state["target_fsm"] = "IDLE"
                                     
                                 state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
+                                state["current_is_m_elf"] = False; state["next_is_m_elf"] = False
                         else:
                             if time_since_arrow > 2.0 and time_since_spell > 2.0:
                                 reason_str = "마법 사용 후 사격 지연" if time_since_spell <= 3.0 else "빠른 사격 중단"
@@ -15190,6 +15234,7 @@ def ai_commander_worker(target_pc):
                                     state["target_fsm"] = "IDLE"
                                     
                                 state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
+                                state["current_is_m_elf"] = False; state["next_is_m_elf"] = False
 
                     max_combat_time = float(settings.get("max_combat_time", 15.0))
 
@@ -15199,7 +15244,9 @@ def ai_commander_worker(target_pc):
                     force_timeout = False
                     dng_combat_name = settings.get("dungeon_name", "")
 
-                    if "event" in dng_combat_name or "오땅" in dng_combat_name:
+                    if state.get("current_is_m_elf", False):
+                        max_combat_time = 10.0
+                    elif "event" in dng_combat_name or "오땅" in dng_combat_name:
                         if "오땅" in dng_combat_name:
 
                             max_combat_time = 8.0
@@ -15215,18 +15262,21 @@ def ai_commander_worker(target_pc):
 
                     # ================= [ 변경 코드 ] =================
                     if combat_dur > max_combat_time or force_timeout:
-                        if force_timeout:
+                        was_m_elf_combat = state.get("current_is_m_elf", False)
+                        if was_m_elf_combat:
+                            dprint(key, f"⚔️ [남요정 PK 제한시간 종료] {max_combat_time}초 경과! 공격을 멈추고 IDLE로 복귀합니다.")
+                        elif force_timeout:
                             dprint(key, "🧱 [이벤트 던전 벽몹 감지] 15초간 1대도 안 맞음! 벽 몹(또는 갇힘)으로 간주하고 타겟 포기!")
                         else:
                             dprint(key, f"🚨 [전투 타임아웃] 전투 지연({max_combat_time}초 초과). 벽치기/오류 판단. 타겟 포기!")
 
                         clear_movements_only(pico_queues[key])
                         
-                        # 👇 [변경] 버프 시전 중이면 목적지만 변경
+                        # 👇 [변경] 남요정 PK 10초 종료 시에는 바로 IDLE로 복귀
                         if str(state.get("target_fsm", "")).startswith("BUFFING"):
-                            state["buff_return_fsm"] = "BRAKE_WAIT"
+                            state["buff_return_fsm"] = "IDLE" if was_m_elf_combat else "BRAKE_WAIT"
                         else:
-                            state["target_fsm"] = "BRAKE_WAIT"
+                            state["target_fsm"] = "IDLE" if was_m_elf_combat else "BRAKE_WAIT"
                             
                         state["brake_end_time"] = curr_time + 0.15
                         state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
@@ -15235,6 +15285,8 @@ def ai_commander_worker(target_pc):
                         state["arrow_is_firing"] = False
                         state["arrow_image"] = None
                         state["current_is_g_mob"] = False
+                        state["current_is_m_elf"] = False
+                        state["next_is_m_elf"] = False
 
                 active_fsms_for_aim = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_LOCKED", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD"]
                 is_fighting_now = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or state.get("target_fsm") in active_fsms_for_aim
@@ -15415,14 +15467,19 @@ def ai_commander_worker(target_pc):
                         G_MOB_CLASS_ID = 5
                         BEAST_MOB_CLASS_ID = 6
                         AVOID_CLASS_ID = 2
+                        M_ELF_CLASS_ID = 7
+                        M_WIZ_CLASS_ID = 8
 
                         dng_yolo_check = settings.get("dungeon_name", "")
                         is_bondon_yolo = "본던" in dng_yolo_check or "gludio" in dng_yolo_check.lower()
+                        use_m_elf_pk = settings.get("use_m_elf_pk", False)
+                        use_m_wiz_pk = settings.get("use_m_wiz_pk", False)
 
                         for box in results[0].boxes:
                             cls_id = int(box.cls[0]); x1_box, y1_box, x2_box, y2_box = map(int, box.xyxy[0])
+                            is_pk_target_cls = (use_m_elf_pk and cls_id == M_ELF_CLASS_ID) or (use_m_wiz_pk and cls_id == M_WIZ_CLASS_ID)
 
-                            if cls_id in [0, 5, 6] or (is_bondon_yolo and cls_id == AVOID_CLASS_ID):
+                            if cls_id in [0, 5, 6] or (is_bondon_yolo and cls_id == AVOID_CLASS_ID) or is_pk_target_cls:
                                 mob_cx, mob_cy = (x1_box + x2_box) // 2, (y1_box + y2_box) // 2
                                 # 💡 [수정 2] YOLO 일반 몹 좌표 연산도 10픽셀 더 내림
                                 mob_foot_y = int(y1_box + (y2_box - y1_box) * 0.85) + 20
@@ -15438,9 +15495,11 @@ def ai_commander_worker(target_pc):
                                 m_obj.is_beast = (cls_id == BEAST_MOB_CLASS_ID)
                                 m_obj.is_normal = (cls_id == 0)
                                 m_obj.is_avoid = (cls_id == AVOID_CLASS_ID) # 💡 정식 avoid 속성 추가
+                                m_obj.is_m_elf = is_pk_target_cls           # 💡 남요정/남법사 공통 PK 타겟 플래그
+                                m_obj.is_m_wiz = (cls_id == M_WIZ_CLASS_ID) # 💡 디버그 구분용 남법사 속성
                                 temp_mobs.append(m_obj)
 
-                            elif cls_id in [1, 3, 4]:
+                            elif cls_id in [1, 3, 4] or (cls_id in [M_ELF_CLASS_ID, M_WIZ_CLASS_ID] and not is_pk_target_cls):
                                 temp_users.append(MobTarget((x1_box + x2_box) // 2, (y1_box + y2_box) // 2, x1_box, y1_box, x2_box, y2_box))
 
                             elif cls_id == AVOID_CLASS_ID and not is_bondon_yolo:
@@ -15765,7 +15824,13 @@ def ai_commander_worker(target_pc):
                     if is_clear:
                         valid_mobs.append(m)
                         if DEBUG_MODE and debug_img is not None:
-                            if getattr(m, 'is_avoid', False):
+                            if getattr(m, 'is_m_elf', False):
+                                pk_lbl = "M_WIZ(PK) (CLEAR)" if getattr(m, 'is_m_wiz', False) else "M_ELF(PK) (CLEAR)"
+                                pk_col = (255, 128, 0) if getattr(m, 'is_m_wiz', False) else (128, 255, 0)
+                                cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), pk_col, 3)
+                                cv2.circle(debug_img, (m.x, m.foot_y), 3, (0, 0, 255), -1)
+                                cv2.putText(debug_img, pk_lbl, (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, pk_col, 2)
+                            elif getattr(m, 'is_avoid', False):
                                 cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), (255, 100, 255), 3)
                                 cv2.circle(debug_img, (m.x, m.foot_y), 3, (255, 100, 255), -1)
                                 cv2.putText(debug_img, "AVOID(PRIO) (CLEAR)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 255), 2)
@@ -16011,6 +16076,8 @@ def ai_commander_worker(target_pc):
                 state["has_fired_arrow"] = False
                 state["current_is_g_mob"] = False
                 state["current_is_avoid"] = False # 💡 완벽 초기화
+                state["current_is_m_elf"] = False
+                state["next_is_m_elf"] = False
                 state["combat_enchant_failed"] = False
                 state["is_combat_emergency_buff"] = False
 
@@ -18605,7 +18672,8 @@ def ai_commander_worker(target_pc):
 
                 if not action_taken and state.get("is_hunt_active", False) and not state.get("is_paused", False):
                     dungeon_name_check = settings.get("dungeon_name", "")
-                    if "수던" in dungeon_name_check or "heine" in dungeon_name_check.lower() or "본던" in dungeon_name_check or "gludio" in dungeon_name_check.lower():
+                    is_heine_or_bondon = ("수던" in dungeon_name_check or "heine" in dungeon_name_check.lower() or "본던" in dungeon_name_check or "gludio" in dungeon_name_check.lower())
+                    if is_heine_or_bondon or settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False):
 
                         fsm_curr = str(state.get("target_fsm", ""))
                         # [수정 1] 무지성 F4 줍기(sweep_active)를 루팅 상태 판정에서 제거!
@@ -18613,25 +18681,33 @@ def ai_commander_worker(target_pc):
 
                         if is_fighting and not is_looting_now and fsm_curr != "HEINE_GMOB_VERIFY" and curr_time >= state.get("cooldown", 0):
 
+                            is_curr_m_elf = state.get("current_is_m_elf", False) and not state.get("is_motion_target", False)
                             is_curr_g = state.get("current_is_g_mob", False) and not state.get("is_motion_target", False)
                             is_curr_avoid = state.get("current_is_avoid", False) and not state.get("is_motion_target", False)
 
-                            if not is_curr_avoid:
+                            if not is_curr_m_elf:
                                 is_bondon_g_chk = "본던" in dungeon_name_check or "gludio" in dungeon_name_check.lower()
                                 g_mob_limit = 150.0 if is_bondon_g_chk else 250.0
 
                                 best_switch_target = None
                                 switch_type = ""
 
+                                # 💡 0순위(최우선): 남요정(m_elf) 또는 남법사(m_wiz) 포착 시 현재 어떤 몹을 치고 있든 최우선 스위칭
+                                if settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False):
+                                    m_elf_nearby = [m for m in mobs if getattr(m, 'is_m_elf', False)]
+                                    if m_elf_nearby:
+                                        best_switch_target = min(m_elf_nearby, key=lambda m: math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy))
+                                        switch_type = "MELF"
+
                                 # 💡 1순위: 본던 avoid 몹이 떴고, 내가 현재 avoid를 치고 있는게 아니라면 무조건 스위칭
-                                if is_bondon_g_chk:
+                                if not best_switch_target and is_heine_or_bondon and not is_curr_avoid and is_bondon_g_chk:
                                     avoid_mobs_nearby = [m for m in mobs if getattr(m, 'is_avoid', False) and math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy) <= g_mob_limit]
                                     if avoid_mobs_nearby:
                                         best_switch_target = min(avoid_mobs_nearby, key=lambda m: math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy))
                                         switch_type = "AVOID"
 
                                 # 💡 2순위: avoid가 없고, 내가 현재 G몹을 치고 있는게 아니라면 기존처럼 G몹 스위칭
-                                if not best_switch_target and not is_curr_g:
+                                if not best_switch_target and is_heine_or_bondon and not is_curr_avoid and not is_curr_g:
                                     g_mobs_nearby = [m for m in mobs if getattr(m, 'is_g_mob', False) and math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy) <= g_mob_limit]
                                     if g_mobs_nearby:
                                         best_switch_target = min(g_mobs_nearby, key=lambda m: math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy))
@@ -18647,6 +18723,17 @@ def ai_commander_worker(target_pc):
                                     if state.get("sweep_active", False):
                                         pico_queues[key].put({"action": "SWEEP_STOP"})
                                         state["sweep_active"] = False
+
+                                    if switch_type == "MELF":
+                                        state["next_is_m_elf"] = True
+                                        if not is_pvp_mode and curr_time > state.get("pvp_on_cmd_cd", 0):
+                                            dprint(key, "⚔️ [남요정 PK 스위칭] Ctrl 더블탭으로 PK 모드(용머리 빨간색)를 먼저 켭니다!")
+                                            pico_queues[key].put({"action": "PVP_OFF"})
+                                            pico_queues[key].put({"action": "WAIT", "delay_min": 0.12, "delay_max": 0.18})
+                                            state["pvp_on_cmd_cd"] = curr_time + 1.5
+                                            state["pvp_off_cd"] = curr_time + 3.0
+                                    else:
+                                        state["next_is_m_elf"] = False
 
                                     if role == "ARCHER":
                                         tx = best_g.x + int(random.gauss(0, 3))
@@ -18692,7 +18779,7 @@ def ai_commander_worker(target_pc):
 
                         if is_sword:
                             state["sword_verify_active"] = False
-                            dprint(key, "🎯 [G몹 타격 확정] G몹 칼표시 확인 완료! 새로운 타겟으로 전환합니다.")
+                            dprint(key, f"🎯 [{state.get('switch_target_type', 'GMOB')} 타격 확정] 칼표시 확인 완료! 새로운 타겟으로 전환합니다.")
 
                             dist = math.hypot(char_screen_cx - cur_x, char_screen_cy - cur_y)
                             nx, ny = ((char_screen_cx - cur_x) / dist, (char_screen_cy - cur_y) / dist) if dist > 0 else (0, 1)
@@ -18710,9 +18797,11 @@ def ai_commander_worker(target_pc):
                             state["is_motion_target"] = False
                             # 💡 갈아탄 몹의 속성으로 전투 상태 완벽 업데이트
                             sw_type = state.pop("switch_target_type", "")
+                            state["current_is_m_elf"] = (sw_type == "MELF")
                             state["current_is_avoid"] = (sw_type == "AVOID")
                             state["current_is_g_mob"] = (sw_type == "GMOB")
                             state["current_is_normal"] = False
+                            state["next_is_m_elf"] = False
 
                             state["humanize_cd"] = 0
                             state["park_push_dist"] = g_val(110, 130)
@@ -18724,7 +18813,8 @@ def ai_commander_worker(target_pc):
                                 state["cooldown"] = curr_time
                             else:
                                 state["sword_verify_active"] = False
-                                dprint(key, "⚠️ [G몹 스위칭 실패] 칼이 안 뜸. 락온 실패로 제동(BRAKE_WAIT) 전환.")
+                                state["next_is_m_elf"] = False
+                                dprint(key, "⚠️ [스위칭 실패] 칼이 안 뜸. 락온 실패로 제동(BRAKE_WAIT) 전환.")
                                 state["target_fsm"] = "BRAKE_WAIT"
                                 state["brake_end_time"] = curr_time + 0.15
                                 state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
@@ -19106,6 +19196,8 @@ def ai_commander_worker(target_pc):
                             state["current_is_g_mob"] = state.get("next_is_g_mob", False)
                             state["current_is_normal"] = state.get("next_is_normal", True)
                             state["current_is_avoid"] = state.get("next_is_avoid", False) # 💡 전투 속성 반영
+                            state["current_is_m_elf"] = state.get("next_is_m_elf", False)
+                            state["next_is_m_elf"] = False
                         else:
 
                             if curr_time - state.get("sword_verify_start", curr_time) <= 0.12:
@@ -19638,6 +19730,10 @@ def ai_commander_worker(target_pc):
                         else:
                             base_score = (p.x - char_screen_cx)**2 + (p.foot_y - char_screen_cy)**2
 
+                        # 💡 0순위(최우선): 남요정(m_elf) 최우선 가산점
+                        if getattr(p, "is_m_elf", False):
+                            base_score -= 20000000
+
                         if getattr(p, "is_motion", False):
                             base_score -= 2000000
 
@@ -19661,6 +19757,7 @@ def ai_commander_worker(target_pc):
                     state["next_is_g_mob"] = getattr(best_mob, "is_g_mob", False)
                     state["next_is_normal"] = getattr(best_mob, "is_normal", True)
                     state["next_is_avoid"] = getattr(best_mob, "is_avoid", False) # 💡 예약 상태 추가
+                    state["next_is_m_elf"] = getattr(best_mob, "is_m_elf", False)
 
                     if role == "ARCHER":
                         raw_tx = best_mob.x + random.gauss(0, 5)
@@ -19729,6 +19826,15 @@ def ai_commander_worker(target_pc):
                                     if (145 - tx) < (130 - ty): tx = 145
                                     else: ty = 130
 
+                    pvp_prep_delay = 0.0
+                    if state.get("next_is_m_elf", False) and not is_pvp_mode and curr_time > state.get("pvp_on_cmd_cd", 0):
+                        dprint(key, "⚔️ [남요정 PK 조준] Ctrl 더블탭으로 PK 모드(용머리 빨간색)를 먼저 활성화합니다!")
+                        pico_queues[key].put({"action": "PVP_OFF"})
+                        pico_queues[key].put({"action": "WAIT", "delay_min": 0.12, "delay_max": 0.18})
+                        state["pvp_on_cmd_cd"] = curr_time + 1.5
+                        state["pvp_off_cd"] = curr_time + 3.0
+                        pvp_prep_delay = 0.45
+
                     pico_queues[key].put({"action": "HOVER", "dx": tx - cur_x, "dy": ty - cur_y})
                     pico_queues[key].put({"action": "SPECIAL_ACK"})
                     state["special_ack_arrived"] = False
@@ -19737,7 +19843,7 @@ def ai_commander_worker(target_pc):
                     state["check_step"], state["check_success"] = 0, False
                     if role != "ARCHER": state["miss_count"] = 0
 
-                    shift_delay = state.pop("shift_brake_delay", 0.0)
+                    shift_delay = state.pop("shift_brake_delay", 0.0) + pvp_prep_delay
                     if role == "ARCHER": state["hover_start_time"] = curr_time + shift_delay + g_time(fitts_time * 0.8, fitts_time * 1.2, key) + g_time(0.13, 0.16, key)
                     else:
                         state["hover_start_time"] = curr_time + shift_delay + g_time(fitts_time * 1.0, fitts_time * 1.2, key) + g_time(0.13, 0.16, key)
@@ -23819,6 +23925,8 @@ def sync_gui_vars():
 
                 "party_help_call_use": p_help_call_use_val,
                 "party_help_call_pct": p_help_call_pct_val,
+                "use_m_elf_pk": gui_vars[k]["use_m_elf_pk"].get() if "use_m_elf_pk" in gui_vars[k] else False,
+                "use_m_wiz_pk": gui_vars[k]["use_m_wiz_pk"].get() if "use_m_wiz_pk" in gui_vars[k] else False,
 
                 "buff_set": gui_vars[k]["buff_set"].get(),
                 "combat_buff": gui_vars[k]["combat_buff"].get(),
@@ -24563,6 +24671,14 @@ for i, pc in enumerate(MINI_PCS):
     tk.Checkbutton(p_help_frame, text="헬프콜(전투중MP):", variable=vars_dict["party_help_call_use"], bg=BG_PANEL, fg="#E040FB", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
     tk.Entry(p_help_frame, textvariable=vars_dict["party_help_call_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
     tk.Label(p_help_frame, text="%↓ 발동", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=0)
+
+    ttk.Separator(tab_party, orient="horizontal").pack(fill="x", padx=2, pady=4)
+
+    p_pk_frame = tk.Frame(tab_party, bg=BG_PANEL)
+    p_pk_frame.pack(side="top", fill="x", padx=2, pady=(0, 2))
+    tk.Label(p_pk_frame, text="■ 적대PK:", bg=BG_PANEL, fg="#FF5252", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0, 4))
+    tk.Checkbutton(p_pk_frame, text="남요정PK", variable=vars_dict["use_m_elf_pk"], bg=BG_PANEL, fg="#FF5252", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(0, 6))
+    tk.Checkbutton(p_pk_frame, text="남법사PK", variable=vars_dict["use_m_wiz_pk"], bg=BG_PANEL, fg="#4FC3F7", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
 
     hp_top_frame = tk.Frame(tab1, bg=BG_PANEL)
     hp_top_frame.pack(side="top", fill="x", padx=2, pady=(0, 2))
