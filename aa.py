@@ -242,7 +242,7 @@ def save_unseen_banner_if_needed(img_bgr):
             return None
 
         h, w = img_bgr.shape[:2]
-        search_roi = img_bgr[max(0, 140):min(h, 310), max(0, 240):min(w, 550)]
+        search_roi = img_bgr[max(0, 90):min(h, 290), max(0, 240):min(w, 550)]
         q_code, match_info = _detect_captcha_question_local(search_roi)
         if q_code:
             return (q_code, match_info)
@@ -350,7 +350,7 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
 
     try:
         h, w = img_bgr.shape[:2]
-        bx1, by1, bx2, by2 = max(0, 240), max(0, 140), min(w, 550), min(h, 310)
+        bx1, by1, bx2, by2 = max(0, 240), max(0, 90), min(w, 550), min(h, 290)
         gx1, gx2 = max(0, 262), min(w, 532)
         gy1 = max(0, int(banner_bottom_y) + 5)
         gy2 = min(h, gy1 + 270)
@@ -5649,8 +5649,8 @@ def ai_commander_worker(target_pc):
                 if state.get("certi_real_buff_elapsed") is not None:
                     state["real_buff_time"] = curr_time - state["certi_real_buff_elapsed"]
 
-                # 🔎 qq/certi/ 폴더 전용 이미지 매칭 헬퍼 함수
-                def find_certi_img(target_name, th=0.82):
+                # 🔎 qq/certi/ 폴더 전용 이미지 매칭 헬퍼 함수 (roi_rect 지정 시 해당 영역만 스캔)
+                def find_certi_img(target_name, th=0.82, roi_rect=None):
                     path = f"qq/certi/{target_name}" if not target_name.startswith("qq/") else target_name
                     if not os.path.exists(path):
                         return None
@@ -5674,29 +5674,43 @@ def ai_commander_worker(target_pc):
                         return None
                     tmpl = tmpl_data["color"]
                     mask = tmpl_data["mask"]
-                    if img_bgr.shape[0] < tmpl.shape[0] or img_bgr.shape[1] < tmpl.shape[1]:
+
+                    if roi_rect is not None:
+                        rx1, ry1, rx2, ry2 = roi_rect
+                        rx1, ry1 = max(0, int(rx1)), max(0, int(ry1))
+                        rx2, ry2 = min(img_bgr.shape[1], int(rx2)), min(img_bgr.shape[0], int(ry2))
+                        search_area = img_bgr[ry1:ry2, rx1:rx2]
+                    else:
+                        rx1, ry1 = 0, 0
+                        search_area = img_bgr
+
+                    if search_area.shape[0] < tmpl.shape[0] or search_area.shape[1] < tmpl.shape[1]:
                         return None
                     try:
                         if mask is not None:
-                            res = cv2.matchTemplate(img_bgr, tmpl, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask]*3))
+                            res = cv2.matchTemplate(search_area, tmpl, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask]*3))
                         else:
-                            res = cv2.matchTemplate(img_bgr, tmpl, cv2.TM_CCOEFF_NORMED)
+                            res = cv2.matchTemplate(search_area, tmpl, cv2.TM_CCOEFF_NORMED)
                         _, max_val, _, max_loc = cv2.minMaxLoc(res)
                         if max_val >= th:
                             th_h, tw_w = tmpl.shape[:2]
-                            cx_pos = max_loc[0] + tw_w // 2
-                            cy_pos = max_loc[1] + th_h // 2
-                            state["certi_last_box"] = (max_loc[0], max_loc[1], tw_w, th_h, target_name, max_val)
+                            abs_x = rx1 + max_loc[0]
+                            abs_y = ry1 + max_loc[1]
+                            cx_pos = abs_x + tw_w // 2
+                            cy_pos = abs_y + th_h // 2
+                            state["certi_last_box"] = (abs_x, abs_y, tw_w, th_h, target_name, max_val)
                             return (cx_pos, cy_pos)
                     except Exception:
                         pass
                     return None
 
-                # 🔎 captcha.png ~ captcha10.png 자동 통합 스캔 헬퍼 함수 (폴더에 있는 파일만 자동 검사)
+                # 🔎 captcha.png ~ captcha10.png 자동 통합 스캔 헬퍼 함수 (주제어 확인 ROI 영역에서만 정밀 검사)
                 def find_any_captcha_img(th=0.75):
+                    # 주소표시줄 바로 아래(X: 240~550, Y: 90~290)로 주제어 ROI와 동일하게 설정
+                    captcha_banner_roi = (240, 90, 550, 290)
                     for idx in range(1, 11):
                         fname = "captcha.png" if idx == 1 else f"captcha{idx}.png"
-                        pos = find_certi_img(fname, th=th)
+                        pos = find_certi_img(fname, th=th, roi_rect=captcha_banner_roi)
                         if pos:
                             return pos
                     return None
