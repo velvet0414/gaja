@@ -141,6 +141,7 @@ CAPTCHA_WORD_MAP = {
     "chimney":    "/m/01jk_4",  # 굴뚝
     "tractor":    "/m/013xlm",  # 트랙터
     "bridge":     "/m/015kr",   # 다리
+    "pier":       "/m/015kr",   # 교각
     "palm":       "/m/0cdl1",   # 야자수
     "boat":       "/m/019jd",   # 보트
     "mountain":   "/m/09d_r",   # 산 또는 언덕
@@ -163,21 +164,27 @@ def get_plaync_tile_center(row_1based, col_1based, grid_size=3, banner_bottom_y=
     cy = int(round(gy1 + (row_1based - 0.5) * cell_step))
     return cx, cy
 
+os.makedirs("qq/certi/debug_log", exist_ok=True)
+
 def _detect_captcha_question_local(banner_bgr):
-    """qq/certi/words/ 폴더의 제시어 이미지를 OpenCV로 매칭하여 CapSolver 질문 코드를 반환합니다."""
+    """
+    qq/certi/words/ 폴더의 제시어 이미지를 다중 스케일(0.9x ~ 1.1x)로 매칭하여
+    캡처 배율 오차가 있어도 정확히 찾아내고, 최고 점수 파일명을 함께 반환합니다.
+    """
     if banner_bgr is None or banner_bgr.size == 0:
-        return None, None
+        return None, "배너없음(0%)"
 
     best_code = None
-    best_name = None
+    best_name = "없음"
     best_score = 0.0
+
+    banner_gray = cv2.cvtColor(banner_bgr, cv2.COLOR_BGR2GRAY)
 
     for fname in os.listdir("qq/certi/words"):
         if not fname.lower().endswith((".png", ".jpg")):
             continue
         fpath = os.path.join("qq/certi/words", fname)
 
-        # 파일명에서 매핑 키워드 추출 (예: car.png, car2.png -> "car")
         matched_code = None
         fname_lower = os.path.splitext(fname)[0].lower()
         for key_prefix, q_code in CAPTCHA_WORD_MAP.items():
@@ -187,7 +194,6 @@ def _detect_captcha_question_local(banner_bgr):
         if not matched_code:
             continue
 
-        # 템플릿 캐시 로드 (한글 경로 호환)
         mtime = os.path.getmtime(fpath)
         cached = _WORD_TEMPLATES_CACHE.get(fpath)
         if not cached or cached["mtime"] != mtime:
@@ -197,54 +203,50 @@ def _detect_captcha_question_local(banner_bgr):
                 bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
                 if bgra is None:
                     continue
-                if len(bgra.shape) == 3 and bgra.shape[2] == 4:
-                    cached = {"color": bgra[:, :, :3], "mask": bgra[:, :, 3], "mtime": mtime}
-                else:
-                    cached = {"color": bgra[:, :, :3] if len(bgra.shape) == 3 else bgra, "mask": None, "mtime": mtime}
+                color_img = bgra[:, :, :3] if len(bgra.shape) == 3 else cv2.cvtColor(bgra, cv2.COLOR_GRAY2BGR)
+                gray_img = cv2.cvtColor(color_img, cv2.COLOR_BGR2GRAY)
+                cached = {"color": color_img, "gray": gray_img, "mtime": mtime}
                 _WORD_TEMPLATES_CACHE[fpath] = cached
             except Exception:
                 continue
 
-        tmpl = cached["color"]
-        mask = cached["mask"]
-        if banner_bgr.shape[0] < tmpl.shape[0] or banner_bgr.shape[1] < tmpl.shape[1]:
-            continue
+        base_gray = cached["gray"]
+        # 💡 수동 캡처 시 발생할 수 있는 미세 배율 차이(90% ~ 110%)까지 모두 스캔!
+        for scale in (1.0, 0.95, 1.05, 0.90, 1.10):
+            th_s = max(5, int(round(base_gray.shape[0] * scale)))
+            tw_s = max(5, int(round(base_gray.shape[1] * scale)))
+            if banner_gray.shape[0] < th_s or banner_gray.shape[1] < tw_s:
+                continue
+            try:
+                tmpl_s = base_gray if scale == 1.0 else cv2.resize(base_gray, (tw_s, th_s), interpolation=cv2.INTER_AREA)
+                res = cv2.matchTemplate(banner_gray, tmpl_s, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, _ = cv2.minMaxLoc(res)
+                if max_val > best_score:
+                    best_score = max_val
+                    best_code = matched_code
+                    best_name = fname
+            except Exception:
+                continue
 
-        try:
-            if mask is not None:
-                res = cv2.matchTemplate(banner_bgr, tmpl, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask]*3))
-            else:
-                res = cv2.matchTemplate(banner_bgr, tmpl, cv2.TM_CCOEFF_NORMED)
-            _, max_val, _, _ = cv2.minMaxLoc(res)
-            if max_val > best_score:
-                best_score = max_val
-                best_code = matched_code
-                best_name = fname
-        except Exception:
-            continue
-
-    if best_score >= 0.82:
-        return best_code, f"{best_name}({best_score*100:.1f}%)"
-    return None, None
+    info_str = f"{best_name}({best_score*100:.1f}%)"
+    # 임계값을 0.75로 완화하여 폰트 안티앨리어싱 차이에도 100% 매칭되도록 보정
+    if best_score >= 0.75:
+        return best_code, info_str
+    return None, info_str
 
 def save_unseen_banner_if_needed(img_bgr):
-    """
-    배너 자르기나 까다로운 위치 조건 없이, 미등록 제시어일 경우
-    미니컴 800x600 화면 전체(img_bgr)를 그대로 qq/certi/words_unseen/ 폴더에 저장합니다.
-    """
+    """미등록 제시어일 경우 800x600 전체 화면을 qq/certi/words_unseen/ 에 저장합니다."""
     global _SAVED_UNSEEN_BANNERS
     try:
         if img_bgr is None or img_bgr.size == 0:
             return None
 
         h, w = img_bgr.shape[:2]
-        # 1️⃣ 이미 qq/certi/words/ 에 등록된 제시어인지 상단 영역에서 먼저 매칭 확인
         search_roi = img_bgr[max(0, 140):min(h, 310), max(0, 240):min(w, 550)]
         q_code, match_info = _detect_captcha_question_local(search_roi)
         if q_code:
             return (q_code, match_info)
 
-        # 2️⃣ 똑같은 화면이 0.3초마다 수백 장 도배되는 것만 방지 (배너 영역 화면 변화 체크)
         check_patch = cv2.cvtColor(img_bgr[max(0, 160):min(h, 270), max(0, 260):min(w, 430)], cv2.COLOR_BGR2GRAY)
         for prev_gray in _SAVED_UNSEEN_BANNERS:
             if prev_gray.shape == check_patch.shape:
@@ -256,7 +258,6 @@ def save_unseen_banner_if_needed(img_bgr):
         if len(_SAVED_UNSEEN_BANNERS) > 30:
             _SAVED_UNSEEN_BANNERS.pop(0)
 
-        # 3️⃣ 자르지 않고 800x600 원본 화면(img_bgr) 전체를 한글 경로 호환 방식으로 저장!
         now_str = time.strftime("%H%M%S") + f"_{int((time.time() % 1) * 100):02d}"
         unseen_path = os.path.join("qq", "certi", "words_unseen", f"full_{now_str}.png")
 
@@ -264,14 +265,13 @@ def save_unseen_banner_if_needed(img_bgr):
         if ok_enc:
             with open(unseen_path, "wb") as f:
                 f.write(enc_buf.tobytes())
-            print(f"📸 [800x600 전체화면 저장 완료] '{unseen_path}' (제시어 글자만 잘라 qq/certi/words/ 에 넣어주세요)")
+            print(f"📸 [미등록 제시어 저장] '{unseen_path}' (최고유사도: {match_info})")
         return None
     except Exception as e:
         print(f"⚠️ [전체화면 자동저장 오류]: {e}")
         return None
 
 def _detect_grid_size_opencv(grid_bgr):
-    """타일 영역(270x270) 내부의 흰색 격자 구분선 위치를 분석해 3x3인지 4x4인지 자동 판별합니다."""
     try:
         if grid_bgr is None or grid_bgr.shape[0] < 240 or grid_bgr.shape[1] < 240:
             return 3
@@ -294,7 +294,6 @@ def _detect_grid_size_opencv(grid_bgr):
         return 3
 
 def _is_tile_already_checked(grid_bgr, row_0based, col_0based, grid_size):
-    """해당 타일 좌측 상단에 리캡차 파란색 체크 표시가 이미 있는지 확인하여 중복 클릭(선택 해제)을 방지합니다."""
     try:
         gh, gw = grid_bgr.shape[:2]
         cw, ch = gw / float(grid_size), gh / float(grid_size)
@@ -311,13 +310,33 @@ def _is_tile_already_checked(grid_bgr, row_0based, col_0based, grid_size):
     except Exception:
         return False
 
+def _save_captcha_debug_image(img_bgr, banner_rect, grid_rect, match_str, grid_size, valid_coords, status_text):
+    """qq/certi/debug_log/ 폴더에 판독 영역, 매칭 점수, 클릭 좌표를 그린 디버그 이미지를 저장합니다."""
+    try:
+        dbg = img_bgr.copy()
+        bx1, by1, bx2, by2 = banner_rect
+        gx1, gy1, gx2, gy2 = grid_rect
+        cv2.rectangle(dbg, (bx1, by1), (bx2, by2), (255, 200, 0), 2)
+        cv2.rectangle(dbg, (gx1, gy1), (gx2, gy2), (255, 0, 255), 2)
+
+        for idx_pt, (cx, cy) in enumerate(valid_coords):
+            cv2.circle(dbg, (cx, cy), 14, (0, 0, 255), 3)
+            cv2.putText(dbg, str(idx_pt + 1), (cx - 6, cy + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+        cv2.rectangle(dbg, (5, 5), (790, 65), (0, 0, 0), -1)
+        cv2.putText(dbg, f"WORD: {match_str} | GRID: {grid_size}x{grid_size}", (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
+        cv2.putText(dbg, f"STATUS: {status_text} | TARGETS: {valid_coords}", (12, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
+
+        now_str = time.strftime("%H%M%S") + f"_{int((time.time() % 1) * 100):02d}"
+        dbg_path = os.path.join("qq", "certi", "debug_log", f"cap_dbg_{now_str}.png")
+        ok_enc, enc_buf = cv2.imencode(".png", dbg)
+        if ok_enc:
+            with open(dbg_path, "wb") as f:
+                f.write(enc_buf.tobytes())
+    except Exception:
+        pass
+
 def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
-    """
-    [CapSolver 100% 단독 엔진 (기존 호출부 호환을 위해 함수명 유지)]
-    1. OpenCV로 파란 배너(qq/certi/words/) 제시어 이미지 즉시 매칭 (0.01초, 비용 0원)
-    2. 미등록 제시어 발견 시 qq/certi/words_unseen/ 폴더에 800x600 전체 화면 자동 저장
-    3. CapSolver ReCaptchaV2Classification API 단독 호출 -> 고정 격자 픽셀 좌표 변환
-    """
     global _LAST_CAPTCHA_CALL_TIME
 
     if not CAPSOLVER_API_KEY or "여기에" in CAPSOLVER_API_KEY:
@@ -331,25 +350,24 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
 
     try:
         h, w = img_bgr.shape[:2]
-
-        # 1️⃣ 제시어 로컬 매칭 (미등록 제시어면 800x600 전체화면 자동 저장)
-        matched_pair = save_unseen_banner_if_needed(img_bgr)
-        if not matched_pair:
-            print("⚠️ [제시어 미매칭] 'qq/certi/words/'에 일치하는 제시어 이미지가 없어 CapSolver 호출을 건너뜁니다.")
-            return []
-
-        question_code, match_info = matched_pair
-
-        # 2️⃣ 3x3 / 4x4 타일 그리드 영역(270x270) 정밀 크롭 및 격자 크기 자동 판별
+        bx1, by1, bx2, by2 = max(0, 240), max(0, 140), min(w, 550), min(h, 310)
         gx1, gx2 = max(0, 262), min(w, 532)
         gy1 = max(0, int(banner_bottom_y) + 5)
         gy2 = min(h, gy1 + 270)
-        grid_crop = img_bgr[gy1:gy2, gx1:gx2]
 
+        search_roi = img_bgr[by1:by2, bx1:bx2]
+        question_code, match_info = _detect_captcha_question_local(search_roi)
+
+        if not question_code:
+            save_unseen_banner_if_needed(img_bgr)
+            print(f"⚠️ [제시어 미매칭] 최고유사도: {match_info} (기준 75% 미달) ➔ CapSolver 스킵")
+            _save_captcha_debug_image(img_bgr, (bx1, by1, bx2, by2), (gx1, gy1, gx2, gy2), match_info, 3, [], "WORD_MISS")
+            return []
+
+        grid_crop = img_bgr[gy1:gy2, gx1:gx2]
         grid_size = _detect_grid_size_opencv(grid_crop)
         print(f"🔎 [로컬 제시어 매칭 성공] {match_info} ➔ 코드:{question_code} ({grid_size}x{grid_size} 격자)")
 
-        # 3️⃣ CapSolver API 단독 호출
         _, buffer = cv2.imencode('.jpg', grid_crop, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
         img_base64 = base64.b64encode(buffer).decode('utf-8')
 
@@ -376,7 +394,9 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
             res_json = json.loads(response.read().decode('utf-8'))
 
         if res_json.get("errorId", 1) != 0:
-            print(f"⚠️ [CapSolver API 오류] {res_json.get('errorCode')}: {res_json.get('errorDescription')}")
+            err_msg = f"{res_json.get('errorCode')}:{res_json.get('errorDescription')}"
+            print(f"⚠️ [CapSolver API 오류] {err_msg}")
+            _save_captcha_debug_image(img_bgr, (bx1, by1, bx2, by2), (gx1, gy1, gx2, gy2), match_info, grid_size, [], f"API_ERR:{err_msg}")
             return []
 
         solution = res_json.get("solution", {})
@@ -402,6 +422,7 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
             valid_coords.append((cx, cy))
             print(f"   📍 [CapSolver 타일 확정] {r_0+1}행 {c_0+1}열 (index:{idx_int}) ➔ 고정픽셀({cx}, {cy})")
 
+        _save_captcha_debug_image(img_bgr, (bx1, by1, bx2, by2), (gx1, gy1, gx2, gy2), match_info, grid_size, valid_coords, f"OK(tiles:{objects})")
         return valid_coords
 
     except Exception as e:
@@ -6507,16 +6528,32 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.05
 
-                    # 4단계: 스크롤 다운 후 confirm.png / new.png / skip.png 클릭
+                    # 4단계: 무조건 스크롤을 먼저 내린 후 하단 구역(Y:450~590)에서만 confirm / new / skip 클릭
                     elif current_fsm == "CERTI_CAPTCHA_SCROLL":
                         is_hw_busy = state.get("hw_busy", False) or not pico_queues[key].empty()
                         if not is_hw_busy:
-                            # 💡 미등록 제시어(또는 0개 타일)일 때는 new.png(새로고침) 또는 skip.png 우선 클릭, 답안 선택 완료 시에는 confirm.png 또는 skip.png 우선 클릭!
+                            # 💡 1) 아직 스크롤을 내리지 않았다면 무조건 휠 스크롤(-5)부터 먼저 내림! (잘린 버튼 및 상단 X 오클릭 원천 방지)
+                            if not state.get("captcha_is_scrolled_down", False):
+                                dprint(key, "🔽 [캡차 선(先) 스크롤 다운] 하단 버튼이 온전히 보이도록 먼저 휠 스크롤을 내립니다.")
+                                pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": -5})
+                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.45, "delay_max": 0.65})
+                                state["captcha_is_scrolled_down"] = True
+                                state["captcha_scroll_cnt"] = 1
+                                state["cooldown"] = curr_time + 0.9
+                                continue
+
+                            # 💡 2) 캡차 하단 버튼 영역(X:250~550, Y:450~590) 안에서만 버튼을 검색 (상단 크롬 탭 X버튼 오매칭 100% 차단!)
+                            def find_captcha_bottom_btn(btn_name, th=0.80):
+                                pos_cand = find_certi_img(btn_name, th=th)
+                                if pos_cand and (250 <= pos_cand[0] <= 550) and (450 <= pos_cand[1] <= 590):
+                                    return pos_cand
+                                return None
+
                             if state.get("captcha_need_new", False):
-                                pos_btn = find_certi_img("new.png", th=0.80) or find_certi_img("skip.png", th=0.80) or find_certi_img("confirm.png", th=0.80)
+                                pos_btn = find_captcha_bottom_btn("new.png", th=0.80) or find_captcha_bottom_btn("skip.png", th=0.80) or find_captcha_bottom_btn("confirm.png", th=0.80)
                                 btn_label = "new(새로고침)/skip"
                             else:
-                                pos_btn = find_certi_img("confirm.png", th=0.80) or find_certi_img("skip.png", th=0.80) or find_certi_img("new.png", th=0.80)
+                                pos_btn = find_captcha_bottom_btn("confirm.png", th=0.80) or find_captcha_bottom_btn("skip.png", th=0.80) or find_captcha_bottom_btn("new.png", th=0.80)
                                 btn_label = "confirm(확인)/skip"
 
                             if pos_btn:
@@ -6532,14 +6569,14 @@ def ai_commander_worker(target_pc):
                                 )
                             else:
                                 if state.get("captcha_scroll_cnt", 0) < 3:
-                                    dprint(key, "🔽 [캡차 스크롤 다운] 하단 confirm/new/skip 버튼을 보기 위해 휠 스크롤을 내립니다.")
+                                    dprint(key, "🔽 [캡차 추가 스크롤 다운] 하단 버튼이 아직 안 보여 휠 스크롤을 한 번 더 내립니다.")
                                     pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": -5})
                                     pico_queues[key].put({"action": "WAIT", "delay_min": 0.4, "delay_max": 0.6})
                                     state["captcha_is_scrolled_down"] = True
                                     state["captcha_scroll_cnt"] = state.get("captcha_scroll_cnt", 0) + 1
                                     state["cooldown"] = curr_time + 0.9
                                 else:
-                                    dprint(key, "⚠️ [하단 버튼 미발견] 스크롤을 내렸으나 버튼을 찾지 못해 스크롤 업 후 재판독합니다.")
+                                    dprint(key, "⚠️ [하단 버튼 미발견] 스크롤을 내렸으나 하단 구역(Y:450~590)에서 버튼을 찾지 못해 스크롤 업 후 재판독합니다.")
                                     state["captcha_is_scrolled_down"] = True
                                     state["target_fsm"] = "CERTI_CAPTCHA_AFTER_CONFIRM"
                                     state["cooldown"] = curr_time + 0.3
