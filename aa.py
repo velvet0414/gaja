@@ -145,6 +145,7 @@ CAPTCHA_WORD_MAP = {
     "boat":       "/m/019jd",   # 보트
     "mountain":   "/m/09d_r",   # 산 또는 언덕
     "taxi":       "/m/0pg52",   # 택시
+    "parking":    "/m/015qbp",  # 주차요금정산기 (주차 미터기)
 }
 
 _WORD_TEMPLATES_CACHE = {}
@@ -324,7 +325,7 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
         return []
 
     now_t = time.time()
-    if now_t - _LAST_CAPTCHA_CALL_TIME < 2.5:
+    if now_t - _LAST_CAPTCHA_CALL_TIME < 1.0:
         return []
     _LAST_CAPTCHA_CALL_TIME = now_t
 
@@ -6240,16 +6241,17 @@ def ai_commander_worker(target_pc):
                             state["captcha_test_round"] = 1
                             state["captcha_is_scrolled_down"] = False
                             state["captcha_scroll_cnt"] = 0
+                            state["captcha_need_new"] = False
                             if settings.get("auth_auto_captcha", False):
-                                dprint(key, "🚨 [3단계 계정입력 직후 캡차 감지] 리캡차 화면 포착! 자동 해독 모드로 돌입합니다.")
+                                dprint(key, "🚨 [3단계 계정입력 직후 캡차 감지] 리캡차 화면 포착! 웹 이미지 완전 로딩을 위해 2.0초 대기 후 판독합니다.")
                                 state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
                             else:
-                                dprint(key, "🚨 [3단계 캡차 감지 - 수동 대기] 캡차 자동해제가 꺼져 있어 음성 알림 후 수동 해결을 대기합니다!")
+                                dprint(key, "🚨 [3단계 캡차 감지 - 수동 대기] 2.0초 로딩 대기 후 화면을 저장하고 수동 해결을 대기합니다!")
                                 pc_num_str = current_pc_num if current_pc_num else get_my_central_num()
                                 threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 {key} 캡차 발생",), daemon=True).start()
                                 state["captcha_tts_last_time"] = curr_time
                                 state["target_fsm"] = "CERTI_CAPTCHA_MANUAL_WAIT"
-                            state["cooldown"] = curr_time + 0.5
+                            state["cooldown"] = curr_time + 2.0  # 💡 1->2단계: 캡차 확인 후 2초 뒤 화면 촬영/매칭
                         else:
                             pos = find_certi_img("5.png", th=0.82)
                             if pos:
@@ -6269,16 +6271,17 @@ def ai_commander_worker(target_pc):
                             state["captcha_test_round"] = 1
                             state["captcha_is_scrolled_down"] = False
                             state["captcha_scroll_cnt"] = 0
+                            state["captcha_need_new"] = False
                             if settings.get("auth_auto_captcha", False):
-                                dprint(key, "🚨 [로그인 단계 캡차 감지] 리캡차 화면 포착! 캡차 자동 돌파 로직으로 진입합니다.")
+                                dprint(key, "🚨 [로그인 단계 캡차 감지] 리캡차 화면 포착! 웹 이미지 완전 로딩을 위해 2.0초 대기 후 판독합니다.")
                                 state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
                             else:
-                                dprint(key, "🚨 [로그인 단계 캡차 감지 - 수동 대기] 캡차 자동해제가 꺼져 있어 음성 알림 후 수동 해결을 대기합니다!")
+                                dprint(key, "🚨 [로그인 단계 캡차 감지 - 수동 대기] 2.0초 로딩 대기 후 화면을 저장하고 수동 해결을 대기합니다!")
                                 pc_num_str = current_pc_num if current_pc_num else get_my_central_num()
                                 threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 {key} 캡차 발생",), daemon=True).start()
                                 state["captcha_tts_last_time"] = curr_time
                                 state["target_fsm"] = "CERTI_CAPTCHA_MANUAL_WAIT"
-                            state["cooldown"] = curr_time + 0.5
+                            state["cooldown"] = curr_time + 2.0  # 💡 1->2단계: 캡차 확인 후 2초 뒤 화면 촬영/매칭
                         else:
                             pos = find_certi_img("7.png", th=0.82)
                             if pos:
@@ -6351,18 +6354,19 @@ def ai_commander_worker(target_pc):
                             state["captcha_test_round"] = 1
                             state["captcha_is_scrolled_down"] = False
                             state["captcha_scroll_cnt"] = 0
+                            state["captcha_need_new"] = False
                             if settings.get("auth_auto_captcha", False):
-                                dprint(key, "🚨 [8단계 인증 분기 - 캡차 감지] 리캡차 화면이 떴습니다! 제미나이 자동 판독에 돌입합니다.")
+                                dprint(key, "🚨 [8단계 인증 분기 - 캡차 감지] 리캡차 화면이 떴습니다! 2.0초 로딩 대기 후 CapSolver 자동 판독에 돌입합니다.")
                                 state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
                             else:
-                                dprint(key, "🚨 [8단계 캡차 감지 - 수동 대기] 캡차 자동해제가 꺼져 있어 음성 알림 후 수동 해결을 대기합니다!")
+                                dprint(key, "🚨 [8단계 캡차 감지 - 수동 대기] 2.0초 로딩 대기 후 화면을 저장하고 수동 해결을 대기합니다!")
                                 pc_num_str = current_pc_num if current_pc_num else get_my_central_num()
                                 threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 {key} 캡차 발생",), daemon=True).start()
                                 state["captcha_tts_last_time"] = curr_time
                                 state["target_fsm"] = "CERTI_CAPTCHA_MANUAL_WAIT"
-                            state["cooldown"] = curr_time + 0.5
+                            state["cooldown"] = curr_time + 2.0  # 💡 1->2단계: 캡차 확인 후 2초 뒤 화면 촬영/매칭
                         else:
-                            # 🟢 [정상 루트] 9.png(메일)와 10.png(전번)를 둘 다 스캔하여 80%(0.80) 이상 중 더 높은 점수로 결정 (기존 0.90 멍때림 해소)
+                            # 🟢 [정상 루트] 9.png(메일)와 10.png(전번)를 둘 다 스캔하여 80%(0.80) 이상 중 더 높은 점수로 결정
                             prev_box = state.get("certi_last_box")
 
                             pos_9 = find_certi_img("9.png", th=0.0)
@@ -6401,21 +6405,25 @@ def ai_commander_worker(target_pc):
                                 state["cooldown"] = curr_time + 0.2
 
                     # =========================================================================
-                    # 🤖 [캡차 전용 로직]
-                    # - 1회차: 커서 이동/스크롤 없이 그대로 제미나이 전송 ➔ 타일 클릭 ➔ 스크롤 다운 ➔ 확인/건너뛰기 클릭
-                    # - 2~N회차: 스크롤 업(상단 제목 노출) ➔ 제미나이 전송 ➔ 타일 클릭 ➔ 스크롤 다운 ➔ 확인/건너뛰기 클릭 반복
+                    # 🤖 [캡차 전용 로직 (1~7단계 정밀 타이밍 적용)]
+                    # 1. captcha 이미지 감지 ➔ 2.0초 대기 (웹 로딩 완료 보장)
+                    # 2. 현재 화면 캡처 후 words 폴더 매칭으로 주제어 추출
+                    # 3. 추출된 주제어 코드 + 타일 이미지를 CapSolver로 전송
+                    # 4. 답안 타일 선택 후 스크롤 내려 confirm / new / skip 클릭
+                    # 5. 스크롤을 다시 위로 올림
+                    # 6. 캡차가 또 떴다면 다시 2.0초 대기 후 위 과정 반복
+                    # 7. 통과되어 9.png / 10.png 확인 시 정보 입력 후 인증 완료
                     # =========================================================================
                     elif current_fsm == "CERTI_CAPTCHA_SOLVE":
                         is_hw_busy = state.get("hw_busy", False) or not pico_queues[key].empty()
                         if not is_hw_busy:
                             round_num = state.get("captcha_test_round", 1)
 
-                            # 💡 커서가 캡차 박스(x:260~530, y:170~540) 바깥에 있으면 휠 스크롤이 안 먹히므로 내부로 먼저 이동!
                             real_c = find_cursor_pos(img_bgr, last_pos=state.get("cursor_pos", [400, 300]), allow_full_scan=True, is_certi_mode="WEB")
                             cur_x, cur_y = real_c if real_c else state.get("cursor_pos", [400, 300])
                             state["cursor_pos"] = [cur_x, cur_y]
 
-                            # 2회차 이상에서 화면이 아래로 내려가 있다면 커서를 캡차 안쪽에 두고 위로 스크롤!
+                            # 화면이 아래로 내려가 있다면 커서를 캡차 안쪽에 두고 위로 스크롤 후 2.0초 대기!
                             if state.get("captcha_is_scrolled_down", False):
                                 dprint(key, f"🔼 [캡차 {round_num}회차 - 스크롤 업] 상단 제시어 확인을 위해 캡차 내부에서 스크롤을 위로 올립니다.")
                                 if not (280 <= cur_x <= 510 and 200 <= cur_y <= 500):
@@ -6428,10 +6436,10 @@ def ai_commander_worker(target_pc):
                                 pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": 5})
                                 pico_queues[key].put({"action": "WAIT", "delay_min": 0.45, "delay_max": 0.65})
                                 state["captcha_is_scrolled_down"] = False
-                                state["cooldown"] = curr_time + 0.8
+                                state["cooldown"] = curr_time + 2.0
                                 continue
 
-                            # 🔎 파란색 제시어 배너 하단 Y좌표(banner_bottom_y) 실시간 측정 (상단 스크롤 시 약 272, 하단 스크롤 시 약 250)
+                            # 🔎 파란색 제시어 배너 하단 Y좌표(banner_bottom_y) 실시간 측정
                             banner_bottom_y = 272
                             try:
                                 hsv_cap = cv2.cvtColor(img_bgr[155:290, 260:535], cv2.COLOR_BGR2HSV)
@@ -6443,17 +6451,19 @@ def ai_commander_worker(target_pc):
                             except Exception:
                                 banner_bottom_y = 272
 
-                            dprint(key, f"🤖 [캡차 {round_num}회차 판독] 배너 하단(Y:{banner_bottom_y}) 기준 크롭 이미지를 전송하여 정답 칸을 분석합니다...")
+                            dprint(key, f"🤖 [캡차 {round_num}회차 판독] 2초 로딩 대기 완료! 배너 하단(Y:{banner_bottom_y}) 기준으로 words 매칭 및 CapSolver 판독을 시작합니다...")
                             click_targets = analyze_captcha_with_gemini(img_bgr, banner_bottom_y=banner_bottom_y)
 
                             if click_targets:
-                                dprint(key, f"🎯 [캡차 {round_num}회차 타격] 총 {len(click_targets)}개의 타일을 고정 격자 좌표로 순차 클릭합니다!")
+                                dprint(key, f"🎯 [캡차 {round_num}회차 타격] 총 {len(click_targets)}개의 답안 타일을 순차 클릭합니다!")
+                                state["captcha_need_new"] = False
                                 state["captcha_target_queue"] = list(click_targets)
                                 state["captcha_scroll_cnt"] = 0
                                 state["target_fsm"] = "CERTI_CAPTCHA_CLICK_NEXT"
                                 state["cooldown"] = curr_time + 0.05
                             else:
-                                dprint(key, f"⏭️ [캡차 {round_num}회차 - 해당 타일 없음] 캡차 박스 중앙으로 커서를 옮긴 뒤 스크롤을 내립니다.")
+                                dprint(key, f"🔄 [캡차 {round_num}회차 - 미등록 제시어 또는 타일 없음] 캡차 중앙으로 커서를 옮긴 뒤 스크롤을 내려 new(새로고침)/skip을 누릅니다.")
+                                state["captcha_need_new"] = True
                                 tx, ty = 397 + int(round(g_val(-10, 10))), 380 + int(round(g_val(-10, 10)))
                                 dx, dy = tx - cur_x, ty - cur_y
                                 dist = math.hypot(dx, dy)
@@ -6479,7 +6489,6 @@ def ai_commander_worker(target_pc):
                                 tx, ty = t_queue.pop(0)
                                 state["captcha_target_queue"] = t_queue
                                 rem_cnt = len(t_queue)
-                                # 각 타일 중심에서 ±2px 이내의 미세 가우시안 오프셋만 부여하고 use_jitter=False(strict_aim=True)로 칼영점 검증!
                                 safe_tx = int(max(10, min(w - 10, tx + int(round(g_val(-2, 2))))))
                                 safe_ty = int(max(10, min(h - 10, ty + int(round(g_val(-2, 2))))))
                                 start_certi_move_and_action(
@@ -6498,81 +6507,96 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.05
 
-                    # 스크롤 다운 후 확인(confirm.png) 또는 건너뛰기(skip.png) 클릭
+                    # 4단계: 스크롤 다운 후 confirm.png / new.png / skip.png 클릭
                     elif current_fsm == "CERTI_CAPTCHA_SCROLL":
                         is_hw_busy = state.get("hw_busy", False) or not pico_queues[key].empty()
                         if not is_hw_busy:
-                            pos_confirm = find_certi_img("confirm.png", th=0.80) or find_certi_img("skip.png", th=0.80)
+                            # 💡 미등록 제시어(또는 0개 타일)일 때는 new.png(새로고침) 또는 skip.png 우선 클릭, 답안 선택 완료 시에는 confirm.png 또는 skip.png 우선 클릭!
+                            if state.get("captcha_need_new", False):
+                                pos_btn = find_certi_img("new.png", th=0.80) or find_certi_img("skip.png", th=0.80) or find_certi_img("confirm.png", th=0.80)
+                                btn_label = "new(새로고침)/skip"
+                            else:
+                                pos_btn = find_certi_img("confirm.png", th=0.80) or find_certi_img("skip.png", th=0.80) or find_certi_img("new.png", th=0.80)
+                                btn_label = "confirm(확인)/skip"
 
-                            if pos_confirm:
+                            if pos_btn:
                                 round_num = state.get("captcha_test_round", 1)
-                                dprint(key, f"✅ [캡차 {round_num}회차 제출] 하단 버튼 발견({pos_confirm[0]}, {pos_confirm[1]})! 클릭 후 다음 테스트 여부를 확인합니다.")
+                                dprint(key, f"✅ [캡차 {round_num}회차 하단 버튼 클릭] {btn_label} 발견({pos_btn[0]}, {pos_btn[1]})! 클릭 후 스크롤을 다시 위로 올립니다.")
                                 state["captcha_scroll_cnt"] = 0
                                 start_certi_move_and_action(
-                                    pos_confirm[0], pos_confirm[1],
+                                    pos_btn[0], pos_btn[1],
                                     next_fsm="CERTI_CAPTCHA_AFTER_CONFIRM",
                                     double=False,
-                                    post_wait=2.0,
-                                    desc=f"캡차 {round_num}회차 확인/건너뛰기 클릭"
+                                    post_wait=1.5,
+                                    desc=f"캡차 {round_num}회차 {btn_label} 클릭"
                                 )
                             else:
                                 if state.get("captcha_scroll_cnt", 0) < 3:
-                                    dprint(key, "🔽 [캡차 스크롤 다운] 하단 확인/건너뛰기 버튼을 보기 위해 휠 스크롤을 내립니다.")
+                                    dprint(key, "🔽 [캡차 스크롤 다운] 하단 confirm/new/skip 버튼을 보기 위해 휠 스크롤을 내립니다.")
                                     pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": -5})
                                     pico_queues[key].put({"action": "WAIT", "delay_min": 0.4, "delay_max": 0.6})
                                     state["captcha_is_scrolled_down"] = True
                                     state["captcha_scroll_cnt"] = state.get("captcha_scroll_cnt", 0) + 1
                                     state["cooldown"] = curr_time + 0.9
                                 else:
-                                    dprint(key, "⚠️ [하단 버튼 미발견] 스크롤을 내렸으나 확인/건너뛰기 버튼을 찾지 못해 스크롤 업 후 재판독합니다.")
+                                    dprint(key, "⚠️ [하단 버튼 미발견] 스크롤을 내렸으나 버튼을 찾지 못해 스크롤 업 후 재판독합니다.")
                                     state["captcha_is_scrolled_down"] = True
                                     state["target_fsm"] = "CERTI_CAPTCHA_AFTER_CONFIRM"
                                     state["cooldown"] = curr_time + 0.3
                         else:
                             state["cooldown"] = curr_time + 0.1
 
-                    # 확인/건너뛰기 클릭 후: 스크롤을 다시 위로 올려 다음 단계 통과 여부 확인 (캡차 유지 시 2·3·4회차 반복!)
+                    # 5~7단계: 스크롤을 다시 위로 올린 뒤 ➔ 9/10 통과 확인 또는 2회차 캡차(2초 대기 후) 반복!
                     elif current_fsm == "CERTI_CAPTCHA_AFTER_CONFIRM":
                         is_hw_busy = state.get("hw_busy", False) or not pico_queues[key].empty()
                         if not is_hw_busy:
+                            # 5단계: 2회차 캡차가 뜨는지 확인을 위해 스크롤을 위로 올림
                             if state.get("captcha_is_scrolled_down", False):
-                                dprint(key, "🔼 [캡차 제출 후 스크롤 업] 화면 상단(다음 테스트 제목 또는 다음 인증 화면) 확인을 위해 스크롤을 다시 위로 올립니다.")
+                                dprint(key, "🔼 [캡차 제출 후 스크롤 업] 2회차 캡차 또는 통과 화면 확인을 위해 스크롤을 위로 올립니다.")
                                 pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": 5})
                                 pico_queues[key].put({"action": "WAIT", "delay_min": 0.25, "delay_max": 0.35})
                                 pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": 5})
                                 pico_queues[key].put({"action": "WAIT", "delay_min": 0.5, "delay_max": 0.7})
                                 state["captcha_is_scrolled_down"] = False
-                                state["cooldown"] = curr_time + 1.1
+                                state["cooldown"] = curr_time + 1.0
                                 continue
 
                             ret_fsm = state.get("captcha_return_fsm", "CERTI_STEP_8_BRANCH")
 
-                            # 1) 3단계(계정 입력 후) 캡차였던 경우 -> 5.png(비번창)가 떴으면 캡차 돌파 성공!
+                            # 7단계(A): 3단계(계정 입력 후) 캡차였던 경우 -> 5.png(비번창) 확인 시 통과!
                             if ret_fsm == "CERTI_STEP_5_FIND" and find_certi_img("5.png", th=0.82):
                                 dprint(key, "🎉 [3단계 캡차 돌파 성공] '5.png'(비밀번호 입력창) 등장 확인! 5단계로 복귀합니다.")
                                 state["target_fsm"] = "CERTI_STEP_5_FIND"
                                 state["cooldown"] = curr_time + 0.1
                                 continue
 
-                            # 2) 8단계(확인 클릭 후) 캡차였던 경우 -> fail.png / 9.png / 10.png 중 하나라도 떴으면 캡차 돌파 성공!
+                            # 7단계(B): 7단계(로그인 후) 캡차였던 경우 -> 7.png 확인 시 통과!
+                            if ret_fsm == "CERTI_STEP_7_FIND" and find_certi_img("7.png", th=0.82):
+                                dprint(key, "🎉 [7단계 캡차 돌파 성공] '7.png' 등장 확인! 7단계로 복귀합니다.")
+                                state["target_fsm"] = "CERTI_STEP_7_FIND"
+                                state["cooldown"] = curr_time + 0.1
+                                continue
+
+                            # 7단계(C): 8단계 캡차였던 경우 -> 9.png / 10.png (또는 fail.png) 확인 시 정보 넣고 인증 완료!
                             if ret_fsm == "CERTI_STEP_8_BRANCH":
-                                if find_certi_img("fail.png", th=0.82) or find_certi_img("9.png", th=0.88) or find_certi_img("10.png", th=0.88):
-                                    dprint(key, "🎉 [8단계 캡차 돌파 성공] 다음 인증 화면 등장 확인! 8단계 분기점으로 복귀합니다.")
+                                if find_certi_img("fail.png", th=0.82) or find_certi_img("9.png", th=0.80) or find_certi_img("10.png", th=0.80):
+                                    dprint(key, "🎉 [8단계 캡차 돌파 성공] 9.png/10.png 등장 확인! 정보를 입력하여 인증을 완료합니다.")
                                     state["target_fsm"] = "CERTI_STEP_8_BRANCH"
                                     state["cooldown"] = curr_time + 0.1
                                     continue
 
-                            # 3) 여전히 캡차 창이 남아있는 경우 -> 2회차, 3회차, 4회차 연속 테스트 즉시 반복!
+                            # 6단계: 캡차가 여전히 떠 있다면 -> 2.0초 대기 후 위 과정을 그대로 반복!
                             if find_any_captcha_img(th=0.75):
                                 next_round = state.get("captcha_test_round", 1) + 1
                                 state["captcha_test_round"] = next_round
-                                if next_round <= 8:
-                                    dprint(key, f"🔄 [연속 캡차 {next_round}회차 돌입] 스크롤 업 완료! 상단 제목이 노출된 화면을 제미나이에게 보내 {next_round}회차 판독을 시작합니다!")
+                                if next_round <= 12:
+                                    dprint(key, f"🔄 [연속 캡차 {next_round}회차 감지] 2.0초 후 화면을 찍어 words 매칭 및 CapSolver 판독을 반복합니다!")
                                     state["captcha_scroll_cnt"] = 0
+                                    state["captcha_need_new"] = False
                                     state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
-                                    state["cooldown"] = curr_time + 0.3
+                                    state["cooldown"] = curr_time + 2.0  # 💡 6단계->2단계: 2회차 캡차 확인 후 2.0초 대기 뒤 촬영/매칭!
                                 else:
-                                    dprint(key, "⚠️ [캡차 8회 연속 초과] 창을 닫고 처음부터 다시 시도합니다.")
+                                    dprint(key, "⚠️ [캡차 12회 연속 초과] 창을 닫고 처음부터 다시 시도합니다.")
                                     pico_queues[key].put({"action": "CLOSE_TAB"})
                                     state["target_fsm"] = "CERTI_STEP_1_FIND"
                                     state["cooldown"] = curr_time + 1.2
