@@ -5476,6 +5476,7 @@ def ai_commander_worker(target_pc):
                         state["arrow_empty_timer"] = 0.0 # 💡 바탕화면에서 F1(윈도우 도움말 엣지) 켜짐 원천 차단!
                         state["is_pulling"] = False
                         state["loot_state"] = "IDLE"
+                        state["certi_from_closed_game"] = False # 💡 인게임 감지 시 무조건 12.png(게임종료) 거치도록 초기화!
                         
                         # 📌 2. 진입 전 상태 정밀 백업 (마을 정비 중이었으면 무조건 창고 이동부터 재시작하도록 저장)
                         prev_fsm = str(state.get("target_fsm", "IDLE"))
@@ -6581,25 +6582,38 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.1
 
-                    # 11단계: suc.png 감지되면 인증 성공 -> IP 사용권 즉시 반납 후 웹페이지 닫고 12.png(또는 13.png) 탐색으로 이동
+                    # 11단계: suc.png 감지되면 인증 성공 -> IP 사용권 즉시 반납 후 웹페이지 닫고 12.png 탐색으로 이동
                     elif current_fsm == "CERTI_WAIT_SUC":
                         pos_suc = find_certi_img("suc.png", th=0.82)
                         if pos_suc:
                             release_central_ip_lock_async(key)
                             pico_queues[key].put({"action": "WAIT", "delay_min": 0.2, "delay_max": 0.35})
                             pico_queues[key].put({"action": "CLOSE_TAB"})
-                            if state.pop("certi_from_closed_game", False):
-                                dprint(key, "✅ [웹 인증 성공 & IP 반납 완료] 게임이 꺼져 있는 상태이므로 12.png를 생략하고 즉시 13.png(게임 실행)로 직행합니다!")
+                            dprint(key, "✅ [웹 인증 성공 & IP 반납 완료] 'suc.png' 감지 완료! 웹페이지를 닫고 12.png(실행 중인 리니지 창)를 먼저 확인합니다.")
+                            state["certi_12_find_start"] = curr_time + 1.0
+                            state["target_fsm"] = "CERTI_STEP_12_FIND"
+                            state["cooldown"] = curr_time + 1.0
+                        else:
+                            state["cooldown"] = curr_time + 0.2
+
+                    # 12단계: 12.png 서치 후 원클릭 (기존 열려있던 리니지 창 다시 활성화 후 종료 시퀀스 진행)
+                    elif current_fsm == "CERTI_STEP_12_FIND":
+                        pos_12 = find_certi_img("12.png", th=0.82)
+                        if pos_12:
+                            state["certi_from_closed_game"] = False
+                            dprint(key, f"🔎 [게임창 활성화] '12.png' 발견({pos_12[0]}, {pos_12[1]})! 원클릭하여 리니지 창을 띄우고 종료(ok2 ➔ quit)를 진행합니다.")
+                            start_certi_move_and_action(pos_12[0], pos_12[1], next_fsm="CERTI_FIND_OK2_FIRST", double=False, post_wait=0.8, desc="12.png 리니지창 활성화")
+                        else:
+                            # 만약 '웹인증 ➔ 게임접속' 수동 버튼으로 시작했고, 2.5초간 스캔해도 작업표시줄에 12.png가 아예 없을 때만 13.png로 이동!
+                            if state.get("certi_from_closed_game", False) and (curr_time - state.get("certi_12_find_start", curr_time) >= 2.5):
+                                state["certi_from_closed_game"] = False
+                                dprint(key, "ℹ️ [게임 미실행 확인] 작업표시줄에 12.png가 없으므로 즉시 13.png(게임 실행) 단계로 이동합니다.")
                                 state["certi_13_wait_mode"] = "CLOSED_START"
                                 state["certi_next_desktop_time"] = 0.0
                                 state["target_fsm"] = "CERTI_STEP_13_FIND"
-                                state["cooldown"] = curr_time + 1.2
+                                state["cooldown"] = curr_time + 0.2
                             else:
-                                dprint(key, "✅ [웹 인증 성공 & IP 반납 완료] 'suc.png' 감지 완료! 웹페이지를 닫고 12.png를 찾습니다.")
-                                state["target_fsm"] = "CERTI_STEP_12_FIND"
-                                state["cooldown"] = curr_time + 1.0
-                        else:
-                            state["cooldown"] = curr_time + 0.2
+                                state["cooldown"] = curr_time + 0.2
 
                     # 12단계: 12.png 서치 후 원클릭 (기존 열려있던 리니지 창 다시 활성화)
                     elif current_fsm == "CERTI_STEP_12_FIND":
@@ -23897,6 +23911,7 @@ def toggle_individual_hunt(key):
 
         state["target_fsm"] = "IDLE" # 💡 인증(CERTI) 등 진행 중이던 모든 FSM 즉시 초기화
         state["certi_last_box"] = None
+        state["certi_from_closed_game"] = False # 💡 수동 웹인증 버튼 잔여 플래그 완전 초기화!
 
         if state.pop("override_dungeon_name", None):
             dprint(key, f"🔄 [목표 층수 복구] 사냥 중지됨. 오입장 상태를 해제하고 원래 사냥터로 복구합니다.")
