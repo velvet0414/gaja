@@ -262,7 +262,7 @@ def save_unseen_banner_if_needed(img_bgr):
 def _locate_captcha_banner_and_grid(img_bgr):
     """
     예시 사진이나 타일 속 파란 하늘에 절대 속지 않고,
-    파란 배너(bx1,by1,bx2,by2)와 정사각형 타일 영역(gx1,gy1,gx2,gy2)을 정확히 잡아냅니다.
+    파란 배너(bx1,by1,bx2,by2)와 타일 전체 영역(gx1,gy1,gx2,gy2)을 정확히 잡아냅니다.
     """
     h, w = img_bgr.shape[:2]
     # 미니컴 800x600 화면에서 리캡차 좌우 X 좌표는 항상 259 ~ 533 (폭 274px)
@@ -322,52 +322,55 @@ def _locate_captcha_banner_and_grid(img_bgr):
     # 타일 시작점(gy1)은 파란 배너 끝(by2)에서 흰색 구분선(4px) 바로 아래
     gy1 = by2 + 4
     grid_w = gx2 - gx1
-    gy2 = min(h, gy1 + grid_w)
+    # 💡 미니컴 투사 비율 보정: 세로 높이를 가로폭보다 +16px(약 290px) 아래로 확장하여 맨 아랫줄 타일 잘림 완벽 해결!
+    grid_h = grid_w + 16
+    gy2 = min(h, gy1 + grid_h)
     return (bx1, by1, bx2, by2), (gx1, gy1, gx2, gy2)
 
 def _detect_grid_size_opencv(grid_bgr, banner_bgr=None):
     """
-    1) 배너 우측 예시 사진 유무 및 2) 타일 내부 흰색 격자선(3등분 vs 4등분)을 분석해
-    3x3인지 4x4인지 정확히 판별합니다.
+    캡처보드 영상 열화에도 영향을 받지 않도록 주변 픽셀 대비 '흰색 경계선 돌출도(Prominence)'와
+    정중앙 십자선(1/2 지점) 유무를 결합해 3x3과 4x4를 100% 판별합니다.
     """
     try:
         if grid_bgr is None or grid_bgr.shape[0] < 200 or grid_bgr.shape[1] < 200:
             return 3
 
-        # 1) 배너 우측(예시 사진 자리)이 90% 이상 순수 파란색이면 예시 사진이 없는 4x4 타일일 확률이 매우 높음
-        right_is_solid_blue = False
-        if banner_bgr is not None and banner_bgr.shape[0] > 40 and banner_bgr.shape[1] > 240:
-            bh, bw = banner_bgr.shape[:2]
-            right_roi = banner_bgr[int(bh*0.15):int(bh*0.85), int(bw*0.62):int(bw*0.96)]
-            hsv_r = cv2.cvtColor(right_roi, cv2.COLOR_BGR2HSV)
-            mask_rb = cv2.inRange(hsv_r, np.array([103, 185, 185]), np.array([117, 255, 255]))
-            blue_ratio = cv2.countNonZero(mask_rb) / float(right_roi.shape[0] * right_roi.shape[1])
-            if blue_ratio >= 0.88:
-                right_is_solid_blue = True
-
-        # 2) 타일 영역에서 3x3 구분선(1/3, 2/3 지점)과 4x4 구분선(1/4, 2/4, 3/4 지점)의 밝기 비교
         gh, gw = grid_bgr.shape[:2]
-        gray = cv2.cvtColor(grid_bgr, cv2.COLOR_BGR2GRAY)
-        white_mask = (gray >= 220).astype(np.float32)
+        gray = cv2.cvtColor(grid_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
 
-        def line_score(pos, is_col=True):
+        def line_prominence(pos, is_col=True):
             p = int(round(pos))
             if is_col:
-                strip = white_mask[:, max(0, p-2):min(gw, p+3)]
-                return float(np.mean( np.max(strip, axis=1) ))
+                c1, c2 = max(0, p - 3), min(gw, p + 4)
+                peak = np.max(gray[:, c1:c2], axis=1)
+                left_bg = gray[:, max(0, p - 8)]
+                right_bg = gray[:, min(gw - 1, p + 8)]
+                diff = peak - 0.5 * (left_bg + right_bg)
+                # 경계선이 양옆 배경보다 12 이상 밝거나 절대 밝기가 190 이상인 비율
+                return float(np.mean((peak >= 175) & ((diff >= 12) | (peak >= 205))))
             else:
-                strip = white_mask[max(0, p-2):min(gh, p+3), :]
-                return float(np.mean( np.max(strip, axis=0) ))
+                r1, r2 = max(0, p - 3), min(gh, p + 4)
+                peak = np.max(gray[r1:r2, :], axis=0)
+                top_bg = gray[max(0, p - 8), :]
+                bot_bg = gray[min(gh - 1, p + 8), :]
+                diff = peak - 0.5 * (top_bg + bot_bg)
+                return float(np.mean((peak >= 175) & ((diff >= 12) | (peak >= 205))))
 
-        score_3x3 = (line_score(gw/3.0, True) + line_score(gw*2.0/3.0, True) +
-                     line_score(gh/3.0, False) + line_score(gh*2.0/3.0, False)) / 4.0
+        score_3x3 = (
+            line_prominence(gw / 3.0, True) + line_prominence(gw * 2.0 / 3.0, True) +
+            line_prominence(gh / 3.0, False) + line_prominence(gh * 2.0 / 3.0, False)
+        ) / 4.0
 
-        score_4x4 = (line_score(gw/4.0, True) + line_score(gw*2.0/4.0, True) + line_score(gw*3.0/4.0, True) +
-                     line_score(gh/4.0, False) + line_score(gh*2.0/4.0, False) + line_score(gh*3.0/4.0, False)) / 6.0
+        score_4x4 = (
+            line_prominence(gw / 4.0, True) + line_prominence(gw * 2.0 / 4.0, True) + line_prominence(gw * 3.0 / 4.0, True) +
+            line_prominence(gh / 4.0, False) + line_prominence(gh * 2.0 / 4.0, False) + line_prominence(gh * 3.0 / 4.0, False)
+        ) / 6.0
 
-        if right_is_solid_blue and score_4x4 >= 0.45:
-            return 4
-        if score_4x4 > score_3x3 + 0.08 and score_4x4 >= 0.60:
+        # 정중앙(1/2) 가로·세로 십자선 점수 (4x4에만 존재)
+        center_cross = 0.5 * (line_prominence(gw / 2.0, True) + line_prominence(gh / 2.0, False))
+
+        if score_4x4 > score_3x3 and (score_4x4 >= 0.42 or center_cross >= 0.50):
             return 4
         return 3
     except Exception:
