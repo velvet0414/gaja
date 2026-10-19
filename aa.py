@@ -2750,24 +2750,27 @@ try:
         cursor_portal_mask = None
 except: cursor_portal_color, cursor_portal_mask = None, None
 
-# 👇👇 [인증 추가 1] 윈도우 바탕화면/웹 인증용 커서 및 인증창 감지 이미지 로드
-try:
-    cursor3_bgra = cv2.imread("qq/certi/cursor3.png", cv2.IMREAD_UNCHANGED)
-    if cursor3_bgra is not None and len(cursor3_bgra.shape) == 3 and cursor3_bgra.shape[2] == 4:
-        globals()["cursor3_color"], globals()["cursor3_mask"] = cursor3_bgra[:, :, :3], cursor3_bgra[:, :, 3]
-    else:
-        globals()["cursor3_color"] = cv2.imread("qq/certi/cursor3.png", cv2.IMREAD_COLOR)
-        globals()["cursor3_mask"] = None
-except: globals()["cursor3_color"], globals()["cursor3_mask"] = None, None
+# 👇👇 [인증 추가 1] 윈도우 바탕화면/웹 인증용 커서 로드 (화면 테두리 사각지대 제거를 위해 투명 여백 자동 크롭!)
+def _load_tight_certi_cursor(img_path):
+    """투명 PNG 커서 주변의 빈 여백(Alpha=0)을 바짝 잘라내어 화면 최상단/최좌측(x=0, y=0~3)에서도 100% 매칭되게 합니다."""
+    try:
+        bgra = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+        if bgra is None:
+            return None, None
+        if len(bgra.shape) == 3 and bgra.shape[2] == 4:
+            color, mask = bgra[:, :, :3], bgra[:, :, 3]
+            ys, xs = np.where(mask > 0)
+            if len(xs) > 0 and len(ys) > 0:
+                color = color[ys.min():ys.max()+1, xs.min():xs.max()+1].copy()
+                mask = mask[ys.min():ys.max()+1, xs.min():xs.max()+1].copy()
+            return color, mask
+        else:
+            return cv2.imread(img_path, cv2.IMREAD_COLOR), None
+    except Exception:
+        return None, None
 
-try:
-    cursor4_bgra = cv2.imread("qq/certi/cursor4.png", cv2.IMREAD_UNCHANGED)
-    if cursor4_bgra is not None and len(cursor4_bgra.shape) == 3 and cursor4_bgra.shape[2] == 4:
-        globals()["cursor4_color"], globals()["cursor4_mask"] = cursor4_bgra[:, :, :3], cursor4_bgra[:, :, 3]
-    else:
-        globals()["cursor4_color"] = cv2.imread("qq/certi/cursor4.png", cv2.IMREAD_COLOR)
-        globals()["cursor4_mask"] = None
-except: globals()["cursor4_color"], globals()["cursor4_mask"] = None, None
+globals()["cursor3_color"], globals()["cursor3_mask"] = _load_tight_certi_cursor("qq/certi/cursor3.png")
+globals()["cursor4_color"], globals()["cursor4_mask"] = _load_tight_certi_cursor("qq/certi/cursor4.png")
 
 try:
     certi_bgra = cv2.imread("qq/certi/certi.png", cv2.IMREAD_UNCHANGED)
@@ -5998,6 +6001,7 @@ def ai_commander_worker(target_pc):
                         state["real_cursor_pos"] = [cur_cx, cur_cy]
                     else:
                         cur_cx, cur_cy = state.get("cursor_pos", [400, 300])
+                        state["real_cursor_pos"] = None
 
                     # 💡 15.png 등 초소형 타겟(use_jitter=False)은 지터 0 고정, 일반 웹 버튼/입력칸은 중심부(가로 ±3px, 세로 ±2px) 타격
                     if use_jitter:
@@ -6008,6 +6012,12 @@ def ai_commander_worker(target_pc):
                         fy = int(max(5, min(h - 5, ty)))
 
                     dx, dy = fx - cur_cx, fy - cur_cy
+                    # 만약 실제 커서를 못 찾은 상태(real_c is None)에서 기억 좌표가 목표 좌표와 같아 dx=0, dy=0이 되면,
+                    # 제자리 멈춤을 막기 위해 먼저 빈 공간 쪽으로 강제 이동시켜 다음 검증 단계에서 커서를 찾게 만듦!
+                    if real_c is None and math.hypot(dx, dy) < 5.0:
+                        dx = int(round(g_val(140, 190))) if fx < 400 else -int(round(g_val(140, 190)))
+                        dy = int(round(g_val(110, 150))) if fy < 300 else -int(round(g_val(110, 150)))
+
                     dist = math.hypot(dx, dy)
                     dur = apply_human_variance(0.08 + 0.035 * math.log2((dist / 20.0) + 1.0) if dist > 0 else 0.08) * 1.2
 
@@ -6019,8 +6029,7 @@ def ai_commander_worker(target_pc):
 
                     state["special_ack_arrived"] = False
                     state["pico_arrived"] = False
-                    state["cursor_pos"] = [fx, fy]
-                    state["real_cursor_pos"] = [fx, fy]
+                    state["cursor_pos"] = [max(5, min(w - 5, cur_cx + dx)), max(5, min(h - 5, cur_cy + dy))]
 
                     state["certi_target_pos"] = (fx, fy)
                     state["certi_click_double"] = double
@@ -6121,8 +6130,11 @@ def ai_commander_worker(target_pc):
                         state["certi_post13_cursor_moved"] = False
                     elif not is_hw_working and curr_time >= state.get("cooldown", 0) and (curr_time - state.get("certi_post13_step_start", curr_time) >= 5.0):
                         retry_info = post13_retry_map[current_fsm]
-                        # 1) 현재 단계에서 찾아야 할 이미지가 이미 떴는지 먼저 확인
-                        curr_target_visible = any(find_certi_img(c_img, th=0.82) is not None for c_img in retry_info["curr_imgs"])
+                        # 1) 현재 단계 이미지 또는 recerti(re1~n) 이미지가 이미 떴는지 먼저 확인
+                        curr_target_visible = (
+                            any(find_certi_img(c_img, th=0.82) is not None for c_img in retry_info["curr_imgs"]) or
+                            (find_any_recerti_img(th=0.82)[0] is not None)
+                        )
 
                         if curr_target_visible:
                             # 커서를 치운 덕분에 현재 단계 이미지가 보이기 시작했다면 타이머만 리셋하고 즉시 아래 본문에서 클릭 진행
@@ -6441,27 +6453,45 @@ def ai_commander_worker(target_pc):
                             strict_aim = state.get("certi_strict_aim", False)
 
                             need_correction = False
-                            if strict_aim:
-                                real_c = find_cursor_pos(img_bgr, last_pos=(tx, ty), allow_full_scan=True, is_certi_mode="WEB")
-                                if real_c:
-                                    state["cursor_pos"] = list(real_c)
-                                    state["real_cursor_pos"] = list(real_c)
-                                    err_dist = math.hypot(tx - real_c[0], ty - real_c[1])
-                                    if err_dist > 2.5 and state.get("certi_corr_cnt", 0) < 3:
-                                        need_correction = True
-                                        corr_dx = tx - real_c[0]
-                                        corr_dy = ty - real_c[1]
-                                        dur_c = apply_human_variance(0.06 + 0.03 * math.log2((err_dist / 20.0) + 1.0))
-                                        deltas_c = generate_human_deltas(corr_dx, corr_dy, duration=dur_c, behavior="CERTI", key=key)
-                                        if deltas_c:
-                                            pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas_c})
-                                        pico_queues[key].put({"action": "SPECIAL_ACK"})
-                                        state["special_ack_arrived"] = False
-                                        state["cursor_pos"] = [tx, ty]
-                                        state["certi_corr_cnt"] = state.get("certi_corr_cnt", 0) + 1
-                                        state["certi_ack_timeout"] = curr_time + dur_c + 1.0
-                                        state["cooldown"] = curr_time + 0.05
-                                        dprint(key, f"🎯 [타겟 정밀 영점보정] 목표({tx},{ty})와 실제({real_c[0]},{real_c[1]}) 오차 {err_dist:.1f}px ➔ 재조준({state['certi_corr_cnt']}/3)")
+                            verify_c_mode = state.get("certi_c_mode", "WEB")
+                            real_c = find_cursor_pos(img_bgr, last_pos=(tx, ty), allow_full_scan=True, is_certi_mode=verify_c_mode)
+                            if real_c:
+                                state["cursor_pos"] = list(real_c)
+                                state["real_cursor_pos"] = list(real_c)
+                                err_dist = math.hypot(tx - real_c[0], ty - real_c[1])
+                                tol_px = 2.5 if strict_aim else 12.0
+                                if err_dist > tol_px and state.get("certi_corr_cnt", 0) < 4:
+                                    need_correction = True
+                                    corr_dx = tx - real_c[0]
+                                    corr_dy = ty - real_c[1]
+                                    dur_c = apply_human_variance(0.06 + 0.03 * math.log2((err_dist / 20.0) + 1.0))
+                                    deltas_c = generate_human_deltas(corr_dx, corr_dy, duration=dur_c, behavior="CERTI", key=key)
+                                    if deltas_c:
+                                        pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas_c})
+                                    pico_queues[key].put({"action": "SPECIAL_ACK"})
+                                    state["special_ack_arrived"] = False
+                                    state["cursor_pos"] = [tx, ty]
+                                    state["certi_corr_cnt"] = state.get("certi_corr_cnt", 0) + 1
+                                    state["certi_ack_timeout"] = curr_time + dur_c + 1.0
+                                    state["cooldown"] = curr_time + 0.05
+                                    dprint(key, f"🎯 [타겟 정밀 영점보정] 목표({tx},{ty})와 실제({real_c[0]},{real_c[1]}) 오차 {err_dist:.1f}px ➔ 재조준({state['certi_corr_cnt']}/4)")
+                            else:
+                                state["real_cursor_pos"] = None
+                                # 🚨 커서를 화면에서 못 찾았을 때 그냥 클릭하지 않고 빈 공간으로 빼내어 위치 복구!
+                                if state.get("certi_corr_cnt", 0) < 3:
+                                    need_correction = True
+                                    rescue_dx = int(round(g_val(140, 190))) if tx < 400 else -int(round(g_val(140, 190)))
+                                    rescue_dy = int(round(g_val(110, 150))) if ty < 300 else -int(round(g_val(110, 150)))
+                                    dur_r = apply_human_variance(0.10)
+                                    deltas_r = generate_human_deltas(rescue_dx, rescue_dy, duration=dur_r, behavior="CERTI", key=key)
+                                    if deltas_r:
+                                        pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas_r})
+                                    pico_queues[key].put({"action": "SPECIAL_ACK"})
+                                    state["special_ack_arrived"] = False
+                                    state["certi_corr_cnt"] = state.get("certi_corr_cnt", 0) + 1
+                                    state["certi_ack_timeout"] = curr_time + dur_r + 1.0
+                                    state["cooldown"] = curr_time + 0.08
+                                    dprint(key, f"👀 [커서 미감지 ➔ 구출 이동] 커서를 못 찾아 빈 공간({rescue_dx:+d},{rescue_dy:+d})으로 빼낸 뒤 재조준합니다! ({state['certi_corr_cnt']}/3)")
 
                             if not need_correction:
                                 is_dbl = state.get("certi_click_double", False)
@@ -7202,20 +7232,20 @@ def ai_commander_worker(target_pc):
                             else:
                                 state["cooldown"] = curr_time + 0.2
 
-                    # 16클릭 후 분기: login.png 확인 전까지 recerti(re1~10) 최우선 감시 vs ticket.png vs login.png
+                    # 16클릭 후 분기: recerti(re1~n) 0순위 최우선 감시 -> login.png -> ticket.png
                     elif current_fsm == "CERTI_AFTER_16_BRANCH":
-                        pos_login = find_certi_img("login.png", th=0.82)
-                        if pos_login:
-                            dprint(key, "✅ [로그인 화면 감지] 'login.png' 포착! 0.3초 간격으로 엔터를 2번 쳐서 다음 화면으로 넘깁니다.")
-                            pico_queues[key].put({"action": "HOLD_KEY", "keycode": 176, "duration": g_val(0.06, 0.09)})
-                            pico_queues[key].put({"action": "WAIT", "delay_min": 0.28, "delay_max": 0.34})
-                            pico_queues[key].put({"action": "HOLD_KEY", "keycode": 176, "duration": g_val(0.06, 0.09)})
-                            state["target_fsm"] = "CERTI_STEP_17_FIND"
-                            state["cooldown"] = curr_time + 1.0
+                        pos_re, re_name = find_any_recerti_img(th=0.82)
+                        if pos_re:
+                            handle_recerti_branch(pos_re, re_name, "16단계 이후 재인증/오류")
                         else:
-                            pos_re, re_name = find_any_recerti_img(th=0.82)
-                            if pos_re:
-                                handle_recerti_branch(pos_re, re_name, "login.png 전 재인증/오류")
+                            pos_login = find_certi_img("login.png", th=0.82)
+                            if pos_login:
+                                dprint(key, "✅ [로그인 화면 감지] 'login.png' 포착! 0.3초 간격으로 엔터를 2번 쳐서 다음 화면으로 넘깁니다.")
+                                pico_queues[key].put({"action": "HOLD_KEY", "keycode": 176, "duration": g_val(0.06, 0.09)})
+                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.28, "delay_max": 0.34})
+                                pico_queues[key].put({"action": "HOLD_KEY", "keycode": 176, "duration": g_val(0.06, 0.09)})
+                                state["target_fsm"] = "CERTI_STEP_17_FIND"
+                                state["cooldown"] = curr_time + 1.0
                             else:
                                 pos_ticket = find_certi_img("ticket.png", th=0.82)
                                 if pos_ticket:
@@ -7438,33 +7468,41 @@ def ai_commander_worker(target_pc):
                         state["target_fsm"] = "CERTI_STEP_13_FIND"
                         state["cooldown"] = curr_time + 1.5
 
-                    # 17단계: 17.png 감지되면 커서 이동 후 더블클릭으로 게임 입장 -> dragon.png 감시
+                    # 17단계: recerti(re1~n) 최우선 감시 + 17.png 감지되면 더블클릭으로 게임 입장 -> dragon.png 감시
                     elif current_fsm == "CERTI_STEP_17_FIND":
-                        pos_17 = find_certi_img("17.png", th=0.82)
-                        if pos_17:
-                            dprint(key, f"🔎 [캐릭터 입장] '17.png' 발견({pos_17[0]}, {pos_17[1]})! 이동 후 더블클릭하여 게임에 입장합니다.")
-                            start_certi_move_and_action(pos_17[0], pos_17[1], next_fsm="CERTI_WAIT_DRAGON", double=True, post_wait=1.5, desc="17.png 게임 입장 더블클릭")
+                        pos_re, re_name = find_any_recerti_img(th=0.82)
+                        if pos_re:
+                            handle_recerti_branch(pos_re, re_name, "17단계 재인증/오류")
                         else:
-                            state["cooldown"] = curr_time + 0.2
-
-                    # 최종 접속 확인 단계: dragon.png 감지 시 Ctrl+M으로 미니맵을 먼저 확실하게 켠 뒤 복귀! (ticket2.png 팝업 감시 병행)
-                    elif current_fsm == "CERTI_WAIT_DRAGON":
-                        pos_t2 = find_certi_img("ticket2.png", th=0.90) or find_certi_img("qq/ticket2.png", th=0.90)
-                        if pos_t2:
-                            dprint(key, "🚨 [접속 직후 ticket2.png 감지] 이용시간 만료 팝업 포착! ok2 ➔ quit 클릭 후 13.png 재접속 단계로 이동합니다!")
-                            state["target_fsm"] = "CERTI_FIND_OK2_FIRST"
-                            state["cooldown"] = curr_time + 0.3
-                        else:
-                            pos_dragon = find_certi_img("dragon.png", th=0.82)
-                            if pos_dragon:
-                                dprint(key, "🐉 [게임 접속 성공] 'dragon.png' 감지 완료! 최우선으로 Ctrl+M을 눌러 미니맵부터 오픈합니다!")
-                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.5, "delay_max": 0.8})
-                                pico_queues[key].put({"action": "OPEN_MINIMAP"})
-                                # 💡 피코가 Ctrl+M과 F1을 끝까지 다 누를 때까지 인증 모드에서 대기(큐 증발 및 계열마법 새치기 원천 차단)
-                                state["target_fsm"] = "CERTI_DRAGON_MINIMAP_WAIT"
-                                state["cooldown"] = curr_time + 1.8
+                            pos_17 = find_certi_img("17.png", th=0.82)
+                            if pos_17:
+                                dprint(key, f"🔎 [캐릭터 입장] '17.png' 발견({pos_17[0]}, {pos_17[1]})! 이동 후 더블클릭하여 게임에 입장합니다.")
+                                start_certi_move_and_action(pos_17[0], pos_17[1], next_fsm="CERTI_WAIT_DRAGON", double=True, post_wait=1.5, desc="17.png 게임 입장 더블클릭")
                             else:
-                                state["cooldown"] = curr_time + 0.3
+                                state["cooldown"] = curr_time + 0.2
+
+                    # 최종 접속 확인 단계: 용머리(dragon.png) 감지 전까지 recerti(re1~n) 및 ticket2.png 상시 감시!
+                    elif current_fsm == "CERTI_WAIT_DRAGON":
+                        pos_dragon = find_certi_img("dragon.png", th=0.82)
+                        if pos_dragon:
+                            dprint(key, "🐉 [게임 접속 성공] 'dragon.png' 감지 완료! 최우선으로 Ctrl+M을 눌러 미니맵부터 오픈합니다!")
+                            pico_queues[key].put({"action": "WAIT", "delay_min": 0.5, "delay_max": 0.8})
+                            pico_queues[key].put({"action": "OPEN_MINIMAP"})
+                            # 💡 피코가 Ctrl+M과 F1을 끝까지 다 누를 때까지 인증 모드에서 대기(큐 증발 및 계열마법 새치기 원천 차단)
+                            state["target_fsm"] = "CERTI_DRAGON_MINIMAP_WAIT"
+                            state["cooldown"] = curr_time + 1.8
+                        else:
+                            pos_re, re_name = find_any_recerti_img(th=0.82)
+                            if pos_re:
+                                handle_recerti_branch(pos_re, re_name, "용머리 대기 중 재인증/오류")
+                            else:
+                                pos_t2 = find_certi_img("ticket2.png", th=0.90) or find_certi_img("qq/ticket2.png", th=0.90)
+                                if pos_t2:
+                                    dprint(key, "🚨 [접속 직후 ticket2.png 감지] 이용시간 만료 팝업 포착! ok2 ➔ quit 클릭 후 13.png 재접속 단계로 이동합니다!")
+                                    state["target_fsm"] = "CERTI_FIND_OK2_FIRST"
+                                    state["cooldown"] = curr_time + 0.3
+                                else:
+                                    state["cooldown"] = curr_time + 0.3
 
                     # 미니맵 오픈(Ctrl+M -> F1) 물리적 타건 완료 후 사냥/정비 상태 최종 복귀
                     elif current_fsm == "CERTI_DRAGON_MINIMAP_WAIT":
