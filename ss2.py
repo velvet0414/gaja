@@ -3329,6 +3329,7 @@ def find_cursor_pos(img_bgr, last_pos=None, check_circle=False, allow_full_scan=
                             res = cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED)
                             _, max_val, _, max_loc = cv2.minMaxLoc(res)
                             min_val = 1.0 - max_val
+                            min_loc = max_loc
                         if not is_valid_cursor_patch(roi, min_loc[0], min_loc[1], tw_t, th_t):
                             continue
                         if min_val <= local_err_limit: return (min_loc[0] + x1 + hx, min_loc[1] + y1 + hy)
@@ -3356,6 +3357,7 @@ def find_cursor_pos(img_bgr, last_pos=None, check_circle=False, allow_full_scan=
                 res = cv2.matchTemplate(search_img, template, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, max_loc = cv2.minMaxLoc(res)
                 min_val = 1.0 - max_val
+                min_loc = max_loc
             if not is_valid_cursor_patch(search_img, min_loc[0], min_loc[1], tw_t, th_t):
                 continue
             if min_val <= full_err_limit: 
@@ -4176,15 +4178,16 @@ def pico_worker_thread(key):
 
             elif action == "CERTI_CLICK":
                 is_double = cmd.get("double", False)
-                h_sleep(0.06, 0.12)
-                send_mouse_click(p_serial, p_lock, 1, 1)
-                h_sleep(0.050, 0.125)
-                send_mouse_click(p_serial, p_lock, 1, 0)
+                h_sleep(0.08, 0.14)
+                # 💡 is_manual=True를 전달하여 더블클릭 도중 15% 확률로 마우스가 옆으로 튕기는 현상을 100% 차단!
+                send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
+                h_sleep(0.045, 0.080)
+                send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
                 if is_double:
-                    h_sleep(0.055, 0.105)
-                    send_mouse_click(p_serial, p_lock, 1, 1)
-                    h_sleep(0.048, 0.110)
-                    send_mouse_click(p_serial, p_lock, 1, 0)
+                    h_sleep(0.050, 0.085)
+                    send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
+                    h_sleep(0.045, 0.080)
+                    send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
                 h_sleep(0.18, 0.32)
 
             elif action == "CLOSE_TAB":
