@@ -6807,32 +6807,41 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.05
 
-                    # 4단계: 무조건 스크롤을 먼저 내린 후 하단 구역(Y:450~590)에서만 confirm / new / skip 클릭
+                    # 4단계: 커서를 상단(Y:320)으로 치워 하단 버튼 가림을 막고 스크롤을 내린 뒤 confirm / new 클릭
                     elif current_fsm == "CERTI_CAPTCHA_SCROLL":
                         is_hw_busy = state.get("hw_busy", False) or not pico_queues[key].empty()
                         if not is_hw_busy:
-                            # 💡 1) 아직 스크롤을 내리지 않았다면 무조건 휠 스크롤(-5)부터 먼저 내림! (잘린 버튼 및 상단 X 오클릭 원천 방지)
+                            # 💡 1) 스크롤을 내리기 전, 마지막으로 찍은 3행 타일 위치에 남아있는 커서가 하단 [확인] 버튼을 가리지 않도록 상단 중앙(397, 320)으로 이동 후 스크롤!
                             if not state.get("captcha_is_scrolled_down", False):
-                                dprint(key, "🔽 [캡차 선(先) 스크롤 다운] 하단 버튼이 온전히 보이도록 먼저 휠 스크롤을 내립니다.")
+                                dprint(key, "🔽 [캡차 선(先) 스크롤 다운] 하단 버튼 가림 방지를 위해 커서를 상단으로 치우고 휠 스크롤을 내립니다.")
+                                cur_x, cur_y = state.get("cursor_pos", [400, 300])
+                                safe_tx = 397 + int(round(g_val(-15, 15)))
+                                safe_ty = 315 + int(round(g_val(-10, 10)))
+                                move_dur = 0.0
+                                if math.hypot(safe_tx - cur_x, safe_ty - cur_y) > 15:
+                                    move_dur = apply_human_variance(0.08 + 0.03 * math.log2((math.hypot(safe_tx - cur_x, safe_ty - cur_y) / 20.0) + 1.0))
+                                    pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(safe_tx - cur_x, safe_ty - cur_y, duration=move_dur, behavior="CERTI", key=key)})
+                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.08, "delay_max": 0.14})
+                                    state["cursor_pos"] = [safe_tx, safe_ty]
+
                                 pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": -5})
                                 pico_queues[key].put({"action": "WAIT", "delay_min": 0.45, "delay_max": 0.65})
                                 state["captcha_is_scrolled_down"] = True
                                 state["captcha_scroll_cnt"] = 1
-                                state["cooldown"] = curr_time + 0.9
+                                state["cooldown"] = curr_time + move_dur + 0.9
                                 continue
 
-                            # 💡 2) 캡차 하단 버튼 영역(X:250~550, Y:450~590) 안에서만 버튼을 검색 (상단 크롬 탭 X버튼 오매칭 100% 차단!)
-                            def find_captcha_bottom_btn(btn_name, th=0.80):
-                                pos_cand = find_certi_img(btn_name, th=th)
-                                if pos_cand and (250 <= pos_cand[0] <= 550) and (450 <= pos_cand[1] <= 590):
-                                    return pos_cand
-                                return None
+                            # 💡 2) 캡차 하단 버튼 영역(X:250~550, Y:380~595)만 직접 잘라서 스캔
+                            def find_captcha_bottom_btn(btn_name, th=0.78):
+                                return find_certi_img(btn_name, th=th, roi_rect=(250, 380, 550, 595))
 
                             if state.get("captcha_need_new", False):
-                                pos_btn = find_captcha_bottom_btn("new.png", th=0.80) or find_captcha_bottom_btn("skip.png", th=0.80) or find_captcha_bottom_btn("confirm.png", th=0.80)
+                                # 타일이 아예 없거나 미등록 제시어일 때만 new(새로고침) 클릭
+                                pos_btn = find_captcha_bottom_btn("new.png", th=0.78) or find_captcha_bottom_btn("skip.png", th=0.78)
                                 btn_label = "new(새로고침)/skip"
                             else:
-                                pos_btn = find_captcha_bottom_btn("confirm.png", th=0.80) or find_captcha_bottom_btn("skip.png", th=0.80) or find_captcha_bottom_btn("new.png", th=0.80)
+                                # 🚨 타일을 정상적으로 찍고 내려왔을 때는 절대 new.png(새로고침)를 누르지 않고 오직 confirm/skip만 탐색!
+                                pos_btn = find_captcha_bottom_btn("confirm.png", th=0.78) or find_captcha_bottom_btn("skip.png", th=0.78)
                                 btn_label = "confirm(확인)/skip"
 
                             if pos_btn:
@@ -6848,14 +6857,14 @@ def ai_commander_worker(target_pc):
                                 )
                             else:
                                 if state.get("captcha_scroll_cnt", 0) < 3:
-                                    dprint(key, "🔽 [캡차 추가 스크롤 다운] 하단 버튼이 아직 안 보여 휠 스크롤을 한 번 더 내립니다.")
+                                    dprint(key, f"🔽 [캡차 추가 스크롤 다운] {btn_label} 버튼이 아직 안 보여 휠 스크롤을 한 번 더 내립니다.")
                                     pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": -5})
                                     pico_queues[key].put({"action": "WAIT", "delay_min": 0.4, "delay_max": 0.6})
                                     state["captcha_is_scrolled_down"] = True
                                     state["captcha_scroll_cnt"] = state.get("captcha_scroll_cnt", 0) + 1
                                     state["cooldown"] = curr_time + 0.9
                                 else:
-                                    dprint(key, "⚠️ [하단 버튼 미발견] 스크롤을 내렸으나 하단 구역(Y:450~590)에서 버튼을 찾지 못해 스크롤 업 후 재판독합니다.")
+                                    dprint(key, "⚠️ [하단 버튼 미발견] 3회 스크롤 후에도 버튼을 찾지 못해 스크롤 업 후 재판독합니다.")
                                     state["captcha_is_scrolled_down"] = True
                                     state["target_fsm"] = "CERTI_CAPTCHA_AFTER_CONFIRM"
                                     state["cooldown"] = curr_time + 0.3
@@ -7034,9 +7043,9 @@ def ai_commander_worker(target_pc):
                         state["certi_rec_miss_cnt"] = 0
                         state["target_fsm"] = "CERTI_WAIT_GAME_LAUNCH"
                         state["cooldown"] = curr_time + 0.2
-                        dprint(key, "👀 [구동 감시 시작] 'waiting.png', 'rec.png'(10초 지속), 'delay.png'(10초), '14.png' 및 recerti 감지를 시작합니다.")
+                        dprint(key, "👀 [구동 감시 시작] 'purple.png', 'waiting.png', 'rec.png'(10초), 'delay.png'(10초), '14.png' 및 recerti 감지를 시작합니다.")
 
-                    # 14단계(구동 감시 및 14.png 클릭): recerti 감시 + delay.png(10초) + rec.png(10초 지속 시 재인증) + waiting.png(1분)
+                    # 14단계(구동 감시 및 14.png 클릭): recerti 감시 + purple.png(퍼플 미실행) + delay.png(10초) + rec.png(10초) + waiting.png(1분)
                     elif current_fsm == "CERTI_WAIT_GAME_LAUNCH":
                         pos_re, re_name = find_any_recerti_img(th=0.82)
                         if pos_re:
@@ -7050,6 +7059,19 @@ def ai_commander_worker(target_pc):
                                 dprint(key, f"🔎 [인증 14단계] '14.png' 발견({pos_14[0]}, {pos_14[1]})! 커서 이동 후 원클릭합니다.")
                                 start_certi_move_and_action(pos_14[0], pos_14[1], next_fsm="CERTI_STEP_15_FIND", double=False, post_wait=0.6, desc="14.png 클릭")
                             else:
+                                # 0) 퍼플 꺼짐 팝업(purple.png) 감지 시 즉시 yse.png 클릭 단계로 이동!
+                                pos_purple = find_certi_img("purple.png", th=0.82) if curr_time >= state.get("certi_purple_cd", 0.0) else None
+                                if pos_purple:
+                                    state["certi_delay_seen_time"] = 0.0
+                                    state["certi_rec_seen_time"] = 0.0
+                                    state["certi_rec_miss_cnt"] = 0
+                                    state["certi_purple_find_start"] = curr_time
+                                    state["certi_purple_evaded"] = False
+                                    dprint(key, f"🟣 [퍼플 미실행 감지] 'purple.png' 포착({pos_purple[0]}, {pos_purple[1]})! 'yse.png'를 찾아 원클릭하여 퍼플 자동 로그인 및 게임 실행을 진행합니다.")
+                                    state["target_fsm"] = "CERTI_PURPLE_YSE_FIND"
+                                    state["cooldown"] = curr_time + 0.1
+                                    continue
+
                                 # 1) delay.png 감지 및 10초 경과 시 강종(recerti) 전환 체크
                                 delay_t = state.get("certi_delay_seen_time", 0.0)
                                 if delay_t == 0.0:
@@ -7098,14 +7120,48 @@ def ai_commander_worker(target_pc):
                                                         state["certi_rec_seen_time"] = 0.0
                                                         state["certi_rec_miss_cnt"] = 0
 
-                                            # rec.png도 없고 waiting.png도 없는 상태로 60초가 경과했을 때의 기본 재실행 방어막
+                                            # rec.png도 없고 waiting.png도 없는 상태로 60초가 경과했을 때 -> 바탕화면 이동 후 12.png(잔류 게임창) 먼저 서치!
                                             if state.get("certi_delay_seen_time", 0.0) == 0.0 and state.get("certi_rec_seen_time", 0.0) == 0.0 and (curr_time - state.get("certi_launch_time", curr_time) >= 60.0):
-                                                dprint(key, "⚠️ [구동 1분 타임아웃] 1분이 지나도록 'waiting.png'가 감지되지 않았습니다! 13.png를 다시 더블클릭하여 재실행합니다.")
-                                                state["certi_13_wait_mode"] = "RETRY_1MIN"
-                                                state["certi_next_desktop_time"] = 0.0
-                                                state["target_fsm"] = "CERTI_STEP_13_FIND"
-                                                state["cooldown"] = curr_time + 0.2
+                                                dprint(key, "⚠️ [구동 1분 타임아웃] 60초간 아무 반응이 없습니다! 바탕화면 이동 후 작업표시줄에 '12.png'(미종료 게임창)가 남아있는지 먼저 확인합니다.")
+                                                clear_movements_only(pico_queues[key])
+                                                pico_queues[key].put({"action": "HOME_MACRO"})
+                                                state["certi_from_closed_game"] = False
+                                                state["certi_12_find_start"] = curr_time + 1.5
+                                                state["target_fsm"] = "CERTI_STEP_12_FIND"
+                                                state["cooldown"] = curr_time + 1.2
                                     state["cooldown"] = curr_time + 0.3
+
+                    # 14-0단계(퍼플 꺼짐 예외처리): yse.png(또는 yes.png) 찾아 원클릭 후 waiting.png 감시(타이머 리셋)로 복귀
+                    elif current_fsm == "CERTI_PURPLE_YSE_FIND":
+                        pos_yse = find_certi_img("yse.png", th=0.82) or find_certi_img("yes.png", th=0.82)
+                        if pos_yse:
+                            state["certi_purple_cd"] = curr_time + 8.0
+                            dprint(key, f"🟣 [퍼플 실행 확인] 'yse.png' 발견({pos_yse[0]}, {pos_yse[1]})! 원클릭 후 퍼플 로그인 및 'waiting.png' 감시로 넘어갑니다.")
+                            start_certi_move_and_action(
+                                pos_yse[0], pos_yse[1],
+                                next_fsm="CERTI_LAUNCH_TIMER_INIT",
+                                double=False,
+                                post_wait=1.5,
+                                desc="퍼플 yse.png 원클릭"
+                            )
+                        else:
+                            elapsed_p = curr_time - state.get("certi_purple_find_start", curr_time)
+                            if elapsed_p >= 3.0 and not state.get("certi_purple_evaded", False):
+                                cur_cx, cur_cy = state.get("cursor_pos", [400, 300])
+                                evade_tx, evade_ty = int(round(g_val(560, 650))), int(round(g_val(260, 340)))
+                                dur_ev = apply_human_variance(0.10 + 0.035 * math.log2((math.hypot(evade_tx - cur_cx, evade_ty - cur_cy) / 20.0) + 1.0))
+                                pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(evade_tx - cur_cx, evade_ty - cur_cy, duration=dur_ev, behavior="CERTI", key=key)})
+                                state["cursor_pos"] = [evade_tx, evade_ty]
+                                state["certi_purple_evaded"] = True
+                                state["cooldown"] = curr_time + dur_ev + 0.3
+                                dprint(key, "👀 [yse.png 가림 방지] 커서를 옆으로 치운 뒤 버튼을 다시 찾습니다.")
+                            elif elapsed_p >= 10.0:
+                                dprint(key, "⚠️ [yse.png 10초 미감지] 구동 감시(waiting.png 대기) 단계로 복귀합니다.")
+                                state["certi_purple_cd"] = curr_time + 5.0
+                                state["target_fsm"] = "CERTI_LAUNCH_TIMER_INIT"
+                                state["cooldown"] = curr_time + 0.2
+                            else:
+                                state["cooldown"] = curr_time + 0.2
 
                     # 15단계: recerti 최우선 감시 + 15.png 감지 후 이동 및 원클릭 (지터 0)
                     elif current_fsm == "CERTI_STEP_15_FIND":
@@ -24217,7 +24273,7 @@ ARDUINO_KEY_MAP = {
     keyboard.Key.f9: 202, keyboard.Key.f10: 203, keyboard.Key.f11: 204, keyboard.Key.f12: 205,
     keyboard.Key.up: 218, keyboard.Key.down: 217, keyboard.Key.left: 216, keyboard.Key.right: 215,
     keyboard.Key.insert: 209, keyboard.Key.delete: 212, keyboard.Key.home: 210, keyboard.Key.end: 213,
-    keyboard.Key.page_up: 211, keyboard.Key.page_down: 214, keyboard.Key.caps_lock: 193
+    keyboard.Key.page_up: 211, keyboard.Key.page_down: 214
 }
 
 def get_arduino_keycode(key):
