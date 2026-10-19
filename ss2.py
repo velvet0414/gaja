@@ -5651,6 +5651,10 @@ def ai_commander_worker(target_pc):
                         return None
                     tmpl, mask = tmpl_data["color"], tmpl_data["mask"]
 
+                    # 💡 7.png 검색 시 화면 맨 아래에서 위로 200픽셀(작업표시줄 포함 하단 영역)은 무조건 스캔 제외!
+                    if roi_rect is None and target_name in ["7.png", "qq/certi/7.png"]:
+                        roi_rect = (0, 0, w, max(100, h - 200))
+
                     if roi_rect is not None:
                         rx1, ry1, rx2, ry2 = roi_rect
                         rx1, ry1 = max(0, int(rx1)), max(0, int(ry1))
@@ -5987,7 +5991,7 @@ def ai_commander_worker(target_pc):
                             state["target_fsm"] = "CERTI_CAPTCHA_SOLVE" if settings.get("auth_auto_captcha", False) else "CERTI_CAPTCHA_MANUAL_WAIT"
                             state["cooldown"] = curr_time + 2.0
                         else:
-                            pos = find_certi_img("7.png", th=0.82)
+                            pos = find_certi_img("7.png", th=0.82, roi_rect=(0, 0, w, max(100, h - 200)))
                             if pos: start_certi_move_and_action(pos[0], pos[1], next_fsm="CERTI_STEP_8_FIND", double=False, desc="7.png 클릭")
                             else: state["cooldown"] = curr_time + 0.2
 
