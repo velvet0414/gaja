@@ -2485,8 +2485,10 @@ def _save_settings_internal():
                 "party_help_call_pct": v["party_help_call_pct"].get() if "party_help_call_pct" in v else "20",
                 "use_m_elf_pk": v["use_m_elf_pk"].get() if "use_m_elf_pk" in v else False,
                 "use_m_wiz_pk": v["use_m_wiz_pk"].get() if "use_m_wiz_pk" in v else False,
+                "use_f_knight_pk": v["use_f_knight_pk"].get() if "use_f_knight_pk" in v else False,
                 "m_elf_conf": v["m_elf_conf"].get().strip() if "m_elf_conf" in v else "70",
                 "m_wiz_conf": v["m_wiz_conf"].get().strip() if "m_wiz_conf" in v else "70",
+                "f_knight_conf": v["f_knight_conf"].get().strip() if "f_knight_conf" in v else "70",
 
                 "dungeon_name": v["dungeon_name"].get(),
                 "heal_use": v["heal_use"].get(), "heal_pct": v["heal_pct"].get(),
@@ -2963,8 +2965,10 @@ for pc in MINI_PCS:
         "party_help_call_pct": tk.StringVar(value=pc_set.get("party_help_call_pct", "20")),
         "use_m_elf_pk": tk.BooleanVar(value=pc_set.get("use_m_elf_pk", False)),
         "use_m_wiz_pk": tk.BooleanVar(value=pc_set.get("use_m_wiz_pk", False)),
+        "use_f_knight_pk": tk.BooleanVar(value=pc_set.get("use_f_knight_pk", False)),
         "m_elf_conf": tk.StringVar(value=str(pc_set.get("m_elf_conf", "70"))),
         "m_wiz_conf": tk.StringVar(value=str(pc_set.get("m_wiz_conf", "70"))),
+        "f_knight_conf": tk.StringVar(value=str(pc_set.get("f_knight_conf", "70"))),
 
         "dungeon_name": tk.StringVar(value=pc_set.get("dungeon_name", "개미굴 6층")),
         "heal_use": tk.BooleanVar(value=pc_set.get("heal_use", True)),
@@ -12715,7 +12719,7 @@ def ai_commander_worker(target_pc):
                 if is_pvp_mode:
                     state["pvp_on_cmd_cd"] = 0.0
 
-                is_m_elf_pk_active = (settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False)) and (
+                is_m_elf_pk_active = (settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False) or settings.get("use_f_knight_pk", False)) and (
                     state.get("current_is_m_elf", False) or
                     state.get("next_is_m_elf", False) or
                     (str(state.get("target_fsm", "")) == "HEINE_GMOB_VERIFY" and state.get("switch_target_type") == "MELF") or
@@ -15539,13 +15543,15 @@ def ai_commander_worker(target_pc):
 
                         m_elf_conf_th = max(0.10, min(0.99, float(settings.get("m_elf_conf", 70.0)) / 100.0))
                         m_wiz_conf_th = max(0.10, min(0.99, float(settings.get("m_wiz_conf", 70.0)) / 100.0))
-                        min_predict_conf = min(YOLO_CONF, m_elf_conf_th, m_wiz_conf_th)
+                        f_knight_conf_th = max(0.10, min(0.99, float(settings.get("f_knight_conf", 70.0)) / 100.0))
+                        min_predict_conf = min(YOLO_CONF, m_elf_conf_th, m_wiz_conf_th, f_knight_conf_th)
 
                         results = pc_model.predict(source=yolo_img, conf=min_predict_conf, half=True, verbose=False)
 
                         G_MOB_CLASS_ID = 5
                         BEAST_MOB_CLASS_ID = 6
                         AVOID_CLASS_ID = 2
+                        F_KNIGHT_CLASS_ID = 3
                         M_ELF_CLASS_ID = 7
                         M_WIZ_CLASS_ID = 8
 
@@ -15553,18 +15559,25 @@ def ai_commander_worker(target_pc):
                         is_bondon_yolo = "본던" in dng_yolo_check or "gludio" in dng_yolo_check.lower()
                         use_m_elf_pk = settings.get("use_m_elf_pk", False)
                         use_m_wiz_pk = settings.get("use_m_wiz_pk", False)
+                        use_f_knight_pk = settings.get("use_f_knight_pk", False)
 
                         for box in results[0].boxes:
                             cls_id = int(box.cls[0]); conf_val = float(box.conf[0])
                             if cls_id == M_ELF_CLASS_ID:
-                                if conf_val < m_elf_conf_th: continue
+                                if conf_val < (m_elf_conf_th if use_m_elf_pk else YOLO_CONF): continue
                             elif cls_id == M_WIZ_CLASS_ID:
-                                if conf_val < m_wiz_conf_th: continue
+                                if conf_val < (m_wiz_conf_th if use_m_wiz_pk else YOLO_CONF): continue
+                            elif cls_id == F_KNIGHT_CLASS_ID:
+                                if conf_val < (f_knight_conf_th if use_f_knight_pk else YOLO_CONF): continue
                             else:
                                 if conf_val < YOLO_CONF: continue
 
                             x1_box, y1_box, x2_box, y2_box = map(int, box.xyxy[0])
-                            is_pk_target_cls = (use_m_elf_pk and cls_id == M_ELF_CLASS_ID) or (use_m_wiz_pk and cls_id == M_WIZ_CLASS_ID)
+                            is_pk_target_cls = (
+                                (use_m_elf_pk and cls_id == M_ELF_CLASS_ID) or
+                                (use_m_wiz_pk and cls_id == M_WIZ_CLASS_ID) or
+                                (use_f_knight_pk and cls_id == F_KNIGHT_CLASS_ID)
+                            )
 
                             if cls_id in [0, 5, 6] or (is_bondon_yolo and cls_id == AVOID_CLASS_ID) or is_pk_target_cls:
                                 mob_cx, mob_cy = (x1_box + x2_box) // 2, (y1_box + y2_box) // 2
@@ -15582,8 +15595,9 @@ def ai_commander_worker(target_pc):
                                 m_obj.is_beast = (cls_id == BEAST_MOB_CLASS_ID)
                                 m_obj.is_normal = (cls_id == 0)
                                 m_obj.is_avoid = (cls_id == AVOID_CLASS_ID) # 💡 정식 avoid 속성 추가
-                                m_obj.is_m_elf = is_pk_target_cls           # 💡 남요정/남법사 공통 PK 타겟 플래그
-                                m_obj.is_m_wiz = (cls_id == M_WIZ_CLASS_ID) # 💡 디버그 구분용 남법사 속성
+                                m_obj.is_m_elf = is_pk_target_cls               # 💡 남요정/남법사/여기사 공통 PK 타겟 플래그
+                                m_obj.is_m_wiz = (cls_id == M_WIZ_CLASS_ID)     # 💡 디버그 구분용 남법사 속성
+                                m_obj.is_f_knight = (cls_id == F_KNIGHT_CLASS_ID) # 💡 디버그 구분용 여기사 속성
                                 temp_mobs.append(m_obj)
 
                             elif cls_id in [1, 3, 4] or (cls_id in [M_ELF_CLASS_ID, M_WIZ_CLASS_ID] and not is_pk_target_cls):
@@ -15912,8 +15926,12 @@ def ai_commander_worker(target_pc):
                         valid_mobs.append(m)
                         if DEBUG_MODE and debug_img is not None:
                             if getattr(m, 'is_m_elf', False):
-                                pk_lbl = "M_WIZ(PK) (CLEAR)" if getattr(m, 'is_m_wiz', False) else "M_ELF(PK) (CLEAR)"
-                                pk_col = (255, 128, 0) if getattr(m, 'is_m_wiz', False) else (128, 255, 0)
+                                if getattr(m, 'is_m_wiz', False):
+                                    pk_lbl, pk_col = "M_WIZ(PK) (CLEAR)", (255, 128, 0)
+                                elif getattr(m, 'is_f_knight', False):
+                                    pk_lbl, pk_col = "F_KNIGHT(PK) (CLEAR)", (180, 105, 255)
+                                else:
+                                    pk_lbl, pk_col = "M_ELF(PK) (CLEAR)", (128, 255, 0)
                                 cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), pk_col, 3)
                                 cv2.circle(debug_img, (m.x, m.foot_y), 3, (0, 0, 255), -1)
                                 cv2.putText(debug_img, pk_lbl, (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, pk_col, 2)
@@ -18760,7 +18778,7 @@ def ai_commander_worker(target_pc):
                 if not action_taken and state.get("is_hunt_active", False) and not state.get("is_paused", False):
                     dungeon_name_check = settings.get("dungeon_name", "")
                     is_heine_or_bondon = ("수던" in dungeon_name_check or "heine" in dungeon_name_check.lower() or "본던" in dungeon_name_check or "gludio" in dungeon_name_check.lower())
-                    if is_heine_or_bondon or settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False):
+                    if is_heine_or_bondon or settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False) or settings.get("use_f_knight_pk", False):
 
                         fsm_curr = str(state.get("target_fsm", ""))
                         # [수정 1] 무지성 F4 줍기(sweep_active)를 루팅 상태 판정에서 제거!
@@ -18779,8 +18797,8 @@ def ai_commander_worker(target_pc):
                                 best_switch_target = None
                                 switch_type = ""
 
-                                # 💡 0순위(최우선): 남요정(m_elf) 또는 남법사(m_wiz) 포착 시 현재 어떤 몹을 치고 있든 최우선 스위칭
-                                if settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False):
+                                # 💡 0순위(최우선): 남요정(m_elf) / 남법사(m_wiz) / 여기사(f_knight) 포착 시 최우선 스위칭
+                                if settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False) or settings.get("use_f_knight_pk", False):
                                     m_elf_nearby = [m for m in mobs if getattr(m, 'is_m_elf', False)]
                                     if m_elf_nearby:
                                         best_switch_target = min(m_elf_nearby, key=lambda m: math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy))
@@ -23936,6 +23954,7 @@ def sync_gui_vars():
             p_help_call_pct_val = safe_float(gui_vars[k]["party_help_call_pct"], 20.0) if "party_help_call_pct" in gui_vars[k] else 20.0
             m_elf_conf_val = safe_float(gui_vars[k]["m_elf_conf"], 70.0) if "m_elf_conf" in gui_vars[k] else 70.0
             m_wiz_conf_val = safe_float(gui_vars[k]["m_wiz_conf"], 70.0) if "m_wiz_conf" in gui_vars[k] else 70.0
+            f_knight_conf_val = safe_float(gui_vars[k]["f_knight_conf"], 70.0) if "f_knight_conf" in gui_vars[k] else 70.0
 
             # --- [버그 수정] 체크박스의 실제 상태를 읽어서 내부 변수에 반영하도록 역전 ---
             _use_hunt = gui_vars[k]["use_party_hunt"].get()
@@ -24016,8 +24035,10 @@ def sync_gui_vars():
                 "party_help_call_pct": p_help_call_pct_val,
                 "use_m_elf_pk": gui_vars[k]["use_m_elf_pk"].get() if "use_m_elf_pk" in gui_vars[k] else False,
                 "use_m_wiz_pk": gui_vars[k]["use_m_wiz_pk"].get() if "use_m_wiz_pk" in gui_vars[k] else False,
+                "use_f_knight_pk": gui_vars[k]["use_f_knight_pk"].get() if "use_f_knight_pk" in gui_vars[k] else False,
                 "m_elf_conf": m_elf_conf_val,
                 "m_wiz_conf": m_wiz_conf_val,
+                "f_knight_conf": f_knight_conf_val,
 
                 "buff_set": gui_vars[k]["buff_set"].get(),
                 "combat_buff": gui_vars[k]["combat_buff"].get(),
@@ -24767,14 +24788,19 @@ for i, pc in enumerate(MINI_PCS):
 
     p_pk_frame = tk.Frame(tab_party, bg=BG_PANEL)
     p_pk_frame.pack(side="top", fill="x", padx=2, pady=(0, 2))
-    tk.Label(p_pk_frame, text="■ 적대PK:", bg=BG_PANEL, fg="#FF5252", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0, 2))
+    tk.Label(p_pk_frame, text="■PK:", bg=BG_PANEL, fg="#FF5252", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(0, 1))
     tk.Checkbutton(p_pk_frame, text="남요정", variable=vars_dict["use_m_elf_pk"], bg=BG_PANEL, fg="#FF5252", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
-    tk.Entry(p_pk_frame, textvariable=vars_dict["m_elf_conf"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
-    tk.Label(p_pk_frame, text="%", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(0, 4))
+    tk.Entry(p_pk_frame, textvariable=vars_dict["m_elf_conf"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=0)
+    tk.Label(p_pk_frame, text="%", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(0, 2))
 
-    tk.Label(p_pk_frame, text="|", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(0, 4))
+    tk.Label(p_pk_frame, text="|", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=0)
     tk.Checkbutton(p_pk_frame, text="남법사", variable=vars_dict["use_m_wiz_pk"], bg=BG_PANEL, fg="#4FC3F7", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
-    tk.Entry(p_pk_frame, textvariable=vars_dict["m_wiz_conf"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
+    tk.Entry(p_pk_frame, textvariable=vars_dict["m_wiz_conf"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=0)
+    tk.Label(p_pk_frame, text="%", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(0, 2))
+
+    tk.Label(p_pk_frame, text="|", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=0)
+    tk.Checkbutton(p_pk_frame, text="여기사", variable=vars_dict["use_f_knight_pk"], bg=BG_PANEL, fg="#EA80FC", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
+    tk.Entry(p_pk_frame, textvariable=vars_dict["f_knight_conf"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=0)
     tk.Label(p_pk_frame, text="%", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=0)
 
     hp_top_frame = tk.Frame(tab1, bg=BG_PANEL)
