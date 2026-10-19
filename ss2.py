@@ -409,10 +409,12 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
         question_code, match_info = _detect_captcha_question_local(search_roi)
 
         if not question_code:
+            globals()["_LAST_CAPTCHA_WORD_MATCHED"] = False
             save_unseen_banner_if_needed(img_bgr)
             print(f"⚠️ [제시어 미매칭] 최고유사도: {match_info} (기준 75% 미달) ➔ CapSolver 스킵")
             _save_captcha_debug_image(img_bgr, (bx1, by1, bx2, by2), (gx1, gy1, gx2, gy2), match_info, 3, [], "WORD_MISS")
             return []
+        globals()["_LAST_CAPTCHA_WORD_MATCHED"] = True
 
         grid_crop = img_bgr[gy1:gy2, gx1:gx2]
         grid_size = _detect_grid_size_opencv(grid_crop, banner_bgr=search_roi)
@@ -3325,13 +3327,26 @@ def find_cursor_pos(img_bgr, last_pos=None, check_circle=False, allow_full_scan=
                         th_t, tw_t = template.shape[:2]
                         if mask is not None:
                             res = cv2.matchTemplate(roi, template, cv2.TM_SQDIFF_NORMED, mask=mask)
-                            min_val, _, min_loc, _ = cv2.minMaxLoc(res)
+                            res = np.nan_to_num(res, nan=1.0, posinf=1.0, neginf=1.0)
+                            min_val, min_loc = 1.0, None
+                            for _ in range(15):
+                                mv, _, ml, _ = cv2.minMaxLoc(res)
+                                if mv > local_err_limit:
+                                    min_val, min_loc = mv, ml
+                                    break
+                                if is_valid_cursor_patch(roi, ml[0], ml[1], tw_t, th_t):
+                                    min_val, min_loc = mv, ml
+                                    break
+                                cv2.circle(res, ml, 6, 1.0, -1)
                         else:
                             res = cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED)
                             _, max_val, _, max_loc = cv2.minMaxLoc(res)
                             min_val = 1.0 - max_val
                             min_loc = max_loc
-                        if not is_valid_cursor_patch(roi, min_loc[0], min_loc[1], tw_t, th_t):
+                            if not is_valid_cursor_patch(roi, min_loc[0], min_loc[1], tw_t, th_t):
+                                continue
+
+                        if min_loc is None:
                             continue
                         if min_val <= local_err_limit: return (min_loc[0] + x1 + hx, min_loc[1] + y1 + hy)
                         if min_val < best_error: 
@@ -3353,13 +3368,26 @@ def find_cursor_pos(img_bgr, last_pos=None, check_circle=False, allow_full_scan=
             th_t, tw_t = template.shape[:2]
             if mask is not None:
                 res = cv2.matchTemplate(search_img, template, cv2.TM_SQDIFF_NORMED, mask=mask)
-                min_val, _, min_loc, _ = cv2.minMaxLoc(res)
+                res = np.nan_to_num(res, nan=1.0, posinf=1.0, neginf=1.0)
+                min_val, min_loc = 1.0, None
+                for _ in range(20):
+                    mv, _, ml, _ = cv2.minMaxLoc(res)
+                    if mv > full_err_limit:
+                        min_val, min_loc = mv, ml
+                        break
+                    if is_valid_cursor_patch(search_img, ml[0], ml[1], tw_t, th_t):
+                        min_val, min_loc = mv, ml
+                        break
+                    cv2.circle(res, ml, 8, 1.0, -1)
             else:
                 res = cv2.matchTemplate(search_img, template, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, max_loc = cv2.minMaxLoc(res)
                 min_val = 1.0 - max_val
                 min_loc = max_loc
-            if not is_valid_cursor_patch(search_img, min_loc[0], min_loc[1], tw_t, th_t):
+                if not is_valid_cursor_patch(search_img, min_loc[0], min_loc[1], tw_t, th_t):
+                    continue
+
+            if min_loc is None:
                 continue
             if min_val <= full_err_limit: 
                 if not is_certi_mode:
@@ -4252,15 +4280,15 @@ def pico_worker_thread(key):
 
             elif action == "CERTI_CLICK":
                 is_double = cmd.get("double", False)
-                h_sleep(0.08, 0.14)
-                # 💡 is_manual=True를 전달하여 더블클릭 도중 15% 확률로 마우스가 옆으로 튕기는 현상을 100% 차단!
+                h_sleep(0.06, 0.12)
+                # 💡 [인간화] 마우스 클릭 체공(Hold) 시간을 50~125ms 범위로 넓게 분산 (15% 튕김 방지를 위해 is_manual=True 유지)
                 send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
-                h_sleep(0.045, 0.080)
+                h_sleep(0.050, 0.125)
                 send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
                 if is_double:
-                    h_sleep(0.050, 0.085)
+                    h_sleep(0.055, 0.105)
                     send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
-                    h_sleep(0.045, 0.080)
+                    h_sleep(0.048, 0.110)
                     send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
                 h_sleep(0.18, 0.32)
 
@@ -5822,7 +5850,7 @@ def ai_commander_worker(target_pc):
                             fl = fname.lower()
                             if fl in checked_files or not fl.endswith((".png", ".jpg")):
                                 continue
-                            if fl.startswith(("lineage", "confirm", "delay", "ok", "rec.")):
+                            if fl.startswith(("lineage", "confirm", "delay", "ok", "rec")):
                                 continue
                             if fl.startswith("re"):
                                 pos = find_certi_img(f"recerti/{fname}", th=th)
@@ -5965,7 +5993,10 @@ def ai_commander_worker(target_pc):
                         state["certi_post13_cursor_moved"] = False
                     elif not is_hw_working and curr_time >= state.get("cooldown", 0) and (curr_time - state.get("certi_post13_step_start", curr_time) >= 5.0):
                         retry_info = post13_retry_map[current_fsm]
-                        curr_target_visible = any(find_certi_img(c_img, th=0.82) is not None for c_img in retry_info["curr_imgs"])
+                        curr_target_visible = (
+                            any(find_certi_img(c_img, th=0.82) is not None for c_img in retry_info["curr_imgs"]) or
+                            (find_any_recerti_img(th=0.82)[0] is not None)
+                        )
                         if curr_target_visible:
                             state["certi_post13_step_start"] = curr_time
                             state["certi_post13_cursor_moved"] = False
@@ -6045,13 +6076,13 @@ def ai_commander_worker(target_pc):
                                 resume_fsm, resume_desc = "CERTI_CAPTCHA_SOLVE", "리캡차 자동 판독 화면(captcha.png)"
                             else:
                                 resume_fsm, resume_desc = "CERTI_CAPTCHA_MANUAL_WAIT", "리캡차 수동 대기 화면(captcha.png)"
-                        elif find_certi_img("confirm.png", th=0.80) or find_certi_img("skip.png", th=0.80):
+                        elif find_certi_img("confirm.png", th=0.80) or find_certi_img("next.png", th=0.80) or find_certi_img("skip.png", th=0.80):
                             if auto_cap_on:
                                 state["captcha_is_scrolled_down"] = True
                                 state["captcha_scroll_cnt"] = 0
-                                resume_fsm, resume_desc = "CERTI_CAPTCHA_SCROLL", "리캡차 하단 확인/건너뛰기(confirm/skip)"
+                                resume_fsm, resume_desc = "CERTI_CAPTCHA_SCROLL", "리캡차 하단 확인/다음/건너뛰기(confirm/next/skip)"
                             else:
-                                resume_fsm, resume_desc = "CERTI_CAPTCHA_MANUAL_WAIT", "리캡차 수동 확인 대기(confirm/skip)"
+                                resume_fsm, resume_desc = "CERTI_CAPTCHA_MANUAL_WAIT", "리캡차 수동 확인 대기(confirm/next/skip)"
 
                         if resume_fsm is None:
                             has_ok2 = find_certi_img("ok2.png", th=0.82) is not None
@@ -6392,6 +6423,7 @@ def ai_commander_worker(target_pc):
                             continue
 
                         click_targets = analyze_captcha_with_gemini(img_bgr)
+                        state["captcha_word_matched"] = globals().get("_LAST_CAPTCHA_WORD_MATCHED", False)
                         if click_targets:
                             state["captcha_need_new"] = False
                             state["captcha_target_queue"] = list(click_targets)
@@ -6428,27 +6460,47 @@ def ai_commander_worker(target_pc):
 
                     elif current_fsm == "CERTI_CAPTCHA_SCROLL":
                         if not state.get("captcha_is_scrolled_down", False):
+                            cur_x, cur_y = state.get("cursor_pos", [400, 300])
+                            safe_tx = 397 + int(round(g_val(-15, 15)))
+                            safe_ty = 315 + int(round(g_val(-10, 10)))
+                            move_dur = 0.0
+                            if math.hypot(safe_tx - cur_x, safe_ty - cur_y) > 15:
+                                move_dur = apply_human_variance(0.08 + 0.03 * math.log2((math.hypot(safe_tx - cur_x, safe_ty - cur_y) / 20.0) + 1.0))
+                                pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(safe_tx - cur_x, safe_ty - cur_y, duration=move_dur, behavior="CERTI", key=key)})
+                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.08, "delay_max": 0.14})
+                                state["cursor_pos"] = [safe_tx, safe_ty]
+
                             pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": -5})
                             pico_queues[key].put({"action": "WAIT", "delay_min": 0.45, "delay_max": 0.65})
                             state["captcha_is_scrolled_down"] = True
                             state["captcha_scroll_cnt"] = 1
-                            state["cooldown"] = curr_time + 0.9
+                            state["cooldown"] = curr_time + move_dur + 0.9
                             continue
 
-                        def find_captcha_bottom_btn(btn_name, th=0.80):
-                            pos_cand = find_certi_img(btn_name, th=th)
-                            if pos_cand and (250 <= pos_cand[0] <= 550) and (450 <= pos_cand[1] <= 590):
-                                return pos_cand
-                            return None
+                        def find_captcha_bottom_btn(btn_name, th=0.78):
+                            return find_certi_img(btn_name, th=th, roi_rect=(250, 380, 550, 595))
 
                         if state.get("captcha_need_new", False):
-                            pos_btn = find_captcha_bottom_btn("new.png", th=0.80) or find_captcha_bottom_btn("skip.png", th=0.80) or find_captcha_bottom_btn("confirm.png", th=0.80)
+                            if state.get("captcha_word_matched", globals().get("_LAST_CAPTCHA_WORD_MATCHED", False)):
+                                # 제시어는 매칭되었으나 해당 사물 타일이 0개인 경우 -> skip(건너뛰기)을 1순위로 클릭!
+                                pos_btn = find_captcha_bottom_btn("skip.png", th=0.78) or find_captcha_bottom_btn("new.png", th=0.78)
+                                btn_label = "skip(건너뛰기 우선)/new"
+                            else:
+                                # words 폴더에 없는 미등록 제시어인 경우 -> new(새로고침)를 1순위로 클릭!
+                                pos_btn = find_captcha_bottom_btn("new.png", th=0.78) or find_captcha_bottom_btn("skip.png", th=0.78)
+                                btn_label = "new(미등록 제시어 새로고침)/skip"
                         else:
-                            pos_btn = find_captcha_bottom_btn("confirm.png", th=0.80) or find_captcha_bottom_btn("skip.png", th=0.80) or find_captcha_bottom_btn("new.png", th=0.80)
+                            # 🚨 타일을 정상적으로 찍고 내려왔을 때는 confirm(확인) -> next(다음) -> skip(건너뛰기) 순으로 탐색!
+                            pos_btn = (
+                                find_captcha_bottom_btn("confirm.png", th=0.78) or
+                                find_captcha_bottom_btn("next.png", th=0.78) or
+                                find_captcha_bottom_btn("skip.png", th=0.78)
+                            )
+                            btn_label = "confirm(확인)/next(다음)/skip"
 
                         if pos_btn:
                             state["captcha_scroll_cnt"] = 0
-                            start_certi_move_and_action(pos_btn[0], pos_btn[1], next_fsm="CERTI_CAPTCHA_AFTER_CONFIRM", double=False, post_wait=1.5, desc="캡차 하단 버튼 클릭")
+                            start_certi_move_and_action(pos_btn[0], pos_btn[1], next_fsm="CERTI_CAPTCHA_AFTER_CONFIRM", double=False, post_wait=1.5, desc=f"캡차 {btn_label} 클릭")
                         elif state.get("captcha_scroll_cnt", 0) < 3:
                             pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": -5})
                             pico_queues[key].put({"action": "WAIT", "delay_min": 0.4, "delay_max": 0.6})
@@ -6570,7 +6622,7 @@ def ai_commander_worker(target_pc):
                         state["certi_rec_miss_cnt"] = 0
                         state["target_fsm"] = "CERTI_WAIT_GAME_LAUNCH"
                         state["cooldown"] = curr_time + 0.2
-                        dprint(key, "👀 [구동 감시 시작] 'waiting.png', 'rec.png'(10초 지속), 'delay.png'(10초), '14.png' 및 recerti 감지를 시작합니다.")
+                        dprint(key, "👀 [구동 감시 시작] 'purple.png', 'waiting.png', 'rec.png'(10초), 'delay.png'(10초), '14.png' 및 recerti 감지를 시작합니다.")
 
                     elif current_fsm == "CERTI_WAIT_GAME_LAUNCH":
                         pos_re, re_name = find_any_recerti_img(th=0.82)
@@ -6584,6 +6636,20 @@ def ai_commander_worker(target_pc):
                                 state["certi_rec_seen_time"] = 0.0
                                 start_certi_move_and_action(pos_14[0], pos_14[1], next_fsm="CERTI_STEP_15_FIND", double=False, post_wait=0.6, desc="14.png 클릭")
                             else:
+                                # 0) 퍼플 꺼짐 팝업(purple.png) 감지 시 즉시 yse.png 클릭 단계로 이동!
+                                pos_purple = find_certi_img("purple.png", th=0.82) if curr_time >= state.get("certi_purple_cd", 0.0) else None
+                                if pos_purple:
+                                    state["certi_delay_seen_time"] = 0.0
+                                    state["certi_rec_seen_time"] = 0.0
+                                    state["certi_rec_miss_cnt"] = 0
+                                    state["certi_purple_find_start"] = curr_time
+                                    state["certi_purple_evaded"] = False
+                                    dprint(key, f"🟣 [퍼플 미실행 감지] 'purple.png' 포착({pos_purple[0]}, {pos_purple[1]})! 'yse.png'를 찾아 원클릭하여 퍼플 자동 로그인 및 게임 실행을 진행합니다.")
+                                    state["target_fsm"] = "CERTI_PURPLE_YSE_FIND"
+                                    state["cooldown"] = curr_time + 0.1
+                                    continue
+
+                                # 1) delay.png 감지 및 10초 경과 시 강종(recerti) 전환 체크
                                 delay_t = state.get("certi_delay_seen_time", 0.0)
                                 if delay_t == 0.0:
                                     pos_delay = find_certi_img("delay.png", th=0.82) or find_certi_img("recerti/delay.png", th=0.82)
@@ -6600,22 +6666,29 @@ def ai_commander_worker(target_pc):
                                     state["target_fsm"] = "CERTI_RECERTI_OPEN_TM"
                                     state["cooldown"] = curr_time + g_val(1.2, 1.6)
                                 else:
+                                    # 2) waiting.png 미출현 상태에서 rec.png / rec2.png / rec3.png 10초 지속 감지 및 1분 타임아웃 체크
                                     if not state.get("certi_waiting_seen", False):
                                         pos_wait = find_certi_img("waiting.png", th=0.82)
                                         if pos_wait:
                                             state["certi_waiting_seen"] = True
                                             state["certi_rec_seen_time"] = 0.0
                                             state["certi_rec_miss_cnt"] = 0
-                                            dprint(key, "✅ [정상 구동 확인] 'waiting.png' 감지됨! (rec.png 감시 해제) 이제 14.png가 뜰 때까지 대기합니다.")
+                                            dprint(key, "✅ [정상 구동 확인] 'waiting.png' 감지됨! (rec~3 감시 해제) 이제 14.png가 뜰 때까지 대기합니다.")
                                         else:
-                                            pos_rec = find_certi_img("rec.png", th=0.82) or find_certi_img("recerti/rec.png", th=0.82)
+                                            pos_rec, rec_name = None, ""
+                                            for r_fname in ("rec.png", "rec2.png", "rec3.png"):
+                                                pos_rec = find_certi_img(r_fname, th=0.82) or find_certi_img(f"recerti/{r_fname}", th=0.82)
+                                                if pos_rec:
+                                                    rec_name = r_fname
+                                                    break
+
                                             if pos_rec:
                                                 state["certi_rec_miss_cnt"] = 0
                                                 if state.get("certi_rec_seen_time", 0.0) == 0.0:
                                                     state["certi_rec_seen_time"] = curr_time
-                                                    dprint(key, f"⏳ [rec.png 감지] ({pos_rec[0]}, {pos_rec[1]}) 포착! 'waiting.png' 없이 10초간 지속 감지 시 즉시 재인증으로 이동합니다.")
+                                                    dprint(key, f"⏳ [{rec_name} 감지] ({pos_rec[0]}, {pos_rec[1]}) 포착! 'waiting.png' 없이 10초간 지속 감지 시 즉시 재인증으로 이동합니다.")
                                                 elif curr_time - state["certi_rec_seen_time"] >= 10.0:
-                                                    dprint(key, "🚨 [rec.png 10초 연속 감지 확정] 'waiting.png' 미출현 상태로 10초간 'rec.png'가 유지되어 즉시 바탕화면 이동 후 재인증을 시작합니다!")
+                                                    dprint(key, f"🚨 [{rec_name} 10초 연속 감지 확정] 'waiting.png' 미출현 상태로 10초간 '{rec_name}'가 유지되어 즉시 바탕화면 이동 후 재인증을 시작합니다!")
                                                     state["certi_rec_seen_time"] = 0.0
                                                     clear_movements_only(pico_queues[key])
                                                     state["certi_from_closed_game"] = True
@@ -6626,17 +6699,52 @@ def ai_commander_worker(target_pc):
                                                 if state.get("certi_rec_seen_time", 0.0) > 0.0:
                                                     state["certi_rec_miss_cnt"] = state.get("certi_rec_miss_cnt", 0) + 1
                                                     if state["certi_rec_miss_cnt"] >= 3:
-                                                        dprint(key, "✅ [rec.png 사라짐 확인] 10초 이내에 'rec.png'가 화면에서 사라졌으므로 재인증 타이머를 초기화합니다.")
+                                                        dprint(key, "✅ [rec~3 사라짐 확인] 10초 이내에 rec~3 이미지가 화면에서 사라졌으므로 재인증 타이머를 초기화합니다.")
                                                         state["certi_rec_seen_time"] = 0.0
                                                         state["certi_rec_miss_cnt"] = 0
 
+                                            # rec.png도 없고 waiting.png도 없는 상태로 60초가 경과했을 때 -> 바탕화면 이동 후 12.png(잔류 게임창) 먼저 서치!
                                             if state.get("certi_delay_seen_time", 0.0) == 0.0 and state.get("certi_rec_seen_time", 0.0) == 0.0 and (curr_time - state.get("certi_launch_time", curr_time) >= 60.0):
-                                                dprint(key, "⚠️ [구동 1분 타임아웃] 1분이 지나도록 'waiting.png'가 감지되지 않았습니다! 13.png를 다시 더블클릭하여 재실행합니다.")
-                                                state["certi_13_wait_mode"] = "RETRY_1MIN"
-                                                state["certi_next_desktop_time"] = 0.0
-                                                state["target_fsm"] = "CERTI_STEP_13_FIND"
-                                                state["cooldown"] = curr_time + 0.2
+                                                dprint(key, "⚠️ [구동 1분 타임아웃] 60초간 아무 반응이 없습니다! 바탕화면 이동 후 작업표시줄에 '12.png'(미종료 게임창)가 남아있는지 먼저 확인합니다.")
+                                                clear_movements_only(pico_queues[key])
+                                                pico_queues[key].put({"action": "HOME_MACRO"})
+                                                state["certi_from_closed_game"] = False
+                                                state["certi_12_find_start"] = curr_time + 1.5
+                                                state["target_fsm"] = "CERTI_STEP_12_FIND"
+                                                state["cooldown"] = curr_time + 1.2
                                     state["cooldown"] = curr_time + 0.3
+
+                    # 14-0단계(퍼플 꺼짐 예외처리): yse.png(또는 yes.png) 찾아 원클릭 후 waiting.png 감시(타이머 리셋)로 복귀
+                    elif current_fsm == "CERTI_PURPLE_YSE_FIND":
+                        pos_yse = find_certi_img("yse.png", th=0.82) or find_certi_img("yes.png", th=0.82)
+                        if pos_yse:
+                            state["certi_purple_cd"] = curr_time + 8.0
+                            dprint(key, f"🟣 [퍼플 실행 확인] 'yse.png' 발견({pos_yse[0]}, {pos_yse[1]})! 원클릭 후 퍼플 로그인 및 'waiting.png' 감시로 넘어갑니다.")
+                            start_certi_move_and_action(
+                                pos_yse[0], pos_yse[1],
+                                next_fsm="CERTI_LAUNCH_TIMER_INIT",
+                                double=False,
+                                post_wait=1.5,
+                                desc="퍼플 yse.png 원클릭"
+                            )
+                        else:
+                            elapsed_p = curr_time - state.get("certi_purple_find_start", curr_time)
+                            if elapsed_p >= 3.0 and not state.get("certi_purple_evaded", False):
+                                cur_cx, cur_cy = state.get("cursor_pos", [400, 300])
+                                evade_tx, evade_ty = int(round(g_val(560, 650))), int(round(g_val(260, 340)))
+                                dur_ev = apply_human_variance(0.10 + 0.035 * math.log2((math.hypot(evade_tx - cur_cx, evade_ty - cur_cy) / 20.0) + 1.0))
+                                pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(evade_tx - cur_cx, evade_ty - cur_cy, duration=dur_ev, behavior="CERTI", key=key)})
+                                state["cursor_pos"] = [evade_tx, evade_ty]
+                                state["certi_purple_evaded"] = True
+                                state["cooldown"] = curr_time + dur_ev + 0.3
+                                dprint(key, "👀 [yse.png 가림 방지] 커서를 옆으로 치운 뒤 버튼을 다시 찾습니다.")
+                            elif elapsed_p >= 10.0:
+                                dprint(key, "⚠️ [yse.png 10초 미감지] 구동 감시(waiting.png 대기) 단계로 복귀합니다.")
+                                state["certi_purple_cd"] = curr_time + 5.0
+                                state["target_fsm"] = "CERTI_LAUNCH_TIMER_INIT"
+                                state["cooldown"] = curr_time + 0.2
+                            else:
+                                state["cooldown"] = curr_time + 0.2
 
                     elif current_fsm == "CERTI_STEP_15_FIND":
                         pos_re, re_name = find_any_recerti_img(th=0.82)
@@ -6657,17 +6765,17 @@ def ai_commander_worker(target_pc):
                             else: state["cooldown"] = curr_time + 0.2
 
                     elif current_fsm == "CERTI_AFTER_16_BRANCH":
-                        pos_login = find_certi_img("login.png", th=0.82)
-                        if pos_login:
-                            pico_queues[key].put({"action": "HOLD_KEY", "keycode": 176, "duration": g_val(0.06, 0.09)})
-                            pico_queues[key].put({"action": "WAIT", "delay_min": 0.28, "delay_max": 0.34})
-                            pico_queues[key].put({"action": "HOLD_KEY", "keycode": 176, "duration": g_val(0.06, 0.09)})
-                            state["target_fsm"] = "CERTI_STEP_17_FIND"
-                            state["cooldown"] = curr_time + 1.0
+                        pos_re, re_name = find_any_recerti_img(th=0.82)
+                        if pos_re:
+                            handle_recerti_branch(pos_re, re_name, "16단계 이후 재인증/오류")
                         else:
-                            pos_re, re_name = find_any_recerti_img(th=0.82)
-                            if pos_re:
-                                handle_recerti_branch(pos_re, re_name, "login.png 전 재인증/오류")
+                            pos_login = find_certi_img("login.png", th=0.82)
+                            if pos_login:
+                                pico_queues[key].put({"action": "HOLD_KEY", "keycode": 176, "duration": g_val(0.06, 0.09)})
+                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.28, "delay_max": 0.34})
+                                pico_queues[key].put({"action": "HOLD_KEY", "keycode": 176, "duration": g_val(0.06, 0.09)})
+                                state["target_fsm"] = "CERTI_STEP_17_FIND"
+                                state["cooldown"] = curr_time + 1.0
                             else:
                                 pos_ticket = find_certi_img("ticket.png", th=0.82)
                                 if pos_ticket:
@@ -6786,19 +6894,19 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.2
 
+                    # R-4단계: 원클릭 직후 Delete 키 1회 전송 (퍼플 오종료 방지를 위해 작업관리자 내 재클릭 금지!)
                     elif current_fsm == "CERTI_RECERTI_TM_PRESS_DEL":
                         state["recerti_kill_try_cnt"] = state.get("recerti_kill_try_cnt", 0) + 1
-                        dprint(key, f"💀 [델키 강제종료] Delete 키를 눌러 리니지 강제 종료를 실행합니다! ({state['recerti_kill_try_cnt']}회차)")
+                        dprint(key, f"💀 [델키 1회 강제종료] Delete 키를 1회 전송합니다! ({state['recerti_kill_try_cnt']}회차)")
                         pico_queues[key].put({"action": "TASKMGR_DEL"})
-                        state["recerti_recheck_deadline"] = curr_time + 3.4
-                        state["recerti_recheck_start"] = curr_time + 0.4
-                        state["target_fsm"] = "CERTI_RECERTI_TM_VERIFY_3S"
+                        state["target_fsm"] = "CERTI_RECERTI_TM_CLOSE_AND_HOME"
                         state["cooldown"] = curr_time + 0.6
 
-                    elif current_fsm == "CERTI_RECERTI_TM_VERIFY_3S":
+                    # R-5단계: confirm2.png(종료 확인창) 유무만 1회 체크 후 즉시 작업관리자를 닫고 바탕화면으로 이동
+                    elif current_fsm == "CERTI_RECERTI_TM_CLOSE_AND_HOME":
                         pos_c2 = find_certi_img("recerti/confirm2.png", th=0.82) or find_certi_img("confirm2.png", th=0.82)
                         if pos_c2:
-                            dprint(key, f"⚠️ [종료 오류 감지] 'confirm2.png' 발견({pos_c2[0]}, {pos_c2[1]})! 확인 버튼을 누른 뒤 최대 3초간 리니지 아이콘을 재감지합니다.")
+                            dprint(key, f"⚠️ [종료 확인창 감지] 'confirm2.png' 발견({pos_c2[0]}, {pos_c2[1]})! 클릭 후 즉시 작업관리자를 닫습니다.")
                             start_certi_move_and_action(
                                 pos_c2[0], pos_c2[1],
                                 next_fsm="CERTI_RECERTI_TM_AFTER_CONFIRM2",
@@ -6808,42 +6916,51 @@ def ai_commander_worker(target_pc):
                                 desc="confirm2.png 종료오류 확인 클릭"
                             )
                         else:
-                            pos_lin_rem = find_certi_img("recerti/lineage.png", th=0.82) or find_certi_img("lineage.png", th=0.82)
-                            if pos_lin_rem:
-                                if curr_time - state.get("recerti_recheck_start", curr_time) >= 1.3 and state.get("recerti_kill_try_cnt", 1) < 3:
-                                    dprint(key, f"🔄 [리니지 잔류 감지] 'lineage.png'가 아직 남아있습니다({pos_lin_rem[0]}, {pos_lin_rem[1]})! 다시 원클릭 후 Delete를 전송합니다.")
-                                    start_certi_move_and_action(
-                                        pos_lin_rem[0], pos_lin_rem[1],
-                                        next_fsm="CERTI_RECERTI_TM_PRESS_DEL",
-                                        double=False,
-                                        use_jitter=False,
-                                        post_wait=0.35,
-                                        desc="잔류 lineage.png 재클릭"
-                                    )
-                                elif curr_time >= state.get("recerti_recheck_deadline", 0):
-                                    dprint(key, "⚠️ [3초 재감지 시간 만료] 작업관리자를 닫고 바탕화면으로 나가 1단계부터 재인증을 진행합니다.")
-                                    pico_queues[key].put({"action": "CLOSE_TASKMGR"})
-                                    state["certi_from_closed_game"] = True
-                                    state["target_fsm"] = "CERTI_GOTO_DESKTOP"
-                                    state["cooldown"] = curr_time + 1.0
-                                else:
-                                    state["cooldown"] = curr_time + 0.25
-                            else:
-                                if curr_time >= state.get("recerti_recheck_deadline", 0):
-                                    dprint(key, "✅ [리니지 완전 종료 확인] 3초간 'lineage.png' 미감지 확인! 작업관리자를 닫고 바탕화면 1단계 재인증으로 복귀합니다!")
-                                    pico_queues[key].put({"action": "CLOSE_TASKMGR"})
-                                    state["certi_from_closed_game"] = True
-                                    state["target_fsm"] = "CERTI_GOTO_DESKTOP"
-                                    state["cooldown"] = curr_time + 1.0
-                                else:
-                                    state["cooldown"] = curr_time + 0.25
+                            dprint(key, "🖥️ [작업관리자 종료 ➔ 바탕화면] 작업관리자를 닫고 작업표시줄 '12.png' 소멸을 최대 7초간 확인합니다.")
+                            pico_queues[key].put({"action": "CLOSE_TASKMGR"})
+                            pico_queues[key].put({"action": "HOME_MACRO"})
+                            cur_cx, cur_cy = state.get("cursor_pos", [400, 300])
+                            if cur_cy >= 530:
+                                safe_tx, safe_ty = int(round(g_val(550, 650))), int(round(g_val(260, 340)))
+                                pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(safe_tx - cur_cx, safe_ty - cur_cy, duration=0.15, behavior="CERTI", key=key)})
+                                state["cursor_pos"] = [safe_tx, safe_ty]
+                            now_real = time.time()
+                            state["recerti_12_gone_deadline"] = now_real + 8.2
+                            state["recerti_12_gone_streak"] = 0
+                            state["target_fsm"] = "CERTI_RECERTI_WAIT_12_GONE"
+                            state["cooldown"] = now_real + 1.2
 
+                    # R-5-1단계: confirm2.png 클릭 직후 즉시 작업관리자를 닫고 바탕화면으로 이동
                     elif current_fsm == "CERTI_RECERTI_TM_AFTER_CONFIRM2":
-                        dprint(key, "👀 [오류 확인 완료] 이제 최대 3초간 작업관리자에서 'lineage.png'가 남아있는지 재감지합니다.")
-                        state["recerti_recheck_start"] = curr_time
-                        state["recerti_recheck_deadline"] = curr_time + 3.0
-                        state["target_fsm"] = "CERTI_RECERTI_TM_VERIFY_3S"
-                        state["cooldown"] = curr_time + 0.2
+                        dprint(key, "🖥️ [확인창 클릭 완료 ➔ 바탕화면] 작업관리자를 닫고 작업표시줄 '12.png' 소멸을 최대 7초간 확인합니다.")
+                        pico_queues[key].put({"action": "CLOSE_TASKMGR"})
+                        pico_queues[key].put({"action": "HOME_MACRO"})
+                        now_real = time.time()
+                        state["recerti_12_gone_deadline"] = now_real + 8.2
+                        state["recerti_12_gone_streak"] = 0
+                        state["target_fsm"] = "CERTI_RECERTI_WAIT_12_GONE"
+                        state["cooldown"] = now_real + 1.2
+
+                    # R-6단계: 바탕화면 작업표시줄(Y:550~600)에서 12.png가 사라지기를 최대 7초간 대기 (안 사라지면 작업관리자 재실행!)
+                    elif current_fsm == "CERTI_RECERTI_WAIT_12_GONE":
+                        pos_12_rem = find_certi_img("12.png", th=0.82, roi_rect=(0, 550, 800, 600))
+                        if pos_12_rem is None:
+                            state["recerti_12_gone_streak"] = state.get("recerti_12_gone_streak", 0) + 1
+                            if state["recerti_12_gone_streak"] >= 2:
+                                dprint(key, "✅ [12.png 소멸 확인] 작업표시줄에서 리니지 아이콘(12.png)이 완전히 사라졌습니다! 1단계 재인증으로 이동합니다!")
+                                state["certi_from_closed_game"] = True
+                                state["target_fsm"] = "CERTI_GOTO_DESKTOP"
+                                state["cooldown"] = curr_time + 0.3
+                            else:
+                                state["cooldown"] = curr_time + 0.15
+                        else:
+                            state["recerti_12_gone_streak"] = 0
+                            if curr_time >= state.get("recerti_12_gone_deadline", 0):
+                                dprint(key, f"🚨 [7초 경과 - 12.png 잔류 확인] 작업표시줄에 '12.png'({pos_12_rem[0]}, {pos_12_rem[1]})가 아직 남아있습니다! 작업관리자를 다시 열어 강종을 재시도합니다!")
+                                state["target_fsm"] = "CERTI_RECERTI_OPEN_TM"
+                                state["cooldown"] = curr_time + 0.2
+                            else:
+                                state["cooldown"] = curr_time + 0.25
 
                     elif current_fsm == "CERTI_TICKET_OK2_FIND":
                         # 🛡️ 아직 화면에 ticket.png가 남아있다면 그 안의 우측하단 ok(종료창의 Cancel 위치)를 절대 찍지 않도록 대기!
@@ -6870,16 +6987,17 @@ def ai_commander_worker(target_pc):
                         state["cooldown"] = curr_time + 1.5
 
                     elif current_fsm == "CERTI_STEP_17_FIND":
-                        pos_17 = find_certi_img("17.png", th=0.82)
-                        if pos_17: start_certi_move_and_action(pos_17[0], pos_17[1], next_fsm="CERTI_WAIT_DRAGON", double=True, post_wait=1.5, desc="17.png 입장 더블클릭")
-                        else: state["cooldown"] = curr_time + 0.2
+                        pos_re, re_name = find_any_recerti_img(th=0.82)
+                        if pos_re:
+                            handle_recerti_branch(pos_re, re_name, "17단계 재인증/오류")
+                        else:
+                            pos_17 = find_certi_img("17.png", th=0.82)
+                            if pos_17: start_certi_move_and_action(pos_17[0], pos_17[1], next_fsm="CERTI_WAIT_DRAGON", double=True, post_wait=1.5, desc="17.png 입장 더블클릭")
+                            else: state["cooldown"] = curr_time + 0.2
 
                     # 🐉 [군주 전용 접속 마무리] dragon.png 감지 ➔ F1 단축창 ➔ F6 헤이스트(688, 502) 원클릭으로 마우스 휠 지정!
                     elif current_fsm == "CERTI_WAIT_DRAGON":
-                        if find_certi_img("ticket2.png", th=0.90) or find_certi_img("qq/ticket2.png", th=0.90):
-                            state["target_fsm"] = "CERTI_FIND_OK2_FIRST"
-                            state["cooldown"] = curr_time + 0.3
-                        elif find_certi_img("dragon.png", th=0.82):
+                        if find_certi_img("dragon.png", th=0.82):
                             dprint(key, "🐉 [군주 접속 성공] 'dragon.png' 확인! F1 탭을 누른 뒤 F6 헤이스트 아이콘(688, 502)을 원클릭하여 휠에 등록합니다!")
                             pico_queues[key].put({"action": "WAIT", "delay_min": 0.4, "delay_max": 0.6})
                             pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.06, 0.10)})
@@ -6887,7 +7005,15 @@ def ai_commander_worker(target_pc):
                             state["target_fsm"] = "CERTI_DRAGON_CLICK_HASTE"
                             state["cooldown"] = curr_time + 1.0
                         else:
-                            state["cooldown"] = curr_time + 0.3
+                            pos_re, re_name = find_any_recerti_img(th=0.82)
+                            if pos_re:
+                                handle_recerti_branch(pos_re, re_name, "용머리 대기 중 재인증/오류")
+                            elif find_certi_img("ticket2.png", th=0.90) or find_certi_img("qq/ticket2.png", th=0.90):
+                                dprint(key, "🚨 [접속 직후 ticket2.png 감지] 이용시간 만료 팝업 포착! ok2 ➔ quit 클릭 후 13.png 재접속 단계로 이동합니다!")
+                                state["target_fsm"] = "CERTI_FIND_OK2_FIRST"
+                                state["cooldown"] = curr_time + 0.3
+                            else:
+                                state["cooldown"] = curr_time + 0.3
 
                     elif current_fsm == "CERTI_DRAGON_CLICK_HASTE":
                         dprint(key, f"🪄 [군주 헤이 휠 등록] F6 슬롯({SLOT_F6_CX}, {SLOT_F6_CY})으로 이동하여 원클릭합니다!")
