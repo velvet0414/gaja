@@ -5950,13 +5950,13 @@ def ai_commander_worker(target_pc):
                                 pos = find_certi_img(f"recerti/{fname}", th=th)
                                 if pos:
                                     return pos, fname
-                    # 2순위: 폴더 내 기타 re로 시작하는 이미지 자동 스캔 (lineage, confirm2, delay, ok, rec 제외)
+                    # 2순위: 폴더 내 기타 re로 시작하는 이미지 자동 스캔 (lineage, confirm2, delay, ok, rec~ 제외)
                     try:
                         for fname in os.listdir(recerti_dir):
                             fl = fname.lower()
                             if fl in checked_files or not fl.endswith((".png", ".jpg")):
                                 continue
-                            if fl.startswith(("lineage", "confirm", "delay", "ok", "rec.")):
+                            if fl.startswith(("lineage", "confirm", "delay", "ok", "rec")):
                                 continue
                             if fl.startswith("re"):
                                 pos = find_certi_img(f"recerti/{fname}", th=th)
@@ -7089,23 +7089,29 @@ def ai_commander_worker(target_pc):
                                     state["target_fsm"] = "CERTI_RECERTI_OPEN_TM"
                                     state["cooldown"] = curr_time + g_val(1.2, 1.6)
                                 else:
-                                    # 2) waiting.png 미출현 상태에서 rec.png 10초 지속 감지 및 1분 타임아웃 체크
+                                    # 2) waiting.png 미출현 상태에서 rec.png / rec2.png / rec3.png 10초 지속 감지 및 1분 타임아웃 체크
                                     if not state.get("certi_waiting_seen", False):
                                         pos_wait = find_certi_img("waiting.png", th=0.82)
                                         if pos_wait:
                                             state["certi_waiting_seen"] = True
                                             state["certi_rec_seen_time"] = 0.0
                                             state["certi_rec_miss_cnt"] = 0
-                                            dprint(key, "✅ [정상 구동 확인] 'waiting.png' 감지됨! (rec.png 감시 해제) 이제 14.png가 뜰 때까지 대기합니다.")
+                                            dprint(key, "✅ [정상 구동 확인] 'waiting.png' 감지됨! (rec~3 감시 해제) 이제 14.png가 뜰 때까지 대기합니다.")
                                         else:
-                                            pos_rec = find_certi_img("rec.png", th=0.82) or find_certi_img("recerti/rec.png", th=0.82)
+                                            pos_rec, rec_name = None, ""
+                                            for r_fname in ("rec.png", "rec2.png", "rec3.png"):
+                                                pos_rec = find_certi_img(r_fname, th=0.82) or find_certi_img(f"recerti/{r_fname}", th=0.82)
+                                                if pos_rec:
+                                                    rec_name = r_fname
+                                                    break
+
                                             if pos_rec:
                                                 state["certi_rec_miss_cnt"] = 0
                                                 if state.get("certi_rec_seen_time", 0.0) == 0.0:
                                                     state["certi_rec_seen_time"] = curr_time
-                                                    dprint(key, f"⏳ [rec.png 감지] ({pos_rec[0]}, {pos_rec[1]}) 포착! 'waiting.png' 없이 10초간 지속 감지 시 즉시 재인증으로 이동합니다.")
+                                                    dprint(key, f"⏳ [{rec_name} 감지] ({pos_rec[0]}, {pos_rec[1]}) 포착! 'waiting.png' 없이 10초간 지속 감지 시 즉시 재인증으로 이동합니다.")
                                                 elif curr_time - state["certi_rec_seen_time"] >= 10.0:
-                                                    dprint(key, "🚨 [rec.png 10초 연속 감지 확정] 'waiting.png' 미출현 상태로 10초간 'rec.png'가 유지되어 즉시 바탕화면 이동 후 재인증을 시작합니다!")
+                                                    dprint(key, f"🚨 [{rec_name} 10초 연속 감지 확정] 'waiting.png' 미출현 상태로 10초간 '{rec_name}'가 유지되어 즉시 바탕화면 이동 후 재인증을 시작합니다!")
                                                     state["certi_rec_seen_time"] = 0.0
                                                     clear_movements_only(pico_queues[key])
                                                     state["certi_from_closed_game"] = True
@@ -7116,7 +7122,7 @@ def ai_commander_worker(target_pc):
                                                 if state.get("certi_rec_seen_time", 0.0) > 0.0:
                                                     state["certi_rec_miss_cnt"] = state.get("certi_rec_miss_cnt", 0) + 1
                                                     if state["certi_rec_miss_cnt"] >= 3:
-                                                        dprint(key, "✅ [rec.png 사라짐 확인] 10초 이내에 'rec.png'가 화면에서 사라졌으므로 재인증 타이머를 초기화합니다.")
+                                                        dprint(key, "✅ [rec~3 사라짐 확인] 10초 이내에 rec~3 이미지가 화면에서 사라졌으므로 재인증 타이머를 초기화합니다.")
                                                         state["certi_rec_seen_time"] = 0.0
                                                         state["certi_rec_miss_cnt"] = 0
 
@@ -7334,22 +7340,19 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.2
 
-                    # R-4단계: 원클릭 직후 Delete 키 명령 전송 ➔ 종료오류(confirm2.png) 및 잔류 재감지(3초) 돌입
+                    # R-4단계: 원클릭 직후 Delete 키 1회 전송 (퍼플 오종료 방지를 위해 작업관리자 내 재클릭 금지!)
                     elif current_fsm == "CERTI_RECERTI_TM_PRESS_DEL":
                         state["recerti_kill_try_cnt"] = state.get("recerti_kill_try_cnt", 0) + 1
-                        dprint(key, f"💀 [델키 강제종료] Delete 키를 눌러 리니지 강제 종료를 실행합니다! ({state['recerti_kill_try_cnt']}회차)")
+                        dprint(key, f"💀 [델키 1회 강제종료] Delete 키를 1회 전송합니다! ({state['recerti_kill_try_cnt']}회차)")
                         pico_queues[key].put({"action": "TASKMGR_DEL"})
-                        state["recerti_recheck_deadline"] = curr_time + 3.4 # 델키 입력 시간(0.4s) + 최대 3.0초 재감지
-                        state["recerti_recheck_start"] = curr_time + 0.4
-                        state["target_fsm"] = "CERTI_RECERTI_TM_VERIFY_3S"
+                        state["target_fsm"] = "CERTI_RECERTI_TM_CLOSE_AND_HOME"
                         state["cooldown"] = curr_time + 0.6
 
-                    # R-5단계: 강종 후 종료오류(confirm2.png) 감지 및 리니지 아이콘 재감지(최대 3초)
-                    elif current_fsm == "CERTI_RECERTI_TM_VERIFY_3S":
-                        # 1) 종료 오류 확인 버튼(confirm2.png)이 떴는지 최우선 체크
+                    # R-5단계: confirm2.png(종료 확인창) 유무만 1회 체크 후 즉시 작업관리자를 닫고 바탕화면으로 이동
+                    elif current_fsm == "CERTI_RECERTI_TM_CLOSE_AND_HOME":
                         pos_c2 = find_certi_img("recerti/confirm2.png", th=0.82) or find_certi_img("confirm2.png", th=0.82)
                         if pos_c2:
-                            dprint(key, f"⚠️ [종료 오류 감지] 'confirm2.png' 발견({pos_c2[0]}, {pos_c2[1]})! 확인 버튼을 누른 뒤 최대 3초간 리니지 아이콘을 재감지합니다.")
+                            dprint(key, f"⚠️ [종료 확인창 감지] 'confirm2.png' 발견({pos_c2[0]}, {pos_c2[1]})! 클릭 후 즉시 작업관리자를 닫습니다.")
                             start_certi_move_and_action(
                                 pos_c2[0], pos_c2[1],
                                 next_fsm="CERTI_RECERTI_TM_AFTER_CONFIRM2",
@@ -7359,46 +7362,52 @@ def ai_commander_worker(target_pc):
                                 desc="confirm2.png 종료오류 확인 클릭"
                             )
                         else:
-                            # 2) 작업관리자에서 lineage.png 재감지 확인
-                            pos_lin_rem = find_certi_img("recerti/lineage.png", th=0.82) or find_certi_img("lineage.png", th=0.82)
-                            if pos_lin_rem:
-                                # Delete를 누른 지 1.3초가 지났는데도 여전히 남아있다면 다시 클릭+Delete 시도 (최대 3회)
-                                if curr_time - state.get("recerti_recheck_start", curr_time) >= 1.3 and state.get("recerti_kill_try_cnt", 1) < 3:
-                                    dprint(key, f"🔄 [리니지 잔류 감지] 'lineage.png'가 아직 남아있습니다({pos_lin_rem[0]}, {pos_lin_rem[1]})! 다시 원클릭 후 Delete를 전송합니다.")
-                                    start_certi_move_and_action(
-                                        pos_lin_rem[0], pos_lin_rem[1],
-                                        next_fsm="CERTI_RECERTI_TM_PRESS_DEL",
-                                        double=False,
-                                        use_jitter=False,
-                                        post_wait=0.35,
-                                        desc="잔류 lineage.png 재클릭"
-                                    )
-                                elif curr_time >= state.get("recerti_recheck_deadline", 0):
-                                    dprint(key, "⚠️ [3초 재감지 시간 만료] 작업관리자를 닫고 바탕화면으로 나가 1단계부터 재인증을 진행합니다.")
-                                    pico_queues[key].put({"action": "CLOSE_TASKMGR"})
-                                    state["certi_from_closed_game"] = True
-                                    state["target_fsm"] = "CERTI_GOTO_DESKTOP"
-                                    state["cooldown"] = curr_time + 1.0
-                                else:
-                                    state["cooldown"] = curr_time + 0.25
-                            else:
-                                # 리니지 아이콘이 사라진 경우: 최대 3초 타이머 동안 혹시 뒤늦게 confirm2.png가 뜨거나 다시 나타나는지 감시 후 종료
-                                if curr_time >= state.get("recerti_recheck_deadline", 0):
-                                    dprint(key, "✅ [리니지 완전 종료 확인] 3초간 'lineage.png' 미감지 확인! 작업관리자를 닫고 바탕화면 1단계 재인증으로 복귀합니다!")
-                                    pico_queues[key].put({"action": "CLOSE_TASKMGR"})
-                                    state["certi_from_closed_game"] = True
-                                    state["target_fsm"] = "CERTI_GOTO_DESKTOP"
-                                    state["cooldown"] = curr_time + 1.0
-                                else:
-                                    state["cooldown"] = curr_time + 0.25
+                            dprint(key, "🖥️ [작업관리자 종료 ➔ 바탕화면] 작업관리자를 닫고 작업표시줄 '12.png' 소멸을 최대 7초간 확인합니다.")
+                            pico_queues[key].put({"action": "CLOSE_TASKMGR"})
+                            pico_queues[key].put({"action": "HOME_MACRO"})
+                            # 혹시 마우스 커서가 작업표시줄(Y>=530)에 있으면 가림 방지를 위해 위로 치움
+                            cur_cx, cur_cy = state.get("cursor_pos", [400, 300])
+                            if cur_cy >= 530:
+                                safe_tx, safe_ty = int(round(g_val(550, 650))), int(round(g_val(260, 340)))
+                                pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(safe_tx - cur_cx, safe_ty - cur_cy, duration=0.15, behavior="CERTI", key=key)})
+                                state["cursor_pos"] = [safe_tx, safe_ty]
+                            now_real = time.time()
+                            state["recerti_12_gone_deadline"] = now_real + 8.2 # 닫기/바탕화면 전환(1.2s) + 최대 7.0초 대기
+                            state["recerti_12_gone_streak"] = 0
+                            state["target_fsm"] = "CERTI_RECERTI_WAIT_12_GONE"
+                            state["cooldown"] = now_real + 1.2
 
-                    # R-6단계: confirm2.png 클릭 직후 3초 타이머를 새로 세팅하여 lineage.png 재감지
+                    # R-5-1단계: confirm2.png 클릭 직후 즉시 작업관리자를 닫고 바탕화면으로 이동
                     elif current_fsm == "CERTI_RECERTI_TM_AFTER_CONFIRM2":
-                        dprint(key, "👀 [오류 확인 완료] 이제 최대 3초간 작업관리자에서 'lineage.png'가 남아있는지 재감지합니다.")
-                        state["recerti_recheck_start"] = curr_time
-                        state["recerti_recheck_deadline"] = curr_time + 3.0
-                        state["target_fsm"] = "CERTI_RECERTI_TM_VERIFY_3S"
-                        state["cooldown"] = curr_time + 0.2
+                        dprint(key, "🖥️ [확인창 클릭 완료 ➔ 바탕화면] 작업관리자를 닫고 작업표시줄 '12.png' 소멸을 최대 7초간 확인합니다.")
+                        pico_queues[key].put({"action": "CLOSE_TASKMGR"})
+                        pico_queues[key].put({"action": "HOME_MACRO"})
+                        now_real = time.time()
+                        state["recerti_12_gone_deadline"] = now_real + 8.2
+                        state["recerti_12_gone_streak"] = 0
+                        state["target_fsm"] = "CERTI_RECERTI_WAIT_12_GONE"
+                        state["cooldown"] = now_real + 1.2
+
+                    # R-6단계: 바탕화면 작업표시줄(Y:550~600)에서 12.png가 사라지기를 최대 7초간 대기 (안 사라지면 작업관리자 재실행!)
+                    elif current_fsm == "CERTI_RECERTI_WAIT_12_GONE":
+                        pos_12_rem = find_certi_img("12.png", th=0.82, roi_rect=(0, 550, 800, 600))
+                        if pos_12_rem is None:
+                            state["recerti_12_gone_streak"] = state.get("recerti_12_gone_streak", 0) + 1
+                            if state["recerti_12_gone_streak"] >= 2:
+                                dprint(key, "✅ [12.png 소멸 확인] 작업표시줄에서 리니지 아이콘(12.png)이 완전히 사라졌습니다! 1단계 재인증으로 이동합니다!")
+                                state["certi_from_closed_game"] = True
+                                state["target_fsm"] = "CERTI_GOTO_DESKTOP"
+                                state["cooldown"] = curr_time + 0.3
+                            else:
+                                state["cooldown"] = curr_time + 0.15
+                        else:
+                            state["recerti_12_gone_streak"] = 0
+                            if curr_time >= state.get("recerti_12_gone_deadline", 0):
+                                dprint(key, f"🚨 [7초 경과 - 12.png 잔류 확인] 작업표시줄에 '12.png'({pos_12_rem[0]}, {pos_12_rem[1]})가 아직 남아있습니다! 작업관리자를 다시 열어 강종을 재시도합니다!")
+                                state["target_fsm"] = "CERTI_RECERTI_OPEN_TM"
+                                state["cooldown"] = curr_time + 0.2
+                            else:
+                                state["cooldown"] = curr_time + 0.25
 
                     # 이용권 오류 후 ok2.png 클릭 -> ticket.png가 완전히 사라진 뒤에만 ok2.png를 찾아 Cancel 오클릭 원천 차단!
                     elif current_fsm == "CERTI_TICKET_OK2_FIND":
