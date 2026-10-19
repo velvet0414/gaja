@@ -398,14 +398,9 @@ def _save_captcha_debug_image(img_bgr, banner_rect, grid_rect, match_str, grid_s
         pass
 
 def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
-    global _LAST_CAPTCHA_CALL_TIME
     if not CAPSOLVER_API_KEY or "여기에" in CAPSOLVER_API_KEY:
         print("⚠️ [CapSolver 오류] API 키가 입력되지 않았습니다!")
         return []
-    now_t = time.time()
-    if now_t - _LAST_CAPTCHA_CALL_TIME < 1.0:
-        return []
-    _LAST_CAPTCHA_CALL_TIME = now_t
 
     try:
         (bx1, by1, bx2, by2), (gx1, gy1, gx2, gy2) = _locate_captcha_banner_and_grid(img_bgr)
@@ -584,32 +579,16 @@ def _local_ip_lock_fallback(action, client_id):
 def request_central_ip_lock(pc_key, target_c_num, action="ACQUIRE"):
     my_num = get_my_central_num()
     t_num = str(target_c_num or my_num).strip()
+    if action == "RELEASE" or t_num == my_num:
+        return True, "GRANTED"
+
+    # 타 중앙컴 프록시(sub.png) 사용 시 해당 중앙컴(31280)이 켜져 있는지만 확인하고 대기 없이 즉시 동시 통과!
     host = CENTRAL_TAILSCALE_MAP.get(t_num, "100.74.191.120")
-    client_id = f"CC-{pc_key}"
-
-    # 로컬 미니1~4 간 동시 진입 1차 차단
-    if t_num == my_num:
-        ok_loc, msg_loc = _local_ip_lock_fallback(action, client_id)
-        if not ok_loc:
-            return False, msg_loc
-
     try:
-        s = socket.create_connection((host, PROXY_DIRECT_EXIT_PORT), timeout=1.2)
-        s.settimeout(1.2)
-        cmd_str = f"IP_LOCK {action} {client_id}\r\n\r\n"
-        s.sendall(cmd_str.encode("utf-8"))
-        resp = s.recv(1024).decode("utf-8", errors="ignore").strip()
+        s = socket.create_connection((host, PROXY_DIRECT_EXIT_PORT), timeout=1.0)
         s.close()
-        if resp.startswith("GRANTED"):
-            return True, "GRANTED"
-        elif resp.startswith("RELEASED"):
-            return True, "RELEASED"
-        elif resp:
-            return False, resp
         return True, "GRANTED"
     except Exception:
-        if t_num == my_num:
-            return True, "LOCAL_FALLBACK"
         return False, "OFFLINE|타 중앙컴 연결 불가"
 
 def release_central_ip_lock_async(pc_key):
