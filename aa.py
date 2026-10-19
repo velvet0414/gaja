@@ -440,10 +440,12 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
         question_code, match_info = _detect_captcha_question_local(search_roi)
 
         if not question_code:
+            globals()["_LAST_CAPTCHA_WORD_MATCHED"] = False
             save_unseen_banner_if_needed(img_bgr)
             print(f"⚠️ [제시어 미매칭] 최고유사도: {match_info} (기준 75% 미달) ➔ CapSolver 스킵")
             _save_captcha_debug_image(img_bgr, (bx1, by1, bx2, by2), (gx1, gy1, gx2, gy2), match_info, 3, [], "WORD_MISS")
             return []
+        globals()["_LAST_CAPTCHA_WORD_MATCHED"] = True
 
         # 2️⃣ 3x3 / 4x4 판별 후 CapSolver 표준 해상도(3x3 -> 300x300, 4x4 -> 450x450)로 리사이즈!
         grid_crop = img_bgr[gy1:gy2, gx1:gx2]
@@ -6237,13 +6239,13 @@ def ai_commander_worker(target_pc):
                                 resume_fsm, resume_desc = "CERTI_CAPTCHA_SOLVE", "리캡차 자동 판독 화면(captcha.png)"
                             else:
                                 resume_fsm, resume_desc = "CERTI_CAPTCHA_MANUAL_WAIT", "리캡차 수동 대기 화면(captcha.png)"
-                        elif find_certi_img("confirm.png", th=0.80) or find_certi_img("skip.png", th=0.80):
+                        elif find_certi_img("confirm.png", th=0.80) or find_certi_img("next.png", th=0.80) or find_certi_img("skip.png", th=0.80):
                             if auto_cap_on:
                                 state["captcha_is_scrolled_down"] = True
                                 state["captcha_scroll_cnt"] = 0
-                                resume_fsm, resume_desc = "CERTI_CAPTCHA_SCROLL", "리캡차 하단 확인/건너뛰기(confirm/skip)"
+                                resume_fsm, resume_desc = "CERTI_CAPTCHA_SCROLL", "리캡차 하단 확인/다음/건너뛰기(confirm/next/skip)"
                             else:
-                                resume_fsm, resume_desc = "CERTI_CAPTCHA_MANUAL_WAIT", "리캡차 수동 확인 대기(confirm/skip)"
+                                resume_fsm, resume_desc = "CERTI_CAPTCHA_MANUAL_WAIT", "리캡차 수동 확인 대기(confirm/next/skip)"
 
                         # 2) 게임 종료 팝업 / 런처 실행 / 인게임 재접속 단계 검사 (바탕화면 작업표시줄 12.png 오인식 배제)
                         if resume_fsm is None:
@@ -6861,13 +6863,22 @@ def ai_commander_worker(target_pc):
                                 return find_certi_img(btn_name, th=th, roi_rect=(250, 380, 550, 595))
 
                             if state.get("captcha_need_new", False):
-                                # 타일이 아예 없거나 미등록 제시어일 때만 new(새로고침) 클릭
-                                pos_btn = find_captcha_bottom_btn("new.png", th=0.78) or find_captcha_bottom_btn("skip.png", th=0.78)
-                                btn_label = "new(새로고침)/skip"
+                                if globals().get("_LAST_CAPTCHA_WORD_MATCHED", False):
+                                    # 제시어는 매칭되었으나 해당 사물 타일이 0개인 경우 -> skip(건너뛰기)을 1순위로 클릭! (없으면 new 클릭)
+                                    pos_btn = find_captcha_bottom_btn("skip.png", th=0.78) or find_captcha_bottom_btn("new.png", th=0.78)
+                                    btn_label = "skip(건너뛰기 우선)/new"
+                                else:
+                                    # words 폴더에 없는 미등록 제시어인 경우 -> new(새로고침)를 1순위로 클릭하여 문제 변경!
+                                    pos_btn = find_captcha_bottom_btn("new.png", th=0.78) or find_captcha_bottom_btn("skip.png", th=0.78)
+                                    btn_label = "new(미등록 제시어 새로고침)/skip"
                             else:
-                                # 🚨 타일을 정상적으로 찍고 내려왔을 때는 절대 new.png(새로고침)를 누르지 않고 오직 confirm/skip만 탐색!
-                                pos_btn = find_captcha_bottom_btn("confirm.png", th=0.78) or find_captcha_bottom_btn("skip.png", th=0.78)
-                                btn_label = "confirm(확인)/skip"
+                                # 🚨 타일을 정상적으로 찍고 내려왔을 때는 confirm(확인) -> next(다음) -> skip(건너뛰기) 순으로 탐색!
+                                pos_btn = (
+                                    find_captcha_bottom_btn("confirm.png", th=0.78) or
+                                    find_captcha_bottom_btn("next.png", th=0.78) or
+                                    find_captcha_bottom_btn("skip.png", th=0.78)
+                                )
+                                btn_label = "confirm(확인)/next(다음)/skip"
 
                             if pos_btn:
                                 round_num = state.get("captcha_test_round", 1)
