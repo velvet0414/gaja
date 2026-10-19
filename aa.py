@@ -5767,9 +5767,11 @@ def ai_commander_worker(target_pc):
                                 state[bk_k] = bk_v
                             dprint(key, "♻️ [버프 타이머 복원] 사망 오인식으로 초기화되었던 모든 버프/헤이 타이머를 완벽히 되살렸습니다!")
 
-                        # ⏸️ [버프 일시정지 & 계열마법 0초 초기화]
+                        # ⏸️ [버프 일시정지 & 계열마법/라이트 0초 초기화]
                         state["buff_element_time"] = 0.0 # F2>F6 요정 계열마법은 재접속 시 증발하므로 0으로 초기화
-                        freeze_keys = ["windwalk", "shield", "holy", "enchant", "blessed", "dex", "decrease", "extra_f10", "light", "blue_pot"]
+                        state["buff_light_time"] = 0.0   # F3>F12 라이트 마법도 재접속 시 증발하므로 0으로 초기화
+                        state["post_certi_fast_buffs"] = {"element", "light"}
+                        freeze_keys = ["windwalk", "shield", "holy", "enchant", "blessed", "dex", "decrease", "extra_f10", "blue_pot"]
                         state["certi_frozen_buffs"] = {
                             bk: max(0.0, state.get(f"buff_{bk}_time", 0.0) - curr_time)
                             for bk in freeze_keys
@@ -5777,7 +5779,7 @@ def ai_commander_worker(target_pc):
                         state["certi_haste_elapsed"] = (curr_time - state["last_haste_time"]) if state.get("last_haste_time", 0.0) > 0.0 else None
                         state["certi_real_buff_elapsed"] = (curr_time - state["real_buff_time"]) if state.get("real_buff_time", 0.0) > 0.0 else None
                         save_buff_times(ai_states)
-                        dprint(key, "⏸️ [버프 타이머 동결] 모든 버프 잔여시간 일시정지 완료! (계열마법 F2>F6은 0초로 리셋)")
+                        dprint(key, "⏸️ [버프 타이머 동결] 모든 버프 잔여시간 일시정지 완료! (계열마법 F2>F6, 라이트 F3>F12는 0초로 리셋)")
 
                         if detected_popup_type == "CERTI":
                             import datetime
@@ -5845,6 +5847,7 @@ def ai_commander_worker(target_pc):
 
                     # 수동 조작 중에도 버프 타이머 동결 및 IP 사용권(Heartbeat) 유지
                     state["buff_element_time"] = 0.0
+                    state["buff_light_time"] = 0.0
                     if "certi_frozen_buffs" in state:
                         for bk, rem_s in state["certi_frozen_buffs"].items():
                             state[f"buff_{bk}_time"] = curr_time + rem_s
@@ -5882,8 +5885,9 @@ def ai_commander_worker(target_pc):
                     dprint(key, "🔄 [수동 종료 ➔ 화면 자동 인식 가동] 현재 화면이 몇 단계인지 스캔하여 자동으로 이어갑니다!")
 
             if is_certi_mode:
-                # ⏸️ [인증 중 버프 잔여시간 실시간 동결 유지 & 계열마법(F2>F6) 0초 고정]
+                # ⏸️ [인증 중 버프 잔여시간 실시간 동결 유지 & 계열마법(F2>F6)/라이트(F3>F12) 0초 고정]
                 state["buff_element_time"] = 0.0
+                state["buff_light_time"] = 0.0
                 if "certi_frozen_buffs" in state:
                     for bk, rem_s in state["certi_frozen_buffs"].items():
                         state[f"buff_{bk}_time"] = curr_time + rem_s
@@ -7512,13 +7516,15 @@ def ai_commander_worker(target_pc):
 
                     # 미니맵 오픈(Ctrl+M -> F1) 물리적 타건 완료 후 사냥/정비 상태 최종 복귀
                     elif current_fsm == "CERTI_DRAGON_MINIMAP_WAIT":
-                        # ▶️ [버프 타이머 일시정지 해제 & 계열마법 0초 확정 저장]
+                        # ▶️ [버프 타이머 일시정지 해제 & 계열마법/라이트 0초 확정 저장 + 10초 텀 예약]
                         state["buff_element_time"] = 0.0
+                        state["buff_light_time"] = 0.0
+                        state["post_certi_fast_buffs"] = {"element", "light"}
                         state.pop("certi_frozen_buffs", None)
                         state.pop("certi_haste_elapsed", None)
                         state.pop("certi_real_buff_elapsed", None)
                         save_buff_times(ai_states)
-                        dprint(key, "🗺️ [미니맵 오픈 완료 & 버프 타이머 재개] 미니맵(Ctrl+M) 활성화 완료! 이제 이전 상태로 복귀하며 계열마법(F2>F6)을 시전합니다.")
+                        dprint(key, "🗺️ [미니맵 오픈 완료 & 버프 타이머 재개] 미니맵(Ctrl+M) 활성화 완료! 이제 이전 상태로 복귀하며 라이트(F3>F12)와 계열마법(F2>F6)을 10초 간격으로 시전합니다.")
 
                         # 인게임 복귀를 위한 맵/커서/생존 타이머 안전 초기화
                         state["dungeon_map_pos"] = None
@@ -17792,17 +17798,30 @@ def ai_commander_worker(target_pc):
                         if target_buff["name"] == "blue_pot":
                             state["pending_blue_pot"] = False
 
+                        # 💡 [인증 복귀 버프 차감] 현재 시전할 버프가 인증 복귀용(light/element)이면 1회성 10초 특권 명단에서 제거
+                        if "post_certi_fast_buffs" in state and target_buff["name"] in state["post_certi_fast_buffs"]:
+                            state["post_certi_fast_buffs"].discard(target_buff["name"])
+
                         if len(expired_buffs) > 1:
                             delay_seconds = 180.0
+                            normal_delay_idx = 0
                             for idx, delayed_b in enumerate(expired_buffs[1:]):
                                 # 💡 [파랭이, 디크리즈 3분 지연 면제] 다른 버프를 밀어낼 때, 절대 3분 지연 패널티를 주지 않음!
                                 if delayed_b["name"] in ["blue_pot", "decrease"]:
                                     dprint(key, f"💊 [{delayed_b['name']} 특권] 3분 지연 페널티를 무시하고 즉각 다음 턴에 시전 대기합니다!")
                                     continue
+
+                                # 💡 [인증 후 재접속 계열/라이트 3분텀 제외 & 10초 딜레이 적용]
+                                if delayed_b["name"] in state.get("post_certi_fast_buffs", set()):
+                                    pushed_time = curr_time + 10.0
+                                    state[f"buff_{delayed_b['name']}_time"] = pushed_time
+                                    dprint(key, f"⚡ [인증 복귀 버프] {delayed_b['name']} 버프는 3분텀에서 제외되어 10초 뒤로 예약됩니다!")
+                                    continue
                                     
-                                pushed_time = curr_time + delay_seconds * (idx + 1)
+                                normal_delay_idx += 1
+                                pushed_time = curr_time + delay_seconds * normal_delay_idx
                                 state[f"buff_{delayed_b['name']}_time"] = pushed_time
-                                dprint(key, f"🕒 [버프 지연] {delayed_b['name']} 버프는 MP 관리를 위해 {int(delay_seconds*(idx+1))}초 뒤로 예약됩니다.")
+                                dprint(key, f"🕒 [버프 지연] {delayed_b['name']} 버프는 MP 관리를 위해 {int(delay_seconds*normal_delay_idx)}초 뒤로 예약됩니다.")
                             save_buff_times(ai_states)
 
                         state["buff_start_mp"] = mp
@@ -26837,9 +26856,11 @@ for i, pc in enumerate(MINI_PCS):
         st["loot_state"] = "IDLE"
         st["death_detect_start"] = 0
 
-        # 버프 타이머 동결 및 재접속 후 계열마법(F2>F6) 시전 예약
+        # 버프 타이머 동결 및 재접속 후 계열마법(F2>F6)/라이트(F3>F12) 시전 예약
         st["buff_element_time"] = 0.0
-        freeze_keys = ["windwalk", "shield", "holy", "enchant", "blessed", "dex", "decrease", "extra_f10", "light", "blue_pot"]
+        st["buff_light_time"] = 0.0
+        st["post_certi_fast_buffs"] = {"element", "light"}
+        freeze_keys = ["windwalk", "shield", "holy", "enchant", "blessed", "dex", "decrease", "extra_f10", "blue_pot"]
         st["certi_frozen_buffs"] = {
             bk: max(0.0, st.get(f"buff_{bk}_time", 0.0) - curr_t)
             for bk in freeze_keys
@@ -26901,10 +26922,12 @@ for i, pc in enumerate(MINI_PCS):
         st["loot_state"] = "IDLE"
         st["death_detect_start"] = 0
 
-        # 기존 인증 진입 시 동결된 버프가 없을 때만 새로 동결 (계열마법 F2>F6은 재접속 시 0초 리셋)
+        # 기존 인증 진입 시 동결된 버프가 없을 때만 새로 동결 (계열마법 F2>F6, 라이트 F3>F12는 재접속 시 0초 리셋)
         st["buff_element_time"] = 0.0
+        st["buff_light_time"] = 0.0
+        st["post_certi_fast_buffs"] = {"element", "light"}
         if "certi_frozen_buffs" not in st:
-            freeze_keys = ["windwalk", "shield", "holy", "enchant", "blessed", "dex", "decrease", "extra_f10", "light", "blue_pot"]
+            freeze_keys = ["windwalk", "shield", "holy", "enchant", "blessed", "dex", "decrease", "extra_f10", "blue_pot"]
             st["certi_frozen_buffs"] = {
                 bk: max(0.0, st.get(f"buff_{bk}_time", 0.0) - curr_t)
                 for bk in freeze_keys
