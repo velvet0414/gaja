@@ -2750,27 +2750,24 @@ try:
         cursor_portal_mask = None
 except: cursor_portal_color, cursor_portal_mask = None, None
 
-# 👇👇 [인증 추가 1] 윈도우 바탕화면/웹 인증용 커서 로드 (화면 테두리 사각지대 제거를 위해 투명 여백 자동 크롭!)
-def _load_tight_certi_cursor(img_path):
-    """투명 PNG 커서 주변의 빈 여백(Alpha=0)을 바짝 잘라내어 화면 최상단/최좌측(x=0, y=0~3)에서도 100% 매칭되게 합니다."""
-    try:
-        bgra = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
-        if bgra is None:
-            return None, None
-        if len(bgra.shape) == 3 and bgra.shape[2] == 4:
-            color, mask = bgra[:, :, :3], bgra[:, :, 3]
-            ys, xs = np.where(mask > 0)
-            if len(xs) > 0 and len(ys) > 0:
-                color = color[ys.min():ys.max()+1, xs.min():xs.max()+1].copy()
-                mask = mask[ys.min():ys.max()+1, xs.min():xs.max()+1].copy()
-            return color, mask
-        else:
-            return cv2.imread(img_path, cv2.IMREAD_COLOR), None
-    except Exception:
-        return None, None
+# 👇👇 [인증 추가 1] 윈도우 바탕화면/웹 인증용 커서 및 인증창 감지 이미지 로드
+try:
+    cursor3_bgra = cv2.imread("qq/certi/cursor3.png", cv2.IMREAD_UNCHANGED)
+    if cursor3_bgra is not None and len(cursor3_bgra.shape) == 3 and cursor3_bgra.shape[2] == 4:
+        globals()["cursor3_color"], globals()["cursor3_mask"] = cursor3_bgra[:, :, :3], cursor3_bgra[:, :, 3]
+    else:
+        globals()["cursor3_color"] = cv2.imread("qq/certi/cursor3.png", cv2.IMREAD_COLOR)
+        globals()["cursor3_mask"] = None
+except: globals()["cursor3_color"], globals()["cursor3_mask"] = None, None
 
-globals()["cursor3_color"], globals()["cursor3_mask"] = _load_tight_certi_cursor("qq/certi/cursor3.png")
-globals()["cursor4_color"], globals()["cursor4_mask"] = _load_tight_certi_cursor("qq/certi/cursor4.png")
+try:
+    cursor4_bgra = cv2.imread("qq/certi/cursor4.png", cv2.IMREAD_UNCHANGED)
+    if cursor4_bgra is not None and len(cursor4_bgra.shape) == 3 and cursor4_bgra.shape[2] == 4:
+        globals()["cursor4_color"], globals()["cursor4_mask"] = cursor4_bgra[:, :, :3], cursor4_bgra[:, :, 3]
+    else:
+        globals()["cursor4_color"] = cv2.imread("qq/certi/cursor4.png", cv2.IMREAD_COLOR)
+        globals()["cursor4_mask"] = None
+except: globals()["cursor4_color"], globals()["cursor4_mask"] = None, None
 
 try:
     certi_bgra = cv2.imread("qq/certi/certi.png", cv2.IMREAD_UNCHANGED)
@@ -3426,16 +3423,27 @@ def find_cursor_pos(img_bgr, last_pos=None, check_circle=False, allow_full_scan=
                         th_t, tw_t = template.shape[:2]
                         if mask is not None:
                             res = cv2.matchTemplate(roi, template, cv2.TM_SQDIFF_NORMED, mask=mask)
-                            min_val, _, min_loc, _ = cv2.minMaxLoc(res)
+                            res = np.nan_to_num(res, nan=1.0, posinf=1.0, neginf=1.0)
+                            min_val, min_loc = 1.0, None
+                            for _ in range(15):
+                                mv, _, ml, _ = cv2.minMaxLoc(res)
+                                if mv > local_err_limit:
+                                    min_val, min_loc = mv, ml
+                                    break
+                                if is_valid_cursor_patch(roi, ml[0], ml[1], tw_t, th_t):
+                                    min_val, min_loc = mv, ml
+                                    break
+                                cv2.circle(res, ml, 6, 1.0, -1)
                         else:
                             res = cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED)
                             _, max_val, _, max_loc = cv2.minMaxLoc(res)
                             min_val = 1.0 - max_val
                             min_loc = max_loc
+                            if not is_valid_cursor_patch(roi, min_loc[0], min_loc[1], tw_t, th_t):
+                                continue
 
-                        if not is_valid_cursor_patch(roi, min_loc[0], min_loc[1], tw_t, th_t):
+                        if min_loc is None:
                             continue
-
                         if min_val <= local_err_limit: return (min_loc[0] + x1 + hx, min_loc[1] + y1 + hy)
                         if min_val < best_error:
                             best_error = min_val
@@ -3457,16 +3465,27 @@ def find_cursor_pos(img_bgr, last_pos=None, check_circle=False, allow_full_scan=
             th_t, tw_t = template.shape[:2]
             if mask is not None:
                 res = cv2.matchTemplate(search_img, template, cv2.TM_SQDIFF_NORMED, mask=mask)
-                min_val, _, min_loc, _ = cv2.minMaxLoc(res)
+                res = np.nan_to_num(res, nan=1.0, posinf=1.0, neginf=1.0)
+                min_val, min_loc = 1.0, None
+                for _ in range(20):
+                    mv, _, ml, _ = cv2.minMaxLoc(res)
+                    if mv > full_err_limit:
+                        min_val, min_loc = mv, ml
+                        break
+                    if is_valid_cursor_patch(search_img, ml[0], ml[1], tw_t, th_t):
+                        min_val, min_loc = mv, ml
+                        break
+                    cv2.circle(res, ml, 8, 1.0, -1)
             else:
                 res = cv2.matchTemplate(search_img, template, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, max_loc = cv2.minMaxLoc(res)
                 min_val = 1.0 - max_val
                 min_loc = max_loc
+                if not is_valid_cursor_patch(search_img, min_loc[0], min_loc[1], tw_t, th_t):
+                    continue
 
-            if not is_valid_cursor_patch(search_img, min_loc[0], min_loc[1], tw_t, th_t):
+            if min_loc is None:
                 continue
-
             if min_val <= full_err_limit:
                 if not is_certi_mode:
                     t_str = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
@@ -6001,7 +6020,6 @@ def ai_commander_worker(target_pc):
                         state["real_cursor_pos"] = [cur_cx, cur_cy]
                     else:
                         cur_cx, cur_cy = state.get("cursor_pos", [400, 300])
-                        state["real_cursor_pos"] = None
 
                     # 💡 15.png 등 초소형 타겟(use_jitter=False)은 지터 0 고정, 일반 웹 버튼/입력칸은 중심부(가로 ±3px, 세로 ±2px) 타격
                     if use_jitter:
@@ -6012,12 +6030,6 @@ def ai_commander_worker(target_pc):
                         fy = int(max(5, min(h - 5, ty)))
 
                     dx, dy = fx - cur_cx, fy - cur_cy
-                    # 만약 실제 커서를 못 찾은 상태(real_c is None)에서 기억 좌표가 목표 좌표와 같아 dx=0, dy=0이 되면,
-                    # 제자리 멈춤을 막기 위해 먼저 빈 공간 쪽으로 강제 이동시켜 다음 검증 단계에서 커서를 찾게 만듦!
-                    if real_c is None and math.hypot(dx, dy) < 5.0:
-                        dx = int(round(g_val(140, 190))) if fx < 400 else -int(round(g_val(140, 190)))
-                        dy = int(round(g_val(110, 150))) if fy < 300 else -int(round(g_val(110, 150)))
-
                     dist = math.hypot(dx, dy)
                     dur = apply_human_variance(0.08 + 0.035 * math.log2((dist / 20.0) + 1.0) if dist > 0 else 0.08) * 1.2
 
@@ -6029,7 +6041,8 @@ def ai_commander_worker(target_pc):
 
                     state["special_ack_arrived"] = False
                     state["pico_arrived"] = False
-                    state["cursor_pos"] = [max(5, min(w - 5, cur_cx + dx)), max(5, min(h - 5, cur_cy + dy))]
+                    state["cursor_pos"] = [fx, fy]
+                    state["real_cursor_pos"] = [fx, fy]
 
                     state["certi_target_pos"] = (fx, fy)
                     state["certi_click_double"] = double
@@ -6453,45 +6466,27 @@ def ai_commander_worker(target_pc):
                             strict_aim = state.get("certi_strict_aim", False)
 
                             need_correction = False
-                            verify_c_mode = state.get("certi_c_mode", "WEB")
-                            real_c = find_cursor_pos(img_bgr, last_pos=(tx, ty), allow_full_scan=True, is_certi_mode=verify_c_mode)
-                            if real_c:
-                                state["cursor_pos"] = list(real_c)
-                                state["real_cursor_pos"] = list(real_c)
-                                err_dist = math.hypot(tx - real_c[0], ty - real_c[1])
-                                tol_px = 2.5 if strict_aim else 12.0
-                                if err_dist > tol_px and state.get("certi_corr_cnt", 0) < 4:
-                                    need_correction = True
-                                    corr_dx = tx - real_c[0]
-                                    corr_dy = ty - real_c[1]
-                                    dur_c = apply_human_variance(0.06 + 0.03 * math.log2((err_dist / 20.0) + 1.0))
-                                    deltas_c = generate_human_deltas(corr_dx, corr_dy, duration=dur_c, behavior="CERTI", key=key)
-                                    if deltas_c:
-                                        pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas_c})
-                                    pico_queues[key].put({"action": "SPECIAL_ACK"})
-                                    state["special_ack_arrived"] = False
-                                    state["cursor_pos"] = [tx, ty]
-                                    state["certi_corr_cnt"] = state.get("certi_corr_cnt", 0) + 1
-                                    state["certi_ack_timeout"] = curr_time + dur_c + 1.0
-                                    state["cooldown"] = curr_time + 0.05
-                                    dprint(key, f"🎯 [타겟 정밀 영점보정] 목표({tx},{ty})와 실제({real_c[0]},{real_c[1]}) 오차 {err_dist:.1f}px ➔ 재조준({state['certi_corr_cnt']}/4)")
-                            else:
-                                state["real_cursor_pos"] = None
-                                # 🚨 커서를 화면에서 못 찾았을 때 그냥 클릭하지 않고 빈 공간으로 빼내어 위치 복구!
-                                if state.get("certi_corr_cnt", 0) < 3:
-                                    need_correction = True
-                                    rescue_dx = int(round(g_val(140, 190))) if tx < 400 else -int(round(g_val(140, 190)))
-                                    rescue_dy = int(round(g_val(110, 150))) if ty < 300 else -int(round(g_val(110, 150)))
-                                    dur_r = apply_human_variance(0.10)
-                                    deltas_r = generate_human_deltas(rescue_dx, rescue_dy, duration=dur_r, behavior="CERTI", key=key)
-                                    if deltas_r:
-                                        pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas_r})
-                                    pico_queues[key].put({"action": "SPECIAL_ACK"})
-                                    state["special_ack_arrived"] = False
-                                    state["certi_corr_cnt"] = state.get("certi_corr_cnt", 0) + 1
-                                    state["certi_ack_timeout"] = curr_time + dur_r + 1.0
-                                    state["cooldown"] = curr_time + 0.08
-                                    dprint(key, f"👀 [커서 미감지 ➔ 구출 이동] 커서를 못 찾아 빈 공간({rescue_dx:+d},{rescue_dy:+d})으로 빼낸 뒤 재조준합니다! ({state['certi_corr_cnt']}/3)")
+                            if strict_aim:
+                                real_c = find_cursor_pos(img_bgr, last_pos=(tx, ty), allow_full_scan=True, is_certi_mode="WEB")
+                                if real_c:
+                                    state["cursor_pos"] = list(real_c)
+                                    state["real_cursor_pos"] = list(real_c)
+                                    err_dist = math.hypot(tx - real_c[0], ty - real_c[1])
+                                    if err_dist > 2.5 and state.get("certi_corr_cnt", 0) < 3:
+                                        need_correction = True
+                                        corr_dx = tx - real_c[0]
+                                        corr_dy = ty - real_c[1]
+                                        dur_c = apply_human_variance(0.06 + 0.03 * math.log2((err_dist / 20.0) + 1.0))
+                                        deltas_c = generate_human_deltas(corr_dx, corr_dy, duration=dur_c, behavior="CERTI", key=key)
+                                        if deltas_c:
+                                            pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas_c})
+                                        pico_queues[key].put({"action": "SPECIAL_ACK"})
+                                        state["special_ack_arrived"] = False
+                                        state["cursor_pos"] = [tx, ty]
+                                        state["certi_corr_cnt"] = state.get("certi_corr_cnt", 0) + 1
+                                        state["certi_ack_timeout"] = curr_time + dur_c + 1.0
+                                        state["cooldown"] = curr_time + 0.05
+                                        dprint(key, f"🎯 [타겟 정밀 영점보정] 목표({tx},{ty})와 실제({real_c[0]},{real_c[1]}) 오차 {err_dist:.1f}px ➔ 재조준({state['certi_corr_cnt']}/3)")
 
                             if not need_correction:
                                 is_dbl = state.get("certi_click_double", False)
