@@ -7025,24 +7025,28 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.2
 
-                    # 13-1단계: 더블클릭 완료 직후 1분 타이머 및 delay.png 타이머 초기화 후 감시 돌입
+                    # 13-1단계: 더블클릭 완료 직후 1분 타이머 및 delay.png / rec.png 타이머 초기화 후 감시 돌입
                     elif current_fsm == "CERTI_LAUNCH_TIMER_INIT":
                         state["certi_launch_time"] = curr_time
                         state["certi_waiting_seen"] = False
                         state["certi_delay_seen_time"] = 0.0
+                        state["certi_rec_seen_time"] = 0.0
+                        state["certi_rec_miss_cnt"] = 0
                         state["target_fsm"] = "CERTI_WAIT_GAME_LAUNCH"
                         state["cooldown"] = curr_time + 0.2
-                        dprint(key, "👀 [구동 감시 시작] 'waiting.png'(1분), 'delay.png'(10초), '14.png' 및 recerti 감지를 시작합니다.")
+                        dprint(key, "👀 [구동 감시 시작] 'waiting.png', 'rec.png'(10초 지속), 'delay.png'(10초), '14.png' 및 recerti 감지를 시작합니다.")
 
-                    # 14단계(구동 감시 및 14.png 클릭): recerti 감시 + delay.png(10초 미진입 시 강종) + waiting.png(1분 타임아웃)
+                    # 14단계(구동 감시 및 14.png 클릭): recerti 감시 + delay.png(10초) + rec.png(10초 지속 시 재인증) + waiting.png(1분)
                     elif current_fsm == "CERTI_WAIT_GAME_LAUNCH":
                         pos_re, re_name = find_any_recerti_img(th=0.82)
                         if pos_re:
+                            state["certi_rec_seen_time"] = 0.0
                             handle_recerti_branch(pos_re, re_name, "구동 중 재인증/오류")
                         else:
                             pos_14 = find_certi_img("14.png", th=0.82)
                             if pos_14:
                                 state["certi_delay_seen_time"] = 0.0
+                                state["certi_rec_seen_time"] = 0.0
                                 dprint(key, f"🔎 [인증 14단계] '14.png' 발견({pos_14[0]}, {pos_14[1]})! 커서 이동 후 원클릭합니다.")
                                 start_certi_move_and_action(pos_14[0], pos_14[1], next_fsm="CERTI_STEP_15_FIND", double=False, post_wait=0.6, desc="14.png 클릭")
                             else:
@@ -7057,27 +7061,46 @@ def ai_commander_worker(target_pc):
                                 if state.get("certi_delay_seen_time", 0.0) > 0.0 and (curr_time - state["certi_delay_seen_time"] >= 10.0):
                                     dprint(key, "🚨 [delay.png 10초 타임아웃] 'delay.png' 매칭 후 10초가 지나도 '14.png'가 확인되지 않아 강종 후 재인증(recerti)으로 넘어갑니다!")
                                     state["certi_delay_seen_time"] = 0.0
+                                    state["certi_rec_seen_time"] = 0.0
                                     clear_movements_only(pico_queues[key])
                                     pico_queues[key].put({"action": "HOME_MACRO"})
                                     state["target_fsm"] = "CERTI_RECERTI_OPEN_TM"
                                     state["cooldown"] = curr_time + g_val(1.2, 1.6)
                                 else:
-                                    # 2) waiting.png 감지 및 1분 타임아웃 체크 (재시도 타이밍 도달 시에만 rec.png 단발 검사!)
+                                    # 2) waiting.png 미출현 상태에서 rec.png 10초 지속 감지 및 1분 타임아웃 체크
                                     if not state.get("certi_waiting_seen", False):
                                         pos_wait = find_certi_img("waiting.png", th=0.82)
                                         if pos_wait:
                                             state["certi_waiting_seen"] = True
-                                            dprint(key, "✅ [정상 구동 확인] 'waiting.png' 감지됨! 이제 14.png가 뜰 때까지 대기합니다.")
-                                        elif state.get("certi_delay_seen_time", 0.0) == 0.0 and (curr_time - state.get("certi_launch_time", curr_time) >= 60.0):
+                                            state["certi_rec_seen_time"] = 0.0
+                                            state["certi_rec_miss_cnt"] = 0
+                                            dprint(key, "✅ [정상 구동 확인] 'waiting.png' 감지됨! (rec.png 감시 해제) 이제 14.png가 뜰 때까지 대기합니다.")
+                                        else:
                                             pos_rec = find_certi_img("rec.png", th=0.82) or find_certi_img("recerti/rec.png", th=0.82)
                                             if pos_rec:
-                                                dprint(key, f"🚨 [구동 1분 타임아웃 + rec.png 감지] 'waiting.png' 미출현 상태에서 'rec.png'({pos_rec[0]}, {pos_rec[1]}) 포착! 바탕화면 이동 후 재인증을 시작합니다!")
-                                                clear_movements_only(pico_queues[key])
-                                                state["certi_from_closed_game"] = True
-                                                state["target_fsm"] = "CERTI_GOTO_DESKTOP"
-                                                state["cooldown"] = curr_time + 0.2
+                                                state["certi_rec_miss_cnt"] = 0
+                                                if state.get("certi_rec_seen_time", 0.0) == 0.0:
+                                                    state["certi_rec_seen_time"] = curr_time
+                                                    dprint(key, f"⏳ [rec.png 감지] ({pos_rec[0]}, {pos_rec[1]}) 포착! 'waiting.png' 없이 10초간 지속 감지 시 즉시 재인증으로 이동합니다.")
+                                                elif curr_time - state["certi_rec_seen_time"] >= 10.0:
+                                                    dprint(key, "🚨 [rec.png 10초 연속 감지 확정] 'waiting.png' 미출현 상태로 10초간 'rec.png'가 유지되어 즉시 바탕화면 이동 후 재인증을 시작합니다!")
+                                                    state["certi_rec_seen_time"] = 0.0
+                                                    clear_movements_only(pico_queues[key])
+                                                    state["certi_from_closed_game"] = True
+                                                    state["target_fsm"] = "CERTI_GOTO_DESKTOP"
+                                                    state["cooldown"] = curr_time + 0.2
+                                                    continue
                                             else:
-                                                dprint(key, "⚠️ [구동 1분 타임아웃] 1분이 지나도록 'waiting.png'가 감지되지 않았습니다(rec.png 없음)! 13.png를 다시 더블클릭하여 재실행합니다.")
+                                                if state.get("certi_rec_seen_time", 0.0) > 0.0:
+                                                    state["certi_rec_miss_cnt"] = state.get("certi_rec_miss_cnt", 0) + 1
+                                                    if state["certi_rec_miss_cnt"] >= 3:
+                                                        dprint(key, "✅ [rec.png 사라짐 확인] 10초 이내에 'rec.png'가 화면에서 사라졌으므로 재인증 타이머를 초기화합니다.")
+                                                        state["certi_rec_seen_time"] = 0.0
+                                                        state["certi_rec_miss_cnt"] = 0
+
+                                            # rec.png도 없고 waiting.png도 없는 상태로 60초가 경과했을 때의 기본 재실행 방어막
+                                            if state.get("certi_delay_seen_time", 0.0) == 0.0 and state.get("certi_rec_seen_time", 0.0) == 0.0 and (curr_time - state.get("certi_launch_time", curr_time) >= 60.0):
+                                                dprint(key, "⚠️ [구동 1분 타임아웃] 1분이 지나도록 'waiting.png'가 감지되지 않았습니다! 13.png를 다시 더블클릭하여 재실행합니다.")
                                                 state["certi_13_wait_mode"] = "RETRY_1MIN"
                                                 state["certi_next_desktop_time"] = 0.0
                                                 state["target_fsm"] = "CERTI_STEP_13_FIND"
