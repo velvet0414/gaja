@@ -605,13 +605,13 @@ CURRENT_PROXY_TARGET_NUM = {
 ALIVE_OTHER_PROXIES = []
 _LAST_PROXY_LOG_TIME = 0.0
 
-# 🔒 [중앙컴 IP 순차 인증 대기열(Lock) 장부] 동일 IP 동시 인증으로 인한 캡차 폭탄 원천 방지
+# 🔒 [중앙컴 IP 다중 인증 관리 장부] 최대 3대 동시 인증 허용 + 시차 입장(Burst 방지)
 _IP_LOCK_MUTEX = threading.Lock()
-_IP_LOCK_HOLDER = None
-_IP_LOCK_HEARTBEAT = 0.0
-_IP_LOCK_START_TIME = 0.0
+_IP_LOCK_MAX_CONCURRENT = 3   # 동일 IP에서 동시에 인증 가능한 최대 미니컴 수 (3대)
+_IP_LOCK_ENTRY_GAP = 3.0      # 동시 패킷 충돌 방지를 위한 입장 간격(초) - 0.0으로 설정 시 완전 동시 진입
+_IP_LOCK_HOLDERS = {}         # {client_id: {"hb": last_hb_time, "start": start_time}}
 _IP_LOCK_COOLDOWN_UNTIL = 0.0
-_IP_LOCK_QUEUE = [] # [(client_id, last_poll_time), ...]
+_IP_LOCK_QUEUE = []           # [(client_id, last_poll_time), ...]
 
 def _get_my_local_ips():
     ips = {"127.0.0.1"}
@@ -663,8 +663,8 @@ def get_next_central_in_order(curr_c_num):
     return my_num
 
 def _process_ip_lock_command(cmd_line):
-    """31280 포트로 들어온 중앙컴 간 IP 사용권 요청(ACQUIRE / RELEASE)을 순차 대기열로 처리합니다."""
-    global _IP_LOCK_HOLDER, _IP_LOCK_HEARTBEAT, _IP_LOCK_START_TIME, _IP_LOCK_COOLDOWN_UNTIL, _IP_LOCK_QUEUE
+    """31280 포트로 들어온 중앙컴 간 IP 사용권 요청(ACQUIRE / RELEASE)을 최대 3대 동시(시차 입장)로 처리합니다."""
+    global _IP_LOCK_HOLDERS, _IP_LOCK_COOLDOWN_UNTIL, _IP_LOCK_QUEUE
     now = time.time()
     parts = cmd_line.strip().split(" ")
     if len(parts) < 3:
@@ -673,24 +673,28 @@ def _process_ip_lock_command(cmd_line):
     client_id = parts[2].strip()
 
     with _IP_LOCK_MUTEX:
-        # 15초 이상 응답 없는 대기열 항목 및 15초 이상 하트비트 끊긴 홀더 자동 만료
+        # 1) 15초 이상 응답 없는 대기열 항목 및 타임아웃된 홀더 자동 회수
         _IP_LOCK_QUEUE = [(cid, t) for cid, t in _IP_LOCK_QUEUE if now - t <= 15.0]
-        if _IP_LOCK_HOLDER is not None:
-            if (now - _IP_LOCK_HEARTBEAT > 15.0) or (now - _IP_LOCK_START_TIME > 120.0):
-                print(f"🔓 [IP 사용권 자동회수] {_IP_LOCK_HOLDER} 응답 타임아웃으로 IP 사용권을 회수합니다.")
-                _IP_LOCK_HOLDER = None
+        expired_holders = [
+            cid for cid, info in _IP_LOCK_HOLDERS.items()
+            if (now - info["hb"] > 15.0) or (now - info["start"] > 120.0)
+        ]
+        for cid in expired_holders:
+            print(f"🔓 [IP 사용권 자동회수] {cid} 응답 타임아웃으로 슬롯을 회수합니다. (현재 사용중: {len(_IP_LOCK_HOLDERS)-1}/{_IP_LOCK_MAX_CONCURRENT})")
+            _IP_LOCK_HOLDERS.pop(cid, None)
 
+        # 2) 사용권 반납 처리
         if action == "RELEASE":
             _IP_LOCK_QUEUE = [(cid, t) for cid, t in _IP_LOCK_QUEUE if cid != client_id]
-            if _IP_LOCK_HOLDER == client_id:
-                _IP_LOCK_HOLDER = None
-                _IP_LOCK_COOLDOWN_UNTIL = now + 3.5 # 연속 인증 간 3.5초 안전 간격 부여
-                print(f"🔓 [IP 사용 완료 반납] {client_id} 인증 종료! (3.5초 뒤 다음 대기열 승인)")
+            if client_id in _IP_LOCK_HOLDERS:
+                _IP_LOCK_HOLDERS.pop(client_id, None)
+                print(f"🔓 [IP 슬롯 반납] {client_id} 인증 종료! (현재 사용중: {len(_IP_LOCK_HOLDERS)}/{_IP_LOCK_MAX_CONCURRENT})")
             return "RELEASED"
 
+        # 3) 사용권 획득 및 생존신호(Heartbeat) 갱신 처리
         elif action == "ACQUIRE":
-            if _IP_LOCK_HOLDER == client_id:
-                _IP_LOCK_HEARTBEAT = now
+            if client_id in _IP_LOCK_HOLDERS:
+                _IP_LOCK_HOLDERS[client_id]["hb"] = now
                 return "GRANTED"
 
             # 대기열에 등록/갱신
@@ -703,24 +707,26 @@ def _process_ip_lock_command(cmd_line):
             if not found_in_q:
                 _IP_LOCK_QUEUE.append((client_id, now))
 
-            if _IP_LOCK_HOLDER is None:
+            # 빈 슬롯이 남아있는 경우 (최대 3대)
+            if len(_IP_LOCK_HOLDERS) < _IP_LOCK_MAX_CONCURRENT:
                 if _IP_LOCK_QUEUE and _IP_LOCK_QUEUE[0][0] == client_id:
                     if now < _IP_LOCK_COOLDOWN_UNTIL:
                         rem_cd = max(1, int(round(_IP_LOCK_COOLDOWN_UNTIL - now)))
-                        return f"COOLDOWN|직전 인증 직후 안전 간격 대기({rem_cd}초)"
+                        return f"COOLDOWN|동시 접속 충돌 방지 시차 대기({rem_cd}초)"
                     _IP_LOCK_QUEUE.pop(0)
-                    _IP_LOCK_HOLDER = client_id
-                    _IP_LOCK_HEARTBEAT = now
-                    _IP_LOCK_START_TIME = now
-                    print(f"🔒 [IP 사용권 승인] {client_id} 에게 내 중앙컴 IP 인증 권한을 부여했습니다!")
+                    _IP_LOCK_HOLDERS[client_id] = {"hb": now, "start": now}
+                    if _IP_LOCK_ENTRY_GAP > 0:
+                        _IP_LOCK_COOLDOWN_UNTIL = now + _IP_LOCK_ENTRY_GAP
+                    print(f"🔒 [IP 슬롯 승인] {client_id} 진입 승인! (현재 동시 사용: {len(_IP_LOCK_HOLDERS)}/{_IP_LOCK_MAX_CONCURRENT})")
                     return "GRANTED"
                 else:
                     q_pos = next((i + 1 for i, (cid, _) in enumerate(_IP_LOCK_QUEUE) if cid == client_id), 1)
                     front_id = _IP_LOCK_QUEUE[0][0] if _IP_LOCK_QUEUE else "앞순번"
-                    return f"WAIT|앞순번({front_id}) 대기 중 (내 순번: {q_pos}번)"
+                    return f"WAIT|앞순번({front_id}) 시차 입장 대기 중 (내 순번: {q_pos}번)"
             else:
                 q_pos = next((i + 1 for i, (cid, _) in enumerate(_IP_LOCK_QUEUE) if cid == client_id), 1)
-                return f"BUSY|현재 [{_IP_LOCK_HOLDER}] 인증 진행 중 (내 대기순번: {q_pos}번)"
+                active_list = ", ".join(_IP_LOCK_HOLDERS.keys())
+                return f"BUSY|3슬롯 모두 사용중[{active_list}] (내 대기순번: {q_pos}번)"
 
     return "ERROR"
 
@@ -7128,11 +7134,15 @@ def ai_commander_worker(target_pc):
                             else:
                                 pos_ticket = find_certi_img("ticket.png", th=0.82)
                                 if pos_ticket:
-                                    dprint(key, "⚠️ [이용권 오류 감지] 'ticket.png' 포착! 1초 대기 후 ESC를 누르고 ok2.png를 찾습니다.")
+                                    dprint(key, "⚠️ [이용권 오류 감지] 'ticket.png' 포착! 1초 대기 후 ESC를 눌러 종료 팝업창으로 전환합니다.")
                                     pico_queues[key].put({"action": "WAIT", "delay_min": 0.95, "delay_max": 1.10})
                                     pico_queues[key].put({"action": "HOLD_KEY", "keycode": 177, "duration": g_val(0.06, 0.10)})
+                                    # 💡 ESC 입력 직후 화면에서 ticket.png(우측하단 ok)가 완전히 사라질 때까지 큐 대기 보장!
+                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.55, "delay_max": 0.70})
+                                    now_real = time.time()
+                                    state["ticket_esc_sent_time"] = now_real
                                     state["target_fsm"] = "CERTI_TICKET_OK2_FIND"
-                                    state["cooldown"] = curr_time + 1.3
+                                    state["cooldown"] = now_real + 1.8
                                 else:
                                     state["cooldown"] = curr_time + 0.2
 
@@ -7311,15 +7321,26 @@ def ai_commander_worker(target_pc):
                         state["target_fsm"] = "CERTI_RECERTI_TM_VERIFY_3S"
                         state["cooldown"] = curr_time + 0.2
 
-                    # 이용권 오류 후 ok2.png 클릭 -> 3초 대기 후 무조건 바탕화면 가기(Win+D) 단계로 이동
+                    # 이용권 오류 후 ok2.png 클릭 -> ticket.png가 완전히 사라진 뒤에만 ok2.png를 찾아 Cancel 오클릭 원천 차단!
                     elif current_fsm == "CERTI_TICKET_OK2_FIND":
-                        pos_ok2 = find_certi_img("ok2.png", th=0.82)
-                        if pos_ok2:
-                            dprint(key, f"🔎 [이용권 오류 종료] 'ok2.png' 발견({pos_ok2[0]}, {pos_ok2[1]})! 원클릭 후 3초 뒤 바탕화면(Win+D) 이동을 실행합니다.")
-                            state["certi_13_wait_mode"] = "TICKET" # 13.png 발견 시 7~10초 대기
-                            start_certi_move_and_action(pos_ok2[0], pos_ok2[1], next_fsm="CERTI_TICKET_GOTO_DESKTOP", double=False, post_wait=3.0, desc="ok2.png 클릭(퍼플 종료 대기)")
+                        # 🛡️ 아직 화면에 ticket.png가 남아있다면 그 안의 우측하단 ok(종료창의 Cancel 위치)를 절대 찍지 않도록 대기!
+                        if find_certi_img("ticket.png", th=0.80) is not None:
+                            if curr_time - state.get("ticket_esc_sent_time", curr_time) >= 2.5:
+                                dprint(key, "🔄 [ticket.png 잔류 감지] ESC가 씹혀 아직 'ticket.png'가 떠 있습니다! ESC를 다시 전송합니다.")
+                                pico_queues[key].put({"action": "HOLD_KEY", "keycode": 177, "duration": g_val(0.06, 0.10)})
+                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.55, "delay_max": 0.70})
+                                state["ticket_esc_sent_time"] = time.time()
+                                state["cooldown"] = time.time() + 0.8
+                            else:
+                                state["cooldown"] = curr_time + 0.15
                         else:
-                            state["cooldown"] = curr_time + 0.2
+                            pos_ok2 = find_certi_img("ok2.png", th=0.82)
+                            if pos_ok2:
+                                dprint(key, f"🔎 [이용권 오류 종료] 종료창 'ok2.png' 발견({pos_ok2[0]}, {pos_ok2[1]})! 원클릭 후 3초 뒤 바탕화면(Win+D) 이동을 실행합니다.")
+                                state["certi_13_wait_mode"] = "TICKET" # 13.png 발견 시 7~10초 대기
+                                start_certi_move_and_action(pos_ok2[0], pos_ok2[1], next_fsm="CERTI_TICKET_GOTO_DESKTOP", double=False, post_wait=3.0, desc="ok2.png 클릭(퍼플 종료 대기)")
+                            else:
+                                state["cooldown"] = curr_time + 0.2
 
                     # 이용권 오류 종료 3초 후: 퍼플(런처) 화면을 내리기 위해 무조건 바탕화면 가기(Win+D) 입력 후 13.png 재시도
                     elif current_fsm == "CERTI_TICKET_GOTO_DESKTOP":
