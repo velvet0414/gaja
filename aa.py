@@ -5944,13 +5944,13 @@ def ai_commander_worker(target_pc):
                                 pos = find_certi_img(f"recerti/{fname}", th=th)
                                 if pos:
                                     return pos, fname
-                    # 2순위: 폴더 내 기타 re로 시작하는 이미지 자동 스캔 (lineage, confirm2, delay, ok 제외)
+                    # 2순위: 폴더 내 기타 re로 시작하는 이미지 자동 스캔 (lineage, confirm2, delay, ok, rec 제외)
                     try:
                         for fname in os.listdir(recerti_dir):
                             fl = fname.lower()
                             if fl in checked_files or not fl.endswith((".png", ".jpg")):
                                 continue
-                            if fl.startswith(("lineage", "confirm", "delay", "ok")):
+                            if fl.startswith(("lineage", "confirm", "delay", "ok", "rec.")):
                                 continue
                             if fl.startswith("re"):
                                 pos = find_certi_img(f"recerti/{fname}", th=th)
@@ -7056,18 +7056,26 @@ def ai_commander_worker(target_pc):
                                     state["target_fsm"] = "CERTI_RECERTI_OPEN_TM"
                                     state["cooldown"] = curr_time + g_val(1.2, 1.6)
                                 else:
-                                    # 2) waiting.png 감지 및 1분 타임아웃 체크
+                                    # 2) waiting.png 감지 및 1분 타임아웃 체크 (재시도 타이밍 도달 시에만 rec.png 단발 검사!)
                                     if not state.get("certi_waiting_seen", False):
                                         pos_wait = find_certi_img("waiting.png", th=0.82)
                                         if pos_wait:
                                             state["certi_waiting_seen"] = True
                                             dprint(key, "✅ [정상 구동 확인] 'waiting.png' 감지됨! 이제 14.png가 뜰 때까지 대기합니다.")
                                         elif state.get("certi_delay_seen_time", 0.0) == 0.0 and (curr_time - state.get("certi_launch_time", curr_time) >= 60.0):
-                                            dprint(key, "⚠️ [구동 1분 타임아웃] 1분이 지나도록 'waiting.png'가 한 번도 감지되지 않았습니다! 13.png를 다시 더블클릭하여 재실행합니다.")
-                                            state["certi_13_wait_mode"] = "RETRY_1MIN"
-                                            state["certi_next_desktop_time"] = 0.0
-                                            state["target_fsm"] = "CERTI_STEP_13_FIND"
-                                            state["cooldown"] = curr_time + 0.2
+                                            pos_rec = find_certi_img("rec.png", th=0.82) or find_certi_img("recerti/rec.png", th=0.82)
+                                            if pos_rec:
+                                                dprint(key, f"🚨 [구동 1분 타임아웃 + rec.png 감지] 'waiting.png' 미출현 상태에서 'rec.png'({pos_rec[0]}, {pos_rec[1]}) 포착! 바탕화면 이동 후 재인증을 시작합니다!")
+                                                clear_movements_only(pico_queues[key])
+                                                state["certi_from_closed_game"] = True
+                                                state["target_fsm"] = "CERTI_GOTO_DESKTOP"
+                                                state["cooldown"] = curr_time + 0.2
+                                            else:
+                                                dprint(key, "⚠️ [구동 1분 타임아웃] 1분이 지나도록 'waiting.png'가 감지되지 않았습니다(rec.png 없음)! 13.png를 다시 더블클릭하여 재실행합니다.")
+                                                state["certi_13_wait_mode"] = "RETRY_1MIN"
+                                                state["certi_next_desktop_time"] = 0.0
+                                                state["target_fsm"] = "CERTI_STEP_13_FIND"
+                                                state["cooldown"] = curr_time + 0.2
                                     state["cooldown"] = curr_time + 0.3
 
                     # 15단계: recerti 최우선 감시 + 15.png 감지 후 이동 및 원클릭 (지터 0)
