@@ -2810,11 +2810,15 @@ for v in HOTKEY_IMGS_MAP.values():
 
 TRASH_TEMPLATES = []
 LEAVE_TEMPLATES = []
+SELL_TEMPLATES = []
 PICK_TEMPLATES = {}
 INVEN_BLACK_TEMPLATE = None
 
+os.makedirs("qq/sell", exist_ok=True)
+os.makedirs("qq/sell2", exist_ok=True)
+
 def load_all_templates():
-    global TRASH_TEMPLATES, LEAVE_TEMPLATES, PICK_TEMPLATES, INVEN_BLACK_TEMPLATE
+    global TRASH_TEMPLATES, LEAVE_TEMPLATES, SELL_TEMPLATES, PICK_TEMPLATES, INVEN_BLACK_TEMPLATE
 
     if os.path.exists("qq/inven_black.png"):
         INVEN_BLACK_TEMPLATE = cv2.imread("qq/inven_black.png", cv2.IMREAD_COLOR)
@@ -2855,6 +2859,26 @@ def load_all_templates():
                             if h > 15 and w > 15: color = color[4:h-4, 4:w-4]
                             LEAVE_TEMPLATES.append({"name": f, "color": color, "mask": None})
         print(f"📦 [창고 맡기기] 아이템 {len(LEAVE_TEMPLATES)}개 로드 완료!")
+
+    SELL_TEMPLATES.clear()
+    if os.path.exists("qq/sell"):
+        for f in os.listdir("qq/sell"):
+            if f.lower().endswith((".png", ".jpg")):
+                path = os.path.join("qq/sell", f)
+                bgra = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+                if bgra is not None:
+                    if len(bgra.shape) == 3 and bgra.shape[2] == 4:
+                        color, mask = bgra[:, :, :3], bgra[:, :, 3]
+                        h, w = color.shape[:2]
+                        if h > 15 and w > 15: color, mask = color[4:h-4, 4:w-4], mask[4:h-4, 4:w-4]
+                        SELL_TEMPLATES.append({"name": f, "color": color, "mask": mask})
+                    else:
+                        color = cv2.imread(path, cv2.IMREAD_COLOR)
+                        if color is not None:
+                            h, w = color.shape[:2]
+                            if h > 15 and w > 15: color = color[4:h-4, 4:w-4]
+                            SELL_TEMPLATES.append({"name": f, "color": color, "mask": None})
+        print(f"💰 [상점 자동판매] 아이템 {len(SELL_TEMPLATES)}개 로드 완료!")
 
     PICK_TEMPLATES.clear()
     if os.path.exists("qq/pick"):
@@ -5743,7 +5767,7 @@ def ai_commander_worker(target_pc):
                         state["loot_state"] = "IDLE"
                         state["certi_from_closed_game"] = False # 💡 인게임 감지 시 무조건 12.png(게임종료) 거치도록 초기화!
                         
-                        # 📌 2. 진입 전 상태 정밀 백업 (마을 정비 중이었으면 무조건 창고 이동부터 재시작하도록 저장)
+                        # 📌 2. 진입 전 상태 정밀 백업 (판매 단계 1~3 / 창고 업무 / 버프 대기 / 사냥터 복귀 세부 기억)
                         prev_fsm = str(state.get("target_fsm", "IDLE"))
                         was_town_maint = (
                             prev_fsm.startswith("TOWN_MAINT") or
@@ -5755,7 +5779,36 @@ def ai_commander_worker(target_pc):
                             (prev_fsm.startswith("BUFFING") and str(state.get("buff_return_fsm", "")).startswith("TOWN_MAINT"))
                         )
                         if was_town_maint:
-                            state["backup_target_fsm_before_certi"] = "TOWN_MAINT_WH_GO"
+                            eff_fsm = prev_fsm
+                            if prev_fsm.startswith("INV_CLEAN"):
+                                eff_fsm = str(state.get("inv_clean_done_next_fsm", "TOWN_MAINT_START"))
+                            elif prev_fsm.startswith("HK_HEAL"):
+                                eff_fsm = str(state.get("hk_return_fsm", "TOWN_MAINT_START"))
+                            elif prev_fsm.startswith("BUFFING"):
+                                eff_fsm = str(state.get("buff_return_fsm", "TOWN_MAINT_START"))
+
+                            if eff_fsm in ["SHUTDOWN_WAIT", "TOWN_MAINT_NORMAL_RETURN"]:
+                                state["shop_sell_step"] = 1
+                                state["already_at_weapon_shop"] = False
+                                state["town_shop_sold_once"] = False
+                                state["backup_target_fsm_before_certi"] = "TOWN_MAINT_SHOP_SELL"
+                            elif eff_fsm == "TOWN_MAINT_SHOP_SELL" or (eff_fsm == "TOWN_MAINT_START" and not state.get("town_shop_sold_once", False)):
+                                if state.get("shop_sell_step", 0) not in [1, 2, 3]:
+                                    state["shop_sell_step"] = 1
+                                state["already_at_weapon_shop"] = False
+                                state["town_shop_sold_once"] = False
+                                state["backup_target_fsm_before_certi"] = "TOWN_MAINT_SHOP_SELL"
+                            elif eff_fsm in ["TOWN_MAINT_EMERGENCY_BUY_ARROW", "TOWN_MAINT_CHOLGI_STEAL"]:
+                                state["backup_target_fsm_before_certi"] = eff_fsm
+                            elif eff_fsm in ["TOWN_MAINT_DONE", "TOWN_MAINT_ROUTE_CHECK"]:
+                                state["backup_target_fsm_before_certi"] = "TOWN_MAINT_ROUTE_CHECK"
+                            elif eff_fsm == "TOWN_MAINT_BUFF":
+                                state["backup_target_fsm_before_certi"] = "TOWN_MAINT_BUFF"
+                            elif eff_fsm in ["TOWN_MAINT_RETURN", "TOWN_MAINT_RETURN_MP_REST", "TOWN_MAINT_REENTRY_WAIT", "TOWN_MAINT_VERIFY_ENTRY", "TOWN_MAINT_SUDUN_RUSH_LOCKED", "TOWN_MAINT_WAIT_ENTER"]:
+                                state["backup_target_fsm_before_certi"] = "TOWN_MAINT_RETURN"
+                            else:
+                                # 창고 이동/맡기기/찾기 및 판매 완료 후 엠탐 단계는 창고 이동부터 재개
+                                state["backup_target_fsm_before_certi"] = "TOWN_MAINT_WH_GO"
                         elif prev_fsm in ["PARTY_WAIT", "PARTY_ACTIVE_STANDBY"]:
                             state["backup_target_fsm_before_certi"] = prev_fsm
                         else:
@@ -7535,15 +7588,38 @@ def ai_commander_worker(target_pc):
                         state["post_certi_poison_fast_until"] = curr_time + 10.0 # 💡 인증 후 재접속 직후 10초간 독 감지 시 딜레이 없이 즉시 해독
 
                         restore_fsm = state.get("backup_target_fsm_before_certi", "IDLE")
-                        if restore_fsm == "TOWN_MAINT_WH_GO":
-                            dprint(key, "🏭 [마을 정비 복귀] 인증 전 마을 정비 모드였으므로, 꼬임 방지를 위해 창고 이동(TOWN_MAINT_WH_GO)부터 다시 시작합니다!")
-                            state["wh_target"] = 1
-                            state["pick_retry_cnt"] = 0
-                            state.pop("found_items_history", None)
+                        if restore_fsm.startswith("TOWN_MAINT"):
                             state["town_thread_running"] = False
-                            state["town_inv_cleaned_once"] = False
-                            state["town_wh_visited_for_weight"] = False
-                            state["target_fsm"] = "TOWN_MAINT_WH_GO"
+                            if restore_fsm == "TOWN_MAINT_SHOP_SELL":
+                                curr_sell_step = state.get("shop_sell_step", 1)
+                                if curr_sell_step not in [1, 2, 3]:
+                                    curr_sell_step = 1
+                                state["shop_sell_step"] = curr_sell_step
+                                state["town_shop_sold_once"] = False
+                                state["already_at_weapon_shop"] = False
+                                dprint(key, f"🛒 [상점 판매 이어하기] 인증 전 진행 중이던 [{curr_sell_step}단계 상점 판매]부터 즉시 재개합니다!")
+                                state["target_fsm"] = "TOWN_MAINT_SHOP_SELL"
+                            elif restore_fsm == "TOWN_MAINT_WH_GO":
+                                dprint(key, "🏭 [창고 업무 이어하기] 인증 전 창고 정비 중이었으므로 창고 이동(TOWN_MAINT_WH_GO)부터 다시 시작합니다!")
+                                state["wh_target"] = 1
+                                state["pick_retry_cnt"] = 0
+                                state.pop("found_items_history", None)
+                                state["town_shop_sold_once"] = True
+                                state["town_inv_cleaned_once"] = False
+                                state["town_wh_visited_for_weight"] = False
+                                state["target_fsm"] = "TOWN_MAINT_WH_GO"
+                            elif restore_fsm in ["TOWN_MAINT_BUFF", "TOWN_MAINT_ROUTE_CHECK"]:
+                                dprint(key, f"🪄 [버프 대기 이어하기] 인증 전 버프 단계였으므로 버프 수령({restore_fsm})으로 즉시 이동합니다!")
+                                state["town_shop_sold_once"] = True
+                                state["target_fsm"] = restore_fsm
+                            elif restore_fsm == "TOWN_MAINT_RETURN":
+                                dprint(key, "🏃 [사냥터 복귀 이어하기] 인증 전 사냥터 이동 중이었으므로 복귀(TOWN_MAINT_RETURN)를 재개합니다!")
+                                state["town_shop_sold_once"] = True
+                                state["target_fsm"] = "TOWN_MAINT_RETURN"
+                            else:
+                                dprint(key, f"🛠️ [마을 정비 세부 복귀] 인증 전 정비 단계({restore_fsm})로 즉시 복귀합니다!")
+                                state["town_shop_sold_once"] = True
+                                state["target_fsm"] = restore_fsm
                         else:
                             dprint(key, f"⚔️ [사냥 모드 복귀] 인증 전 사냥 상태({restore_fsm})로 즉시 복귀합니다!")
                             state["target_fsm"] = restore_fsm
@@ -9141,6 +9217,9 @@ def ai_commander_worker(target_pc):
 
                         state["town_inv_cleaned_once"] = False
                         state["town_wh_visited_for_weight"] = False
+                        state["town_shop_sold_once"] = False
+                        state["shop_sell_step"] = 1
+                        state["already_at_weapon_shop"] = False
 
                         state["town_hk_checked"] = False
                         state["town_hk_f1_pressed"] = 0
@@ -9483,30 +9562,35 @@ def ai_commander_worker(target_pc):
                                 time.sleep(g_val(0.6, 0.9))
 
                             if step_name == "NORMAL_RETURN_SCROLL":
-                                dprint(key, "📜 [일반 귀환] 비상 상황 아님! 아데나 절약을 위해 F9 창고 두루마리로 귀환합니다.")
+                                dprint(key, "📜 [일반 귀환] 비상 상황 아님! F9 기억창을 열어 1차 무기상(weapon_shop.png)으로 귀환합니다.")
+
+                                ai_states[key]["town_shop_sold_once"] = False
+                                ai_states[key]["shop_sell_step"] = 1
+                                ai_states[key]["already_at_weapon_shop"] = False
 
                                 send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
                                 time.sleep(g_val(0.2, 0.3))
                                 send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
                                 time.sleep(g_val(0.6, 0.8))
 
-                                # [수정] 가우스 지터 배제, 정중앙 기준 Y+2 내린 후 ±2픽셀 하드코딩 클릭
-                                wh_pos = None
+                                shop_pos = None
                                 start_w_t = time.time()
                                 while time.time() - start_w_t < 3.0:
-                                    wh_pos = find_img_universal("qq/menu_heine_wh.png", th=0.80, ui_only=True)
-                                    if wh_pos: break
+                                    shop_pos = find_img_universal("qq/weapon_shop.png", th=0.80, ui_only=True)
+                                    if shop_pos: break
                                     time.sleep(0.05)
 
-                                if wh_pos:
-                                    dprint(key, "✅ [창고지기] 메뉴 발견! Y축 보정 후 정밀 클릭합니다.")
+                                if shop_pos:
+                                    dprint(key, "✅ [무기 방어구 상인] 메뉴 발견! 정밀 클릭하여 귀환합니다.")
                                     time.sleep(g_val(0.15, 0.25))
-                                    safe_x = wh_pos[0] + random.randint(-2, 2)
-                                    safe_y = (wh_pos[1] + 2) + random.randint(-2, 2) # Y좌표 2픽셀 내림
+                                    safe_x = shop_pos[0] + random.randint(-2, 2)
+                                    safe_y = shop_pos[1] + random.randint(-2, 2)
                                     m_click_ack(safe_x, safe_y, jx=0, jy=0, double=False, pre_delay=g_val(0.25, 0.4))
+                                    ai_states[key]["already_at_weapon_shop"] = True
                                 else:
-                                    dprint(key, "⚠️ 창고 두루마리 클릭 실패! 최후의 수단으로 비상 귀환(F8) 발동!")
+                                    dprint(key, "⚠️ weapon_shop.png 클릭 실패! 최후의 수단으로 비상 귀환(F8) 발동!")
                                     send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
+                                    ai_states[key]["already_at_weapon_shop"] = False
 
                                 time.sleep(g_val(2.8, 3.3))
 
@@ -9519,6 +9603,282 @@ def ai_commander_worker(target_pc):
 
                                 ai_states[key]["town_hk_checked"] = False
                                 ai_states[key]["town_hk_f1_pressed"] = 0
+                                return
+
+                            elif step_name == "DO_SHOP_SELL":
+                                WEAPON1_NPC_OY = 50
+                                WEAPON2_NPC_OY = 50
+                                OTHERS_NPC_OY  = 50
+
+                                def press_esc_clean():
+                                    for _ in range(2):
+                                        send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True)
+                                        time.sleep(g_val(0.04, 0.07))
+                                        send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
+                                        time.sleep(g_val(0.08, 0.12))
+
+                                def m_click_fast(tx, ty, jx=0, jy=0, d_min=0.05, d_max=0.08, double=False):
+                                    if key in ai_states: ai_states[key]["abort_macro"] = False
+                                    screen = latest_frames.get(key)
+                                    cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
+                                    if screen is not None:
+                                        real_c = find_cursor_pos(screen, last_pos=(cur_x, cur_y), allow_full_scan=True)
+                                        if real_c:
+                                            cur_x, cur_y = real_c[0], real_c[1]
+                                            if key in ai_states: ai_states[key]["cursor_pos"] = [cur_x, cur_y]
+
+                                    fx = int(tx + (random.gauss(0, jx / 2.0) if jx > 0 else 0))
+                                    fy = int(ty + (random.gauss(0, jy / 2.0) if jy > 0 else 0))
+                                    h_s, w_s = screen.shape[:2] if screen is not None else (600, 800)
+                                    fx = max(5, min(w_s - 5, fx))
+                                    fy = max(5, min(h_s - 5, fy))
+
+                                    dur = apply_human_variance(0.06 + 0.03 * math.log2((math.hypot(fx - cur_x, fy - cur_y) / 20.0) + 1.0)) * 0.85
+                                    deltas = generate_human_deltas(fx - cur_x, fy - cur_y, duration=dur, behavior="NORMAL", key=key)
+                                    if deltas: send_macro_buffer(p_serial, p_lock, deltas, key)
+                                    time.sleep(dur + g_val(0.02, 0.05))
+                                    send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
+                                    time.sleep(g_val(0.04, 0.06))
+                                    send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
+
+                                    if double:
+                                        time.sleep(g_val(0.04, 0.06))
+                                        send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
+                                        time.sleep(g_val(0.04, 0.06))
+                                        send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
+
+                                    time.sleep(g_val(d_min, d_max))
+                                    if key in ai_states: ai_states[key]["cursor_pos"] = [fx, fy]
+                                    return fx, fy
+
+                                def teleport_to_oren():
+                                    dprint(key, "📜 [오렌 이동] F3 -> F10 (축순)을 눌러 오렌(oren.png) 기억 장소로 이동합니다.")
+                                    send_keyboard_key(p_serial, p_lock, 196, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 196, 0, is_manual=True)
+                                    time.sleep(g_val(0.2, 0.3))
+                                    send_keyboard_key(p_serial, p_lock, 203, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 203, 0, is_manual=True)
+                                    time.sleep(g_val(0.7, 1.0))
+
+                                    oren_found = False
+                                    stuck_oren = 0
+                                    last_oren_img = None
+
+                                    for _ in range(30):
+                                        pos_oren = find_img_universal("qq/oren.png", th=0.80, ui_only=True)
+                                        if pos_oren:
+                                            dprint(key, "✅ 기억창에서 'oren.png' 발견! 더블클릭하여 텔레포트합니다.")
+                                            m_click_fast(pos_oren[0], pos_oren[1], jx=4, jy=2, d_min=0.2, d_max=0.35, double=True)
+                                            oren_found = True
+                                            break
+
+                                        cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
+                                        if cur_x > 280 or cur_y > 380:
+                                            m_click_fast(150, 220, jx=10, jy=10, d_min=0.05, d_max=0.1, double=False)
+
+                                        scr_o = latest_frames.get(key)
+                                        if scr_o is not None:
+                                            h_s, w_s = scr_o.shape[:2]
+                                            ui_roi = scr_o[0:min(400, h_s), 0:min(290, w_s)]
+                                            uh, uw = ui_roi.shape[:2]
+                                            if uh > 200 and uw > 50:
+                                                curr_o_img = cv2.cvtColor(ui_roi[150:uh-50, uw//2:uw], cv2.COLOR_BGR2GRAY)
+                                                if last_oren_img is not None and last_oren_img.shape == curr_o_img.shape:
+                                                    diff = cv2.absdiff(last_oren_img, curr_o_img)
+                                                    _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
+                                                    if cv2.countNonZero(thresh) < 100: stuck_oren += 1
+                                                    else: stuck_oren = 0
+                                                last_oren_img = curr_o_img
+                                            if stuck_oren >= 6:
+                                                break
+
+                                        send_mouse_scroll(p_serial, p_lock, -5)
+                                        time.sleep(g_val(0.12, 0.18))
+
+                                    if not oren_found:
+                                        dprint(key, "❌ 기억창에서 'oren.png'를 찾지 못했습니다! ESC를 누르고 F1 탭으로 복귀합니다.")
+                                        press_esc_clean()
+                                        send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+                                        return False
+
+                                    time.sleep(g_val(0.2, 0.3))
+                                    send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+                                    time.sleep(g_val(2.1, 2.5))
+                                    return True
+
+                                def sell_at_shop(npc_img_path, shop_label, npc_oy=50):
+                                    dprint(key, f"🏪 [{shop_label}] NPC({npc_img_path}) 탐색 및 클릭을 시도합니다.")
+                                    if not click_img(npc_img_path, f"[{shop_label}] NPC", th=0.80, timeout=4.0, oy=npc_oy, jx=2, jy=8, d_min=0.3, d_max=0.5, ui_only=False):
+                                        dprint(key, f"⚠️ [{shop_label}] NPC 조준 실패! 다음 단계로 넘어갑니다.")
+                                        press_esc_clean()
+                                        return False
+
+                                    if not click_img("qq/sell.png", f"[{shop_label}] Sell 버튼", th=0.75, timeout=4.0, jx=3, jy=2, d_min=0.3, d_max=0.45, ui_only=True):
+                                        dprint(key, f"⚠️ [{shop_label}] Sell 버튼 클릭 실패! ESC로 창을 닫습니다.")
+                                        press_esc_clean()
+                                        return False
+
+                                    dprint(key, f"🔎 [{shop_label}] 1.5초간 sell2.png 버튼 활성화 여부를 확인합니다...")
+                                    sell2_visible = False
+                                    chk_start_t = time.time()
+                                    while time.time() - chk_start_t < 1.5:
+                                        if find_img_universal("qq/sell2.png", th=0.75, ui_only=True):
+                                            sell2_visible = True
+                                            break
+                                        time.sleep(0.05)
+
+                                    if not sell2_visible:
+                                        dprint(key, f"ℹ️ [{shop_label}] 1.5초간 sell2.png 미발견 (팔 수 있는 물건 없음)! ESC로 창을 닫고 다음 단계로 넘어갑니다.")
+                                        press_esc_clean()
+                                        time.sleep(g_val(0.4, 0.6))
+                                        return True
+
+                                    dprint(key, f"✅ [{shop_label}] sell2.png 확인 완료! qq/sell 폴더 이미지 다중 선택(수량 99) 및 스크롤을 시작합니다.")
+
+                                    if SELL_TEMPLATES:
+                                        stuck_scrolls = 0
+                                        last_scroll_img = None
+                                        has_handled_any = False
+                                        just_scrolled = False
+
+                                        for scroll_idx in range(50):
+                                            found_any = False
+
+                                            if just_scrolled:
+                                                time.sleep(g_val(0.10, 0.14))
+                                                just_scrolled = False
+
+                                            for tmpl_dict in SELL_TEMPLATES:
+                                                tmpl_name = tmpl_dict['name']
+                                                pos_list = find_all_imgs_universal(tmpl_dict, th=0.82, ui_only=True)
+                                                if not pos_list:
+                                                    continue
+
+                                                for pos in pos_list:
+                                                    screen_chk = latest_frames.get(key)
+                                                    if screen_chk is None:
+                                                        continue
+
+                                                    h_s, w_s = screen_chk.shape[:2]
+                                                    is_already_selected = False
+                                                    chk_x1 = int(pos[0])
+                                                    chk_y1 = int(pos[1])
+                                                    chk_x2 = min(w_s, chk_x1 + 60)
+                                                    chk_y2 = min(h_s, chk_y1 + 20)
+
+                                                    if chk_x2 > chk_x1 and chk_y2 > chk_y1:
+                                                        chk_roi = screen_chk[chk_y1:chk_y2, chk_x1:chk_x2]
+                                                        hsv_roi = cv2.cvtColor(chk_roi, cv2.COLOR_BGR2HSV)
+                                                        mask_blue = cv2.inRange(hsv_roi, np.array([100, 50, 30]), np.array([140, 255, 150]))
+                                                        if cv2.countNonZero(mask_blue) >= 20:
+                                                            is_already_selected = True
+
+                                                    if is_already_selected:
+                                                        continue
+
+                                                    dprint(key, f"💰 [{shop_label}] 판매 템({tmpl_name}) 고속 선택({pos[0]}, {pos[1]}) ➔ 수량(99) 입력!")
+                                                    m_click_fast(pos[0], pos[1], jx=13, jy=3, d_min=0.05, d_max=0.08)
+                                                    m_type_num("99")
+                                                    time.sleep(g_val(0.08, 0.12))
+                                                    has_handled_any = True
+                                                    found_any = True
+
+                                            if found_any:
+                                                stuck_scrolls = 0
+                                                continue
+
+                                            screen = latest_frames.get(key)
+                                            if screen is not None:
+                                                h_scr, w_scr = screen.shape[:2]
+                                                c_x, c_y = ai_states.get(key, {}).get("cursor_pos", [120, 200])
+
+                                                chk_x1, chk_y1 = max(0, int(c_x) - 50), max(0, int(c_y) - 15)
+                                                chk_x2, chk_y2 = min(w_scr, int(c_x) + 50), min(h_scr, int(c_y) + 15)
+
+                                                if chk_x2 > chk_x1 and chk_y2 > chk_y1:
+                                                    curr_scroll_img = cv2.cvtColor(screen[chk_y1:chk_y2, chk_x1:chk_x2], cv2.COLOR_BGR2GRAY)
+
+                                                    if last_scroll_img is not None and last_scroll_img.shape == curr_scroll_img.shape:
+                                                        diff = cv2.absdiff(last_scroll_img, curr_scroll_img)
+                                                        _, thresh = cv2.threshold(diff, 10, 255, cv2.THRESH_BINARY)
+                                                        if cv2.countNonZero(thresh) < 5: stuck_scrolls += 1
+                                                        else: stuck_scrolls = 0
+                                                    last_scroll_img = curr_scroll_img
+
+                                                if stuck_scrolls >= random.randint(5, 6):
+                                                    dprint(key, f"🛑 [{shop_label}] 스크롤 바닥 도달 확정.")
+                                                    break
+
+                                            send_mouse_scroll(p_serial, p_lock, -3)
+                                            time.sleep(g_val(0.04, 0.06))
+                                            send_mouse_scroll(p_serial, p_lock, -3)
+                                            time.sleep(g_val(0.05, 0.08))
+                                            just_scrolled = True
+
+                                        if has_handled_any:
+                                            dprint(key, f"▶ [{shop_label} 판매 확정] sell2.png 버튼을 원클릭하여 일괄 매각합니다.")
+                                            click_img("qq/sell2.png", f"[{shop_label}] 최종 판매(sell2) 버튼", th=0.75, jx=3, jy=2, d_min=0.3, d_max=0.45, ui_only=True)
+                                        else:
+                                            dprint(key, f"ℹ️ [{shop_label}] 목록에 qq/sell 대상 아이템이 없어 ESC로 창을 닫습니다.")
+                                            press_esc_clean()
+                                    else:
+                                        dprint(key, "⚠️ 'qq/sell' 폴더가 비어있습니다! ESC로 창을 닫습니다.")
+                                        press_esc_clean()
+
+                                    time.sleep(g_val(0.5, 0.8))
+                                    return True
+
+                                start_step = ai_states.get(key, {}).get("shop_sell_step", 1)
+                                if start_step not in [1, 2, 3]:
+                                    start_step = 1
+
+                                # -----------------------------------------------------------------
+                                # 1단계: 1차 무기상 (weapon_shop_npc.png)
+                                # -----------------------------------------------------------------
+                                if start_step <= 1:
+                                    ai_states[key]["shop_sell_step"] = 1
+                                    is_already_here = ai_states[key].pop("already_at_weapon_shop", False)
+
+                                    # 일반 귀환(NORMAL_RETURN_SCROLL) 직후가 아니라면(풀정비 버튼, F8 귀환, 사망 등) 무조건 두루마리로 이동!
+                                    if not is_already_here:
+                                        dprint(key, "📜 [1단계 무기상 이동] F1 -> F9 기억창을 열어 1차 무기상(weapon_shop.png)으로 날아갑니다.")
+                                        send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+                                        time.sleep(g_val(0.2, 0.3))
+                                        send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
+                                        time.sleep(g_val(0.6, 0.8))
+
+                                        if click_img("qq/weapon_shop.png", "[1단계 무기상] 메뉴", th=0.80, timeout=3.0, jx=12, jy=3, d_min=0.25, d_max=0.4, ui_only=True):
+                                            time.sleep(g_val(2.3, 2.7))
+                                        else:
+                                            dprint(key, "⚠️ weapon_shop.png 클릭 실패! ESC로 창을 닫습니다.")
+                                            press_esc_clean()
+
+                                    sell_at_shop("qq/weapon_shop_npc.png", "1단계 무기상", npc_oy=WEAPON1_NPC_OY)
+                                    ai_states[key]["shop_sell_step"] = 2
+
+                                # -----------------------------------------------------------------
+                                # 2단계: 오렌 무기상 (무조건 F3->F10 oren.png 더블클릭 이동 후 weapon2.png)
+                                # -----------------------------------------------------------------
+                                if start_step <= 2:
+                                    ai_states[key]["shop_sell_step"] = 2
+                                    if teleport_to_oren():
+                                        sell_at_shop("qq/weapon2.png", "2단계 오렌무기상", npc_oy=WEAPON2_NPC_OY)
+                                    ai_states[key]["shop_sell_step"] = 3
+
+                                # -----------------------------------------------------------------
+                                # 3단계: 오렌 잡화상 (현재 화면 옆 others.png)
+                                # -----------------------------------------------------------------
+                                if start_step <= 3:
+                                    ai_states[key]["shop_sell_step"] = 3
+                                    # 만약 3단계 도중 인증으로 재접속해서(start_step == 3) 화면에 잡화상이 안 보일 때만 오렌 이동
+                                    if start_step == 3 and find_img_universal("qq/others.png", th=0.80, ui_only=False) is None:
+                                        teleport_to_oren()
+                                    sell_at_shop("qq/others.png", "3단계 오렌잡화상", npc_oy=OTHERS_NPC_OY)
+
+                                dprint(key, "🎉 [1~3단계 상점 판매 완료] 이제 창고 및 나머지 정비를 위해 TOWN_MAINT_START로 이동합니다!")
+                                ai_states[key]["town_shop_sold_once"] = True
+                                ai_states[key]["shop_sell_step"] = 0
+                                ai_states[key]["target_fsm"] = "TOWN_MAINT_START"
+                                ai_states[key]["cooldown"] = time.time() + 0.1
+                                ai_states[key]["town_thread_running"] = False
                                 return
 
                             elif step_name == "MOTHER_TREE_TELEPORT":
@@ -9792,18 +10152,12 @@ def ai_commander_worker(target_pc):
                                         dprint(key, f"🏹 [{dng_name}] 오땅/이벤트 맵이므로 GUI 설정({arrow_qty}발)을 무시하고 은화살을 5000발 강제 인출합니다!")
                                     arrow_qty = 5600
 
-                                try: tele_qty = int(current_settings.get(key, {}).get("pick_teleport", 0))
-                                except: tele_qty = 0
+                                # 💡 오렌 상점 순회(축순 이동) 및 복귀를 위해 GUI 설정과 무관하게 축순 3장 인출 하드코딩!
+                                tele_qty = 3
                                 
                                 # 💡 파랭이 수량 설정 읽어오기
                                 try: bluepot_qty = int(current_settings.get(key, {}).get("pick_bluepot", 0))
                                 except: bluepot_qty = 0
-
-                                # 💡 [수정] 본던(gludio) 사냥 시에도 축순(teleport) 수량을 0으로 강제하여 인출 생략!
-                                if "수던" in dng_name or "heine" in dng_name.lower() or "오땅" in dng_name or "event" in dng_name.lower() or "본던" in dng_name or "gludio" in dng_name.lower():
-                                    if tele_qty > 0 and pick_retry_cnt == 0:
-                                        dprint(key, f"📜 [{dng_name}] 축순이 필요 없는 사냥터입니다. 축순 인출을 생략합니다.")
-                                    tele_qty = 0
 
                                 pick_targets = {
                                     "arrow": arrow_qty,
@@ -12714,7 +13068,7 @@ def ai_commander_worker(target_pc):
                             state.pop("found_items_history", None)
 
                             if state.pop("event_skip_maint", False):
-                                dprint(key, "🦇 [특수 던전] 위기 대피로 귀환했으므로 창고 정비를 스킵합니다.")
+                                dprint(key, "🦇 [특수 던전] 위기 대피로 귀환했으므로 상점 판매 및 창고 정비를 스킵합니다.")
 
                                 dng_name_mptam_route = settings.get("dungeon_name", "")
                                 is_special_mptam = "event" in dng_name_mptam_route or "오땅" in dng_name_mptam_route
@@ -12728,6 +13082,15 @@ def ai_commander_worker(target_pc):
                                     state["event_mptam_skip_wh"] = True
                                 else:
                                     state["target_fsm"] = "TOWN_MAINT_RETURN"
+                                state["cooldown"] = curr_time + 0.1
+                                continue
+
+                            # 🛒 [1순위: 상점 순회 판매] 위기 대피가 아니라면 창고/엠탐 전에 1~3단계 상점 판매부터 수행
+                            if not state.get("town_shop_sold_once", False):
+                                if state.get("shop_sell_step", 0) not in [1, 2, 3]:
+                                    state["shop_sell_step"] = 1
+                                dprint(key, f"🛒 [마을 정비 1순위] 상점 순회 판매({state['shop_sell_step']}단계부터)를 개시합니다!")
+                                state["target_fsm"] = "TOWN_MAINT_SHOP_SELL"
                                 state["cooldown"] = curr_time + 0.1
                                 continue
 
@@ -13011,6 +13374,11 @@ def ai_commander_worker(target_pc):
                                 dprint(key, f"🏃 [사냥터 직행] 헤이/강촐 받은지 {haste_elapsed/60:.1f}분 경과. [{threshold_str} 기준 미달 및 팩트 정상] 리필 스킵, 사냥터로 직행!")
                                 state["target_fsm"] = "TOWN_MAINT_RETURN"
                                 state["cooldown"] = curr_time + 0.1
+
+                        elif fsm_town == "TOWN_MAINT_SHOP_SELL":
+                            if not state.get("town_thread_running", False):
+                                state["town_thread_running"] = True
+                                threading.Thread(target=maint_worker_thread, args=("DO_SHOP_SELL",), daemon=True).start()
 
                         elif fsm_town == "TOWN_MAINT_WH_GO":
                             if not state.get("town_thread_running", False):
@@ -25909,11 +26277,11 @@ for i, pc in enumerate(MINI_PCS):
 
         sell_item_name = gui_vars[target_key]["sell_item"].get()
         sell_img_map = {
-            "촐기": "qq/sell/cholgi.png",
-            "강촐": "qq/sell/gangchol.png",
-            "지혜": "qq/sell/jihye.png"
+            "촐기": "qq/sell2/cholgi.png",
+            "강촐": "qq/sell2/gangchol.png",
+            "지혜": "qq/sell2/jihye.png"
         }
-        sell_item_img = sell_img_map.get(sell_item_name, "qq/sell/cholgi.png")
+        sell_item_img = sell_img_map.get(sell_item_name, "qq/sell2/cholgi.png")
 
         print(f"\n💰 [{target_key}] 자동 판매 매크로 시작! (대상: {sell_item_name} / 1회 인출: {sell_qty}개)")
         print(f"💡 [종료 조건] 창고에 더 이상 팔 '{sell_item_name}'이(가) 없으면 자동으로 매크로가 종료됩니다.")
@@ -26300,6 +26668,10 @@ for i, pc in enumerate(MINI_PCS):
                 ai_states[target_key]["town_thread_running"] = False
                 ai_states[target_key]["town_inv_cleaned_once"] = False
                 ai_states[target_key]["town_wh_visited_for_weight"] = False
+                ai_states[target_key]["town_shop_sold_once"] = False
+                ai_states[target_key]["shop_sell_step"] = 1
+                ai_states[target_key]["already_at_weapon_shop"] = False
+                ai_states[target_key]["last_haste_time"] = 0.0
 
                 ai_states[target_key]["town_hk_checked"] = False
                 ai_states[target_key]["town_hk_f1_pressed"] = 0
@@ -26443,136 +26815,429 @@ for i, pc in enumerate(MINI_PCS):
     btn_double_tap.pack(fill="x", expand=True, padx=2)
     '''
 
-    def run_6f_entry_test(target_key=key):
+    def run_weapon_shop_sell_test(target_key=key):
         if not picos.get(target_key):
             print(f"❌ [{target_key}] 피코 연결 안됨!")
             return
 
-        print(f"\n🚀 [{target_key}] (수동 지시) 6층 진입(5층 대기 ➔ 5to6스위칭 ➔ 텔포 ➔ 진입) 테스트 돌입!")
-        print(f"👀 던전책 클릭은 생략했습니다. 5층 진입 텍스트나 맵을 인식하면 즉시 포탈 진입 시퀀스를 가동합니다.")
+        global active_manual_target
+        if active_manual_target == target_key:
+            toggle_manual(None)
+            import time
+            time.sleep(0.15)
 
-        # 💡 사냥터를 6-1로 강제 변경
-        gui_vars[target_key]["dungeon_name"].set("본던 6-1")
-        save_settings()
-
-        if target_key not in ai_states or not ai_states[target_key].get("is_hunt_active", False):
+        if target_key in ai_states and ai_states[target_key].get("is_hunt_active", False):
+            print(f"🔄 [{target_key}] 자동 사냥이 켜져 있어 상점 순회 판매 테스트를 위해 사냥을 잠시 멈춥니다.")
             toggle_individual_hunt(target_key)
+            import time
+            time.sleep(0.2)
 
-        def _6f_test_thread():
-            import time, cv2, os
-            time.sleep(0.5)
+        # 테스트 편의를 위해 버튼 클릭 시 qq/sell 폴더 이미지를 최신 상태로 다시 로드
+        load_all_templates()
 
-            if target_key in ai_states:
-                with pico_queues[target_key].mutex: pico_queues[target_key].queue.clear()
-                if ai_states[target_key].get("sweep_active", False):
-                    pico_queues[target_key].put({"action": "SWEEP_STOP"})
-                    ai_states[target_key]["sweep_active"] = False
-                    
-                ai_states[target_key]["is_pulling"] = False
-                ai_states[target_key]["is_attacking"] = False
-                ai_states[target_key]["arrow_is_firing"] = False
-                ai_states[target_key]["town_thread_running"] = True # 다른 유지보수 스레드 중지
+        print(f"\n🛒 [{target_key}] (수동 지시) 1~3단계 상점 순회 판매 테스트 시작! (qq/sell 등록 템: {len(SELL_TEMPLATES)}개)")
+        with pico_queues[target_key].mutex: pico_queues[target_key].queue.clear()
 
-                # 💡 맵을 5to6으로 강제 변경하여 5층 미니맵을 인식할 수 있게 세팅
-                ai_states[target_key]["override_dungeon_name"] = "본던 5to6"
-                ai_states[target_key]["dungeon_map_pos"] = None
-                
-                print(f"✅ [{target_key}] 6층 진입 테스트 대기 모드! 화면에서 'gludio5_in.png' 또는 미니맵을 찾습니다.")
+        if target_key in ai_states:
+            ai_states[target_key]["abort_macro"] = False
 
-            global_start_t = time.time()
-            door_found_and_moving = False
-            
-            in_img_path = "qq/gludio5_in.png"
+        def _weapon_shop_sell_worker():
+            import cv2, numpy as np, os, math, random
+            import time as builtin_time
 
-            class ManualAbort(Exception): pass
-            def wait_with_heal(duration):
-                start_w = time.time()
-                while time.time() - start_w < duration:
-                    if active_manual_target == target_key or not ai_states.get(target_key, {}).get("is_hunt_active", False):
-                        raise ManualAbort()
-                    time.sleep(0.02)
+            p_serial = picos.get(target_key)
+            p_lock = pico_locks.get(target_key)
+            if not p_serial:
+                return
+
+            # 💡 NPC 이미지가 머리 위 이름표 기준일 때 아래로 내려 찍을 픽셀 오프셋 (몸통 직접 캡처 시 0으로 수정)
+            WEAPON1_NPC_OY = 50
+            WEAPON2_NPC_OY = 50
+            OTHERS_NPC_OY  = 50
+
+            class ManualAbort(BaseException): pass
+
+            def check_abort():
+                if active_manual_target == target_key or ai_states.get(target_key, {}).get("is_hunt_active", False):
+                    raise ManualAbort()
+                curr_f = str(ai_states.get(target_key, {}).get("target_fsm", ""))
+                if curr_f.startswith("DEATH_RESTART") or curr_f.startswith("CERTI_"):
+                    raise ManualAbort()
+
+            class SafeTime:
+                @staticmethod
+                def sleep(duration):
+                    end_t = builtin_time.time() + duration
+                    while builtin_time.time() < end_t:
+                        check_abort()
+                        builtin_time.sleep(0.02)
+                @staticmethod
+                def time():
+                    check_abort()
+                    return builtin_time.time()
+
+            time = SafeTime()
+
+            def m_click(tx, ty, jx=0, jy=0, d_min=0.2, d_max=0.35, double=False):
+                if target_key in ai_states: ai_states[target_key]["abort_macro"] = False
+
+                screen = latest_frames.get(target_key)
+                cur_x, cur_y = ai_states.get(target_key, {}).get("cursor_pos", [400, 300])
+
+                if screen is not None:
+                    real_c = find_cursor_pos(screen, last_pos=(cur_x, cur_y), allow_full_scan=True)
+                    if real_c:
+                        cur_x, cur_y = real_c[0], real_c[1]
+                        if target_key in ai_states: ai_states[target_key]["cursor_pos"] = [cur_x, cur_y]
+
+                fx = int(tx + (random.gauss(0, jx / 2.0) if jx > 0 else 0))
+                fy = int(ty + (random.gauss(0, jy / 2.0) if jy > 0 else 0))
+
+                h_s, w_s = screen.shape[:2] if screen is not None else (600, 800)
+                fx = max(5, min(w_s - 5, fx))
+                fy = max(5, min(h_s - 5, fy))
+
+                dur = apply_human_variance(0.06 + 0.03 * math.log2((math.hypot(fx - cur_x, fy - cur_y) / 20.0) + 1.0)) * 0.85
+
+                deltas = generate_human_deltas(fx - cur_x, fy - cur_y, duration=dur, behavior="NORMAL", key=target_key)
+                if deltas: send_macro_buffer(p_serial, p_lock, deltas, target_key)
+                time.sleep(dur + g_val(0.02, 0.05))
+                send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
+                time.sleep(g_val(0.04, 0.06))
+                send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
+
+                if double:
+                    time.sleep(g_val(0.04, 0.06))
+                    send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
+                    time.sleep(g_val(0.04, 0.06))
+                    send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
+
+                time.sleep(g_val(d_min, d_max))
+                if target_key in ai_states: ai_states[target_key]["cursor_pos"] = [fx, fy]
+                return fx, fy
+
+            def m_type_num(num_str):
+                for char in str(num_str):
+                    send_keyboard_key(p_serial, p_lock, ord(char), 1, is_manual=True); time.sleep(g_val(0.035, 0.06))
+                    send_keyboard_key(p_serial, p_lock, ord(char), 0, is_manual=True); time.sleep(g_val(0.035, 0.06))
+
+            def press_esc_clean():
+                for _ in range(2):
+                    send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True)
+                    time.sleep(g_val(0.04, 0.07))
+                    send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
+                    time.sleep(g_val(0.08, 0.12))
+
+            def find_img_universal(img_data_or_path, th=0.82, ui_only=True):
+                screen = latest_frames.get(target_key)
+                if screen is None: return None
+
+                h_scr, w_scr = screen.shape[:2]
+                if ui_only:
+                    search_area = screen[0:min(400, h_scr), 0:min(290, w_scr)]
+                else:
+                    search_area = screen[0:min(480, h_scr), 0:w_scr]
+
+                if isinstance(img_data_or_path, str):
+                    if not img_data_or_path.startswith("qq/"): img_data_or_path = f"qq/{img_data_or_path}"
+                    if not os.path.exists(img_data_or_path): return None
+                    with open(img_data_or_path, "rb") as f: np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
+                    tmpl_bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
+                    if tmpl_bgra is None: return None
+                    if len(tmpl_bgra.shape) == 3 and tmpl_bgra.shape[2] == 4:
+                        res = cv2.matchTemplate(search_area, tmpl_bgra[:,:,:3], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl_bgra[:,:,3]]*3))
+                    else:
+                        tmpl_bgr = tmpl_bgra[:,:,:3] if len(tmpl_bgra.shape)==3 else tmpl_bgra
+                        res = cv2.matchTemplate(search_area, tmpl_bgr, cv2.TM_CCOEFF_NORMED)
+                    tmpl_h, tmpl_w = tmpl_bgra.shape[:2]
+                else:
+                    tmpl, mask = img_data_or_path["color"], img_data_or_path["mask"]
+                    if mask is not None: res = cv2.matchTemplate(search_area, tmpl, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask]*3))
+                    else: res = cv2.matchTemplate(search_area, tmpl, cv2.TM_CCOEFF_NORMED)
+                    tmpl_h, tmpl_w = tmpl.shape[:2]
+
+                _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                if max_val >= th:
+                    return (max_loc[0] + tmpl_w//2, max_loc[1] + tmpl_h//2)
+                return None
+
+            def find_all_imgs_universal(img_data_or_path, th=0.82, ui_only=True):
+                screen = latest_frames.get(target_key)
+                if screen is None: return []
+
+                h_scr, w_scr = screen.shape[:2]
+                if ui_only:
+                    search_area = screen[0:min(400, h_scr), 0:min(290, w_scr)]
+                else:
+                    search_area = screen[0:min(480, h_scr), 0:w_scr]
+
+                if isinstance(img_data_or_path, str):
+                    if not img_data_or_path.startswith("qq/"): img_data_or_path = f"qq/{img_data_or_path}"
+                    if not os.path.exists(img_data_or_path): return []
+                    with open(img_data_or_path, "rb") as f: np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
+                    tmpl_bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
+                    if tmpl_bgra is None: return []
+                    if len(tmpl_bgra.shape) == 3 and tmpl_bgra.shape[2] == 4:
+                        res = cv2.matchTemplate(search_area, tmpl_bgra[:,:,:3], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl_bgra[:,:,3]]*3))
+                    else:
+                        tmpl_bgr = tmpl_bgra[:,:,:3] if len(tmpl_bgra.shape)==3 else tmpl_bgra
+                        res = cv2.matchTemplate(search_area, tmpl_bgr, cv2.TM_CCOEFF_NORMED)
+                    tmpl_h, tmpl_w = tmpl_bgra.shape[:2]
+                else:
+                    tmpl, mask = img_data_or_path["color"], img_data_or_path["mask"]
+                    if mask is not None: res = cv2.matchTemplate(search_area, tmpl, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask]*3))
+                    else: res = cv2.matchTemplate(search_area, tmpl, cv2.TM_CCOEFF_NORMED)
+                    tmpl_h, tmpl_w = tmpl.shape[:2]
+
+                locs = np.where(res >= th)
+                pts = []
+                for pt in zip(*locs[::-1]):
+                    cx, cy = pt[0] + tmpl_w//2, pt[1] + tmpl_h//2
+                    is_dup = False
+                    for ex, ey in pts:
+                        if abs(ex - cx) < 10 and abs(ey - cy) < 10:
+                            is_dup = True
+                            break
+                    if not is_dup:
+                        pts.append((cx, cy))
+
+                pts.sort(key=lambda p: p[1])
+                return pts
+
+            def click_img(img_data_or_path, desc, th=0.80, timeout=3.0, oy=0, jx=0, jy=0, d_min=0.3, d_max=0.45, ui_only=True, double=False):
+                start_t = time.time()
+                while time.time() - start_t < timeout:
+                    pos = find_img_universal(img_data_or_path, th, ui_only=ui_only)
+                    if pos:
+                        dprint(target_key, f"✅ {desc} 발견!")
+                        time.sleep(g_val(0.15, 0.25))
+                        return m_click(pos[0], pos[1] + oy, jx=jx, jy=jy, d_min=d_min, d_max=d_max, double=double)
+                    time.sleep(0.05)
+                dprint(target_key, f"❌ {desc} 인식 실패!")
+                return None
+
+            def sell_at_shop(npc_img_path, shop_label, npc_oy=50):
+                """공통 상점 판매 함수: NPC 클릭 ➔ sell.png ➔ 1.5초 sell2.png 확인 ➔ 다중 선택(99) 및 스크롤 ➔ sell2.png 완료"""
+                dprint(target_key, f"🏪 [{shop_label}] NPC({npc_img_path}) 탐색 및 클릭을 시도합니다.")
+                if not click_img(npc_img_path, f"[{shop_label}] NPC", th=0.80, timeout=4.0, oy=npc_oy, jx=2, jy=8, d_min=0.3, d_max=0.5, ui_only=False):
+                    dprint(target_key, f"⚠️ [{shop_label}] NPC 조준 실패! 다음 단계로 넘어갑니다.")
+                    press_esc_clean()
+                    return False
+
+                if not click_img("qq/sell.png", f"[{shop_label}] Sell 버튼", th=0.75, timeout=4.0, jx=3, jy=2, d_min=0.3, d_max=0.45, ui_only=True):
+                    dprint(target_key, f"⚠️ [{shop_label}] Sell 버튼 클릭 실패! ESC로 창을 닫습니다.")
+                    press_esc_clean()
+                    return False
+
+                dprint(target_key, f"🔎 [{shop_label}] 1.5초간 sell2.png 버튼 활성화 여부를 확인합니다...")
+                sell2_visible = False
+                chk_start_t = time.time()
+                while time.time() - chk_start_t < 1.5:
+                    if find_img_universal("qq/sell2.png", th=0.75, ui_only=True):
+                        sell2_visible = True
+                        break
+                    time.sleep(0.05)
+
+                if not sell2_visible:
+                    dprint(target_key, f"ℹ️ [{shop_label}] 1.5초간 sell2.png 미발견 (팔 수 있는 물건 없음)! ESC로 창을 닫고 다음 단계로 넘어갑니다.")
+                    press_esc_clean()
+                    time.sleep(g_val(0.4, 0.6))
+                    return True
+
+                dprint(target_key, f"✅ [{shop_label}] sell2.png 확인 완료! qq/sell 폴더 이미지 다중 선택(수량 99) 및 스크롤을 시작합니다.")
+
+                if SELL_TEMPLATES:
+                    stuck_scrolls = 0
+                    last_scroll_img = None
+                    has_handled_any = False
+                    just_scrolled = False
+
+                    for scroll_idx in range(50):
+                        found_any = False
+
+                        if just_scrolled:
+                            time.sleep(g_val(0.10, 0.14))
+                            just_scrolled = False
+
+                        for tmpl_dict in SELL_TEMPLATES:
+                            tmpl_name = tmpl_dict['name']
+                            pos_list = find_all_imgs_universal(tmpl_dict, th=0.82, ui_only=True)
+                            if not pos_list:
+                                continue
+
+                            for pos in pos_list:
+                                screen_chk = latest_frames.get(target_key)
+                                if screen_chk is None:
+                                    continue
+
+                                h_s, w_s = screen_chk.shape[:2]
+                                is_already_selected = False
+                                chk_x1 = int(pos[0])
+                                chk_y1 = int(pos[1])
+                                chk_x2 = min(w_s, chk_x1 + 60)
+                                chk_y2 = min(h_s, chk_y1 + 20)
+
+                                if chk_x2 > chk_x1 and chk_y2 > chk_y1:
+                                    chk_roi = screen_chk[chk_y1:chk_y2, chk_x1:chk_x2]
+                                    hsv_roi = cv2.cvtColor(chk_roi, cv2.COLOR_BGR2HSV)
+                                    mask_blue = cv2.inRange(hsv_roi, np.array([100, 50, 30]), np.array([140, 255, 150]))
+                                    if cv2.countNonZero(mask_blue) >= 20:
+                                        is_already_selected = True
+
+                                if is_already_selected:
+                                    continue
+
+                                dprint(target_key, f"💰 [{shop_label}] 판매 템({tmpl_name}) 고속 선택({pos[0]}, {pos[1]}) ➔ 수량(99) 입력!")
+                                m_click(pos[0], pos[1], jx=13, jy=3, d_min=0.05, d_max=0.08)
+                                m_type_num("99")
+                                time.sleep(g_val(0.08, 0.12))
+                                has_handled_any = True
+                                found_any = True
+
+                        if found_any:
+                            stuck_scrolls = 0
+                            continue
+
+                        screen = latest_frames.get(target_key)
+                        if screen is not None:
+                            h_scr, w_scr = screen.shape[:2]
+                            c_x, c_y = ai_states.get(target_key, {}).get("cursor_pos", [120, 200])
+
+                            chk_x1, chk_y1 = max(0, int(c_x) - 50), max(0, int(c_y) - 15)
+                            chk_x2, chk_y2 = min(w_scr, int(c_x) + 50), min(h_scr, int(c_y) + 15)
+
+                            if chk_x2 > chk_x1 and chk_y2 > chk_y1:
+                                curr_scroll_img = cv2.cvtColor(screen[chk_y1:chk_y2, chk_x1:chk_x2], cv2.COLOR_BGR2GRAY)
+
+                                if last_scroll_img is not None and last_scroll_img.shape == curr_scroll_img.shape:
+                                    diff = cv2.absdiff(last_scroll_img, curr_scroll_img)
+                                    _, thresh = cv2.threshold(diff, 10, 255, cv2.THRESH_BINARY)
+                                    if cv2.countNonZero(thresh) < 5: stuck_scrolls += 1
+                                    else: stuck_scrolls = 0
+                                last_scroll_img = curr_scroll_img
+
+                            if stuck_scrolls >= random.randint(5, 6):
+                                dprint(target_key, f"🛑 [{shop_label}] 스크롤 바닥 도달 확정.")
+                                break
+
+                        send_mouse_scroll(p_serial, p_lock, -3)
+                        time.sleep(g_val(0.04, 0.06))
+                        send_mouse_scroll(p_serial, p_lock, -3)
+                        time.sleep(g_val(0.05, 0.08))
+                        just_scrolled = True
+
+                    if has_handled_any:
+                        dprint(target_key, f"▶ [{shop_label} 판매 확정] sell2.png 버튼을 원클릭하여 일괄 매각합니다.")
+                        click_img("qq/sell2.png", f"[{shop_label}] 최종 판매(sell2) 버튼", th=0.75, jx=3, jy=2, d_min=0.3, d_max=0.45, ui_only=True)
+                    else:
+                        dprint(target_key, f"ℹ️ [{shop_label}] 목록에 qq/sell 대상 아이템이 없어 ESC로 창을 닫습니다.")
+                        press_esc_clean()
+                else:
+                    dprint(target_key, "⚠️ 'qq/sell' 폴더가 비어있습니다! ESC로 창을 닫습니다.")
+                    press_esc_clean()
+
+                time.sleep(g_val(0.5, 0.8))
+                return True
 
             try:
-                while time.time() - global_start_t < 120.0:
-                    wait_with_heal(0.1)
+                # =========================================================================
+                # 1단계: F1 -> F9 (두루마리) weapon_shop.png 이동 후 1차 무기상 판매
+                # =========================================================================
+                dprint(target_key, "📜 [1단계] F1 -> F9 기억창을 열어 1차 무기상(weapon_shop.png)으로 이동합니다.")
+                send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+                time.sleep(g_val(0.2, 0.3))
+                send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
+                time.sleep(g_val(0.6, 0.8))
 
-                    if ai_states.get(target_key, {}).get("dungeon_map_pos") is not None:
-                        dprint(target_key, f"🚪 [진입 성공] 본던 5층 맵(좌표) 인식 완료! 6층 진격 작전을 시작합니다!")
-                        door_found_and_moving = True
+                if not click_img("qq/weapon_shop.png", "[1단계 무기상] 메뉴", th=0.80, timeout=3.0, jx=12, jy=3, d_min=0.25, d_max=0.4, ui_only=True):
+                    dprint(target_key, "⚠️ weapon_shop.png 클릭 실패! ESC를 눌러 창을 닫고 테스트를 중단합니다.")
+                    press_esc_clean()
+                    return
+
+                time.sleep(g_val(2.3, 2.7))
+                sell_at_shop("qq/weapon_shop_npc.png", "1단계 무기상", npc_oy=WEAPON1_NPC_OY)
+
+                # =========================================================================
+                # 2단계: F3 -> F10 (축순) oren.png 더블클릭 이동 후 오렌 무기상(weapon2.png) 판매
+                # =========================================================================
+                dprint(target_key, "📜 [2단계] F3 -> F10 (축순)을 눌러 오렌(oren.png) 기억 장소로 이동합니다.")
+                send_keyboard_key(p_serial, p_lock, 196, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 196, 0, is_manual=True)
+                time.sleep(g_val(0.2, 0.3))
+                send_keyboard_key(p_serial, p_lock, 203, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 203, 0, is_manual=True)
+                time.sleep(g_val(0.7, 1.0))
+
+                oren_found = False
+                stuck_oren = 0
+                last_oren_img = None
+
+                for _ in range(30):
+                    pos_oren = find_img_universal("qq/oren.png", th=0.80, ui_only=True)
+                    if pos_oren:
+                        dprint(target_key, "✅ [2단계] 기억창에서 'oren.png' 발견! 더블클릭하여 텔레포트합니다.")
+                        m_click(pos_oren[0], pos_oren[1], jx=4, jy=2, d_min=0.2, d_max=0.35, double=True)
+                        oren_found = True
                         break
 
-                    if os.path.exists(in_img_path):
-                        scr = latest_frames.get(target_key)
-                        if scr is not None:
-                            h, w = scr.shape[:2]
-                            try: ANT_IN_X1_v = globals().get("ANT_IN_X1", 1)
-                            except: ANT_IN_X1_v = 1
-                            try: ANT_IN_X2_v = globals().get("ANT_IN_X2", 130)
-                            except: ANT_IN_X2_v = 130
+                    # 첫 화면에 안 보일 경우 기억창 안에서 휠 스크롤 탐색
+                    cur_x, cur_y = ai_states.get(target_key, {}).get("cursor_pos", [400, 300])
+                    if cur_x > 280 or cur_y > 380:
+                        m_click(150, 220, jx=10, jy=10, d_min=0.05, d_max=0.1, double=False)
 
-                            c_y1 = max(0, min(h, 430))
-                            c_y2 = max(0, min(h, 480))
-                            c_x1 = max(0, min(w, ANT_IN_X1_v))
-                            c_x2 = max(0, min(w, ANT_IN_X2_v))
+                    scr_o = latest_frames.get(target_key)
+                    if scr_o is not None:
+                        h_s, w_s = scr_o.shape[:2]
+                        ui_roi = scr_o[0:min(400, h_s), 0:min(290, w_s)]
+                        uh, uw = ui_roi.shape[:2]
+                        if uh > 200 and uw > 50:
+                            curr_o_img = cv2.cvtColor(ui_roi[150:uh-50, uw//2:uw], cv2.COLOR_BGR2GRAY)
+                            if last_oren_img is not None and last_oren_img.shape == curr_o_img.shape:
+                                diff = cv2.absdiff(last_oren_img, curr_o_img)
+                                _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
+                                if cv2.countNonZero(thresh) < 100: stuck_oren += 1
+                                else: stuck_oren = 0
+                            last_oren_img = curr_o_img
+                        if stuck_oren >= 6:
+                            break
 
-                            if c_x2 > c_x1 and c_y2 > c_y1:
-                                ui_check_roi = scr[c_y1:c_y2, c_x1:c_x2]
-                                try:
-                                    if "gludio_in_img_test" not in loaded_models:
-                                        bgra = cv2.imread(in_img_path, cv2.IMREAD_UNCHANGED)
-                                        if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4:
-                                            loaded_models["gludio_in_img_test"] = {"color": cv2.cvtColor(bgra[:, :, :3], cv2.COLOR_BGR2GRAY), "mask": bgra[:, :, 3]}
-                                        else:
-                                            loaded_models["gludio_in_img_test"] = {"color": cv2.imread(in_img_path, cv2.IMREAD_GRAYSCALE), "mask": None}
+                    send_mouse_scroll(p_serial, p_lock, -5)
+                    time.sleep(g_val(0.12, 0.18))
 
-                                    gludio_in_tmpl = loaded_models.get("gludio_in_img_test")
-                                    if gludio_in_tmpl and gludio_in_tmpl["color"] is not None:
-                                        roi_gray = cv2.cvtColor(ui_check_roi, cv2.COLOR_BGR2GRAY)
-                                        if gludio_in_tmpl["mask"] is not None:
-                                            res = cv2.matchTemplate(roi_gray, gludio_in_tmpl["color"], cv2.TM_CCORR_NORMED, mask=gludio_in_tmpl["mask"])
-                                        else:
-                                            res = cv2.matchTemplate(roi_gray, gludio_in_tmpl["color"], cv2.TM_CCOEFF_NORMED)
-                                        _, max_val, _, _ = cv2.minMaxLoc(res)
+                if not oren_found:
+                    dprint(target_key, "❌ [2단계] 기억창에서 'oren.png'를 찾지 못했습니다! ESC를 누르고 F1 탭으로 복귀합니다.")
+                    press_esc_clean()
+                    send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+                    return
 
-                                        if max_val >= 0.85:
-                                            dprint(target_key, f"🚪 [진입 성공] 본던 진입 텍스트({in_img_path}) 발견! 6층 진격 작전을 시작합니다!")
-                                            door_found_and_moving = True
-                                            break
-                                except: pass
+                # 축순 이동 직후 단축키 창을 F1 탭으로 즉시 복구
+                time.sleep(g_val(0.2, 0.3))
+                send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
 
-                if door_found_and_moving:
-                    dprint(target_key, "🚀 [6층 진격 작전] 5층 입장 확인! 즉시 일반 텔레포트(F11)를 1회 시전합니다!")
-                    
-                    with pico_queues[target_key].mutex: pico_queues[target_key].queue.clear()
-                    
-                    pico_queues[target_key].put({"action": "TELEPORT"})
-                    
-                    # 💡 테스트 코드도 무거운 검증 대신 일반 텔포(IDLE)로 통일!
-                    ai_states[target_key]["target_fsm"] = "IDLE"
-                    ai_states[target_key]["cooldown"] = time.time() + 1.5
-                    
-                    ai_states[target_key]["town_done_logged"] = False
-                    ai_states[target_key]["dungeon_map_pos"] = None
-                    ai_states[target_key]["dungeon_last_map_pos"] = None
-                    ai_states[target_key]["dungeon_global_path"] = []
-                    ai_states[target_key]["reentry_retry_cnt"] = 0
+                time.sleep(g_val(2.1, 2.5))
+                sell_at_shop("qq/weapon2.png", "2단계 오렌무기상", npc_oy=WEAPON2_NPC_OY)
+
+                # =========================================================================
+                # 3단계: 현재 화면 바로 옆 오렌 잡화상(others.png) 원클릭 후 판매
+                # =========================================================================
+                dprint(target_key, "🛍️ [3단계] 현재 화면에서 오렌 잡화상(others.png)을 찾아 판매를 진행합니다.")
+                sell_at_shop("qq/others.png", "3단계 오렌잡화상", npc_oy=OTHERS_NPC_OY)
+
+                dprint(target_key, "🎉 [1~3단계 상점 순회 판매 완료] 모든 상점 판매 시퀀스가 정상적으로 끝났습니다!")
 
             except ManualAbort:
-                print(f"\n🛑 [{target_key}] 수동 모드 개입으로 테스트 종료.")
-                ai_states[target_key]["target_fsm"] = "IDLE"
+                print(f"\n🛑 [{target_key}] 수동 모드(`) 개입 또는 사냥 시작으로 상점 순회 판매 테스트를 중단합니다.")
+                with pico_queues[target_key].mutex: pico_queues[target_key].queue.clear()
             except Exception as e:
-                print(f"❌ [{target_key}] 테스트 중 에러: {e}")
-                ai_states[target_key]["target_fsm"] = "IDLE"
-            finally:
-                ai_states[target_key]["town_thread_running"] = False
+                import traceback
+                traceback.print_exc()
+                print(f"❌ [{target_key}] 상점 순회 판매 테스트 중 에러: {e}")
 
         import threading
-        threading.Thread(target=_6f_test_thread, daemon=True).start()
+        threading.Thread(target=_weapon_shop_sell_worker, daemon=True).start()
 
-    measure_frame = tk.LabelFrame(tab2, text=" 🧪 본던 6층 진입 (5층도착 ➔ 5to6 ➔ 텔포 ➔ 진입) 테스트 ", font=("맑은 고딕", 9, "bold"), bg=BG_PANEL, fg="#FFD54F", bd=1)
+    measure_frame = tk.LabelFrame(tab2, text=" 🛒 1~3단계 상점 순회 자동 판매 테스트 (qq/sell 연동) ", font=("맑은 고딕", 9, "bold"), bg=BG_PANEL, fg="#FFD54F", bd=1)
     measure_frame.pack(side="top", fill="x", padx=10, pady=(5, 5))
 
-    btn_6f_test = tk.Button(measure_frame, text="▶ 6층 진입 테스트 시작 (던전책 생략)", font=("맑은 고딕", 8, "bold"), bg="#E91E63", fg="white", relief="flat", command=lambda k=key: run_6f_entry_test(k))
+    btn_6f_test = tk.Button(measure_frame, text="▶ 1~3단계 상점 순회 판매 테스트 시작 (하이네무기 ➔ 오렌무기 ➔ 오렌잡화)", font=("맑은 고딕", 8, "bold"), bg="#E91E63", fg="white", relief="flat", command=lambda k=key: run_weapon_shop_sell_test(k))
     btn_6f_test.pack(fill="x", expand=True, padx=5, pady=5)
 
     debug_frame = tk.LabelFrame(tab2, text=" 🛠️ 시스템 유지보수 / 디버그 ", bg=BG_PANEL, fg="#FF9800", font=("맑은 고딕", 9, "bold"))
