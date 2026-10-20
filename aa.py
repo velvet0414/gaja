@@ -18452,8 +18452,13 @@ def ai_commander_worker(target_pc):
                         dist_to_b = math.hypot(ix - char_screen_cx, (iy + 15 - char_screen_cy) / 0.50)
 
                         if is_party_moving_loot:
-                            if dist_to_b > 250.0:
-                                b['ignore_reason'] = f"PARTY_OUT_150px({dist_to_b:.1f})"
+                            # 💡 YOLO 몹 감지 반경(FIXED_ELLIPSE_RX=340, FIXED_ELLIPSE_RY=240)과 100% 동일하게 동기화
+                            LOOT_ELLIPSE_RX = 340.0
+                            LOOT_ELLIPSE_RY = 240.0
+                            dx_loot = ix - char_screen_cx
+                            dy_loot = (iy + 15) - char_screen_cy
+                            if (dx_loot**2) / (LOOT_ELLIPSE_RX**2) + (dy_loot**2) / (LOOT_ELLIPSE_RY**2) > 1.0:
+                                b['ignore_reason'] = "PARTY_OUT_YOLO_RANGE"
                                 ignored_boxes.append(b)
                                 continue
 
