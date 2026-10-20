@@ -9581,10 +9581,10 @@ def ai_commander_worker(target_pc):
                                     time.sleep(0.05)
 
                                 if shop_pos:
-                                    dprint(key, "✅ [무기 방어구 상인] 메뉴 발견! 정밀 클릭하여 귀환합니다.")
+                                    dprint(key, "✅ [무기 방어구 상인] 메뉴 발견! Y+2 보정 후 정밀 클릭하여 귀환합니다.")
                                     time.sleep(g_val(0.15, 0.25))
-                                    safe_x = shop_pos[0] + random.randint(-2, 2)
-                                    safe_y = shop_pos[1] + random.randint(-2, 2)
+                                    safe_x = shop_pos[0] + int(round(g_val(-2, 2)))
+                                    safe_y = (shop_pos[1] + 2) + int(round(g_val(-1, 1)))
                                     m_click_ack(safe_x, safe_y, jx=0, jy=0, double=False, pre_delay=g_val(0.25, 0.4))
                                     ai_states[key]["already_at_weapon_shop"] = True
                                 else:
@@ -9665,8 +9665,10 @@ def ai_commander_worker(target_pc):
                                     for _ in range(30):
                                         pos_oren = find_img_universal("qq/oren.png", th=0.80, ui_only=True)
                                         if pos_oren:
-                                            dprint(key, "✅ 기억창에서 'oren.png' 발견! 더블클릭하여 텔레포트합니다.")
-                                            m_click_fast(pos_oren[0], pos_oren[1], jx=4, jy=2, d_min=0.2, d_max=0.35, double=True)
+                                            dprint(key, "✅ 기억창에서 'oren.png' 발견! Y+2 보정 및 도착 확인 후 정밀 더블클릭합니다.")
+                                            safe_x = pos_oren[0] + int(round(g_val(-2, 2)))
+                                            safe_y = (pos_oren[1] + 2) + int(round(g_val(-1, 1)))
+                                            m_click_ack(safe_x, safe_y, jx=0, jy=0, double=True, pre_delay=g_val(0.30, 0.50))
                                             oren_found = True
                                             break
 
@@ -9845,7 +9847,19 @@ def ai_commander_worker(target_pc):
                                         send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
                                         time.sleep(g_val(0.6, 0.8))
 
-                                        if click_img("qq/weapon_shop.png", "[1단계 무기상] 메뉴", th=0.80, timeout=3.0, jx=12, jy=3, d_min=0.25, d_max=0.4, ui_only=True):
+                                        shop_pos = None
+                                        start_w_t = time.time()
+                                        while time.time() - start_w_t < 3.0:
+                                            shop_pos = find_img_universal("qq/weapon_shop.png", th=0.80, ui_only=True)
+                                            if shop_pos: break
+                                            time.sleep(0.05)
+
+                                        if shop_pos:
+                                            dprint(key, "✅ [1단계 무기상] 메뉴 발견! Y+2 보정 후 정밀 클릭합니다.")
+                                            time.sleep(g_val(0.15, 0.25))
+                                            safe_x = shop_pos[0] + int(round(g_val(-2, 2)))
+                                            safe_y = (shop_pos[1] + 2) + int(round(g_val(-1, 1)))
+                                            m_click_ack(safe_x, safe_y, jx=0, jy=0, double=False, pre_delay=g_val(0.25, 0.4))
                                             time.sleep(g_val(2.3, 2.7))
                                         else:
                                             dprint(key, "⚠️ weapon_shop.png 클릭 실패! ESC로 창을 닫습니다.")
@@ -27149,7 +27163,7 @@ for i, pc in enumerate(MINI_PCS):
                 send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
                 time.sleep(g_val(0.6, 0.8))
 
-                if not click_img("qq/weapon_shop.png", "[1단계 무기상] 메뉴", th=0.80, timeout=3.0, jx=12, jy=3, d_min=0.25, d_max=0.4, ui_only=True):
+                if not click_img("qq/weapon_shop.png", "[1단계 무기상] 메뉴", th=0.80, timeout=3.0, oy=2, jx=2, jy=1, d_min=0.25, d_max=0.4, ui_only=True):
                     dprint(target_key, "⚠️ weapon_shop.png 클릭 실패! ESC를 눌러 창을 닫고 테스트를 중단합니다.")
                     press_esc_clean()
                     return
@@ -27173,8 +27187,10 @@ for i, pc in enumerate(MINI_PCS):
                 for _ in range(30):
                     pos_oren = find_img_universal("qq/oren.png", th=0.80, ui_only=True)
                     if pos_oren:
-                        dprint(target_key, "✅ [2단계] 기억창에서 'oren.png' 발견! 더블클릭하여 텔레포트합니다.")
-                        m_click(pos_oren[0], pos_oren[1], jx=4, jy=2, d_min=0.2, d_max=0.35, double=True)
+                        dprint(target_key, "✅ [2단계] 기억창에서 'oren.png' 발견! Y+2 보정 후 정밀 더블클릭합니다.")
+                        safe_x = pos_oren[0] + int(round(g_val(-2, 2)))
+                        safe_y = (pos_oren[1] + 2) + int(round(g_val(-1, 1)))
+                        m_click(safe_x, safe_y, jx=0, jy=0, d_min=0.25, d_max=0.4, double=True)
                         oren_found = True
                         break
 
