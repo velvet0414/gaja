@@ -10166,8 +10166,8 @@ def ai_commander_worker(target_pc):
                                         dprint(key, f"🏹 [{dng_name}] 오땅/이벤트 맵이므로 GUI 설정({arrow_qty}발)을 무시하고 은화살을 5000발 강제 인출합니다!")
                                     arrow_qty = 5600
 
-                                # 💡 오렌 상점 순회(축순 이동) 및 복귀를 위해 GUI 설정과 무관하게 축순 3장 인출 하드코딩!
-                                tele_qty = 3
+                                # 💡 오렌 상점 순회(축순 이동) 및 복귀를 위해 GUI 설정과 무관하게 축순 5장 인출 하드코딩!
+                                tele_qty = 5
                                 
                                 # 💡 파랭이 수량 설정 읽어오기
                                 try: bluepot_qty = int(current_settings.get(key, {}).get("pick_bluepot", 0))
