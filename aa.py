@@ -25219,7 +25219,10 @@ def arrange_windows():
 
         target_x, target_y = positions[pc_idx]
 
-        win32gui.MoveWindow(hwnd, target_x, target_y, full_w, full_h, True)
+        try:
+            win32gui.MoveWindow(hwnd, target_x, target_y, full_w, full_h, True)
+        except Exception as e:
+            print(f"⚠️ [{TARGET_PC_KEY}] 창 이동 권한 제한 무시 (현재 위치에서 캡처 진행): {e}")
         CAPTURE_ROIS[TARGET_PC_KEY] = {"top": target_y + offset_y, "left": target_x + offset_x, "width": client_w, "height": client_h}
         MINI_PCS[0]["pos"] = (target_x, target_y)
         print(f"🪟 [{TARGET_PC_KEY}] 창 정렬 완료 (위치: {target_x}, {target_y})")
