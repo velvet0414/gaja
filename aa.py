@@ -675,11 +675,11 @@ def _process_ip_lock_command(cmd_line):
     client_id = parts[2].strip()
 
     with _IP_LOCK_MUTEX:
-        # 1) 15초 이상 응답 없는 대기열 항목 및 타임아웃된 홀더 자동 회수
+        # 1) 15초 이상 응답 없는 대기열 항목 및 타임아웃된 홀더 자동 회수 (최대 점유 300초 보장)
         _IP_LOCK_QUEUE = [(cid, t) for cid, t in _IP_LOCK_QUEUE if now - t <= 15.0]
         expired_holders = [
             cid for cid, info in _IP_LOCK_HOLDERS.items()
-            if (now - info["hb"] > 15.0) or (now - info["start"] > 120.0)
+            if (now - info["hb"] > 15.0) or (now - info["start"] > 300.0)
         ]
         for cid in expired_holders:
             print(f"🔓 [IP 사용권 자동회수] {cid} 응답 타임아웃으로 슬롯을 회수합니다. (현재 사용중: {len(_IP_LOCK_HOLDERS)-1}/{_IP_LOCK_MAX_CONCURRENT})")
@@ -6128,14 +6128,14 @@ def ai_commander_worker(target_pc):
                     state["certi_lock_hb_time"] = curr_time
                     threading.Thread(target=request_central_ip_lock, args=(key, state["certi_locked_central"], "ACQUIRE"), daemon=True).start()
 
-                # ⏱️ [웹 인증 타임아웃 워치독] 로그인 처리(파란 동그라미) 구간은 최대 25초간 충분히 대기!
+                # ⏱️ [웹 인증 타임아웃 워치독] 로그인 처리(파란 동그라미) 구간은 최대 120초간 충분히 대기!
                 web_timeout_fsms = {
                     "CERTI_STEP_2_FIND", "CERTI_STEP_3_FIND", "CERTI_STEP_5_FIND",
                     "CERTI_STEP_7_FIND", "CERTI_STEP_8_FIND", "CERTI_STEP_8_BRANCH",
                     "CERTI_WAIT_SUC"
                 }
-                # 아이디/비번 입력 후 넘어가는 단계(5, 7, 8_BRANCH, WAIT_SUC)는 25초, 단순 버튼 탐색(2, 3, 8)은 15초 부여
-                step_limit_sec = 25.0 if current_fsm in {"CERTI_STEP_5_FIND", "CERTI_STEP_7_FIND", "CERTI_STEP_8_BRANCH", "CERTI_WAIT_SUC"} else 15.0
+                # 아이디/비번 입력 후 넘어가는 단계(5, 7, 8_BRANCH, WAIT_SUC)는 120초, 단순 버튼 탐색(2, 3, 8)은 15초 부여
+                step_limit_sec = 120.0 if current_fsm in {"CERTI_STEP_5_FIND", "CERTI_STEP_7_FIND", "CERTI_STEP_8_BRANCH", "CERTI_WAIT_SUC"} else 15.0
 
                 if current_fsm not in web_timeout_fsms or is_hw_working or state.get("certi_web_last_fsm") != current_fsm:
                     state["certi_web_last_fsm"] = current_fsm
