@@ -517,7 +517,7 @@ def get_my_central_num():
     """커맨드컴은 중앙 12번과 물리 회선을 공유하므로 기본 회선 번호를 '12'로 반환합니다."""
     return "12"
 
-def get_next_central_in_order(curr_c_num):
+def get_next_central_in_order(curr_c_num, pc_key=None):
     my_num = get_my_central_num()
     curr_str = str(curr_c_num).strip()
     if curr_str not in CENTRAL_ORDER:
@@ -653,28 +653,15 @@ def _handle_proxy_client(client_sock, pc_key):
             if pc_key:
                 CURRENT_PROXY_TARGET_NUM[pc_key] = target_num
 
-        start_idx = CENTRAL_ORDER.index(target_num) if target_num in CENTRAL_ORDER else 0
-        total_cnt = len(CENTRAL_ORDER)
-        for offset in range(total_cnt):
-            cand_num = CENTRAL_ORDER[(start_idx + offset) % total_cnt]
-            if cand_num == my_num:
-                continue
-            ehost = CENTRAL_TAILSCALE_MAP.get(cand_num)
-            if not ehost:
-                continue
+        ehost = CENTRAL_TAILSCALE_MAP.get(target_num)
+        if ehost:
             try:
-                remote_sock = socket.create_connection((ehost, PROXY_DIRECT_EXIT_PORT), timeout=1.5)
-                if offset > 0 and pc_key:
-                    CURRENT_PROXY_TARGET_NUM[pc_key] = cand_num
-                    if pc_key in ai_states:
-                        ai_states[pc_key]["certi_curr_central"] = cand_num
+                remote_sock = socket.create_connection((ehost, PROXY_DIRECT_EXIT_PORT), timeout=4.0)
                 if now_t - _LAST_PROXY_LOG_TIME > 3.0:
-                    print(f"🔗 [군주 프록시 우회] {pc_key} 크롬 ➔ [{cand_num}번 중앙컴({ehost})] 회선으로 정상 연결됨!")
+                    print(f"🔗 [군주 프록시 우회] {pc_key} 크롬 ➔ [{target_num}번 중앙컴({ehost})] 회선으로 정상 연결됨!")
                     _LAST_PROXY_LOG_TIME = now_t
-                break
             except Exception:
                 remote_sock = None
-                continue
 
         if remote_sock is not None:
             try: remote_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -5937,12 +5924,32 @@ def ai_commander_worker(target_pc):
                     "CERTI_STEP_2_FIND", "CERTI_STEP_3_FIND", "CERTI_STEP_5_FIND",
                     "CERTI_STEP_7_FIND", "CERTI_STEP_8_FIND", "CERTI_STEP_8_BRANCH", "CERTI_WAIT_SUC"
                 }
+                step_limit_sec = 25.0 if current_fsm in {"CERTI_STEP_5_FIND", "CERTI_STEP_7_FIND", "CERTI_STEP_8_BRANCH", "CERTI_WAIT_SUC"} else 15.0
+
                 if current_fsm not in web_timeout_fsms or is_hw_working or state.get("certi_web_last_fsm") != current_fsm:
                     state["certi_web_last_fsm"] = current_fsm
                     state["certi_web_step_start"] = curr_time
-                elif curr_time - state.get("certi_web_step_start", curr_time) >= 10.0:
-                    dprint(key, f"⏰ [웹 인증 10초 타임아웃] '{current_fsm}' 단계 10초 초과! 크롬 창을 닫고 다시 시작합니다.")
+                elif curr_time - state.get("certi_web_step_start", curr_time) >= step_limit_sec:
                     pico_queues[key].put({"action": "CLOSE_TAB"})
+                    if state.get("certi_use_sub", False):
+                        release_central_ip_lock_async(key)
+                        my_num = get_my_central_num()
+                        prev_c = str(state.get("certi_curr_central") or my_num).strip()
+                        next_c = get_next_central_in_order(prev_c)
+                        state["certi_curr_central"] = next_c
+                        if key not in saved_settings:
+                            saved_settings[key] = {}
+                        saved_settings[key]["certi_curr_central"] = next_c
+                        save_settings()
+                        if next_c == my_num:
+                            state["certi_use_sub"] = False
+                        else:
+                            state["certi_use_sub"] = True
+                            CURRENT_PROXY_TARGET_NUM[key] = next_c
+                        dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 지연 초과! [{prev_c}번 ➔ {next_c}번 중앙컴] 회선으로 변경하여 재시도합니다.")
+                    else:
+                        dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 단계 {step_limit_sec:.0f}초 초과! 크롬 창을 닫고 다시 시작합니다.")
+
                     state["certi_web_last_fsm"] = None
                     state["certi_web_step_start"] = curr_time
                     state["certi_last_box"] = None
@@ -8068,7 +8075,10 @@ def arrange_windows():
             ctypes.windll.user32.AdjustWindowRectEx(ctypes.byref(rect), style, False, ex_style)
             full_w, full_h, offset_x, offset_y = rect.right - rect.left, rect.bottom - rect.top, -rect.left, -rect.top
             
-            win32gui.MoveWindow(hwnd, target_x, target_y, full_w, full_h, True)
+            try:
+                win32gui.MoveWindow(hwnd, target_x, target_y, full_w, full_h, True)
+            except Exception as e:
+                print(f"⚠️ [{key}] 창 이동 권한 제한 무시 (현재 위치에서 캡처 진행): {e}")
             CAPTURE_ROIS[key] = {"top": target_y + offset_y, "left": target_x + offset_x, "width": client_w, "height": client_h}
             pc["pos"] = (target_x, target_y)
             print(f"🪟 [{key}] '{title}' 창 개별 정렬 완료 (위치: {target_x}, {target_y})")
