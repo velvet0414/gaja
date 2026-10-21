@@ -11966,7 +11966,7 @@ def ai_commander_worker(target_pc):
                                     for _ in range(5):
                                         send_mouse_scroll(p_serial, p_lock, -1 * int(round(g_val(3, 6))))
                                         wait_with_heal(g_val(0.08, 0.12))
-                                    wait_with_heal(g_val(0.3, 0.5))
+                                    wait_with_heal(g_val(0.6, 0.8))
 
                                     # -------------------------------------------------------------
                                     # [본던 층별 전용 이미지 세팅]
