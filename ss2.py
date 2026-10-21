@@ -7724,7 +7724,7 @@ ARDUINO_KEY_MAP = {
     keyboard.Key.f9: 202, keyboard.Key.f10: 203, keyboard.Key.f11: 204, keyboard.Key.f12: 205,
     keyboard.Key.up: 218, keyboard.Key.down: 217, keyboard.Key.left: 216, keyboard.Key.right: 215,
     keyboard.Key.insert: 209, keyboard.Key.delete: 212, keyboard.Key.home: 210, keyboard.Key.end: 213,
-    keyboard.Key.page_up: 211, keyboard.Key.page_down: 214, keyboard.Key.caps_lock: 193
+    keyboard.Key.page_up: 211, keyboard.Key.page_down: 214
 }
 
 def get_arduino_keycode(key):
