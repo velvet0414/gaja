@@ -11969,20 +11969,20 @@ def ai_commander_worker(target_pc):
                                     wait_with_heal(g_val(0.6, 0.8))
 
                                     # -------------------------------------------------------------
-                                    # [본던 층별 전용 이미지 세팅]
+                                    # [본던 층별 전용 이미지 세팅 (엉뚱한 층 클릭 유발하던 예비 이미지 분리)]
                                     # -------------------------------------------------------------
                                     book_img_list = []
                                     in_img_path = ""
                                     
                                     if "4-" in dungeon_name or "4층" in dungeon_name:
-                                        book_img_list = ["qq/gludio44.png", "qq/gludio.png", "qq/bondon.png"]
+                                        book_img_list = ["qq/gludio44.png"]
                                         in_img_path = "qq/gludio4_in.png"
                                     elif "5-" in dungeon_name or "5층" in dungeon_name:
-                                        book_img_list = ["qq/gludio55.png", "qq/gludio.png", "qq/bondon.png"]
+                                        book_img_list = ["qq/gludio55.png"]
                                         in_img_path = "qq/gludio5_in.png"
                                     elif "6-" in dungeon_name or "6층" in dungeon_name:
-                                        # 💡 6층 갈 땐 5층에 내려야 하므로 gludio55(5층) 클릭!
-                                        book_img_list = ["qq/gludio55.png", "qq/gludio.png", "qq/bondon.png"]
+                                        # 💡 6층 갈 땐 5층에 내려야 하므로 gludio55(5층)만 정확히 클릭!
+                                        book_img_list = ["qq/gludio55.png"]
                                         in_img_path = "qq/gludio5_in.png"
                                         # 💡 [핵심] 5층에 도착하기 전에 미리 5to6 맵을 쓰도록 강제 설정! (미니맵 오인식 방어)
                                         ai_states[key]["override_dungeon_name"] = "본던 5to6"
@@ -11993,17 +11993,74 @@ def ai_commander_worker(target_pc):
                                         book_img_list = ["qq/gludio.png", "qq/bondon.png"]
                                         in_img_path = "qq/gludio_in.png"
 
+                                    # 🎯 [던전책 층수 숫자 정밀 판독 함수]
+                                    # '던전 X층'에서 공통 글자('던전', '층')의 서브픽셀 위상 때문에 다른 층이 더 높게 나오는 현상을 막기 위해,
+                                    # 모든 '던전 ?층' 후보 줄을 찾은 뒤 '숫자 영역(우측에서 24~12px 구간)' 일치율이 가장 높은 줄을 선택합니다!
+                                    def find_bondon_floor_exact(img_path):
+                                        scr_now = latest_frames.get(key)
+                                        if scr_now is None:
+                                            return None
+                                        if not img_path.startswith("qq/"):
+                                            img_path = f"qq/{img_path}"
+                                        if not os.path.exists(img_path):
+                                            return None
+                                        with open(img_path, "rb") as _f:
+                                            _arr = np.asarray(bytearray(_f.read()), dtype=np.uint8)
+                                        tmpl_bgra = cv2.imdecode(_arr, cv2.IMREAD_UNCHANGED)
+                                        if tmpl_bgra is None:
+                                            return None
+                                        tmpl_bgr = tmpl_bgra[:, :, :3] if len(tmpl_bgra.shape) == 3 else tmpl_bgra
+                                        th_h, tw_w = tmpl_bgr.shape[:2]
+
+                                        h_scr, w_scr = scr_now.shape[:2]
+                                        search_area = scr_now[0:min(400, h_scr), 0:min(290, w_scr)]
+                                        if search_area.shape[0] < th_h or search_area.shape[1] < tw_w:
+                                            return None
+
+                                        res_full = cv2.matchTemplate(search_area, tmpl_bgr, cv2.TM_CCOEFF_NORMED)
+                                        # 템플릿 가로폭이 40px 이상('던전 X층')이면 숫자 부분(우측 끝에서 24px~12px)만 별도 추출
+                                        if tw_w >= 40:
+                                            dx1, dx2 = max(0, tw_w - 24), max(1, tw_w - 12)
+                                            digit_tmpl = cv2.cvtColor(tmpl_bgr[:, dx1:dx2], cv2.COLOR_BGR2GRAY)
+                                            temp_res = res_full.copy()
+                                            best_pos = None
+                                            best_digit_score = -1.0
+
+                                            for _ in range(8):
+                                                _, max_v, _, max_l = cv2.minMaxLoc(temp_res)
+                                                if max_v < 0.80:
+                                                    break
+                                                cx, cy = max_l[0], max_l[1]
+                                                rx1 = max(0, cx + dx1 - 1)
+                                                ry1 = max(0, cy - 1)
+                                                rx2 = min(search_area.shape[1], cx + dx2 + 1)
+                                                ry2 = min(search_area.shape[0], cy + th_h + 1)
+                                                roi_d = cv2.cvtColor(search_area[ry1:ry2, rx1:rx2], cv2.COLOR_BGR2GRAY)
+                                                if roi_d.shape[0] >= digit_tmpl.shape[0] and roi_d.shape[1] >= digit_tmpl.shape[1]:
+                                                    res_d = cv2.matchTemplate(roi_d, digit_tmpl, cv2.TM_CCOEFF_NORMED)
+                                                    d_score = float(cv2.minMaxLoc(res_d)[1])
+                                                    if d_score >= 0.85 and d_score > best_digit_score:
+                                                        best_digit_score = d_score
+                                                        best_pos = (cx + tw_w // 2, cy + th_h // 2)
+                                                cv2.circle(temp_res, max_l, 8, -1.0, -1)
+                                            return best_pos
+                                        else:
+                                            _, max_v, _, max_l = cv2.minMaxLoc(res_full)
+                                            if max_v >= 0.88:
+                                                return (max_l[0] + tw_w // 2, max_l[1] + th_h // 2)
+                                            return None
+
                                     found = False
                                     
-                                    # 휠 내림 동작 없이 바로 10회 스캔 시도 (UI 뜨는 딜레이 감안)
+                                    # 스크롤 완료 후 10회 스캔 시도 (숫자 정밀 검증 적용)
                                     for _ in range(10):
                                         pos = None
                                         for img_name in book_img_list:
-                                            pos = find_img_universal(img_name, th=0.92, ui_only=True)
+                                            pos = find_bondon_floor_exact(img_name)
                                             if pos: break
 
                                         if pos:
-                                            dprint(key, f"✅ 던전책({dungeon_name}) 텍스트 발견! 원클릭하여 텔레포트합니다.")
+                                            dprint(key, f"✅ 던전책({dungeon_name}) 숫자 정밀 검증 완료({pos[0]}, {pos[1]})! 원클릭하여 텔레포트합니다.")
 
                                             safe_x = pos[0] + random.randint(-2, 2)
                                             safe_y = pos[1] + random.randint(-2, 2)
