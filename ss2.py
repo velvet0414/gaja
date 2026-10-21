@@ -540,7 +540,7 @@ def _local_ip_lock_fallback(action, client_id):
     with _LOCAL_IP_LOCK_MUTEX:
         _LOCAL_IP_LOCK_QUEUE = [(cid, t) for cid, t in _LOCAL_IP_LOCK_QUEUE if now - t <= 15.0]
         if _LOCAL_IP_LOCK_HOLDER is not None:
-            if (now - _LOCAL_IP_LOCK_HEARTBEAT > 15.0) or (now - _LOCAL_IP_LOCK_START_TIME > 120.0):
+            if (now - _LOCAL_IP_LOCK_HEARTBEAT > 15.0) or (now - _LOCAL_IP_LOCK_START_TIME > 300.0):
                 _LOCAL_IP_LOCK_HOLDER = None
         if action == "RELEASE":
             _LOCAL_IP_LOCK_QUEUE = [(cid, t) for cid, t in _LOCAL_IP_LOCK_QUEUE if cid != client_id]
@@ -5924,7 +5924,7 @@ def ai_commander_worker(target_pc):
                     "CERTI_STEP_2_FIND", "CERTI_STEP_3_FIND", "CERTI_STEP_5_FIND",
                     "CERTI_STEP_7_FIND", "CERTI_STEP_8_FIND", "CERTI_STEP_8_BRANCH", "CERTI_WAIT_SUC"
                 }
-                step_limit_sec = 25.0 if current_fsm in {"CERTI_STEP_5_FIND", "CERTI_STEP_7_FIND", "CERTI_STEP_8_BRANCH", "CERTI_WAIT_SUC"} else 15.0
+                step_limit_sec = 120.0 if current_fsm in {"CERTI_STEP_5_FIND", "CERTI_STEP_7_FIND", "CERTI_STEP_8_BRANCH", "CERTI_WAIT_SUC"} else 15.0
 
                 if current_fsm not in web_timeout_fsms or is_hw_working or state.get("certi_web_last_fsm") != current_fsm:
                     state["certi_web_last_fsm"] = current_fsm
