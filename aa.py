@@ -11946,6 +11946,13 @@ def ai_commander_worker(target_pc):
                                     wait_with_heal(g_val(0.8, 1.2))
 
                                     cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
+                                    scr_book = latest_frames.get(key)
+                                    if scr_book is not None:
+                                        real_c = find_cursor_pos(scr_book, last_pos=(cur_x, cur_y), allow_full_scan=True)
+                                        if real_c:
+                                            cur_x, cur_y = real_c[0], real_c[1]
+                                            ai_states[key]["cursor_pos"] = [cur_x, cur_y]
+
                                     park_x, park_y = 150, 250
                                     dx, dy = park_x - cur_x, park_y - cur_y
                                     dur = apply_human_variance(0.15 + 0.05 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if math.hypot(dx, dy) > 0 else 0.1)
@@ -11954,6 +11961,12 @@ def ai_commander_worker(target_pc):
                                     state["pico_arrived"] = False
                                     state["cursor_pos"] = [park_x, park_y]
                                     wait_with_heal(dur + g_val(0.3, 0.5))
+
+                                    dprint(key, "🔽 [강제 스크롤] 본던 항목을 찾기 위해 무조건 5회 휠을 먼저 내립니다.")
+                                    for _ in range(5):
+                                        send_mouse_scroll(p_serial, p_lock, -1 * int(round(g_val(3, 6))))
+                                        wait_with_heal(g_val(0.08, 0.12))
+                                    wait_with_heal(g_val(0.3, 0.5))
 
                                     # -------------------------------------------------------------
                                     # [본던 층별 전용 이미지 세팅]
