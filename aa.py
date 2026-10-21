@@ -641,7 +641,7 @@ def get_my_central_num():
         return gui_num
     return "1"
 
-def get_next_central_in_order(curr_c_num):
+def get_next_central_in_order(curr_c_num, pc_key=None):
     """
     현재 중앙컴 번호(curr_c_num)의 '다음 번호(+1)'부터 순차적으로 돌며
     살아있는 다음 중앙컴 번호를 반환합니다. 한 바퀴를 다 돌면 내 중앙컴 번호(my_num)로 복귀합니다.
@@ -811,7 +811,7 @@ def _handle_proxy_client(client_sock, is_exit_server=False, pc_key=None):
         try: client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except Exception: pass
 
-        # 1) 미니컴 전용 입구(31281~31284)로 들어온 경우 -> 지정된 순번의 타 중앙컴(31280)으로 토스!
+        # 1) 미니컴 전용 입구(31281~31284)로 들어온 경우 -> 지정된 타 중앙컴(31280) 1곳으로만 일관되게 토스! (세션 IP 쪼개짐 원천 방지)
         if not is_exit_server:
             now_t = time.time()
             my_num = get_my_central_num()
@@ -821,28 +821,15 @@ def _handle_proxy_client(client_sock, is_exit_server=False, pc_key=None):
                 if pc_key:
                     CURRENT_PROXY_TARGET_NUM[pc_key] = target_num
 
-            start_idx = CENTRAL_ORDER.index(target_num) if target_num in CENTRAL_ORDER else 0
-            total_cnt = len(CENTRAL_ORDER)
-            for offset in range(total_cnt):
-                cand_num = CENTRAL_ORDER[(start_idx + offset) % total_cnt]
-                if cand_num == my_num:
-                    continue
-                ehost = CENTRAL_TAILSCALE_MAP.get(cand_num)
-                if not ehost:
-                    continue
+            ehost = CENTRAL_TAILSCALE_MAP.get(target_num)
+            if ehost:
                 try:
-                    remote_sock = socket.create_connection((ehost, PROXY_DIRECT_EXIT_PORT), timeout=1.5)
-                    if offset > 0 and pc_key:
-                        CURRENT_PROXY_TARGET_NUM[pc_key] = cand_num
-                        if pc_key in ai_states:
-                            ai_states[pc_key]["certi_curr_central"] = cand_num
+                    remote_sock = socket.create_connection((ehost, PROXY_DIRECT_EXIT_PORT), timeout=4.0)
                     if now_t - _LAST_PROXY_LOG_TIME > 3.0:
-                        print(f"🔗 [프록시 우회 연결] {pc_key} 크롬 ➔ [{cand_num}번 중앙컴({ehost})] 회선으로 정상 연결됨!")
+                        print(f"🔗 [프록시 우회 연결] {pc_key} 크롬 ➔ [{target_num}번 중앙컴({ehost})] 회선으로 정상 연결됨!")
                         _LAST_PROXY_LOG_TIME = now_t
-                    break
                 except Exception:
                     remote_sock = None
-                    continue
 
             if remote_sock is not None:
                 try: remote_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -947,17 +934,20 @@ def _start_proxy_listener(bind_port, pc_key=None):
     is_exit = (pc_key is None)
     while True:
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            try: srv.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            except Exception: pass
         try:
             srv.bind(("0.0.0.0", bind_port))
-            srv.listen(64)
+            srv.listen(128)
             break
         except Exception:
             try: srv.close()
             except Exception: pass
+            # 이미 같은 중앙컴의 다른 미니창이 31280 출구를 열고 있다면 중복 바인딩하지 않고 대기
             if not is_exit:
                 return
-            time.sleep(3.0)
+            time.sleep(5.0)
 
     if pc_key:
         print(f"🌐 [우회 입구 개통] {pc_key} 전용 크롬 우회 포트({bind_port}) 오픈 완료!")
@@ -6138,19 +6128,39 @@ def ai_commander_worker(target_pc):
                     state["certi_lock_hb_time"] = curr_time
                     threading.Thread(target=request_central_ip_lock, args=(key, state["certi_locked_central"], "ACQUIRE"), daemon=True).start()
 
-                # ⏱️ [웹 인증 10초 타임아웃 워치독] 2.png 감지 단계부터 다음 이미지를 10초 이상 못 찾으면 크롬 닫고 다시 시작!
+                # ⏱️ [웹 인증 타임아웃 워치독] 로그인 처리(파란 동그라미) 구간은 최대 25초간 충분히 대기!
                 web_timeout_fsms = {
                     "CERTI_STEP_2_FIND", "CERTI_STEP_3_FIND", "CERTI_STEP_5_FIND",
                     "CERTI_STEP_7_FIND", "CERTI_STEP_8_FIND", "CERTI_STEP_8_BRANCH",
                     "CERTI_WAIT_SUC"
                 }
+                # 아이디/비번 입력 후 넘어가는 단계(5, 7, 8_BRANCH, WAIT_SUC)는 25초, 단순 버튼 탐색(2, 3, 8)은 15초 부여
+                step_limit_sec = 25.0 if current_fsm in {"CERTI_STEP_5_FIND", "CERTI_STEP_7_FIND", "CERTI_STEP_8_BRANCH", "CERTI_WAIT_SUC"} else 15.0
+
                 if current_fsm not in web_timeout_fsms or is_hw_working or state.get("certi_web_last_fsm") != current_fsm:
                     state["certi_web_last_fsm"] = current_fsm
                     state["certi_web_step_start"] = curr_time
-                elif curr_time - state.get("certi_web_step_start", curr_time) >= 10.0:
-                    icon_label = "sub.png(우회)" if state.get("certi_use_sub", False) else "1.png(기본)"
-                    dprint(key, f"⏰ [웹 인증 10초 타임아웃] '{current_fsm}' 단계에서 10초간 다음 이미지를 찾지 못했습니다! 크롬 창을 닫고 {icon_label}부터 다시 시작합니다.")
+                elif curr_time - state.get("certi_web_step_start", curr_time) >= step_limit_sec:
                     pico_queues[key].put({"action": "CLOSE_TAB"})
+                    if state.get("certi_use_sub", False):
+                        release_central_ip_lock_async(key)
+                        my_num = get_my_central_num()
+                        prev_c = str(state.get("certi_curr_central") or my_num).strip()
+                        next_c = get_next_central_in_order(prev_c)
+                        state["certi_curr_central"] = next_c
+                        if key not in saved_settings:
+                            saved_settings[key] = {}
+                        saved_settings[key]["certi_curr_central"] = next_c
+                        save_settings()
+                        if next_c == my_num:
+                            state["certi_use_sub"] = False
+                        else:
+                            state["certi_use_sub"] = True
+                            CURRENT_PROXY_TARGET_NUM[key] = next_c
+                        dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 지연 초과! [{prev_c}번 ➔ {next_c}번 중앙컴] 회선으로 변경하여 재시도합니다.")
+                    else:
+                        dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 단계에서 {step_limit_sec:.0f}초간 다음 이미지를 찾지 못해 크롬 창을 닫고 다시 시작합니다.")
+
                     state["certi_web_last_fsm"] = None
                     state["certi_web_step_start"] = curr_time
                     state["certi_last_box"] = None
@@ -13890,176 +13900,43 @@ def ai_commander_worker(target_pc):
                         if loop_time_gap > 2.0:
                             loop_time_gap = 0.0
 
-                        if is_ui_blocking:
-                            if state.get("haste_empty_start", 0) > 0:
-                                state["haste_empty_start"] += loop_time_gap
-                        else:
-                            if curr_time > state.get("next_haste_scan", 0):
-                                state["next_haste_scan"] = curr_time + 0.3
+                        # 💡 타임아웃 및 우측 아이콘 감시 완전 제거: 인벤 열림 여부와 무관하게 0.15초마다 하단 채팅창(haste_x.png)만 정밀 감시
+                        if curr_time > state.get("next_haste_scan", 0):
+                            state["next_haste_scan"] = curr_time + 0.15
 
-                                dng_name_haste = settings.get("dungeon_name", "")
+                            real_buff_time = state.get("real_buff_time", 0.0)
+                            time_since_real_buff = curr_time - real_buff_time
 
-                                last_haste = state.get("last_haste_time", 0.0)
-                                time_since_buff = curr_time - last_haste
-                                is_real_buff = state.get("is_real_buff_received", False)
-                                real_buff_time = state.get("real_buff_time", 0.0)
-                                time_since_real_buff = curr_time - real_buff_time
+                            is_detected_missing = False
+                            missing_reason = ""
 
-                                is_detected_missing = False
-                                missing_reason = ""
+                            CHAT_X1, CHAT_X2 = 125, 600
+                            CHAT_Y1, CHAT_Y2 = 490, h
 
-                                is_oak_or_event = "오땅" in dng_name_haste or "event" in dng_name_haste.lower()
-                                is_sudeon = "수던" in dng_name_haste or "heine" in dng_name_haste.lower()
-                                is_bondon = "본던" in dng_name_haste or "gludio" in dng_name_haste.lower()
+                            if w >= CHAT_X2 and h >= CHAT_Y2 and globals().get("img_haste_x") is not None:
+                                if (curr_time - state.get("hunt_start_time", curr_time) > 10.0) and (time_since_real_buff > 120.0):
+                                    chat_roi = img_bgr[CHAT_Y1:CHAT_Y2, CHAT_X1:CHAT_X2]
+                                    gray_check = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
+                                    _, bright_text = cv2.threshold(gray_check, 100, 255, cv2.THRESH_BINARY)
 
-                                if is_oak_or_event or is_sudeon or is_bondon:
-                                    CHAT_X1, CHAT_X2 = 125, 600
-                                    CHAT_Y1, CHAT_Y2 = 490, h
+                                    if cv2.countNonZero(bright_text) > 20:
+                                        try:
+                                            img_h_x = globals().get("img_haste_x")
+                                            img_h_x_m = globals().get("img_haste_x_mask")
 
-                                    if w >= CHAT_X2 and h >= CHAT_Y2 and globals().get("img_haste_x") is not None:
-                                        # 💡 time_since_real_buff > 120.0 조건을 추가 
-                                        if (curr_time - state.get("hunt_start_time", curr_time) > 10.0) and (time_since_real_buff > 120.0):
-                                            chat_roi = img_bgr[CHAT_Y1:CHAT_Y2, CHAT_X1:CHAT_X2]
-                                            gray_check = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
-                                            _, bright_text = cv2.threshold(gray_check, 100, 255, cv2.THRESH_BINARY)
+                                            gray_roi = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
+                                            gray_tmpl = cv2.cvtColor(img_h_x, cv2.COLOR_BGR2GRAY)
 
-                                            if cv2.countNonZero(bright_text) > 20:
-                                                try:
-                                                    img_h_x = globals().get("img_haste_x")
-                                                    img_h_x_m = globals().get("img_haste_x_mask")
+                                            if img_h_x_m is not None: res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCORR_NORMED, mask=img_h_x_m)
+                                            else: res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCOEFF_NORMED)
 
-                                                    gray_roi = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
-                                                    gray_tmpl = cv2.cvtColor(img_h_x, cv2.COLOR_BGR2GRAY)
+                                            _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
+                                            OAK_HASTE_THRESHOLD = 0.88
 
-                                                    if img_h_x_m is not None: res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCORR_NORMED, mask=img_h_x_m)
-                                                    else: res_haste = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCOEFF_NORMED)
-
-                                                    _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
-                                                    OAK_HASTE_THRESHOLD = 0.88
-
-                                                    if max_val_haste >= OAK_HASTE_THRESHOLD:
-                                                        is_detected_missing = True
-                                                        missing_reason = f"채팅창 헤이풀림 감지({max_val_haste*100:.1f}%)"
-                                                except: pass
-
-                                if not is_detected_missing and not is_oak_or_event:
-                                    is_icon_check_needed = True
-
-                                    if is_sudeon or is_bondon:
-                                        if time_since_buff >= 7200.0:
-                                            is_icon_check_needed = True
-                                            if curr_time > state.get("sudeon_icon_log_time", 0):
-                                                loc_name = "수던" if is_sudeon else "본던"
-                                                dprint(key, f"🚨 [{loc_name} 헤이 감시] 버프 후 2시간 경과! 사냥터 내 우측 상단 아이콘 팩트 체크를 상시 가동합니다.")
-                                                state["sudeon_icon_log_time"] = curr_time + 60.0
-                                        else:
-                                            is_icon_check_needed = False
-
-                                    if (is_sudeon or is_bondon) and not is_icon_check_needed:
-                                        if state.get("haste_empty_start", 0) > 0:
-                                            state["haste_empty_start"] += loop_time_gap
-
-                                    if is_icon_check_needed:
-                                        haste_found = False
-
-                                        if w >= 60 and h >= 350:
-                                            buff_roi_x1 = max(0, w - 60)
-                                            buff_roi_y1 = 0
-                                            buff_roi_x2 = w
-                                            buff_roi_y2 = min(h, 350)
-                                            buff_roi = img_bgr[buff_roi_y1:buff_roi_y2, buff_roi_x1:buff_roi_x2]
-
-                                            import os
-                                            ha_dir = "qq/ha"
-                                            if os.path.exists(ha_dir):
-                                                for f_name in os.listdir(ha_dir):
-                                                    if f_name.lower().endswith((".png", ".jpg")):
-                                                        img_path = f"{ha_dir}/{f_name}"
-                                                        if img_path not in loaded_models:
-                                                            try:
-                                                                bgra = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
-                                                                if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4:
-                                                                    loaded_models[img_path] = {"color": bgra[:,:,:3], "mask": bgra[:,:,3]}
-                                                                else:
-                                                                    color = cv2.imread(img_path, cv2.IMREAD_COLOR)
-                                                                    loaded_models[img_path] = {"color": color, "mask": None} if color is not None else None
-                                                            except: loaded_models[img_path] = None
-
-                                                        tmpl = loaded_models.get(img_path)
-                                                        if tmpl and tmpl["color"] is not None:
-                                                            try:
-                                                                if tmpl["mask"] is not None: res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl["mask"]]*3))
-                                                                else: res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCOEFF_NORMED)
-                                                                _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
-                                                                if max_val_haste >= (settings.get("haste_match_rate", 92.0) / 100.0):
-                                                                    haste_found = True
-                                                                    break
-                                                            except: pass
-                                                    if haste_found: break
-
-                                            if not haste_found and globals().get("img_haste") is not None:
-                                                try:
-                                                    if globals().get("img_haste_mask") is not None: res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste_mask")]*3))
-                                                    else: res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCOEFF_NORMED)
-                                                    _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
-                                                    if max_val_haste >= (settings.get("haste_match_rate", 92.0) / 100.0): haste_found = True
-                                                except: pass
-
-                                            if not haste_found and globals().get("img_haste2") is not None:
-                                                try:
-                                                    if globals().get("img_haste2_mask") is not None: res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste2_mask")]*3))
-                                                    else: res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCOEFF_NORMED)
-                                                    _, max_val_haste2, _, _ = cv2.minMaxLoc(res_haste2)
-                                                    if max_val_haste2 >= (settings.get("haste_match_rate", 92.0) / 100.0): haste_found = True
-                                                except: pass
-
-                                        if haste_found:
-                                            state["haste_empty_start"] = 0
-                                            state["haste_visible_start"] = curr_time
-
-                                            last_h = state.get("last_haste_time", 0.0)
-                                            # [수정 1] 2시간 초과 시 발생하는 물결 오인식으로 인해 타이머가 0초로 강제 리셋되는 치명적 버그 삭제!
-                                            # 오직 매크로를 처음 켰을 때(last_h == 0.0)만 타이머를 현재 시간으로 세팅해줍니다.
-                                            if last_h == 0.0:
-                                                if curr_time > state.get("haste_self_heal_log", 0):
-                                                    dprint(key, "✅ [헤이스트 자가 치유] 초기화된 타이머(0초)를 현재 시간으로 복구합니다!")
-                                                    state["haste_self_heal_log"] = curr_time + 60.0
-                                                state["last_haste_time"] = curr_time
-                                                state["is_real_buff_received"] = True
-                                                state["real_buff_time"] = curr_time
-                                                # 💡 [핵심 픽스] 아랫줄에서 '버프 기록 없음(0.0)'으로 오판하지 않도록 지역 변수도 즉시 동기화!
-                                                last_haste = curr_time
-                                                time_since_buff = 0.0
-
-                                        else:
-                                            state["haste_visible_start"] = 0
-                                            if state.get("haste_empty_start", 0) == 0:
-                                                state["haste_empty_start"] = curr_time
-
-                                    target_empty_time = 120.0 if (is_sudeon or is_bondon or is_oak_or_event) else 40.0
-
-                                    if state.get("haste_empty_start", 0) > 0 and curr_time - state.get("haste_empty_start", 0) >= target_empty_time:
-                                        is_detected_missing = True
-                                        missing_reason = f"우측 아이콘 {int(target_empty_time)}초 증발"
-
-                                if not is_detected_missing:
-                                    if last_haste == 0.0:
-                                        is_detected_missing = True
-                                        missing_reason = "버프 기록 없음 (초기화됨)"
-                                    elif last_haste > 0.0:
-                                        safe_time_since = max(0.0, time_since_buff)
-
-                                        timeout_limit = 7500.0 if (is_sudeon or is_bondon) else 7200.0
-
-                                        if safe_time_since >= timeout_limit:
-                                            if state.get("is_real_buff_received", False) and safe_time_since > (timeout_limit + 800.0):
-                                                if curr_time > state.get("last_chat_dbg_log4", 0):
-                                                    dprint(key, f"🛡️ [타임아웃 버그 차단] 시간 연산 오류 감지({safe_time_since:.1f}초)! 타이머를 강제 정상화합니다.")
-                                                    state["last_chat_dbg_log4"] = curr_time + 10.0
-                                                state["last_haste_time"] = curr_time
-                                            else:
+                                            if max_val_haste >= OAK_HASTE_THRESHOLD:
                                                 is_detected_missing = True
-                                                missing_reason = f"{int(timeout_limit/3600)}시간 타임아웃"
+                                                missing_reason = f"채팅창 헤이풀림 감지({max_val_haste*100:.1f}%)"
+                                        except: pass
 
                                 if is_detected_missing:
                                     state["last_haste_time"] = 0.0
