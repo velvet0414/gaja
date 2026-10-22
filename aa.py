@@ -1836,13 +1836,14 @@ def check_minimap_marker_exists(minimap_bgr):
         roi = minimap_bgr[y1:y2, x1:x2]
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 
-        mask_red1 = cv2.inRange(hsv, (0, 140, 140), (10, 255, 255))
-        mask_red2 = cv2.inRange(hsv, (170, 140, 140), (180, 255, 255))
+        mask_red1 = cv2.inRange(hsv, (0, 140, 140), (6, 255, 255))
+        mask_red2 = cv2.inRange(hsv, (172, 140, 140), (180, 255, 255))
         mask_red = cv2.bitwise_or(mask_red1, mask_red2)
 
-        mask_yellow = cv2.inRange(hsv, (15, 100, 100), (45, 255, 255))
+        # 파티원 주황색(8~22) 및 파티장 노란 왕관(18~40) 통합 감지
+        mask_yellow = cv2.inRange(hsv, (8, 80, 120), (42, 255, 255))
 
-        if cv2.countNonZero(mask_red) > 10 or cv2.countNonZero(mask_yellow) > 10:
+        if cv2.countNonZero(mask_red) >= 5 or cv2.countNonZero(mask_yellow) >= 5:
             return True
 
         return False
@@ -8103,27 +8104,48 @@ def ai_commander_worker(target_pc):
                 state.get("town_thread_running", False)
             )
 
-            # 💡 미니맵 빨간 화살표(current_facing_angle) 감지 시에만 파탈로 확정하고 초대 요청 활성화!
-            if current_facing_angle is not None:
-                # 미니맵에 빨간 화살표가 보임 == 솔플(파탈) 상태
+            # 💡 미니맵 중앙(28x28)에서 파티장 노란 왕관 / 파티원 주황 마커 픽셀(5개 이상) 검출로 파티 상태 판독!
+            party_marker_px = 0
+            solo_red_px = 0
+            if minimap_bgr is not None and minimap_bgr.size > 0:
+                try:
+                    mh, mw = minimap_bgr.shape[:2]
+                    mcx, mcy = mw // 2, mh // 2
+                    m_roi = minimap_bgr[max(0, mcy - 14):min(mh, mcy + 14), max(0, mcx - 14):min(mw, mcx + 14)]
+                    m_hsv = cv2.cvtColor(m_roi, cv2.COLOR_BGR2HSV)
+
+                    # 1) 파티 중: 주황색 마커(Hue 8~22) + 노란색 왕관(Hue 18~42) 픽셀 수
+                    mask_party_color = cv2.inRange(m_hsv, (8, 80, 120), (42, 255, 255))
+                    party_marker_px = int(cv2.countNonZero(mask_party_color))
+
+                    # 2) 솔플 중: 순수 빨간색 화살표(Hue 0~5, 173~180) 픽셀 수
+                    mask_r1 = cv2.inRange(m_hsv, (0, 140, 140), (5, 255, 255))
+                    mask_r2 = cv2.inRange(m_hsv, (173, 140, 140), (180, 255, 255))
+                    solo_red_px = int(cv2.countNonZero(cv2.bitwise_or(mask_r1, mask_r2)))
+                except Exception:
+                    pass
+
+            if party_marker_px >= 5:
+                # 미니맵 중앙에 주황색/노란색 픽셀 5개 이상 감지 == 정상 파티 상태!
+                state["solo_red_arrow_streak"] = 0
+                state["no_red_arrow_streak"] = state.get("no_red_arrow_streak", 0) + 1
+                if state["no_red_arrow_streak"] >= 3:
+                    if not state.get("in_ingame_party", True):
+                        dprint(key, f"✅ [미니맵 파티 확인] 중앙 주황/노랑 픽셀({party_marker_px}개) 감지! 파티 유지 상태로 확정합니다.")
+                    state["in_ingame_party"] = True
+                    state["need_party_invite_req"] = False
+                    if state.get("is_invite_leader", False):
+                        state["had_party_as_leader"] = True
+            elif solo_red_px >= 5:
+                # 주황/노랑 픽셀이 없고 순수 빨간 화살표 픽셀(5개 이상) 감지 == 솔플(파탈) 상태!
                 state["no_red_arrow_streak"] = 0
                 if curr_time > state.get("party_accept_grace_until", 0.0):
                     state["solo_red_arrow_streak"] = state.get("solo_red_arrow_streak", 0) + 1
                     if state["solo_red_arrow_streak"] >= 5:
                         if state.get("in_ingame_party", True):
-                            dprint(key, "🚨 [미니맵 파탈 감지] 미니맵 빨간 화살표 확인! 파장에게 파티 초대를 요청합니다.")
+                            dprint(key, f"🚨 [미니맵 파탈 감지] 주황/노랑 없음({party_marker_px}개) & 빨간 화살표({solo_red_px}개) 확인! 초대를 요청합니다.")
                         state["in_ingame_party"] = False
                         state["need_party_invite_req"] = True
-            else:
-                # 미니맵은 열려 있는데 빨간 화살표가 안 보임 == 파티 맺어진 상태
-                state["solo_red_arrow_streak"] = 0
-                if check_minimap_marker_exists(minimap_bgr):
-                    state["no_red_arrow_streak"] = state.get("no_red_arrow_streak", 0) + 1
-                    if state["no_red_arrow_streak"] >= 5:
-                        state["in_ingame_party"] = True
-                        state["need_party_invite_req"] = False
-                        if state.get("is_invite_leader", False):
-                            state["had_party_as_leader"] = True
 
             my_inv_grp = str(settings.get("invite_group", "선택안함"))
             my_char_name = str(settings.get("char_name", "")).strip()
