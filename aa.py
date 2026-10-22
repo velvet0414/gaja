@@ -984,17 +984,48 @@ LOCAL_IPC_PORTS = {
 }
 
 local_party_states = {}
+global_invite_states = {}
 party_lock = threading.Lock()
 
+_KOR_CHO = ['r', 'R', 's', 'e', 'E', 'f', 'a', 'q', 'Q', 't', 'T', 'd', 'w', 'W', 'c', 'z', 'x', 'v', 'g']
+_KOR_JUNG = ['k', 'o', 'i', 'O', 'j', 'p', 'u', 'P', 'h', 'hk', 'ho', 'hl', 'y', 'n', 'nj', 'np', 'nl', 'b', 'm', 'ml', 'l']
+_KOR_JONG = ['', 'r', 'R', 'rt', 's', 'sw', 'sg', 'e', 'f', 'fr', 'fa', 'fq', 'ft', 'fx', 'fv', 'fg', 'a', 'q', 'qt', 't', 'T', 'd', 'w', 'c', 'z', 'x', 'v', 'g']
+_KOR_COMPAT_MAP = {
+    'ㄱ': 'r', 'ㄲ': 'R', 'ㄳ': 'rt', 'ㄴ': 's', 'ㄵ': 'sw', 'ㄶ': 'sg', 'ㄷ': 'e', 'ㄸ': 'E',
+    'ㄹ': 'f', 'ㄺ': 'fr', 'ㄻ': 'fa', 'ㄼ': 'fq', 'ㄽ': 'ft', 'ㄾ': 'fx', 'ㄿ': 'fv', 'ㅀ': 'fg',
+    'ㅁ': 'a', 'ㅂ': 'q', 'ㅃ': 'Q', 'ㅄ': 'qt', 'ㅅ': 't', 'ㅆ': 'T', 'ㅇ': 'd', 'ㅈ': 'w',
+    'ㅉ': 'W', 'ㅊ': 'c', 'ㅋ': 'z', 'ㅌ': 'x', 'ㅍ': 'v', 'ㅎ': 'g',
+    'ㅏ': 'k', 'ㅐ': 'o', 'ㅑ': 'i', 'ㅒ': 'O', 'ㅓ': 'j', 'ㅔ': 'p', 'ㅕ': 'u', 'ㅖ': 'P',
+    'ㅗ': 'h', 'ㅘ': 'hk', 'ㅙ': 'ho', 'ㅚ': 'hl', 'ㅛ': 'y', 'ㅜ': 'n', 'ㅝ': 'nj', 'ㅞ': 'np',
+    'ㅟ': 'nl', 'ㅠ': 'b', 'ㅡ': 'm', 'ㅢ': 'ml', 'ㅣ': 'l'
+}
+
+def kor_to_eng_typo(text):
+    """한글 문자열(쌍자음/겹받침 포함)을 피코 입력용 두벌식 영타 문자열로 변환합니다."""
+    res = []
+    for ch in str(text):
+        code = ord(ch)
+        if 0xAC00 <= code <= 0xD7A3:
+            offset = code - 0xAC00
+            cho = offset // 588
+            jung = (offset % 588) // 28
+            jong = offset % 28
+            res.append(_KOR_CHO[cho] + _KOR_JUNG[jung] + _KOR_JONG[jong])
+        elif ch in _KOR_COMPAT_MAP:
+            res.append(_KOR_COMPAT_MAP[ch])
+        else:
+            res.append(ch)
+    return "".join(res)
+
 def local_ipc_listener_thread(my_key):
-    """내 전용 포트를 열고 파티원들의 외침을 듣는 귀(Receiver)"""
+    """내 전용 포트를 열고 로컬 및 타 중앙컴 파티원들의 외침을 듣는 귀(Receiver)"""
     my_port = LOCAL_IPC_PORTS.get(my_key)
     if not my_port: return
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(('127.0.0.1', my_port))
+    sock.bind(('0.0.0.0', my_port))
     sock.setblocking(False)
-    print(f"📡 [파티 로컬망] {my_key} 전용 수신 포트({my_port}) 개통 완료!")
+    print(f"📡 [파티 광역망] {my_key} 전용 수신 포트(0.0.0.0:{my_port}) 개통 완료!")
 
     while True:
         try:
@@ -1003,29 +1034,50 @@ def local_ipc_listener_thread(my_key):
                 msg = json.loads(data.decode('utf-8'))
 
                 sender_key = msg.get("pc_key")
-                sender_party = msg.get("party_group")
-                my_party = current_settings.get(my_key, {}).get("party_group", "선택안함")
+                sender_c_num = str(msg.get("central_num", get_my_central_num()))
+                my_c_num = str(get_my_central_num())
+                sender_uid = msg.get("uid", f"{sender_c_num}-{sender_key}")
+                my_uid = f"{my_c_num}-{my_key}"
 
-                if sender_key != my_key and my_party != "선택안함" and sender_party == my_party:
+                if sender_uid == my_uid:
+                    continue
+
+                now_t = time.time()
+                msg["recv_time"] = now_t
+
+                # 1) 기존 전술 파티(A~D조): 동일 중앙컴 내부 미니컴끼리만 연동 (기존 기능 100% 보존)
+                sender_party = msg.get("party_group", "선택안함")
+                my_party = current_settings.get(my_key, {}).get("party_group", "선택안함")
+                if sender_c_num == my_c_num and sender_key != my_key and my_party != "선택안함" and sender_party == my_party:
                     with party_lock:
-                        msg["recv_time"] = time.time()
                         local_party_states[sender_key] = msg
+
+                # 2) 다중 중앙컴 인게임 자동초대 조(1~12): 조 선택 즉시 기존 파장을 알 수 있도록 상시 수신 저장
+                sender_inv_grp = str(msg.get("invite_group", "선택안함"))
+                if sender_inv_grp != "선택안함":
+                    with party_lock:
+                        global_invite_states[sender_uid] = msg
         except BlockingIOError: pass
         except Exception: pass
         time.sleep(0.05)
 
 def local_ipc_broadcaster_thread(my_key):
-    """내 상태와 '내가 치고 있는 몹의 절대 좌표(GPS)'를 파티원에게 0.1초마다 쏴주는 입(Sender)"""
+    """내 상태와 '내가 치고 있는 몹의 절대 좌표(GPS)' 및 '자동 초대조 상태'를 쏴주는 입(Sender)"""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    last_remote_broadcast = 0.0
 
     while True:
         try:
             my_party = current_settings.get(my_key, {}).get("party_group", "선택안함")
+            my_inv_grp = str(current_settings.get(my_key, {}).get("invite_group", "선택안함"))
             use_party_hunt = current_settings.get(my_key, {}).get("use_party_hunt", False)
             use_party_fixed = current_settings.get(my_key, {}).get("use_party_fixed", False)
             st = ai_states.get(my_key, {})
 
-            if (use_party_hunt or use_party_fixed) and my_party != "선택안함":
+            need_tactic_bcast = (use_party_hunt or use_party_fixed) and my_party != "선택안함"
+            need_invite_bcast = (my_inv_grp != "선택안함")
+
+            if need_tactic_bcast or need_invite_bcast:
                 hp = st.get("last_hp", 100.0)
                 mp = sorted(st.get("mp_buffer", [100.0]*5))[2] if "mp_buffer" in st else 100.0
                 my_map_pos = st.get("dungeon_map_pos")
@@ -1085,9 +1137,35 @@ def local_ipc_broadcaster_thread(my_key):
                                     mob_map_pos = (mob_map_x, mob_map_y)
                         except: pass
 
+                my_c_num = str(get_my_central_num())
+                try: my_c_int = int(my_c_num)
+                except: my_c_int = 1
+                try: my_m_int = int(my_key.replace("미니", ""))
+                except: my_m_int = 1
+                my_uid = f"{my_c_int}-{my_key}"
+
+                # 💡 오직 인증(CERTI_) 중일 때만 게임 이탈로 간주 (특정시간대 딜레이 CERTI_DELAY_WAIT 포함)
+                real_hunt_on = st.get("backup_hunt_active", st.get("is_hunt_active", False))
+                real_fsm_str = str(st.get("backup_target_fsm", raw_fsm)) if raw_fsm == "GHOST_MODE" else raw_fsm
+                is_in_game = bool(real_hunt_on and not real_fsm_str.startswith("CERTI_"))
+                in_party_now = bool(is_in_game and st.get("in_ingame_party", False))
+                is_inv_leader = bool(is_in_game and st.get("is_invite_leader", False))
+
                 payload = {
+                    "uid": my_uid,
+                    "central_num": my_c_int,
+                    "mini_num": my_m_int,
                     "pc_key": my_key,
                     "party_group": my_party,
+                    "invite_group": my_inv_grp,
+                    "char_name": current_settings.get(my_key, {}).get("char_name", ""),
+                    "in_game": is_in_game,
+                    "in_party": in_party_now,
+                    "need_invite": bool(is_in_game and not in_party_now and not is_inv_leader),
+                    "is_invite_leader": is_inv_leader,
+                    "group_join_time": st.get("invite_group_join_time", 0.0),
+                    "leader_since": st.get("invite_leader_since", 0.0),
+                    "party_order": st.get("party_order", []),
                     "is_party_inviter": current_settings.get(my_key, {}).get("is_party_inviter", False),
                     "party_state": party_state,
                     "mob_map_pos": mob_map_pos,
@@ -1120,6 +1198,17 @@ def local_ipc_broadcaster_thread(my_key):
                     if k != my_key:
                         try: sock.sendto(data, ('127.0.0.1', port))
                         except: pass
+
+                now_b = time.time()
+                if need_invite_bcast and (now_b - last_remote_broadcast >= 0.4):
+                    last_remote_broadcast = now_b
+                    target_ips = [ip for _, ip in ALIVE_OTHER_PROXIES] if ALIVE_OTHER_PROXIES else [
+                        ip for c_k, ip in CENTRAL_TAILSCALE_MAP.items() if c_k != my_c_num
+                    ]
+                    for r_ip in target_ips:
+                        for port in LOCAL_IPC_PORTS.values():
+                            try: sock.sendto(data, (r_ip, port))
+                            except: pass
 
         except Exception: pass
         time.sleep(0.1)
@@ -2465,6 +2554,9 @@ def _save_settings_internal():
                 "is_puller": v["is_puller"].get(),
                 "is_party_inviter": v["is_party_inviter"].get(),
                 "party_group": v["party_group"].get(),
+                "invite_group": v["invite_group"].get() if "invite_group" in v else "선택안함",
+                "char_name": v["char_name"].get().strip() if "char_name" in v else "",
+                "party_to_main_migrated": True,
                 "party_dungeon_name": v["party_dungeon_name"].get(),
 
                 "party_heal_use": v["party_heal_use"].get(), "party_heal_pct": v["party_heal_pct"].get(),
@@ -2718,6 +2810,79 @@ try:
         img_nopotion_mask = None
 except: img_nopotion, img_nopotion_mask = None, None
 
+def check_minimap_party_marker(minimap_bgr):
+    """미니맵 중앙 화살표 색상으로 파탈(SOLO: 빨간화살표) vs 파티중(PARTY: 노란마커) 여부를 판별합니다."""
+    if minimap_bgr is None or minimap_bgr.size == 0:
+        return "UNKNOWN"
+    try:
+        h, w = minimap_bgr.shape[:2]
+        center_x, center_y = w // 2, h // 2
+        roi_size = 14
+        x1, y1 = max(0, center_x - roi_size), max(0, center_y - roi_size)
+        x2, y2 = min(w, center_x + roi_size), min(h, center_y + roi_size)
+
+        roi = minimap_bgr[y1:y2, x1:x2]
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+
+        mask_red1 = cv2.inRange(hsv, (0, 140, 140), (10, 255, 255))
+        mask_red2 = cv2.inRange(hsv, (170, 140, 140), (180, 255, 255))
+        mask_red = cv2.bitwise_or(mask_red1, mask_red2)
+        mask_yellow = cv2.inRange(hsv, (15, 100, 100), (45, 255, 255))
+
+        if cv2.countNonZero(mask_red) > 10:
+            return "SOLO"
+        elif cv2.countNonZero(mask_yellow) > 10:
+            return "PARTY"
+        return "UNKNOWN"
+    except Exception:
+        return "UNKNOWN"
+
+def check_chat_template_match(img_bgr, fname, th=0.80):
+    """하단 채팅창 ROI(X:125~600, Y:490~600) 영역에서 qq/party.png 또는 qq/yungta.png를 감지합니다."""
+    if img_bgr is None:
+        return False
+    path = f"qq/{fname}" if not fname.startswith("qq/") else fname
+    if not os.path.exists(path):
+        return False
+    cache_key = f"chat_tmpl_{path}"
+    if cache_key not in loaded_models:
+        try:
+            with open(path, "rb") as f:
+                np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
+            bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
+            if bgra is not None:
+                if len(bgra.shape) == 3 and bgra.shape[2] == 4 and np.min(bgra[:, :, 3]) < 250:
+                    loaded_models[cache_key] = {"color": bgra[:, :, :3], "mask": bgra[:, :, 3]}
+                else:
+                    color = bgra[:, :, :3] if len(bgra.shape) == 3 else cv2.cvtColor(bgra, cv2.COLOR_GRAY2BGR)
+                    loaded_models[cache_key] = {"color": color, "mask": None}
+            else:
+                loaded_models[cache_key] = None
+        except Exception:
+            loaded_models[cache_key] = None
+
+    tmpl_data = loaded_models.get(cache_key)
+    if not tmpl_data or tmpl_data["color"] is None:
+        return False
+
+    h, w = img_bgr.shape[:2]
+    if w < 600 or h <= 490:
+        return False
+    chat_roi = img_bgr[490:h, 125:600]
+    tmpl = tmpl_data["color"]
+    mask = tmpl_data["mask"]
+    if chat_roi.shape[0] < tmpl.shape[0] or chat_roi.shape[1] < tmpl.shape[1]:
+        return False
+    try:
+        if mask is not None:
+            res = cv2.matchTemplate(chat_roi, tmpl, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask]*3))
+        else:
+            res = cv2.matchTemplate(chat_roi, tmpl, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, _ = cv2.minMaxLoc(res)
+        return max_val >= th
+    except Exception:
+        return False
+
 try:
     cursor_bgra = cv2.imread("qq/cursor_custom.png", cv2.IMREAD_UNCHANGED)
     if cursor_bgra is not None: cursor_color, cursor_mask = cursor_bgra[:, :, :3], cursor_bgra[:, :, 3]
@@ -2947,6 +3112,32 @@ for pc in MINI_PCS:
     if "com_port" in pc_set:
         pc["com_port"] = pc_set["com_port"]
 
+    # 💡 [최초 1회 자동 이관] 기존 파티 탭에 설정해둔 생존/힐/엠탐 수치들을 메인 탭 설정으로 덮어쓰기
+    if pc_set and not pc_set.get("party_to_main_migrated", False):
+        migrate_map = {
+            "party_heal_use": "heal_use",
+            "party_heal_pct": "heal_pct",
+            "party_heal_mp_pct": "heal_mp_pct",
+            "party_abs_return_use": "abs_return_use",
+            "party_abs_return_pct": "abs_return_pct",
+            "party_pot_use": "pot_use",
+            "party_pot_pct": "pot_pct",
+            "party_poison_type": "poison_type",
+            "party_poison_delay": "poison_delay",
+            "party_hp_danger_pct": "hp_danger_pct",
+            "party_hp_20_action": "hp_20_action",
+            "party_pk_drop_pct": "pk_drop_pct",
+            "party_max_combat_time": "max_combat_time",
+            "party_use_mptam": "use_mptam",
+            "party_mptam_start_pct": "mptam_start_pct",
+            "party_mptam_stop_pct": "mptam_stop_pct",
+        }
+        for p_key_name, m_key_name in migrate_map.items():
+            if p_key_name in pc_set:
+                pc_set[m_key_name] = pc_set[p_key_name]
+        pc_set["party_to_main_migrated"] = True
+        print(f"🔄 [{k}] 최초 업데이트 감지: 기존 파티 탭의 생존/힐/엠탐 설정을 메인 탭으로 덮어썼습니다!")
+
     gui_vars[k] = {
         "com_port": tk.StringVar(value=pc.get("com_port", "")),
         "role": tk.StringVar(value=pc_set.get("role", "솔플 : 던전")),
@@ -2963,6 +3154,8 @@ for pc in MINI_PCS:
         "is_puller": tk.BooleanVar(value=pc_set.get("is_puller", False)),
         "is_party_inviter": tk.BooleanVar(value=pc_set.get("is_party_inviter", False)),
         "party_group": tk.StringVar(value=pc_set.get("party_group", "선택안함")),
+        "invite_group": tk.StringVar(value=pc_set.get("invite_group", "선택안함")),
+        "char_name": tk.StringVar(value=pc_set.get("char_name", "")),
 
         "party_dungeon_name": tk.StringVar(value=pc_set.get("party_dungeon_name", "수던1-1")),
 
@@ -4090,7 +4283,7 @@ def pico_worker_thread(key):
             # 🛡️ [바탕화면 엣지(F1) 실행 원천 차단] 인증 모드(CERTI_) 중에는 인게임 F1~F12 단축키 및 사냥/버프 매크로 실행을 하드웨어 직전에서 폐기!
             curr_fsm_hw = str(ai_states.get(key, {}).get("target_fsm", ""))
             if curr_fsm_hw.startswith("CERTI_"):
-                if action in ["ESCAPE", "TELEPORT", "TELEPORT_SPAM", "HEAL", "POTION", "BODY_TO_MIND", "ANTIDOTE", "BUFF_COMBO", "SWEEP_START", "TRASH_DELETE"]:
+                if action in ["ESCAPE", "TELEPORT", "TELEPORT_SPAM", "HEAL", "POTION", "BODY_TO_MIND", "ANTIDOTE", "BUFF_COMBO", "SWEEP_START", "TRASH_DELETE", "PARTY_INVITE_CMD", "PARTY_ACCEPT_CMD"]:
                     dprint(key, f"🛡️ [인증모드 키 차단] 바탕화면 오작동 방지를 위해 잔여 인게임 명령({action})을 폐기합니다.")
                     if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
                     continue
@@ -4248,6 +4441,82 @@ def pico_worker_thread(key):
                 h_sleep(0.04, 0.08)
                 send_keyboard_key(p_serial, p_lock, 129, 0)
                 h_sleep(0.05, 0.1)
+
+            elif action == "PARTY_INVITE_CMD":
+                eng_name = str(cmd.get("eng_name", "")).strip()
+                need_han_eng = cmd.get("need_han_eng", False)
+                if eng_name:
+                    # 1) 누르고 있던 F4(줍기) / F7(바디) / Shift 안전 해제
+                    if key in ai_states and ai_states[key].get("sweep_active", False):
+                        send_keyboard_key(p_serial, p_lock, KEY_F4, 0)
+                        ai_states[key]["sweep_active"] = False
+                    if key in ai_states and ai_states[key].get("body_held", False):
+                        send_keyboard_key(p_serial, p_lock, KEY_F7, 0)
+                        ai_states[key]["body_held"] = False
+                    send_keyboard_key(p_serial, p_lock, 129, 0)
+                    h_sleep(0.05, 0.09)
+
+                    # 2) yungta.png 감지 시 Shift + Space 로 한글 전환
+                    if need_han_eng:
+                        send_keyboard_key(p_serial, p_lock, 129, 1)
+                        h_sleep(0.04, 0.08)
+                        send_keyboard_key(p_serial, p_lock, 32, 1)
+                        h_sleep(0.04, 0.08)
+                        send_keyboard_key(p_serial, p_lock, 32, 0)
+                        h_sleep(0.04, 0.08)
+                        send_keyboard_key(p_serial, p_lock, 129, 0)
+                        h_sleep(0.15, 0.24)
+
+                    # 3) '/초대 ' 입력 (/cheo + Space)
+                    for ch_cmd in "/cheo":
+                        k_tap(ord(ch_cmd))
+                        h_sleep(0.045, 0.085)
+
+                    k_tap(32) # Space
+                    # 💡 쌍자음(Shift) 첫 글자와 Space가 겹쳐 한/영이 풀리는 현상을 막는 물리적 안전 간격
+                    h_sleep(0.14, 0.20)
+
+                    # 4) 변환된 케릭명(쌍자음 대문자 Shift 포함) 입력 후 엔터
+                    for ch in eng_name:
+                        if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                            break
+                        if 'A' <= ch <= 'Z':
+                            kcode = ord(ch.lower())
+                            send_keyboard_key(p_serial, p_lock, 129, 1) # Shift DOWN
+                            h_sleep(0.04, 0.08)
+                            send_keyboard_key(p_serial, p_lock, kcode, 1)
+                            h_sleep(0.05, 0.09)
+                            send_keyboard_key(p_serial, p_lock, kcode, 0)
+                            h_sleep(0.04, 0.08)
+                            send_keyboard_key(p_serial, p_lock, 129, 0) # Shift UP
+                        else:
+                            k_tap(ord(ch))
+                        h_sleep(0.045, 0.095)
+
+                    h_sleep(0.12, 0.20)
+                    k_tap(176) # Enter
+                    h_sleep(0.15, 0.25)
+
+            elif action == "PARTY_ACCEPT_CMD":
+                if key in ai_states and ai_states[key].get("sweep_active", False):
+                    send_keyboard_key(p_serial, p_lock, KEY_F4, 0)
+                    ai_states[key]["sweep_active"] = False
+                if key in ai_states and ai_states[key].get("body_held", False):
+                    send_keyboard_key(p_serial, p_lock, KEY_F7, 0)
+                    ai_states[key]["body_held"] = False
+                send_keyboard_key(p_serial, p_lock, 129, 0)
+                h_sleep(0.05, 0.09)
+
+                k_tap(ord('y'))
+                h_sleep(0.10, 0.18)
+                k_tap(176) # Enter
+                # 💡 피코가 실제로 y + 엔터를 다 친 직후에 파티 합류 완료 도장을 찍음!
+                if key in ai_states:
+                    ai_states[key]["in_ingame_party"] = True
+                    ai_states[key]["solo_red_arrow_streak"] = 0
+                    ai_states[key]["party_accept_grace_until"] = time.time() + 5.0
+                dprint(key, "🎉 [파티 수락 타건 완료] 피코가 'y + 엔터' 입력을 마쳤습니다! 파장에게 합류 완료 신호를 보냅니다.")
+                h_sleep(0.15, 0.25)
 
             elif action == "MOUSE_WHEEL":
                 amount = cmd.get("amount", -1)
@@ -5516,7 +5785,7 @@ def clear_movements_only(q_obj):
         for item in q_obj.queue:
             action = item.get("action")
 
-            if action in ["ESCAPE", "TELEPORT", "HEAL", "POTION", "ANTIDOTE", "SWEEP_START", "SWEEP_STOP", "BUFF_COMBO", "BODY_TO_MIND", "HOLD_KEY", "SHIFT_SPACE", "SHIFT_CLICK_BRAKE", "MOUSE_WHEEL", "WAIT", "SPECIAL_ACK", "OPEN_MINIMAP", "HOME_MACRO", "CERTI_CLICK", "TYPE_STRING", "CLOSE_TAB", "OPEN_TASKMGR", "TASKMGR_DEL", "CLOSE_TASKMGR"]:
+            if action in ["ESCAPE", "TELEPORT", "HEAL", "POTION", "ANTIDOTE", "SWEEP_START", "SWEEP_STOP", "BUFF_COMBO", "BODY_TO_MIND", "HOLD_KEY", "SHIFT_SPACE", "SHIFT_CLICK_BRAKE", "MOUSE_WHEEL", "WAIT", "SPECIAL_ACK", "OPEN_MINIMAP", "HOME_MACRO", "CERTI_CLICK", "TYPE_STRING", "CLOSE_TAB", "OPEN_TASKMGR", "TASKMGR_DEL", "CLOSE_TASKMGR", "PARTY_INVITE_CMD", "PARTY_ACCEPT_CMD"]:
                 criticals.append(item)
             else:
                 if action in ["HOVER", "ATTACK", "SINGLE_ATTACK"]:
@@ -5756,6 +6025,12 @@ def ai_commander_worker(target_pc):
                         state["is_pulling"] = False
                         state["loot_state"] = "IDLE"
                         state["certi_from_closed_game"] = False # 💡 인게임 감지 시 무조건 12.png(게임종료) 거치도록 초기화!
+                        state["in_ingame_party"] = False
+                        state["is_invite_leader"] = False
+                        state["had_party_as_leader"] = False
+                        state["invite_group_join_time"] = 0.0
+                        state["invite_leader_since"] = 0.0
+                        state["party_order"] = []
                         
                         # 📌 2. 진입 전 상태 정밀 백업 (판매 단계 1~3 / 창고 업무 / 버프 대기 / 사냥터 복귀 세부 기억)
                         prev_fsm = str(state.get("target_fsm", "IDLE"))
@@ -7778,6 +8053,224 @@ def ai_commander_worker(target_pc):
 
             if check_minimap_marker_exists(minimap_bgr):
                 state["minimap_arrow_seen"] = curr_time
+
+            # ====================================================================
+            # 🤝 [다중 중앙컴 자동 파티 초대 & 초대순서 파장 자동위임 & 파탈 감지 엔진]
+            # ====================================================================
+            marker_status = check_minimap_party_marker(minimap_bgr)
+            if marker_status == "PARTY":
+                state["solo_red_arrow_streak"] = 0
+                state["in_ingame_party"] = True
+                if state.get("is_invite_leader", False):
+                    state["had_party_as_leader"] = True
+            elif marker_status == "SOLO":
+                if curr_time > state.get("party_accept_grace_until", 0.0):
+                    state["solo_red_arrow_streak"] = state.get("solo_red_arrow_streak", 0) + 1
+                    if state["solo_red_arrow_streak"] >= 8:
+                        if state.get("in_ingame_party", False):
+                            dprint(key, "🚨 [미니맵 파탈 감지] 미니맵에 빨간 화살표가 감지되었습니다! 파티 재가입 대기 상태로 전환합니다.")
+                        state["in_ingame_party"] = False
+
+            my_inv_grp = str(settings.get("invite_group", "선택안함"))
+            my_char_name = str(settings.get("char_name", "")).strip()
+
+            # 초대조 변경 또는 해제 감지 시 상태 초기화 및 진입 시각 기록
+            if state.get("last_invite_group", "선택안함") != my_inv_grp:
+                state["last_invite_group"] = my_inv_grp
+                state["is_invite_leader"] = False
+                state["had_party_as_leader"] = False
+                state["invite_leader_since"] = 0.0
+                state["party_order"] = []
+                state["known_party_order"] = []
+                if my_inv_grp != "선택안함":
+                    state["invite_group_join_time"] = curr_time
+                    state["invite_listen_until"] = curr_time + 0.6
+                else:
+                    state["invite_group_join_time"] = 0.0
+
+            if my_inv_grp != "선택안함" and state.get("is_hunt_active", False) and not state.get("is_paused", False) and active_manual_target != key:
+                if state.get("invite_group_join_time", 0.0) == 0.0:
+                    state["invite_group_join_time"] = curr_time
+                    state["invite_listen_until"] = curr_time + 0.6
+
+                my_c_num = str(get_my_central_num())
+                try: my_c_int = int(my_c_num)
+                except: my_c_int = 1
+                try: my_m_int = int(key.replace("미니", ""))
+                except: my_m_int = 1
+                my_uid = f"{my_c_int}-{key}"
+
+                # 1) 같은 초대조의 인게임(비인증) 멤버 수집
+                online_inv_members = {
+                    my_uid: {
+                        "uid": my_uid,
+                        "central_num": my_c_int,
+                        "mini_num": my_m_int,
+                        "char_name": my_char_name,
+                        "in_game": True,
+                        "in_party": state.get("in_ingame_party", False),
+                        "need_invite": (not state.get("in_ingame_party", False) and not state.get("is_invite_leader", False)),
+                        "is_invite_leader": state.get("is_invite_leader", False),
+                        "group_join_time": state.get("invite_group_join_time", curr_time),
+                        "leader_since": state.get("invite_leader_since", 0.0),
+                        "party_order": state.get("party_order", [])
+                    }
+                }
+                with party_lock:
+                    for p_uid, p_info in list(global_invite_states.items()):
+                        if curr_time - p_info.get("recv_time", 0.0) <= 3.0 and str(p_info.get("invite_group", "선택안함")) == my_inv_grp:
+                            if p_info.get("in_game", False):
+                                online_inv_members[p_uid] = p_info
+
+                # 2) 파장 단독 파탈 시 자동 권위 이양 체크 (기존 파장만 파탈되고 다른 파티원들은 파티 유지 중인 경우)
+                if state.get("is_invite_leader", False) and state.get("had_party_as_leader", False) and not state.get("in_ingame_party", False):
+                    other_in_party = [u for u, m in online_inv_members.items() if u != my_uid and m.get("in_party", False)]
+                    if other_in_party:
+                        dprint(key, "🔄 [파장 단독 파탈 감지] 나만 파티에서 이탈되었습니다! 기존 수락 순서 다음 캐릭터에게 파장을 넘기고 초대를 요청합니다.")
+                        state["is_invite_leader"] = False
+                        state["had_party_as_leader"] = False
+                        state["invite_leader_since"] = 0.0
+                        if my_uid in state.get("party_order", []):
+                            state["party_order"].remove(my_uid)
+                        online_inv_members[my_uid]["is_invite_leader"] = False
+                        online_inv_members[my_uid]["need_invite"] = True
+
+                # 3) 현재 온라인 멤버 중 활성 파장 확인 및 선출/위임 (번호 우선순위 없음: 100% 선착순 + 수락순)
+                active_leaders = [m for m in online_inv_members.values() if m.get("is_invite_leader", False)]
+
+                if len(active_leaders) > 1:
+                    # 만약 동시에 파장이 겹쳤을 경우: 이미 파티가 있는 파장 우선 -> 먼저 파장이 된(또는 먼저 조를 선택한) 순서대로 단일화
+                    active_leaders.sort(key=lambda m: (
+                        0 if m.get("in_party", False) else 1,
+                        m.get("leader_since", 0.0) if m.get("leader_since", 0.0) > 0 else m.get("group_join_time", curr_time),
+                        m.get("uid", "")
+                    ))
+                    winner_uid = active_leaders[0]["uid"]
+                    if winner_uid != my_uid and state.get("is_invite_leader", False):
+                        dprint(key, f"🤝 [파장 단일화 양보] 먼저 대기 중이던 {winner_uid} 캐릭터에게 파티장 권한을 양보합니다.")
+                        state["is_invite_leader"] = False
+                        state["had_party_as_leader"] = False
+                        state["invite_leader_since"] = 0.0
+                    active_leaders = [active_leaders[0]]
+
+                if len(active_leaders) == 1:
+                    leader_info = active_leaders[0]
+                    leader_uid = leader_info["uid"]
+                    if leader_uid != my_uid:
+                        state["is_invite_leader"] = False
+                        state["invite_leader_since"] = 0.0
+                        l_order = leader_info.get("party_order", [])
+                        if l_order:
+                            state["known_party_order"] = list(l_order)
+                    else:
+                        state["is_invite_leader"] = True
+                        if state.get("invite_leader_since", 0.0) == 0.0:
+                            state["invite_leader_since"] = curr_time
+                        cur_order = state.get("party_order", [])
+                        # 1) 기존에 등록된 순서 중 현재 파티 유지 중(in_party == True)인 멤버만 순서 그대로 유지
+                        cleaned_order = [my_uid]
+                        for u in cur_order:
+                            if u == my_uid:
+                                continue
+                            if u in online_inv_members and online_inv_members[u].get("in_party", False):
+                                cleaned_order.append(u)
+                        # 2) 새로 'y + 엔터'를 쳐서 in_party == True가 된 멤버를 수락 완료된 순서대로 뒤에 추가!
+                        for u, m_obj in online_inv_members.items():
+                            if u != my_uid and m_obj.get("in_party", False) and u not in cleaned_order:
+                                cleaned_order.append(u)
+                                dprint(key, f"📋 [파티 합류 순서 기록] {u}('{m_obj.get('char_name', '')}') 수락(y+엔터) 확인! 위임 장부 갱신: {cleaned_order}")
+                        state["party_order"] = cleaned_order
+                        state["known_party_order"] = list(cleaned_order)
+
+                elif len(active_leaders) == 0 and curr_time >= state.get("invite_listen_until", 0.0):
+                    # 활성 파장이 없는 경우: (A) 기존 파티 유지 중이면 수락 순서(known_party_order) 1순위가 위임 / (B) 전원 노파티면 최초 조 선택(최초 접속) 캐릭터가 파장!
+                    in_party_members = [m for m in online_inv_members.values() if m.get("in_party", False)]
+                    if in_party_members:
+                        known_order = state.get("known_party_order", [])
+                        delegated_uid = None
+                        for cand_uid in known_order:
+                            if cand_uid in online_inv_members and online_inv_members[cand_uid].get("in_party", False):
+                                delegated_uid = cand_uid
+                                break
+                        if not delegated_uid:
+                            in_party_members.sort(key=lambda m: (m.get("group_join_time", curr_time), m.get("uid", "")))
+                            delegated_uid = in_party_members[0]["uid"]
+
+                        if delegated_uid == my_uid:
+                            state["is_invite_leader"] = True
+                            state["had_party_as_leader"] = True
+                            state["invite_leader_since"] = curr_time
+                            new_order = [u for u in known_order if u in online_inv_members and online_inv_members[u].get("in_party", False)]
+                            if my_uid not in new_order:
+                                new_order.insert(0, my_uid)
+                            state["party_order"] = new_order
+                            state["known_party_order"] = list(new_order)
+                            dprint(key, f"👑 [파장 자동 위임] 기존 파장 이탈! 수락(y+엔터) 순서에 따라 내가 새 파티장({my_uid})이 됩니다! (현재 순서: {new_order})")
+                    else:
+                        all_online = list(online_inv_members.values())
+                        all_online.sort(key=lambda m: (m.get("group_join_time", curr_time), m.get("uid", "")))
+                        first_uid = all_online[0]["uid"]
+                        if first_uid == my_uid:
+                            state["is_invite_leader"] = True
+                            state["had_party_as_leader"] = False
+                            state["invite_leader_since"] = curr_time
+                            state["party_order"] = [my_uid]
+                            state["known_party_order"] = [my_uid]
+                            dprint(key, f"👑 [초대조 파장 선출] 초대조({my_inv_grp}) 최초 진입 확인! 내가 파티장({my_uid}) 역할을 시작합니다.")
+
+                # 4) [파티장 역할]: 파티가 안 맺어진 조원에게 '/초대 케릭명' 발송 (마을 정비 중에는 보류하고 사냥터 복귀 후 실행!)
+                fsm_inv_chk = str(state.get("target_fsm", "IDLE"))
+                is_ui_busy_for_chat = (
+                    fsm_inv_chk.startswith("TOWN_MAINT") or
+                    fsm_inv_chk.startswith("WEAPON_REPAIR") or
+                    fsm_inv_chk.startswith("INV_CLEAN") or
+                    fsm_inv_chk.startswith("HK_HEAL") or
+                    fsm_inv_chk.startswith("DEATH") or
+                    fsm_inv_chk.startswith("BUFFING") or
+                    fsm_inv_chk.startswith("F1_INIT") or
+                    fsm_inv_chk in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] or
+                    state.get("town_thread_running", False) or
+                    state.get("hw_busy", False)
+                )
+
+                if state.get("is_invite_leader", False) and not is_ui_busy_for_chat and curr_time > state.get("party_invite_global_cd", 0.0):
+                    inv_time_map = state.setdefault("invited_time_map", {})
+                    requesters = [
+                        m for u, m in online_inv_members.items()
+                        if u != my_uid and (m.get("need_invite", False) or not m.get("in_party", False))
+                        and str(m.get("char_name", "")).strip() != ""
+                        and (curr_time - inv_time_map.get(u, 0.0) >= 6.0)
+                    ]
+                    if requesters:
+                        requesters.sort(key=lambda m: (m.get("group_join_time", curr_time), m.get("uid", "")))
+                        target_m = requesters[0]
+                        t_uid = target_m["uid"]
+                        t_char_name = str(target_m["char_name"]).strip()
+                        t_eng_name = kor_to_eng_typo(t_char_name)
+                        is_yungta_now = check_chat_template_match(img_bgr, "yungta.png", th=0.80)
+
+                        pico_queues[key].put({
+                            "action": "PARTY_INVITE_CMD",
+                            "eng_name": t_eng_name,
+                            "raw_name": t_char_name,
+                            "need_han_eng": is_yungta_now
+                        })
+                        inv_time_map[t_uid] = curr_time
+                        state["party_invite_global_cd"] = curr_time + 3.0
+                        state["party_accept_grace_until"] = curr_time + 5.0
+                        state["cooldown"] = max(state.get("cooldown", 0.0), curr_time + 1.2)
+                        dprint(key, f"📨 [자동 파티초대 발송] {t_uid}('{t_char_name}' ➔ 영타:'{t_eng_name}') 초대 명령 전송! (영타전환:{is_yungta_now} / 상대 y+엔터 대기중)")
+
+                # 5) [파티원 역할]: 파탈 상태일 때 채팅창 ROI에 party.png 감지 시 'y + 엔터' 큐 등록 (합류 완료 판정은 피코가 엔터 친 직후에!)
+                if not state.get("in_ingame_party", False) and not is_ui_busy_for_chat:
+                    if curr_time > state.get("next_party_png_scan", 0.0) and curr_time > state.get("party_accept_cd", 0.0):
+                        state["next_party_png_scan"] = curr_time + 0.25
+                        if check_chat_template_match(img_bgr, "party.png", th=0.80):
+                            pico_queues[key].put({"action": "PARTY_ACCEPT_CMD"})
+                            state["party_accept_cd"] = curr_time + 4.0
+                            state["cooldown"] = max(state.get("cooldown", 0.0), curr_time + 0.8)
+                            dprint(key, "✅ [파티 초대 감지] 채팅창 'party.png' 포착! 피코에 'y + 엔터' 수락 명령을 지시합니다.")
+            # ====================================================================
 
             if role == "DUNGEON":
                 if minimap_bgr is not None and pc_map_edges is not None:
@@ -24851,25 +25344,24 @@ def sync_gui_vars():
                 gui_vars[k]["party_mode"].set(p_mode_val)
             # -------------------------------------------------------------------------
 
-            is_party = gui_vars[k]["use_party_hunt"].get() or gui_vars[k]["use_party_fixed"].get()
-
-            final_heal_use = gui_vars[k]["party_heal_use"].get() if is_party else gui_vars[k]["heal_use"].get()
-            final_heal_pct = p_hp_val if is_party else hp_val
-            final_heal_mp_pct = p_heal_mp_val if is_party else heal_mp_val
-            final_pot_use = gui_vars[k]["party_pot_use"].get() if is_party else gui_vars[k]["pot_use"].get()
-            final_pot_pct = p_pot_val if is_party else pot_val
-            final_poison_type = gui_vars[k]["party_poison_type"].get() if is_party else gui_vars[k]["poison_type"].get()
-            final_poison_delay = p_poison_delay_val if is_party else poison_delay_val
-            final_abs_return_use = gui_vars[k]["party_abs_return_use"].get() if is_party else gui_vars[k]["abs_return_use"].get()
-            final_abs_return_pct = p_abs_return_pct_val if is_party else abs_return_pct_val
-            final_hp_danger_pct = p_hp_danger_val if is_party else hp_danger_val
-            final_hp_20_action = gui_vars[k]["party_hp_20_action"].get() if is_party else gui_vars[k]["hp_20_action"].get()
-            final_pk_drop_pct = p_pk_drop_val if is_party else pk_drop_val
-            final_max_combat_time = p_max_combat_val if is_party else max_combat_val
+            # 💡 파티 모드에서도 메인 탭의 힐/생존/엠탐 설정을 공통으로 사용
+            final_heal_use = gui_vars[k]["heal_use"].get()
+            final_heal_pct = hp_val
+            final_heal_mp_pct = heal_mp_val
+            final_pot_use = gui_vars[k]["pot_use"].get()
+            final_pot_pct = pot_val
+            final_poison_type = gui_vars[k]["poison_type"].get()
+            final_poison_delay = poison_delay_val
+            final_abs_return_use = gui_vars[k]["abs_return_use"].get()
+            final_abs_return_pct = abs_return_pct_val
+            final_hp_danger_pct = hp_danger_val
+            final_hp_20_action = gui_vars[k]["hp_20_action"].get()
+            final_pk_drop_pct = pk_drop_val
+            final_max_combat_time = max_combat_val
             final_return_cond = gui_vars[k]["return_cond"].get()
-            final_use_mptam = gui_vars[k]["party_use_mptam"].get() if is_party else gui_vars[k]["use_mptam"].get()
-            final_mptam_start_pct = p_mptam_start_val if is_party else mptam_start_val
-            final_mptam_stop_pct = p_mptam_stop_val if is_party else mptam_stop_val
+            final_use_mptam = gui_vars[k]["use_mptam"].get()
+            final_mptam_start_pct = mptam_start_val
+            final_mptam_stop_pct = mptam_stop_val
             final_is_wiz_mptam = gui_vars[k].get("is_wiz_mptam", tk.BooleanVar(value=False)).get()
 
             st = ai_states.get(k, {})
@@ -24885,8 +25377,12 @@ def sync_gui_vars():
                 "is_puller": gui_vars[k]["is_puller"].get(),
                 "is_party_inviter": gui_vars[k]["is_party_inviter"].get(),
                 "party_group": gui_vars[k]["party_group"].get(),
+                "invite_group": gui_vars[k]["invite_group"].get() if "invite_group" in gui_vars[k] else "선택안함",
+                "char_name": gui_vars[k]["char_name"].get().strip() if "char_name" in gui_vars[k] else "",
                 "party_dungeon_name": gui_vars[k]["party_dungeon_name"].get(),
                 "dungeon_name": gui_vars[k]["dungeon_name"].get(),
+                "party_poison_type": final_poison_type,
+                "party_mptam_stop_pct": final_mptam_stop_pct,
 
                 "heal_use": final_heal_use,
                 "heal_percent": final_heal_pct,
@@ -25596,77 +26092,37 @@ for i, pc in enumerate(MINI_PCS):
     party_mid_frame.pack(side="top", fill="x", pady=(0, 4), padx=2)
     tk.Label(party_mid_frame, text="■ 사냥터:", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 9, "bold")).pack(side="left", padx=1)
 
-    cb_party_dng = ttk.Combobox(party_mid_frame, textvariable=vars_dict["party_dungeon_name"], values=list(DUNGEON_ASSETS.keys()), state="readonly", width=12, font=("맑은 고딕", 9))
+    cb_party_dng = ttk.Combobox(party_mid_frame, textvariable=vars_dict["party_dungeon_name"], values=list(DUNGEON_ASSETS.keys()), state="readonly", width=10, font=("맑은 고딕", 9))
     cb_party_dng.pack(side="left", padx=1)
     cb_party_dng.bind("<<ComboboxSelected>>", make_on_dungeon_change(key))
 
-    tk.Label(party_mid_frame, text="| 조:", bg=BG_PANEL, fg="#4FC3F7", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(10, 2))
-    ttk.Combobox(party_mid_frame, textvariable=vars_dict["party_group"], values=["선택안함", "A조", "B조", "C조", "D조"], state="readonly", width=6, font=("맑은 고딕", 9)).pack(side="left", padx=0)
+    tk.Label(party_mid_frame, text="| 조:", bg=BG_PANEL, fg="#4FC3F7", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(4, 1))
+    ttk.Combobox(party_mid_frame, textvariable=vars_dict["party_group"], values=["선택안함", "A조", "B조", "C조", "D조"], state="readonly", width=5, font=("맑은 고딕", 9)).pack(side="left", padx=0)
+
+    tk.Label(party_mid_frame, text="| 초대조:", bg=BG_PANEL, fg="#FFD54F", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(4, 1))
+    ttk.Combobox(party_mid_frame, textvariable=vars_dict["invite_group"], values=["선택안함"] + [str(n) for n in range(1, 13)], state="readonly", width=5, font=("맑은 고딕", 9)).pack(side="left", padx=0)
 
     ttk.Separator(tab_party, orient="horizontal").pack(fill="x", padx=2, pady=4)
 
-    p_hp_top_frame = tk.Frame(tab_party, bg=BG_PANEL)
-    p_hp_top_frame.pack(side="top", fill="x", padx=2, pady=(0, 2))
-    tk.Label(p_hp_top_frame, text="HP", bg=BG_PANEL, fg="#4FC3F7", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0,1))
-    tk.Entry(p_hp_top_frame, textvariable=vars_dict["party_heal_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=0)
-    tk.Label(p_hp_top_frame, text="%(MP", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=0)
-    tk.Entry(p_hp_top_frame, textvariable=vars_dict["party_heal_mp_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=0)
-    tk.Label(p_hp_top_frame, text="%↑)", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=0)
-    tk.Checkbutton(p_hp_top_frame, text="힐", variable=vars_dict["party_heal_use"], bg=BG_PANEL, fg=FG_TEXT, selectcolor="#3E3E42", font=("맑은 고딕", 8)).pack(side="left", padx=0)
-
-    tk.Label(p_hp_top_frame, text="|", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(1,0))
-    tk.Checkbutton(p_hp_top_frame, text="절대귀환:", variable=vars_dict["party_abs_return_use"], bg=BG_PANEL, fg="#EF5350", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
-    tk.Entry(p_hp_top_frame, textvariable=vars_dict["party_abs_return_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
-    tk.Label(p_hp_top_frame, text="%↓(F8)", bg=BG_PANEL, fg="#EF5350", font=("맑은 고딕", 8)).pack(side="left", padx=0)
-
-    p_hp_mid_frame = tk.Frame(tab_party, bg=BG_PANEL)
-    p_hp_mid_frame.pack(side="top", fill="x", padx=2, pady=2)
-    tk.Label(p_hp_mid_frame, text="HP", bg=BG_PANEL, fg="#EF5350", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0,1))
-    tk.Entry(p_hp_mid_frame, textvariable=vars_dict["party_pot_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=0)
-    tk.Label(p_hp_mid_frame, text="%↓", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=0)
-    tk.Checkbutton(p_hp_mid_frame, text="물약(F5)", variable=vars_dict["party_pot_use"], bg=BG_PANEL, fg=FG_TEXT, selectcolor="#3E3E42", font=("맑은 고딕", 8)).pack(side="left", padx=0)
-
-    tk.Label(p_hp_mid_frame, text="| 독(F10):", bg=BG_PANEL, fg="#A5D6A7", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(1,0))
-    ttk.Combobox(p_hp_mid_frame, textvariable=vars_dict["party_poison_type"], values=["해독제", "큐어포이즌"], state="readonly", width=7, font=("맑은 고딕", 8)).pack(side="left", padx=1)
-    tk.Entry(p_hp_mid_frame, textvariable=vars_dict["party_poison_delay"], width=2, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
-    tk.Label(p_hp_mid_frame, text="초", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=0)
-
-    p_danger_frame = tk.Frame(tab_party, bg=BG_PANEL)
-    p_danger_frame.pack(side="top", fill="x", padx=2, pady=2)
-    tk.Label(p_danger_frame, text="┗", bg=BG_PANEL, fg="#FFB300", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0,1))
-    tk.Entry(p_danger_frame, textvariable=vars_dict["party_hp_danger_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
-    tk.Label(p_danger_frame, text="%위기:", bg=BG_PANEL, fg="#FFB300", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
-    ttk.Combobox(p_danger_frame, textvariable=vars_dict["party_hp_20_action"], values=["귀환 (F8)", "텔레포트 (F11)"], state="readonly", width=10).pack(side="left", padx=1)
-
-    tk.Label(p_danger_frame, text="| PK:", bg=BG_PANEL, fg="#E91E63", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(1,0))
-    tk.Entry(p_danger_frame, textvariable=vars_dict["party_pk_drop_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
-    tk.Label(p_danger_frame, text="%↓", bg=BG_PANEL, fg="#E91E63", font=("맑은 고딕", 8)).pack(side="left", padx=0)
-
-    tk.Label(p_danger_frame, text="| ⚔️제한:", bg=BG_PANEL, fg="#FF9800", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(2,0))
-    tk.Entry(p_danger_frame, textvariable=vars_dict["party_max_combat_time"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
-    tk.Label(p_danger_frame, text="초", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=0)
+    p_char_frame = tk.Frame(tab_party, bg=BG_PANEL)
+    p_char_frame.pack(side="top", fill="x", padx=2, pady=(2, 4))
+    tk.Label(p_char_frame, text="■ 내 케릭명:", bg=BG_PANEL, fg="#B2FF59", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0, 4))
+    tk.Entry(p_char_frame, textvariable=vars_dict["char_name"], width=16, justify="center", bg="#3E3E42", fg="white", insertbackground="white", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=2)
+    tk.Label(p_char_frame, text="(한글 입력 시 자동 영타 변환)", bg=BG_PANEL, fg="#9E9E9E", font=("맑은 고딕", 8)).pack(side="left", padx=(4, 0))
 
     ttk.Separator(tab_party, orient="horizontal").pack(fill="x", padx=2, pady=4)
-
-    p_mptam_frame = tk.Frame(tab_party, bg=BG_PANEL)
-    p_mptam_frame.pack(side="top", fill="x", padx=2, pady=2)
-    tk.Checkbutton(p_mptam_frame, text="엠탐", variable=vars_dict["party_use_mptam"], bg=BG_PANEL, fg="#B39DDB", selectcolor="#3E3E42", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=1)
-    tk.Entry(p_mptam_frame, textvariable=vars_dict["party_mptam_start_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
-    tk.Label(p_mptam_frame, text="% 발동, ", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left")
-    tk.Entry(p_mptam_frame, textvariable=vars_dict["party_mptam_stop_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
-    tk.Label(p_mptam_frame, text="% 종료", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left")
-
-    tk.Label(p_mptam_frame, text=" |", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(2, 0))
-    tk.Checkbutton(p_mptam_frame, text="비상텔:", variable=vars_dict["party_mptam_tele_use"], bg=BG_PANEL, fg="#EF5350", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
-    tk.Entry(p_mptam_frame, textvariable=vars_dict["party_mptam_tele_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
-    tk.Label(p_mptam_frame, text="%↓(전투)", bg=BG_PANEL, fg="#EF5350", font=("맑은 고딕", 8)).pack(side="left", padx=0)
 
     p_help_frame = tk.Frame(tab_party, bg=BG_PANEL)
-    p_help_frame.pack(side="top", fill="x", padx=2, pady=(0, 2))
-    tk.Label(p_help_frame, text="┗", bg=BG_PANEL, fg="#E040FB", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0,1))
+    p_help_frame.pack(side="top", fill="x", padx=2, pady=2)
+    tk.Label(p_help_frame, text="■ 전술:", bg=BG_PANEL, fg="#E040FB", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0, 2))
     tk.Checkbutton(p_help_frame, text="헬프콜(전투중MP):", variable=vars_dict["party_help_call_use"], bg=BG_PANEL, fg="#E040FB", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
     tk.Entry(p_help_frame, textvariable=vars_dict["party_help_call_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
-    tk.Label(p_help_frame, text="%↓ 발동", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=0)
+    tk.Label(p_help_frame, text="%↓", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=0)
+
+    tk.Label(p_help_frame, text=" |", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(4, 2))
+    tk.Checkbutton(p_help_frame, text="비상텔:", variable=vars_dict["party_mptam_tele_use"], bg=BG_PANEL, fg="#EF5350", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
+    tk.Entry(p_help_frame, textvariable=vars_dict["party_mptam_tele_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
+    tk.Label(p_help_frame, text="%↓(전투)", bg=BG_PANEL, fg="#EF5350", font=("맑은 고딕", 8)).pack(side="left", padx=0)
 
     ttk.Separator(tab_party, orient="horizontal").pack(fill="x", padx=2, pady=4)
 
@@ -27595,6 +28051,7 @@ for i, pc in enumerate(MINI_PCS):
 tk.Label(root, text="※ 수동 제어 후 원래 상태로 복귀하려면 [`] 키(물결표 키)를 누르세요.", font=("맑은 고딕", 9), bg="#1E1E1E", fg="#757575").pack(pady=5)
 
 sync_gui_vars()
+save_settings()
 arrange_windows()
 
 threading.Thread(target=debug_render_thread, daemon=True).start()
