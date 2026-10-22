@@ -1149,8 +1149,26 @@ def local_ipc_broadcaster_thread(my_key):
                 real_fsm_str = str(st.get("backup_target_fsm", raw_fsm)) if raw_fsm == "GHOST_MODE" else raw_fsm
                 is_in_game = bool(real_hunt_on and not real_fsm_str.startswith("CERTI_"))
                 in_party_now = bool(is_in_game and st.get("in_ingame_party", True))
-                is_inv_leader = bool(is_in_game and st.get("is_invite_leader", False))
-                explicit_req = bool(is_in_game and st.get("need_party_invite_req", False) and not in_party_now and not is_inv_leader)
+                is_inv_leader = bool(is_in_game and st.get("is_invite_leader", False) and not st.get("not_party_leader_locked", False))
+
+                # 💡 파티원이 정비/인증/전투 중이 아닌 순수 IDLE 대기 상태이며 3회 실패 포기 상태가 아닐 때만 요청 발송
+                is_idle_for_req = (
+                    real_fsm_str in ["IDLE", "PATROL", "PARTY_WAIT", "PARTY_ACTIVE_STANDBY", "SQUAD_WAIT"] and
+                    not st.get("town_thread_running", False) and
+                    not st.get("is_attacking", False) and
+                    not st.get("arrow_is_firing", False) and
+                    not st.get("sweep_active", False)
+                )
+                explicit_req = bool(
+                    is_in_game and
+                    is_idle_for_req and
+                    not st.get("party_invite_giveup", False) and
+                    not st.get("waiting_party_minimap_verify", False) and
+                    not st.get("pending_leader_invite_sig", False) and
+                    st.get("need_party_invite_req", False) and
+                    not in_party_now and
+                    not is_inv_leader
+                )
 
                 payload = {
                     "uid": my_uid,
@@ -1164,9 +1182,12 @@ def local_ipc_broadcaster_thread(my_key):
                     "in_party": in_party_now,
                     "need_invite": explicit_req,
                     "is_invite_leader": is_inv_leader,
+                    "not_leader_locked": bool(st.get("not_party_leader_locked", False)),
                     "group_join_time": st.get("invite_group_join_time", 0.0),
                     "leader_since": st.get("invite_leader_since", 0.0),
                     "party_order": st.get("party_order", []),
+                    "last_invited_uid": st.get("last_invited_uid", ""),
+                    "last_invited_ts": st.get("last_invited_ts", 0.0),
                     "is_party_inviter": current_settings.get(my_key, {}).get("is_party_inviter", False),
                     "party_state": party_state,
                     "mob_map_pos": mob_map_pos,
@@ -2803,6 +2824,46 @@ try:
 except: img_haste_x, img_haste_x_mask = None, None
 
 try:
+    _pj_path = "qq/pratyjangx.png" if os.path.exists("qq/pratyjangx.png") else ("pratyjangx.png" if os.path.exists("pratyjangx.png") else "qq/partyjangx.png")
+    img_pratyjang_x_bgra = cv2.imread(_pj_path, cv2.IMREAD_UNCHANGED)
+    if img_pratyjang_x_bgra is not None and len(img_pratyjang_x_bgra.shape) == 3 and img_pratyjang_x_bgra.shape[2] == 4:
+        img_pratyjang_x = img_pratyjang_x_bgra[:, :, :3]
+        img_pratyjang_x_mask = img_pratyjang_x_bgra[:, :, 3]
+    else:
+        img_pratyjang_x = cv2.imread(_pj_path, cv2.IMREAD_COLOR)
+        img_pratyjang_x_mask = None
+except: img_pratyjang_x, img_pratyjang_x_mask = None, None
+
+def check_pratyjangx_in_chat(img_bgr):
+    """헤이없음(haste_x.png) 감지 방식과 100% 동일한 방식으로 채팅창의 pratyjangx.png를 감지합니다."""
+    if img_bgr is None or globals().get("img_pratyjang_x") is None:
+        return False
+    h, w = img_bgr.shape[:2]
+    CHAT_X1, CHAT_X2 = 125, 600
+    CHAT_Y1, CHAT_Y2 = 490, h
+    if w < CHAT_X2 or h < CHAT_Y2:
+        return False
+    try:
+        chat_roi = img_bgr[CHAT_Y1:CHAT_Y2, CHAT_X1:CHAT_X2]
+        gray_check = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
+        _, bright_text = cv2.threshold(gray_check, 100, 255, cv2.THRESH_BINARY)
+        if cv2.countNonZero(bright_text) > 20:
+            img_pj_x = globals().get("img_pratyjang_x")
+            img_pj_x_m = globals().get("img_pratyjang_x_mask")
+            gray_roi = gray_check
+            gray_tmpl = cv2.cvtColor(img_pj_x, cv2.COLOR_BGR2GRAY)
+            if img_pj_x_m is not None:
+                res_pj = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCORR_NORMED, mask=img_pj_x_m)
+            else:
+                res_pj = cv2.matchTemplate(gray_roi, gray_tmpl, cv2.TM_CCOEFF_NORMED)
+            _, max_val_pj, _, _ = cv2.minMaxLoc(res_pj)
+            if max_val_pj >= 0.88:
+                return True
+    except Exception:
+        pass
+    return False
+
+try:
     img_nopotion_bgra = cv2.imread("qq/nopotion.png", cv2.IMREAD_UNCHANGED)
     if img_nopotion_bgra is not None and len(img_nopotion_bgra.shape) == 3 and img_nopotion_bgra.shape[2] == 4:
         img_nopotion = img_nopotion_bgra[:, :, :3]
@@ -2815,15 +2876,13 @@ except: img_nopotion, img_nopotion_mask = None, None
 _CHAT_MATCH_DBG_TIMER = {}
 
 def check_chat_template_match(img_bgr, fname, th=0.80):
-    """하단 채팅창 ROI(X:125~600, Y:490~600)에서 생컬러 + 위상보정 + 반투명 배경 채팅 비침 제거(글자추출) 매칭을 수행합니다."""
+    """하단 채팅창 ROI(X:125~600, Y:490~600)에서 생컬러 + 위상보정 + 반투명 배경 채팅 비침 제거 매칭을 수행합니다. (터미널 스팸 출력 제거됨)"""
     if img_bgr is None:
         return False
     h, w = img_bgr.shape[:2]
     if w < 600 or h <= 490:
         return False
 
-    now_t = time.time()
-    pc_k = globals().get("TARGET_PC_KEY", "SYSTEM")
     is_yungta = ("yungta" in fname.lower())
 
     # 1) yungta.png 검사 시: 채팅창 좌측 하단 한/영 표시칸(X:135~168, Y:570~600)의 주황/빨간색 [A] 박스 픽셀 수 측정
@@ -2839,12 +2898,9 @@ def check_chat_template_match(img_bgr, fname, th=0.80):
         except Exception:
             red_cnt = 0
 
-    # 2) 템플릿 로드 및 반투명 배경 뒤 채팅 비침 제거용 글자 레이어 생성
+    # 2) 템플릿 로드 및 캐싱
     path = f"qq/{fname}" if not fname.startswith("qq/") else fname
     if not os.path.exists(path):
-        if now_t - _CHAT_MATCH_DBG_TIMER.get(fname, 0.0) >= 2.0:
-            _CHAT_MATCH_DBG_TIMER[fname] = now_t
-            dprint(pc_k, f"❌ [이미지 파일 없음] '{path}' 파일이 존재하지 않습니다! (붉은픽셀:{red_cnt}개)")
         return (red_cnt >= 18) if is_yungta else False
 
     mtime = os.path.getmtime(path)
@@ -2858,7 +2914,6 @@ def check_chat_template_match(img_bgr, fname, th=0.80):
             if color_img is not None:
                 blur_img = cv2.GaussianBlur(color_img, (3, 3), 0)
                 gray_t = cv2.cvtColor(color_img, cv2.COLOR_BGR2GRAY)
-                # 반투명 갈색 창 밑으로 비치는 일반 채팅(밝기 135 이하)을 0으로 눌러버리는 기준값 계산
                 bg_cut = int(max(135, min(165, float(np.mean(gray_t)) + 0.6 * float(np.std(gray_t)))))
                 fg_t = cv2.GaussianBlur(np.clip(gray_t.astype(np.int16) - bg_cut, 0, 255).astype(np.uint8), (3, 3), 0)
                 loaded_models[cache_key] = {
@@ -2875,9 +2930,6 @@ def check_chat_template_match(img_bgr, fname, th=0.80):
 
     tmpl_data = loaded_models.get(cache_key)
     if not tmpl_data or tmpl_data.get("color") is None:
-        if now_t - _CHAT_MATCH_DBG_TIMER.get(fname, 0.0) >= 2.0:
-            _CHAT_MATCH_DBG_TIMER[fname] = now_t
-            dprint(pc_k, f"❌ [이미지 로드 실패] '{path}' 디코딩 실패! (붉은픽셀:{red_cnt}개)")
         return (red_cnt >= 18) if is_yungta else False
 
     tmpl = tmpl_data["color"]
@@ -2890,7 +2942,7 @@ def check_chat_template_match(img_bgr, fname, th=0.80):
     if bh > chat_roi.shape[0] or bw > chat_roi.shape[1]:
         return (red_cnt >= 18) if is_yungta else False
 
-    # 3) ① 생컬러 매칭 + ② 3x3 위상보정 컬러 매칭 + ③ 반투명 배경 채팅 비침 제거(글자추출) 매칭
+    # 3) 생컬러 매칭 + 위상보정 컬러 매칭 + 반투명 배경 채팅 비침 제거(글자추출) 매칭
     raw_val = 0.0
     blur_val = 0.0
     fg_val = 0.0
@@ -2917,16 +2969,7 @@ def check_chat_template_match(img_bgr, fname, th=0.80):
         pass
 
     color_val = max(raw_val, blur_val, fg_val)
-    is_matched = (color_val >= th) or (is_yungta and red_cnt >= 18)
-
-    # 4) 터미널 디버그 로그 출력
-    if is_yungta or is_matched or (now_t - _CHAT_MATCH_DBG_TIMER.get(fname, 0.0) >= 2.0):
-        _CHAT_MATCH_DBG_TIMER[fname] = now_t
-        red_info = f" | [A]붉은픽셀:{red_cnt}개(기준:18개)" if is_yungta else ""
-        verdict = "✅감지성공" if is_matched else "⚪미감지"
-        dprint(pc_k, f"🔎 [채팅매칭 디버그] {fname}(원본:{bw}x{bh}) | 생컬러:{raw_val*100:.1f}% | 위상보정:{blur_val*100:.1f}% | 글자추출:{fg_val*100:.1f}%{red_info} ➔ {verdict}")
-
-    return is_matched
+    return (color_val >= th) or (is_yungta and red_cnt >= 18)
 
 try:
     cursor_bgra = cv2.imread("qq/cursor_custom.png", cv2.IMREAD_UNCHANGED)
@@ -4542,7 +4585,20 @@ def pico_worker_thread(key):
 
                         h_sleep(0.12, 0.20)
                         k_tap(176) # Enter
-                        h_sleep(0.15, 0.25)
+                        h_sleep(0.30, 0.40) # 시스템 메시지('파티장만이 초대할 수 있습니다.') 출력 대기
+
+                        scr_after_inv = latest_frames.get(key)
+                        if scr_after_inv is not None and check_pratyjangx_in_chat(scr_after_inv):
+                            if key in ai_states:
+                                ai_states[key]["is_invite_leader"] = False
+                                ai_states[key]["not_party_leader_locked"] = True
+                                ai_states[key]["need_lock_snapshot"] = True
+                                ai_states[key]["last_invited_uid"] = ""
+                            dprint(key, "🚫 [파장 권한 없음 감지] 채팅창 'pratyjangx.png'(파티장만이 초대 가능) 확인! 현재 파티원 구성이 바뀔 때까지 파장 권한을 내려놓고 대기합니다.")
+                        else:
+                            if key in ai_states:
+                                ai_states[key]["last_invited_uid"] = str(cmd.get("target_uid", ""))
+                                ai_states[key]["last_invited_ts"] = time.time()
                 finally:
                     if key in ai_states:
                         ai_states[key]["is_chat_typing"] = False
@@ -4558,11 +4614,12 @@ def pico_worker_thread(key):
                     h_sleep(0.10, 0.18)
                     k_tap(176) # Enter
                     if key in ai_states:
-                        ai_states[key]["in_ingame_party"] = True
-                        ai_states[key]["need_party_invite_req"] = False
+                        ai_states[key]["waiting_party_minimap_verify"] = True
+                        ai_states[key]["party_verify_deadline"] = time.time() + 3.5
                         ai_states[key]["solo_red_arrow_streak"] = 0
-                        ai_states[key]["party_accept_grace_until"] = time.time() + 5.0
-                    dprint(key, "🎉 [파티 수락 타건 완료] 피코가 'y + 엔터' 입력을 마쳤습니다! 파장에게 합류 완료 신호를 보냅니다.")
+                        ai_states[key]["no_red_arrow_streak"] = 0
+                        ai_states[key]["party_accept_grace_until"] = time.time() + 4.0
+                    dprint(key, "⌨️ [파티 수락 타건 완료] 피코가 'y + 엔터' 입력을 마쳤습니다! 3.5초간 미니맵 파티 마커 생성 여부를 검증합니다.")
                     h_sleep(0.15, 0.25)
                 finally:
                     if key in ai_states:
@@ -8161,22 +8218,44 @@ def ai_commander_worker(target_pc):
                 state["solo_red_arrow_streak"] = 0
                 state["no_red_arrow_streak"] = state.get("no_red_arrow_streak", 0) + 1
                 if state["no_red_arrow_streak"] >= 3:
-                    if not state.get("in_ingame_party", True):
-                        dprint(key, f"✅ [미니맵 파티 확인] 중앙 주황/노랑 픽셀({party_marker_px}개) 감지! 파티 유지 상태로 확정합니다.")
+                    if state.get("waiting_party_minimap_verify", False) or not state.get("in_ingame_party", True):
+                        dprint(key, f"✅ [미니맵 파티 확인] 중앙 주황/노랑 픽셀({party_marker_px}개) 감지! 파티 합류 성공으로 확정합니다.")
                     state["in_ingame_party"] = True
                     state["need_party_invite_req"] = False
+                    state["waiting_party_minimap_verify"] = False
+                    state["pending_leader_invite_sig"] = False
+                    state["party_accept_try_cnt"] = 0
+                    state["party_invite_giveup"] = False
                     if state.get("is_invite_leader", False):
                         state["had_party_as_leader"] = True
-            elif solo_red_px >= 5:
-                # 주황/노랑 픽셀이 없고 순수 빨간 화살표 픽셀(5개 이상) 감지 == 솔플(파탈) 상태!
+            else:
                 state["no_red_arrow_streak"] = 0
-                if curr_time > state.get("party_accept_grace_until", 0.0):
-                    state["solo_red_arrow_streak"] = state.get("solo_red_arrow_streak", 0) + 1
-                    if state["solo_red_arrow_streak"] >= 5:
-                        if state.get("in_ingame_party", True):
-                            dprint(key, f"🚨 [미니맵 파탈 감지] 주황/노랑 없음({party_marker_px}개) & 빨간 화살표({solo_red_px}개) 확인! 초대를 요청합니다.")
-                        state["in_ingame_party"] = False
-                        state["need_party_invite_req"] = True
+                # 1) 'y + 엔터' 입력 후 미니맵 파티 합류 여부를 검증 중인 경우 (3.5초 대기)
+                if state.get("waiting_party_minimap_verify", False):
+                    if curr_time >= state.get("party_verify_deadline", 0.0):
+                        state["waiting_party_minimap_verify"] = False
+                        try_cnt = state.get("party_accept_try_cnt", 0) + 1
+                        state["party_accept_try_cnt"] = try_cnt
+                        if try_cnt < 3:
+                            state["in_ingame_party"] = False
+                            state["need_party_invite_req"] = True
+                            dprint(key, f"🔄 [파티 합류 미확인 ({try_cnt}/3회 실패)] 'y + 엔터' 후 미니맵 주황/노랑 마커 미감지! 파장에게 재초대를 요청합니다. (남은 시도: {3 - try_cnt}회)")
+                        else:
+                            state["in_ingame_party"] = False
+                            state["need_party_invite_req"] = False
+                            state["party_invite_giveup"] = True
+                            dprint(key, "🚫 [파티 수락 3회 연속 실패 ➔ 요청 중단] 총 3회 시도에도 미니맵 파티가 확인되지 않아, 수동 개입(`) 또는 사냥 껐다 켜기 전까지 파티 요청을 중단합니다!")
+                # 2) 일반 상태에서 순수 빨간 화살표 픽셀(5개 이상) 감지 == 솔플(파탈) 상태!
+                elif solo_red_px >= 5:
+                    if curr_time > state.get("party_accept_grace_until", 0.0):
+                        state["solo_red_arrow_streak"] = state.get("solo_red_arrow_streak", 0) + 1
+                        if state["solo_red_arrow_streak"] >= 5:
+                            state["in_ingame_party"] = False
+                            state["not_party_leader_locked"] = False
+                            if not state.get("party_invite_giveup", False):
+                                if not state.get("need_party_invite_req", False):
+                                    dprint(key, f"🚨 [미니맵 파탈 감지] 주황/노랑 없음({party_marker_px}개) & 빨간 화살표({solo_red_px}개) 확인! 초대를 요청합니다.")
+                                state["need_party_invite_req"] = True
 
             my_inv_grp = str(settings.get("invite_group", "선택안함"))
             my_char_name = str(settings.get("char_name", "")).strip()
@@ -8185,10 +8264,15 @@ def ai_commander_worker(target_pc):
             if state.get("last_invite_group", "선택안함") != my_inv_grp:
                 state["last_invite_group"] = my_inv_grp
                 state["is_invite_leader"] = False
+                state["not_party_leader_locked"] = False
                 state["had_party_as_leader"] = False
                 state["invite_leader_since"] = 0.0
                 state["party_order"] = []
                 state["known_party_order"] = []
+                state["party_invite_giveup"] = False
+                state["party_accept_try_cnt"] = 0
+                state["waiting_party_minimap_verify"] = False
+                state["pending_leader_invite_sig"] = False
                 if my_inv_grp != "선택안함":
                     state["invite_group_join_time"] = curr_time
                     state["invite_listen_until"] = curr_time + 0.6
@@ -8201,6 +8285,16 @@ def ai_commander_worker(target_pc):
                     state["invite_group_join_time"] = curr_time
                     state["invite_listen_until"] = curr_time + 0.6
 
+                # 🔎 내가 파장이라고 생각 중일 때 채팅창에 pratyjangx.png(헤이없음과 동일 방식)가 뜨면 즉시 파장 권한 해제!
+                if state.get("is_invite_leader", False) and curr_time > state.get("next_pj_x_scan", 0.0):
+                    state["next_pj_x_scan"] = curr_time + 0.15
+                    if check_pratyjangx_in_chat(img_bgr):
+                        state["is_invite_leader"] = False
+                        state["not_party_leader_locked"] = True
+                        state["need_lock_snapshot"] = True
+                        state["last_invited_uid"] = ""
+                        dprint(key, "🚫 [파장 권한 없음 감지] 채팅창 'pratyjangx.png' 확인! 현재 파티원 구성이 바뀔 때까지 파장 권한을 내려놓고 조용히 대기합니다.")
+
                 my_c_num = str(get_my_central_num())
                 try: my_c_int = int(my_c_num)
                 except: my_c_int = 1
@@ -8208,12 +8302,22 @@ def ai_commander_worker(target_pc):
                 except: my_m_int = 1
                 my_uid = f"{my_c_int}-{key}"
 
-                # 💡 파티원이 사냥터에서 정상 대기/사냥 중(UI 안 바쁨)이고 파탈 확인된 상태일 때만 초대 요청!
+                # 💡 파티원이 정비/인증/전투 중이 아닌 IDLE 대기 상태이고 3회 실패 포기 상태가 아닐 때만 초대 요청!
+                is_idle_for_invite = (
+                    fsm_inv_chk in ["IDLE", "PATROL", "PARTY_WAIT", "PARTY_ACTIVE_STANDBY", "SQUAD_WAIT"] and
+                    not is_ui_busy_for_chat and
+                    not state.get("is_attacking", False) and
+                    not state.get("arrow_is_firing", False) and
+                    not state.get("sweep_active", False)
+                )
                 my_need_invite_now = bool(
                     state.get("need_party_invite_req", False) and
                     not state.get("in_ingame_party", True) and
                     not state.get("is_invite_leader", False) and
-                    not is_ui_busy_for_chat
+                    not state.get("party_invite_giveup", False) and
+                    not state.get("waiting_party_minimap_verify", False) and
+                    not state.get("pending_leader_invite_sig", False) and
+                    is_idle_for_invite
                 )
 
                 # 1) 같은 초대조의 인게임(비인증) 멤버 수집
@@ -8226,10 +8330,13 @@ def ai_commander_worker(target_pc):
                         "in_game": True,
                         "in_party": state.get("in_ingame_party", True),
                         "need_invite": my_need_invite_now,
-                        "is_invite_leader": state.get("is_invite_leader", False),
+                        "is_invite_leader": bool(state.get("is_invite_leader", False) and not state.get("not_party_leader_locked", False)),
+                        "not_leader_locked": bool(state.get("not_party_leader_locked", False)),
                         "group_join_time": state.get("invite_group_join_time", curr_time),
                         "leader_since": state.get("invite_leader_since", 0.0),
-                        "party_order": state.get("party_order", [])
+                        "party_order": state.get("party_order", []),
+                        "last_invited_uid": state.get("last_invited_uid", ""),
+                        "last_invited_ts": state.get("last_invited_ts", 0.0)
                     }
                 }
                 with party_lock:
@@ -8237,6 +8344,27 @@ def ai_commander_worker(target_pc):
                         if curr_time - p_info.get("recv_time", 0.0) <= 3.0 and str(p_info.get("invite_group", "선택안함")) == my_inv_grp:
                             if p_info.get("in_game", False):
                                 online_inv_members[p_uid] = p_info
+
+                # 🔓 [핵심] pratyjangx.png로 파장 잠금(not_party_leader_locked)된 상태라도,
+                # 당시 파티원 중 누군가(기존 파장 등)가 파탈/인증/튕김으로 빠졌거나 파티원 전원이 잠금 상태가 되면 즉시 잠금을 해제하여 왕관을 이어받을 수 있게 함!
+                curr_in_party_set = {u for u, m in online_inv_members.items() if m.get("in_party", False)}
+                if state.pop("need_lock_snapshot", False):
+                    state["locked_party_snapshot"] = set(curr_in_party_set)
+
+                if state.get("not_party_leader_locked", False):
+                    snap_set = state.get("locked_party_snapshot", set())
+                    # ① 당시 파티에 있던 캐릭터 중 하나라도 파티에서 빠졌거나 오프라인이 된 경우
+                    someone_left_party = bool(snap_set and not snap_set.issubset(curr_in_party_set))
+                    # ② 현재 파티 중인 모든 캐릭터가 전부 잠금 상태에 빠져 아무도 파장을 못 잡는 경우
+                    all_in_party_locked = bool(
+                        curr_in_party_set and
+                        all(online_inv_members[u].get("not_leader_locked", False) for u in curr_in_party_set)
+                    )
+                    if someone_left_party or all_in_party_locked:
+                        state["not_party_leader_locked"] = False
+                        state["locked_party_snapshot"] = set()
+                        online_inv_members[my_uid]["not_leader_locked"] = False
+                        dprint(key, "🔓 [파장 잠금 자동 해제] 기존 파티원 이탈(또는 전원 잠금) 감지! 인게임 왕관 승계 가능 상태이므로 파장 후보 자격을 복구합니다.")
 
                 # 2) 파장 단독 파탈 시 자동 권위 이양 체크 (기존 파장만 파탈되고 다른 파티원들은 파티 유지 중인 경우)
                 if state.get("is_invite_leader", False) and state.get("had_party_as_leader", False) and not state.get("in_ingame_party", True):
@@ -8252,8 +8380,8 @@ def ai_commander_worker(target_pc):
                         online_inv_members[my_uid]["is_invite_leader"] = False
                         online_inv_members[my_uid]["need_invite"] = True
 
-                # 3) 현재 온라인 멤버 중 활성 파장 확인 및 선출/위임 (번호 우선순위 없음: 100% 선착순 + 수락순)
-                active_leaders = [m for m in online_inv_members.values() if m.get("is_invite_leader", False)]
+                # 3) 현재 온라인 멤버 중 활성 파장 확인 및 선출/위임 (pratyjangx.png로 잠긴 캐릭터는 파장 후보에서 제외)
+                active_leaders = [m for m in online_inv_members.values() if m.get("is_invite_leader", False) and not m.get("not_leader_locked", False)]
 
                 if len(active_leaders) > 1:
                     active_leaders.sort(key=lambda m: (
@@ -8278,6 +8406,16 @@ def ai_commander_worker(target_pc):
                         l_order = leader_info.get("party_order", [])
                         if l_order:
                             state["known_party_order"] = list(l_order)
+
+                        # 📩 파장이 나(my_uid)에게 초대 명령어를 방금 입력 완료했는지 신호 확인!
+                        l_inv_uid = str(leader_info.get("last_invited_uid", ""))
+                        l_inv_ts = float(leader_info.get("last_invited_ts", 0.0))
+                        if l_inv_uid == my_uid and l_inv_ts > state.get("last_handled_invite_ts", 0.0) and (curr_time - l_inv_ts <= 10.0):
+                            state["last_handled_invite_ts"] = l_inv_ts
+                            if not state.get("in_ingame_party", True) and not state.get("party_invite_giveup", False) and not state.get("waiting_party_minimap_verify", False):
+                                state["pending_leader_invite_sig"] = True
+                                state["leader_invite_sig_time"] = curr_time
+                                dprint(key, f"📩 [파장 초대신호 수신] 파장({leader_uid})이 나에게 초대 명령어를 보냈습니다! 이미지 매칭 및 수락을 진행합니다. ({state.get('party_accept_try_cnt', 0) + 1}/3회차)")
                     else:
                         state["is_invite_leader"] = True
                         state["need_party_invite_req"] = False
@@ -8293,17 +8431,17 @@ def ai_commander_worker(target_pc):
                         for u, m_obj in online_inv_members.items():
                             if u != my_uid and m_obj.get("in_party", False) and u not in cleaned_order:
                                 cleaned_order.append(u)
-                                dprint(key, f"📋 [파티 합류 순서 기록] {u}('{m_obj.get('char_name', '')}') 수락(y+엔터) 확인! 위임 장부 갱신: {cleaned_order}")
+                                dprint(key, f"📋 [파티 합류 순서 기록] {u}('{m_obj.get('char_name', '')}') 미니맵 파티 합류 확인! 위임 장부 갱신: {cleaned_order}")
                         state["party_order"] = cleaned_order
                         state["known_party_order"] = list(cleaned_order)
 
-                elif len(active_leaders) == 0 and curr_time >= state.get("invite_listen_until", 0.0):
-                    in_party_members = [m for m in online_inv_members.values() if m.get("in_party", False)]
+                elif len(active_leaders) == 0 and curr_time >= state.get("invite_listen_until", 0.0) and not state.get("not_party_leader_locked", False):
+                    in_party_members = [m for m in online_inv_members.values() if m.get("in_party", False) and not m.get("not_leader_locked", False)]
                     if in_party_members:
                         known_order = state.get("known_party_order", [])
                         delegated_uid = None
                         for cand_uid in known_order:
-                            if cand_uid in online_inv_members and online_inv_members[cand_uid].get("in_party", False):
+                            if cand_uid in online_inv_members and online_inv_members[cand_uid].get("in_party", False) and not online_inv_members[cand_uid].get("not_leader_locked", False):
                                 delegated_uid = cand_uid
                                 break
                         if not delegated_uid:
@@ -8320,22 +8458,23 @@ def ai_commander_worker(target_pc):
                                 new_order.insert(0, my_uid)
                             state["party_order"] = new_order
                             state["known_party_order"] = list(new_order)
-                            dprint(key, f"👑 [파장 자동 위임] 기존 파장 이탈! 수락(y+엔터) 순서에 따라 내가 새 파티장({my_uid})이 됩니다! (현재 순서: {new_order})")
+                            dprint(key, f"👑 [파장 자동 위임] 기존 파장 이탈 또는 권한 이양! 순서에 따라 내가 새 파티장({my_uid})이 됩니다! (현재 순서: {new_order})")
                     else:
-                        all_online = list(online_inv_members.values())
-                        all_online.sort(key=lambda m: (m.get("group_join_time", curr_time), m.get("uid", "")))
-                        first_uid = all_online[0]["uid"]
-                        if first_uid == my_uid:
-                            state["is_invite_leader"] = True
-                            state["had_party_as_leader"] = False
-                            state["need_party_invite_req"] = False
-                            state["invite_leader_since"] = curr_time
-                            state["party_order"] = [my_uid]
-                            state["known_party_order"] = [my_uid]
-                            dprint(key, f"👑 [초대조 파장 선출] 초대조({my_inv_grp}) 최초 진입 확인! 내가 파티장({my_uid}) 역할을 시작합니다.")
+                        all_online = [m for m in online_inv_members.values() if not m.get("not_leader_locked", False)]
+                        if all_online:
+                            all_online.sort(key=lambda m: (m.get("group_join_time", curr_time), m.get("uid", "")))
+                            first_uid = all_online[0]["uid"]
+                            if first_uid == my_uid:
+                                state["is_invite_leader"] = True
+                                state["had_party_as_leader"] = False
+                                state["need_party_invite_req"] = False
+                                state["invite_leader_since"] = curr_time
+                                state["party_order"] = [my_uid]
+                                state["known_party_order"] = [my_uid]
+                                dprint(key, f"👑 [초대조 파장 선출] 초대조({my_inv_grp}) 최초 진입 확인! 내가 파티장({my_uid}) 역할을 시작합니다.")
 
-                # 4) [파티장 역할]: 오직 파티원이 명시적으로 초대 요청(need_invite == True)을 보냈을 때만 큐 폭파 후 '/초대 케릭명' 발송!
-                if state.get("is_invite_leader", False) and not is_ui_busy_for_chat and curr_time > state.get("party_invite_global_cd", 0.0):
+                # 4) [파티장 역할]: 전투가 모두 끝났고 독이 없는 상태일 때만 '/초대 케릭명' 발송! (독 감염 시 GUI 딜레이 무시 즉시 해독 우선)
+                if state.get("is_invite_leader", False) and not state.get("not_party_leader_locked", False) and not is_ui_busy_for_chat and curr_time > state.get("party_invite_global_cd", 0.0):
                     inv_time_map = state.setdefault("invited_time_map", {})
                     requesters = [
                         m for u, m in online_inv_members.items()
@@ -8344,50 +8483,89 @@ def ai_commander_worker(target_pc):
                         and (curr_time - inv_time_map.get(u, 0.0) >= 6.0)
                     ]
                     if requesters:
-                        requesters.sort(key=lambda m: (m.get("group_join_time", curr_time), m.get("uid", "")))
-                        target_m = requesters[0]
-                        t_uid = target_m["uid"]
-                        t_char_name = str(target_m["char_name"]).strip()
-                        t_eng_name = kor_to_eng_typo(t_char_name)
-                        is_yungta_now = check_chat_template_match(img_bgr, "yungta.png", th=0.80)
+                        # 🛡️ 파장 전투/루팅 중인지 체크 (전투가 모두 끝난 뒤에 초대 명령어 입력)
+                        is_leader_in_combat = (
+                            len(mobs) > 0 or
+                            state.get("is_attacking", False) or
+                            state.get("arrow_is_firing", False) or
+                            state.get("is_pulling", False) or
+                            state.get("sweep_active", False) or
+                            fsm_inv_chk.startswith("LOOT") or
+                            fsm_inv_chk not in ["IDLE", "PATROL", "PARTY_WAIT", "PARTY_ACTIVE_STANDBY", "SQUAD_WAIT"] or
+                            (curr_time - state.get("last_exp_time", 0.0) < 1.2)
+                        )
+                        if is_leader_in_combat:
+                            if curr_time - state.get("leader_combat_wait_log_t", 0.0) >= 3.0:
+                                state["leader_combat_wait_log_t"] = curr_time
+                                dprint(key, "⏳ [파장 전투 중 초대 보류] 현재 전투/루팅 중이므로 교전이 모두 끝난 뒤 파티 초대를 진행합니다.")
+                        else:
+                            # 🧪 파장이 독에 걸려 있는지 즉시 픽셀 검사 ➔ 독 상태면 GUI 딜레이 무시하고 해독부터 실행!
+                            _, _, raw_poison_leader, _ = get_hp_mp_percent(img_bgr, w, h, HP_Y_START, HP_Y_END)
+                            if state.get("is_poisoned", False) or raw_poison_leader:
+                                if curr_time > state.get("antidote_cd", 0):
+                                    poison_type = settings.get("poison_type", "해독제")
+                                    if state.get("sweep_active", False):
+                                        pico_queues[key].put({"action": "SWEEP_STOP"})
+                                        state["sweep_active"] = False
+                                    if state.get("body_held", False):
+                                        if picos.get(key) and pico_locks.get(key):
+                                            send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                                        state["body_held"] = False
+                                    is_spell = (poison_type != "해독제")
+                                    dprint(key, f"💊 [파장 초대 전 즉시 해독] 파장 독 감염 확인! GUI 대기시간을 무시하고 즉시 해독({poison_type}) 후 초대를 진행합니다.")
+                                    pico_queues[key].put({"action": "ANTIDOTE", "is_spell": is_spell})
+                                    state["antidote_cd"] = curr_time + 1.5
+                                    state.setdefault("poison_history", []).clear()
+                                    state["is_poisoned"] = False
+                                    state["poison_timer"] = 0
+                                    state["cooldown"] = max(state.get("cooldown", 0), curr_time + 1.2)
+                                continue
 
-                        # 💥 큐 폭파 및 진행 중인 모든 공격/이동/줍기 즉시 정지 후 초대 명령 단독 실행!
-                        state["abort_macro"] = True
-                        with pico_queues[key].mutex:
-                            pico_queues[key].queue.clear()
-                        pico_queues[key].put({"action": "FORCE_RELEASE"})
-                        if state.get("sweep_active", False):
-                            pico_queues[key].put({"action": "SWEEP_STOP"})
-                            state["sweep_active"] = False
-                        if state.get("body_held", False):
-                            if picos.get(key) and pico_locks.get(key):
-                                send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
-                            state["body_held"] = False
+                            requesters.sort(key=lambda m: (m.get("group_join_time", curr_time), m.get("uid", "")))
+                            target_m = requesters[0]
+                            t_uid = target_m["uid"]
+                            t_char_name = str(target_m["char_name"]).strip()
+                            t_eng_name = kor_to_eng_typo(t_char_name)
+                            is_yungta_now = check_chat_template_match(img_bgr, "yungta.png", th=0.80)
 
-                        state["is_attacking"] = False
-                        state["arrow_is_firing"] = False
-                        state["has_fired_arrow"] = False
-                        state["is_pulling"] = False
-                        state["target_fsm"] = "IDLE"
+                            # 💥 큐 폭파 및 진행 중인 모든 공격/이동/줍기 즉시 정지 후 초대 명령 단독 실행!
+                            state["abort_macro"] = True
+                            with pico_queues[key].mutex:
+                                pico_queues[key].queue.clear()
+                            pico_queues[key].put({"action": "FORCE_RELEASE"})
+                            if state.get("sweep_active", False):
+                                pico_queues[key].put({"action": "SWEEP_STOP"})
+                                state["sweep_active"] = False
+                            if state.get("body_held", False):
+                                if picos.get(key) and pico_locks.get(key):
+                                    send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                                state["body_held"] = False
 
-                        state["is_chat_typing"] = True
-                        state["chat_typing_timeout"] = curr_time + 3.5
+                            state["is_attacking"] = False
+                            state["arrow_is_firing"] = False
+                            state["has_fired_arrow"] = False
+                            state["is_pulling"] = False
+                            state["target_fsm"] = "IDLE"
 
-                        pico_queues[key].put({
-                            "action": "PARTY_INVITE_CMD",
-                            "eng_name": t_eng_name,
-                            "raw_name": t_char_name,
-                            "need_han_eng": is_yungta_now
-                        })
-                        inv_time_map[t_uid] = curr_time
-                        state["party_invite_global_cd"] = curr_time + 3.5
-                        state["party_accept_grace_until"] = curr_time + 5.0
-                        state["cooldown"] = curr_time + 2.5
-                        dprint(key, f"📨 [파티원 요청 수신 ➔ 큐폭파 초대] {t_uid}('{t_char_name}' ➔ 영타:'{t_eng_name}') 초대 명령 단독 전송! (영타감지:{is_yungta_now})")
-                        continue
+                            state["is_chat_typing"] = True
+                            state["chat_typing_timeout"] = curr_time + 3.5
 
-                # 5) [파티원 역할]: 채팅창 ROI에 party.png 또는 party2.png 중 하나라도 컬러 매칭되면 큐 폭파 후 'y + 엔터' 수락!
-                if not state.get("is_invite_leader", False) and not is_ui_busy_for_chat:
+                            pico_queues[key].put({
+                                "action": "PARTY_INVITE_CMD",
+                                "target_uid": t_uid,
+                                "eng_name": t_eng_name,
+                                "raw_name": t_char_name,
+                                "need_han_eng": is_yungta_now
+                            })
+                            inv_time_map[t_uid] = curr_time
+                            state["party_invite_global_cd"] = curr_time + 3.5
+                            state["party_accept_grace_until"] = curr_time + 5.0
+                            state["cooldown"] = curr_time + 2.5
+                            dprint(key, f"📨 [파티원 요청 수신 ➔ 초대 실행] 전투/독 없음 확인! {t_uid}('{t_char_name}' ➔ 영타:'{t_eng_name}') 초대 명령 전송! (영타감지:{is_yungta_now})")
+                            continue
+
+                # 5) [파티원 역할]: 미파티 상태(not in_ingame_party)일 때만 party.png / party2.png 매칭 ➔ 파장 초대신호 수신 시 미매칭이어도 강제 'y + 엔터' 수락!
+                if not state.get("is_invite_leader", False) and not is_ui_busy_for_chat and not state.get("in_ingame_party", True) and not state.get("party_invite_giveup", False) and not state.get("waiting_party_minimap_verify", False):
                     if curr_time > state.get("next_party_png_scan", 0.0) and curr_time > state.get("party_accept_cd", 0.0):
                         state["next_party_png_scan"] = curr_time + 0.20
                         matched_party_img = None
@@ -8396,7 +8574,16 @@ def ai_commander_worker(target_pc):
                                 matched_party_img = p_img_name
                                 break
 
-                        if matched_party_img:
+                        force_accept_by_sig = False
+                        if not matched_party_img and state.get("pending_leader_invite_sig", False):
+                            if curr_time - state.get("leader_invite_sig_time", 0.0) >= 0.8:
+                                force_accept_by_sig = True
+
+                        if matched_party_img or force_accept_by_sig:
+                            state["pending_leader_invite_sig"] = False
+                            state["waiting_party_minimap_verify"] = True
+                            state["party_verify_deadline"] = curr_time + 4.5
+
                             state["abort_macro"] = True
                             with pico_queues[key].mutex:
                                 pico_queues[key].queue.clear()
@@ -8419,9 +8606,13 @@ def ai_commander_worker(target_pc):
                             state["chat_typing_timeout"] = curr_time + 2.0
 
                             pico_queues[key].put({"action": "PARTY_ACCEPT_CMD"})
-                            state["party_accept_cd"] = curr_time + 4.0
+                            state["party_accept_cd"] = curr_time + 3.5
                             state["cooldown"] = curr_time + 1.2
-                            dprint(key, f"✅ [파티 초대 감지] 채팅창 '{matched_party_img}' 컬러 매칭 성공! 큐 폭파 후 'y + 엔터' 수락 명령을 실행합니다.")
+                            curr_try_num = state.get("party_accept_try_cnt", 0) + 1
+                            if matched_party_img:
+                                dprint(key, f"✅ [파티 초대 감지 ({curr_try_num}/3회차)] 채팅창 '{matched_party_img}' 매칭 성공! 'y + 엔터' 입력 후 미니맵 검사를 진행합니다.")
+                            else:
+                                dprint(key, f"⚠️ [이미지 미매칭 ➔ 강제 수락 ({curr_try_num}/3회차)] 파장 초대 신호 확인 후 이미지가 안 잡혀 강제로 'y + 엔터' 입력 후 미니맵을 검사합니다!")
                             continue
             # ====================================================================
 
@@ -8923,6 +9114,13 @@ def ai_commander_worker(target_pc):
                 state["pico_arrived"] = True
                 state["special_ack_arrived"] = True
                 state["loot_ack_arrived"] = True
+
+                # 💡 수동 개입(`) 후 복귀 시 파티 초대 3회 실패 락아웃 및 파장 잠금 해제
+                state["party_invite_giveup"] = False
+                state["party_accept_try_cnt"] = 0
+                state["waiting_party_minimap_verify"] = False
+                state["pending_leader_invite_sig"] = False
+                state["not_party_leader_locked"] = False
 
                 state["f1_retry_cnt"] = 0
                 state["cooldown"] = curr_time + 0.1
@@ -16462,7 +16660,7 @@ def ai_commander_worker(target_pc):
                         heal_mp_limit = settings.get("heal_mp_percent", 30.0)
                         
                         # 👇👇 [위즈 무거운 엠탐 생존 제어 + 물약 고갈 안전장치] 👇👇
-                        is_wiz_heavy = settings.get("use_wiz_mptam", False) and state.get("is_mptam_mode", False) and locals().get("is_heavy", False)
+                        is_wiz_heavy = settings.get("is_wiz_mptam", False) and state.get("is_mptam_mode", False) and locals().get("is_heavy", False)
                         is_potion_empty = False
                         
                         if is_wiz_heavy:
@@ -16546,9 +16744,8 @@ def ai_commander_worker(target_pc):
                                         released_key = True
                                         
                                     if state.get("body_held", False):
-                                        # 💡 위즈 모드일 때는 물약을 먹더라도 꾹 누르고 있던 바디(F7)를 절대 떼지 않습니다!
-                                        is_wiz_heavy = settings.get("is_wiz_mptam", False) and state.get("is_mptam_mode", False) and locals().get("is_heavy", False)
-                                        if not is_wiz_heavy:
+                                        # 💡 위즈 모드(물약 정상 보유)일 때는 물약을 먹더라도 꾹 누르고 있던 바디(F7)를 절대 떼지 않습니다!
+                                        if not state.get("wiz_heavy_active", False):
                                             if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0)
                                             state["body_held"] = False
                                             released_key = True
@@ -18733,12 +18930,15 @@ def ai_commander_worker(target_pc):
                         dprint(key, f"⏳ [잉여 마나 선제 버프] 파트너 대기 중 MP 95% 도달! 남은 시간이 가장 짧은 '{best_pre_buff['name']}'({rem_val:.0f}초 남음) 버프를 선제 시전합니다!")
 
                 if expired_buffs:
+                    # 💡 MP 필터링 전 전체 만료 버프 백업 (우선 버프 시전 시 중복된 일반 버프에도 10초 딜레이를 부여하기 위함)
+                    all_expired_before_mp = list(expired_buffs)
+                    fast_buff_set = {"decrease", "shield", "light", "extra_f10"}
 
                     # 👇 하드코딩된 50.0 대신 GUI 설정값을 가져옵니다.
                     buff_mp_limit = settings.get("buff_mp_pct", 50.0)
                     if mp < buff_mp_limit:
-                        # 💡 파랭이, 디크리즈 제외 (MP가 부족해도 무거우면 써야함)
-                        expired_buffs = [b for b in expired_buffs if b["name"] in ["extra_f10", "shield", "blue_pot", "decrease"]]
+                        # 💡 쉴드, 라이트, 디크리즈, 기타버프(및 파랭이)는 버프MP 제한 없이 언제든 시전 허용!
+                        expired_buffs = [b for b in expired_buffs if b["name"] in ["extra_f10", "shield", "light", "blue_pot", "decrease"]]
 
                     if expired_buffs:
 
@@ -18755,17 +18955,9 @@ def ai_commander_worker(target_pc):
                             state["body_held"] = False
                             dprint(key, "🛑 [버프 꼬임 방지] 버프 시전 전, 누르고 있던 바디(F7)를 완벽히 해제합니다!")
 
-                        # 💡 [파랭이 강제 새치기] 
-                        blue_pot_index = next((i for i, b in enumerate(expired_buffs) if b["name"] == "blue_pot"), -1)
-                        if blue_pot_index != -1:
-                            blue_buff = expired_buffs.pop(blue_pot_index)
-                            expired_buffs.insert(0, blue_buff)
-
-                        # 💡 [디크리즈 절대 0순위 강제 새치기] 디크리즈가 있다면 파랭이보다도 맨 앞으로!
-                        dec_index = next((i for i, b in enumerate(expired_buffs) if b["name"] == "decrease"), -1)
-                        if dec_index != -1:
-                            dec_buff = expired_buffs.pop(dec_index)
-                            expired_buffs.insert(0, dec_buff)
+                        # 💡 [우선순위 정렬] 디크리즈(0) ➔ 파랭이(1) ➔ 쉴드(2) ➔ 라이트(3) ➔ 기타버프(4) ➔ 일반버프(99, 기존 순서 유지)
+                        priority_order = {"decrease": 0, "blue_pot": 1, "shield": 2, "light": 3, "extra_f10": 4}
+                        expired_buffs.sort(key=lambda b: priority_order.get(b["name"], 99))
 
                         target_buff = expired_buffs[0]
                         
@@ -18777,27 +18969,48 @@ def ai_commander_worker(target_pc):
                         if "post_certi_fast_buffs" in state and target_buff["name"] in state["post_certi_fast_buffs"]:
                             state["post_certi_fast_buffs"].discard(target_buff["name"])
 
-                        if len(expired_buffs) > 1:
-                            delay_seconds = 180.0
-                            normal_delay_idx = 0
-                            for idx, delayed_b in enumerate(expired_buffs[1:]):
-                                # 💡 [파랭이, 디크리즈 3분 지연 면제] 다른 버프를 밀어낼 때, 절대 3분 지연 패널티를 주지 않음!
-                                if delayed_b["name"] in ["blue_pot", "decrease"]:
-                                    dprint(key, f"💊 [{delayed_b['name']} 특권] 3분 지연 페널티를 무시하고 즉각 다음 턴에 시전 대기합니다!")
-                                    continue
+                        # 💡 [중복 버프 딜레이 처리]
+                        other_expired_buffs = [b for b in all_expired_before_mp if b["name"] != target_buff["name"]]
+                        if other_expired_buffs:
+                            # 1) 이번에 시전하는 버프가 [쉴드, 라이트, 디크리즈, 기타버프] 중 하나인 경우:
+                            #    중복된 다른 버프들을 3분(180초) 대기열에 넣지 않고 약 10초(가우스 난수) 뒤로 예약!
+                            if target_buff["name"] in fast_buff_set:
+                                for delayed_b in other_expired_buffs:
+                                    if delayed_b["name"] == "blue_pot":
+                                        dprint(key, f"💊 [blue_pot 특권] 지연 없이 다음 턴에 즉시 시전 대기합니다!")
+                                        continue
+                                    short_delay = g_val(9.5, 11.5)
+                                    state[f"buff_{delayed_b['name']}_time"] = curr_time + short_delay
+                                    dprint(key, f"⚡ [우선버프 선시전] '{target_buff['name']}' 먼저 시전! 중복된 '{delayed_b['name']}' 버프는 {short_delay:.1f}초 뒤 시전됩니다.")
+                                save_buff_times(ai_states)
 
-                                # 💡 [인증 후 재접속 계열/라이트 3분텀 제외 & 10초 딜레이 적용]
-                                if delayed_b["name"] in state.get("post_certi_fast_buffs", set()):
-                                    pushed_time = curr_time + 10.0
+                            # 2) 일반 버프(또는 파랭이)가 시전되는 경우:
+                            #    [쉴드, 라이트, 디크리즈, 기타버프]는 3분 대기열에서 완전 제외하고, 일반 버프끼리만 3분 간격 적용!
+                            elif len(expired_buffs) > 1:
+                                delay_seconds = 180.0
+                                normal_delay_idx = 0
+                                for idx, delayed_b in enumerate(expired_buffs[1:]):
+                                    if delayed_b["name"] == "blue_pot":
+                                        dprint(key, f"💊 [blue_pot 특권] 3분 지연 페널티를 무시하고 즉각 다음 턴에 시전 대기합니다!")
+                                        continue
+
+                                    if delayed_b["name"] in fast_buff_set:
+                                        short_delay = g_val(9.5, 11.5)
+                                        state[f"buff_{delayed_b['name']}_time"] = curr_time + short_delay
+                                        dprint(key, f"⚡ [대기열 면제] '{delayed_b['name']}' 버프는 3분 대기열에 끼지 않고 {short_delay:.1f}초 뒤 시전됩니다!")
+                                        continue
+
+                                    if delayed_b["name"] in state.get("post_certi_fast_buffs", set()):
+                                        short_delay = g_val(9.5, 11.5)
+                                        state[f"buff_{delayed_b['name']}_time"] = curr_time + short_delay
+                                        dprint(key, f"⚡ [인증 복귀 버프] {delayed_b['name']} 버프는 3분텀에서 제외되어 {short_delay:.1f}초 뒤로 예약됩니다!")
+                                        continue
+                                        
+                                    normal_delay_idx += 1
+                                    pushed_time = curr_time + delay_seconds * normal_delay_idx
                                     state[f"buff_{delayed_b['name']}_time"] = pushed_time
-                                    dprint(key, f"⚡ [인증 복귀 버프] {delayed_b['name']} 버프는 3분텀에서 제외되어 10초 뒤로 예약됩니다!")
-                                    continue
-                                    
-                                normal_delay_idx += 1
-                                pushed_time = curr_time + delay_seconds * normal_delay_idx
-                                state[f"buff_{delayed_b['name']}_time"] = pushed_time
-                                dprint(key, f"🕒 [버프 지연] {delayed_b['name']} 버프는 MP 관리를 위해 {int(delay_seconds*normal_delay_idx)}초 뒤로 예약됩니다.")
-                            save_buff_times(ai_states)
+                                    dprint(key, f"🕒 [버프 지연] {delayed_b['name']} 버프는 MP 관리를 위해 {int(delay_seconds*normal_delay_idx)}초 뒤로 예약됩니다.")
+                                save_buff_times(ai_states)
 
                         state["buff_start_mp"] = mp
                         state["current_buff"] = target_buff
@@ -24893,8 +25106,7 @@ def ai_commander_worker(target_pc):
                     is_exp_safe_for_body = (curr_time - state.get("last_exp_time", 0) > 1.0)
 
                     # 👇👇 [위즈 바디 끊김 방지 방어막] 👇👇
-                    is_wiz_heavy = settings.get("is_wiz_mptam", False) and state.get("is_mptam_mode", False) and locals().get("is_heavy", False)
-                    if is_wiz_heavy:
+                    if state.get("wiz_heavy_active", False):
                         need_heal = False # 힐 판단을 False로 속여서 바디(F7)가 끊기지 않고 쭉 유지되도록 유도!
                     else:
                         need_heal = settings.get("heal_use") and hp <= settings.get("heal_percent", 70.0) and mp >= heal_mp_limit
@@ -25707,6 +25919,13 @@ def toggle_individual_hunt(key):
         state["is_active_standby"] = False
         state["designated_base_node"] = None
         state["is_combat_emergency_buff"] = False
+
+        # 💡 자동사냥 버튼을 다시 켤 때 파티 초대 3회 실패 락아웃 및 파장 잠금 초기화
+        state["party_invite_giveup"] = False
+        state["party_accept_try_cnt"] = 0
+        state["waiting_party_minimap_verify"] = False
+        state["pending_leader_invite_sig"] = False
+        state["not_party_leader_locked"] = False
         
         # 👇👇 [핵심 추가] 사냥 시작 버튼을 누른 직후 딱 1번 전 층수 딥스캔 발동 예약!
         state["force_floor_scan"] = True
