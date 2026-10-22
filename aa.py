@@ -2814,7 +2814,7 @@ except: img_nopotion, img_nopotion_mask = None, None
 _CHAT_MATCH_DBG_TIMER = {}
 
 def check_chat_template_match(img_bgr, fname, th=0.80):
-    """하단 채팅창 ROI(X:125~600, Y:490~600)에서 컬러/그레이/글자마스크 하이브리드 매칭 + [A] 아이콘 감지 + 실시간 디버그 로그를 수행합니다."""
+    """하단 채팅창 ROI(X:125~600, Y:490~600)에서 원본 컬러 이미지 그대로 1:1 매칭 + [A] 아이콘 감지를 수행합니다."""
     if img_bgr is None:
         return False
     h, w = img_bgr.shape[:2]
@@ -2825,7 +2825,7 @@ def check_chat_template_match(img_bgr, fname, th=0.80):
     pc_k = globals().get("TARGET_PC_KEY", "SYSTEM")
     is_yungta = ("yungta" in fname.lower())
 
-    # 1) yungta.png 검사 시: 채팅창 좌측 하단 한/영 표시칸(X:135~168, Y:570~600)의 주황/빨간색 [A] 박스 픽셀 수 측정 (aa_2.py에서 13번 컴이 성공했던 핵심 로직)
+    # 1) yungta.png 검사 시: 채팅창 좌측 하단 한/영 표시칸(X:135~168, Y:570~600)의 주황/빨간색 [A] 박스 픽셀 수 측정
     red_cnt = 0
     if is_yungta:
         try:
@@ -2838,7 +2838,7 @@ def check_chat_template_match(img_bgr, fname, th=0.80):
         except Exception:
             red_cnt = 0
 
-    # 2) 한글 경로에서도 절대 실패하지 않도록 open + imdecode(IMREAD_UNCHANGED)로 컬러/그레이/마스크 데이터 로드
+    # 2) 원본 3채널 컬러 이미지 그대로 로드
     path = f"qq/{fname}" if not fname.startswith("qq/") else fname
     if not os.path.exists(path):
         if now_t - _CHAT_MATCH_DBG_TIMER.get(fname, 0.0) >= 2.0:
@@ -2847,37 +2847,15 @@ def check_chat_template_match(img_bgr, fname, th=0.80):
         return (red_cnt >= 18) if is_yungta else False
 
     mtime = os.path.getmtime(path)
-    cache_key = f"chat_hybrid_v4_{path}"
+    cache_key = f"chat_raw_color_{path}"
     cached = loaded_models.get(cache_key)
     if not cached or cached.get("mtime") != mtime:
         try:
             with open(path, "rb") as f:
                 np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
-            bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
-            if bgra is not None:
-                if len(bgra.shape) == 3 and bgra.shape[2] == 4:
-                    color_img = bgra[:, :, :3]
-                    alpha_mask = bgra[:, :, 3]
-                elif len(bgra.shape) == 3:
-                    color_img = bgra
-                    alpha_mask = None
-                else:
-                    color_img = cv2.cvtColor(bgra, cv2.COLOR_GRAY2BGR)
-                    alpha_mask = None
-
-                gray_img = cv2.cvtColor(color_img, cv2.COLOR_BGR2GRAY)
-                # 💡 반투명 채팅창 배경 타일 간섭을 제거하기 위해 밝은 글자 획만 추출한 자동 마스크 생성
-                _, text_mask = cv2.threshold(gray_img, 125, 255, cv2.THRESH_BINARY)
-                if cv2.countNonZero(text_mask) < 10:
-                    _, text_mask = cv2.threshold(gray_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-                loaded_models[cache_key] = {
-                    "color": color_img,
-                    "gray": gray_img,
-                    "alpha_mask": alpha_mask,
-                    "text_mask": text_mask,
-                    "mtime": mtime
-                }
+            color_img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if color_img is not None:
+                loaded_models[cache_key] = {"color": color_img, "mtime": mtime}
             else:
                 loaded_models[cache_key] = None
         except Exception:
@@ -2891,73 +2869,30 @@ def check_chat_template_match(img_bgr, fname, th=0.80):
         return (red_cnt >= 18) if is_yungta else False
 
     tmpl = tmpl_data["color"]
-    tmpl_gray = tmpl_data["gray"]
-    alpha_mask = tmpl_data["alpha_mask"]
-    text_mask = tmpl_data["text_mask"]
-
     chat_roi = img_bgr[490:h, 125:600]
-    chat_roi_gray = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
     bh, bw = tmpl.shape[:2]
 
-    # 3) ① 순수 컬러 매칭 + ② 그레이 매칭 + ③ 반투명 배경 무시(알파/글자 마스크) 매칭 중 최고 점수 측정
-    raw_1to1_val = 0.0
-    best_val = 0.0
-    best_sc = 1.0
-    best_mode = "COLOR"
+    if bh > chat_roi.shape[0] or bw > chat_roi.shape[1]:
+        return (red_cnt >= 18) if is_yungta else False
 
-    for sc in (1.0, 0.95, 0.9, 0.85, 0.8, 0.7, 0.6, 0.5, 0.4, 0.35, 0.3, 1.05, 1.1, 1.2):
-        nh, nw = int(round(bh * sc)), int(round(bw * sc))
-        if nh < 8 or nw < 8 or nh > chat_roi.shape[0] or nw > chat_roi.shape[1]:
-            continue
-        try:
-            interp = cv2.INTER_AREA if sc < 1.0 else cv2.INTER_CUBIC
-            r_tmpl = tmpl if sc == 1.0 else cv2.resize(tmpl, (nw, nh), interpolation=interp)
-            r_gray = tmpl_gray if sc == 1.0 else cv2.resize(tmpl_gray, (nw, nh), interpolation=interp)
+    # 3) 전처리/리사이즈 없이 원본 컬러 이미지 1:1 그대로 매칭
+    color_val = 0.0
+    try:
+        res = cv2.matchTemplate(chat_roi, tmpl, cv2.TM_CCOEFF_NORMED)
+        _, val, _, _ = cv2.minMaxLoc(res)
+        if not (np.isnan(val) or np.isinf(val)):
+            color_val = float(val)
+    except Exception:
+        pass
 
-            # (A) 순수 컬러 매칭
-            res_c = cv2.matchTemplate(chat_roi, r_tmpl, cv2.TM_CCOEFF_NORMED)
-            _, val_c, _, _ = cv2.minMaxLoc(res_c)
-            if np.isnan(val_c) or np.isinf(val_c): val_c = 0.0
+    is_matched = (color_val >= th) or (is_yungta and red_cnt >= 18)
 
-            # (B) 그레이스케일 매칭 (캡처보드 색감 왜곡 보정)
-            res_g = cv2.matchTemplate(chat_roi_gray, r_gray, cv2.TM_CCOEFF_NORMED)
-            _, val_g, _, _ = cv2.minMaxLoc(res_g)
-            if np.isnan(val_g) or np.isinf(val_g): val_g = 0.0
-
-            # (C) 마스크 매칭 (누끼 마스크 또는 밝은 글자 마스크로 뒷배경 타일 간섭 제거)
-            val_m = 0.0
-            active_mask = alpha_mask if alpha_mask is not None else text_mask
-            if active_mask is not None:
-                r_mask = active_mask if sc == 1.0 else cv2.resize(active_mask, (nw, nh), interpolation=cv2.INTER_NEAREST)
-                if cv2.countNonZero(r_mask) >= 8:
-                    res_m = cv2.matchTemplate(chat_roi_gray, r_gray, cv2.TM_CCORR_NORMED, mask=r_mask)
-                    _, max_m, _, max_loc_m = cv2.minMaxLoc(res_m)
-                    if not (np.isnan(max_m) or np.isinf(max_m)):
-                        # 단색 밝은 배경 오매칭 방지를 위해 매칭된 패치의 대비(표준편차) 검증
-                        patch = chat_roi_gray[max_loc_m[1]:max_loc_m[1]+nh, max_loc_m[0]:max_loc_m[0]+nw]
-                        if patch.size > 0 and float(np.std(patch)) >= 12.0:
-                            val_m = float(max_m)
-
-            cand_list = [("COLOR", float(val_c)), ("GRAY", float(val_g)), ("MASK", float(val_m))]
-            cur_mode, cur_best = max(cand_list, key=lambda x: x[1])
-
-            if sc == 1.0:
-                raw_1to1_val = cur_best
-            if cur_best > best_val:
-                best_val = cur_best
-                best_sc = sc
-                best_mode = cur_mode
-        except Exception:
-            continue
-
-    is_matched = (best_val >= th) or (is_yungta and red_cnt >= 18)
-
-    # 4) 터미널에 원인 판독용 디버그 로그 출력 (yungta는 호출 시마다, party는 2초 간격 또는 감지 시 즉시 출력)
+    # 4) 터미널 디버그 로그 출력
     if is_yungta or is_matched or (now_t - _CHAT_MATCH_DBG_TIMER.get(fname, 0.0) >= 2.0):
         _CHAT_MATCH_DBG_TIMER[fname] = now_t
         red_info = f" | [A]붉은픽셀:{red_cnt}개(기준:18개)" if is_yungta else ""
         verdict = "✅감지성공" if is_matched else "⚪미감지"
-        dprint(pc_k, f"🔎 [채팅매칭 디버그] {fname}(원본:{bw}x{bh}) | 1:1:{raw_1to1_val*100:.1f}% | 최고:{best_val*100:.1f}%({best_mode}/{best_sc}x){red_info} ➔ {verdict}")
+        dprint(pc_k, f"🔎 [채팅매칭 디버그] {fname}(원본:{bw}x{bh}) | 1:1원본컬러:{color_val*100:.1f}%{red_info} ➔ {verdict}")
 
     return is_matched
 
