@@ -1148,8 +1148,9 @@ def local_ipc_broadcaster_thread(my_key):
                 real_hunt_on = st.get("backup_hunt_active", st.get("is_hunt_active", False))
                 real_fsm_str = str(st.get("backup_target_fsm", raw_fsm)) if raw_fsm == "GHOST_MODE" else raw_fsm
                 is_in_game = bool(real_hunt_on and not real_fsm_str.startswith("CERTI_"))
-                in_party_now = bool(is_in_game and st.get("in_ingame_party", False))
+                in_party_now = bool(is_in_game and st.get("in_ingame_party", True))
                 is_inv_leader = bool(is_in_game and st.get("is_invite_leader", False))
+                explicit_req = bool(is_in_game and st.get("need_party_invite_req", False) and not in_party_now and not is_inv_leader)
 
                 payload = {
                     "uid": my_uid,
@@ -1161,7 +1162,7 @@ def local_ipc_broadcaster_thread(my_key):
                     "char_name": current_settings.get(my_key, {}).get("char_name", ""),
                     "in_game": is_in_game,
                     "in_party": in_party_now,
-                    "need_invite": bool(is_in_game and not in_party_now and not is_inv_leader),
+                    "need_invite": explicit_req,
                     "is_invite_leader": is_inv_leader,
                     "group_join_time": st.get("invite_group_join_time", 0.0),
                     "leader_since": st.get("invite_leader_since", 0.0),
@@ -2810,96 +2811,40 @@ try:
         img_nopotion_mask = None
 except: img_nopotion, img_nopotion_mask = None, None
 
-def check_chat_template_match(img_bgr, fname, th=0.75):
-    """하단 채팅창 ROI(X:125~600, Y:490~600)에서 배경색을 자동 제거(누끼)하여 글자만 정밀 매칭합니다."""
+def check_chat_template_match(img_bgr, fname, th=0.80):
+    """하단 채팅창 ROI(X:125~600, Y:490~600)에서 컬러 이미지 있는 그대로 매칭합니다."""
     if img_bgr is None:
         return False
     h, w = img_bgr.shape[:2]
     if w < 600 or h <= 490:
         return False
 
-    # 💡 1. 'yungta.png' 검사 시: 채팅창 좌측 하단 한/영 표시칸(X:135~168, Y:570~600)의 빨간/주황색 [A] 박스 픽셀 직접 감지!
-    if "yungta" in fname.lower():
-        try:
-            ime_roi = img_bgr[max(0, min(h, 570)):h, 135:168]
-            if ime_roi.size > 0:
-                hsv_ime = cv2.cvtColor(ime_roi, cv2.COLOR_BGR2HSV)
-                mask_red1 = cv2.inRange(hsv_ime, np.array([0, 110, 90]), np.array([18, 255, 255]))
-                mask_red2 = cv2.inRange(hsv_ime, np.array([165, 110, 90]), np.array([180, 255, 255]))
-                if cv2.countNonZero(cv2.bitwise_or(mask_red1, mask_red2)) >= 18:
-                    return True
-        except Exception:
-            pass
-
-    # 💡 2. 채팅 텍스트(party.png 등) 자동 배경 마스킹(누끼) 및 다중 배율 매칭
     path = f"qq/{fname}" if not fname.startswith("qq/") else fname
     if not os.path.exists(path):
         return False
-    cache_key = f"chat_tmpl_v2_{path}"
+
+    cache_key = f"chat_color_raw_{path}"
     if cache_key not in loaded_models:
         try:
-            with open(path, "rb") as f:
-                np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
-            bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
-            if bgra is not None:
-                color = bgra[:, :, :3] if len(bgra.shape) == 3 else cv2.cvtColor(bgra, cv2.COLOR_GRAY2BGR)
-                gray = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
-                hsv = cv2.cvtColor(color, cv2.COLOR_BGR2HSV)
-
-                # 기존 알파 채널(투명 배경)이 있으면 그대로 쓰고, 없으면(갈색 바닥 등) 글자(밝은 획 + 검은 테두리)만 자동 추출!
-                if len(bgra.shape) == 3 and bgra.shape[2] == 4 and np.min(bgra[:, :, 3]) < 250:
-                    mask = bgra[:, :, 3]
-                else:
-                    # 밝은 글자 알맹이(채도 낮고 밝음) + 검은색 글자 테두리(밝기 낮음)만 255로 남기고 갈색 배경은 0으로 제거
-                    bright_text = cv2.inRange(hsv, np.array([0, 0, 155]), np.array([180, 90, 255]))
-                    black_outline = cv2.inRange(gray, 0, 60)
-                    mask = cv2.bitwise_or(bright_text, black_outline)
-                    if cv2.countNonZero(mask) < (gray.size * 0.10):
-                        mask = None
-
-                loaded_models[cache_key] = {"color": color, "gray": gray, "mask": mask}
-            else:
-                loaded_models[cache_key] = None
+            tmpl_color = cv2.imread(path, cv2.IMREAD_COLOR)
+            loaded_models[cache_key] = tmpl_color
         except Exception:
             loaded_models[cache_key] = None
 
-    tmpl_data = loaded_models.get(cache_key)
-    if not tmpl_data or tmpl_data.get("gray") is None:
+    tmpl = loaded_models.get(cache_key)
+    if tmpl is None:
         return False
 
-    chat_roi_bgr = img_bgr[490:h, 125:600]
-    chat_roi_gray = cv2.cvtColor(chat_roi_bgr, cv2.COLOR_BGR2GRAY)
-    base_gray = tmpl_data["gray"]
-    base_mask = tmpl_data.get("mask")
-    bh, bw = base_gray.shape[:2]
+    chat_roi = img_bgr[490:h, 125:600]
+    if chat_roi.shape[0] < tmpl.shape[0] or chat_roi.shape[1] < tmpl.shape[1]:
+        return False
 
-    for sc in (1.0, 0.95, 1.05, 0.9, 0.85, 0.8, 0.75, 0.7, 0.6, 0.5):
-        nh, nw = int(round(bh * sc)), int(round(bw * sc))
-        if nh < 8 or nw < 8 or nh > chat_roi_gray.shape[0] or nw > chat_roi_gray.shape[1]:
-            continue
-        try:
-            interp = cv2.INTER_AREA if sc < 1.0 else cv2.INTER_CUBIC
-            r_gray = base_gray if sc == 1.0 else cv2.resize(base_gray, (nw, nh), interpolation=interp)
-
-            # 1차: 자동 누끼 마스크 적용 매칭 (사냥터 바닥색 완전 무시)
-            if base_mask is not None:
-                r_mask = base_mask if sc == 1.0 else cv2.resize(base_mask, (nw, nh), interpolation=cv2.INTER_NEAREST)
-                res_m = cv2.matchTemplate(chat_roi_gray, r_gray, cv2.TM_CCOEFF_NORMED, mask=r_mask)
-                _, max_val_m, _, _ = cv2.minMaxLoc(res_m)
-                if not np.isnan(max_val_m) and not np.isinf(max_val_m) and max_val_m >= th:
-                    return True
-
-            # 2차: 순수 밝은 글자 획(이진화) 매칭 보조
-            _, roi_bin = cv2.threshold(chat_roi_gray, 160, 255, cv2.THRESH_BINARY)
-            _, tmpl_bin = cv2.threshold(r_gray, 160, 255, cv2.THRESH_BINARY)
-            if cv2.countNonZero(tmpl_bin) >= 15:
-                res_b = cv2.matchTemplate(roi_bin, tmpl_bin, cv2.TM_CCOEFF_NORMED)
-                _, max_val_b, _, _ = cv2.minMaxLoc(res_b)
-                if max_val_b >= th:
-                    return True
-        except Exception:
-            continue
-    return False
+    try:
+        res = cv2.matchTemplate(chat_roi, tmpl, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, _ = cv2.minMaxLoc(res)
+        return max_val >= th
+    except Exception:
+        return False
 
 try:
     cursor_bgra = cv2.imread("qq/cursor_custom.png", cv2.IMREAD_UNCHANGED)
@@ -4324,6 +4269,7 @@ def pico_worker_thread(key):
                         p_serial.write(bytearray([0xAE, 1, 200, 0xFE]))
 
                     except: pass
+                reset_hw_key_states(p_serial)
 
                 if key in ai_states:
                     ai_states[key]["body_held"] = False
@@ -4461,105 +4407,92 @@ def pico_worker_thread(key):
                 h_sleep(0.05, 0.1)
 
             elif action == "PARTY_INVITE_CMD":
-                eng_name = str(cmd.get("eng_name", "")).strip()
-                need_han_eng = cmd.get("need_han_eng", False)
-                if eng_name:
-                    is_central_13 = (str(get_my_central_num()).strip() == "13")
+                try:
+                    eng_name = str(cmd.get("eng_name", "")).strip()
+                    need_han_eng = cmd.get("need_han_eng", False)
+                    if eng_name:
+                        is_central_13 = (str(get_my_central_num()).strip() == "13")
 
-                    def _toggle_han_eng():
-                        if is_central_13:
-                            # 💡 13번 중앙컴 소속 미니컴: 일반 한/영 키(234) 단독 타건
-                            k_tap(234)
-                            h_sleep(0.20, 0.28)
-                        else:
-                            # 💡 1~12번 중앙컴 소속 미니컴: Shift + Space 조합키 타건
-                            send_keyboard_key(p_serial, p_lock, 129, 1)
-                            h_sleep(0.04, 0.08)
-                            send_keyboard_key(p_serial, p_lock, 32, 1)
-                            h_sleep(0.04, 0.08)
-                            send_keyboard_key(p_serial, p_lock, 32, 0)
-                            h_sleep(0.04, 0.08)
-                            send_keyboard_key(p_serial, p_lock, 129, 0)
-                            h_sleep(0.20, 0.28)
+                        # 1) 모든 눌린 키/마우스 상태 초기화 및 안정화 대기
+                        reset_hw_key_states(p_serial)
+                        send_keyboard_key(p_serial, p_lock, 129, 0, is_manual=True)
+                        send_keyboard_key(p_serial, p_lock, 32, 0, is_manual=True)
+                        h_sleep(0.15, 0.22)
 
-                    # 1) 누르고 있던 F4(줍기) / F7(바디) / Shift 안전 해제
-                    if key in ai_states and ai_states[key].get("sweep_active", False):
-                        send_keyboard_key(p_serial, p_lock, KEY_F4, 0)
-                        ai_states[key]["sweep_active"] = False
-                    if key in ai_states and ai_states[key].get("body_held", False):
-                        send_keyboard_key(p_serial, p_lock, KEY_F7, 0)
-                        ai_states[key]["body_held"] = False
-                    send_keyboard_key(p_serial, p_lock, 129, 0)
-                    h_sleep(0.05, 0.09)
+                        # 2) '/' 입력 전 채팅창 ROI에서 yungta.png 감지 시 한글 전환
+                        scr_now = latest_frames.get(key)
+                        if need_han_eng or (scr_now is not None and check_chat_template_match(scr_now, "yungta.png", th=0.80)):
+                            if is_central_13:
+                                dprint(key, "🔄 [파장 한/영 전환] 'yungta.png' 감지! 한영키(234)로 한글 전환합니다.")
+                                send_keyboard_key(p_serial, p_lock, 234, 1, is_manual=True)
+                                h_sleep(0.06, 0.10)
+                                send_keyboard_key(p_serial, p_lock, 234, 0, is_manual=True)
+                                h_sleep(0.25, 0.35)
+                            else:
+                                dprint(key, "🔄 [파장 한/영 전환] 'yungta.png' 감지! Shift(선입력 홀드)+Space로 한글 전환합니다.")
+                                # 💡 Shift를 먼저 누르고 0.12~0.18초간 확실히 유지한 뒤 Space를 타건해야 Space 단독 입력이 안 됨!
+                                send_keyboard_key(p_serial, p_lock, 129, 1, is_manual=True) # Shift DOWN
+                                h_sleep(0.12, 0.18)
+                                send_keyboard_key(p_serial, p_lock, 32, 1, is_manual=True)  # Space DOWN
+                                h_sleep(0.06, 0.10)
+                                send_keyboard_key(p_serial, p_lock, 32, 0, is_manual=True)  # Space UP
+                                h_sleep(0.08, 0.12)
+                                send_keyboard_key(p_serial, p_lock, 129, 0, is_manual=True) # Shift UP
+                                h_sleep(0.25, 0.35)
 
-                    key_type_str = "한영키(234)" if is_central_13 else "Shift+Space"
-
-                    # 2) [1차 검사] '/' 입력 전 채팅창 ROI에서 yungta.png 감지 시 한글 전환
-                    scr_now = latest_frames.get(key)
-                    if need_han_eng or (scr_now is not None and check_chat_template_match(scr_now, "yungta.png", th=0.80)):
-                        dprint(key, f"🔄 [파장 한/영 전환 1차] 채팅창 'yungta.png' 감지! {key_type_str}로 한글 전환합니다.")
-                        _toggle_han_eng()
-
-                    # 3) '/' 키를 먼저 눌러 채팅 입력창 활성화
-                    k_tap(ord('/'))
-                    h_sleep(0.15, 0.22)
-
-                    # 4) [2차 팩트체크] '/' 입력 후에도 yungta.png가 남아있다면 한/영 재전환!
-                    scr_after_slash = latest_frames.get(key)
-                    if scr_after_slash is not None and check_chat_template_match(scr_after_slash, "yungta.png", th=0.80):
-                        dprint(key, f"🔄 [파장 한/영 전환 2차] '/' 입력 후에도 영타('yungta.png') 유지 감지! {key_type_str} 재전환합니다.")
-                        _toggle_han_eng()
-
-                    # 5) '초대 ' 입력 (cheo + Space)
-                    for ch_cmd in "cheo":
-                        k_tap(ord(ch_cmd))
-                        h_sleep(0.045, 0.085)
-
-                    k_tap(32) # Space
-                    # 💡 쌍자음(Shift) 첫 글자와 Space가 겹쳐 한/영이 풀리는 현상을 막는 물리적 안전 간격
-                    h_sleep(0.14, 0.20)
-
-                    # 6) 변환된 케릭명(쌍자음 대문자 Shift 포함) 입력 후 엔터
-                    for ch in eng_name:
-                        if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
-                            break
-                        if 'A' <= ch <= 'Z':
-                            kcode = ord(ch.lower())
-                            send_keyboard_key(p_serial, p_lock, 129, 1) # Shift DOWN
-                            h_sleep(0.04, 0.08)
-                            send_keyboard_key(p_serial, p_lock, kcode, 1)
+                        # 3) '/초대 ' 입력 (/cheo + Space) - 선엔터 없이 즉시 입력
+                        for ch_cmd in "/cheo":
+                            k_tap(ord(ch_cmd))
                             h_sleep(0.05, 0.09)
-                            send_keyboard_key(p_serial, p_lock, kcode, 0)
-                            h_sleep(0.04, 0.08)
-                            send_keyboard_key(p_serial, p_lock, 129, 0) # Shift UP
-                        else:
-                            k_tap(ord(ch))
-                        h_sleep(0.045, 0.095)
 
-                    h_sleep(0.12, 0.20)
-                    k_tap(176) # Enter
-                    h_sleep(0.15, 0.25)
+                        k_tap(32) # Space
+                        h_sleep(0.15, 0.22)
+
+                        # 4) 변환된 케릭명(쌍자음 대문자 Shift 포함) 입력 후 엔터
+                        for ch in eng_name:
+                            if active_manual_target == key or ai_states[key].get("is_paused"):
+                                break
+                            if 'A' <= ch <= 'Z':
+                                kcode = ord(ch.lower())
+                                send_keyboard_key(p_serial, p_lock, 129, 1, is_manual=True) # Shift DOWN
+                                h_sleep(0.08, 0.12)
+                                send_keyboard_key(p_serial, p_lock, kcode, 1, is_manual=True)
+                                h_sleep(0.05, 0.09)
+                                send_keyboard_key(p_serial, p_lock, kcode, 0, is_manual=True)
+                                h_sleep(0.06, 0.10)
+                                send_keyboard_key(p_serial, p_lock, 129, 0, is_manual=True) # Shift UP
+                            else:
+                                k_tap(ord(ch))
+                            h_sleep(0.05, 0.10)
+
+                        h_sleep(0.12, 0.20)
+                        k_tap(176) # Enter
+                        h_sleep(0.15, 0.25)
+                finally:
+                    if key in ai_states:
+                        ai_states[key]["is_chat_typing"] = False
+                        ai_states[key]["cooldown"] = time.time() + 0.2
 
             elif action == "PARTY_ACCEPT_CMD":
-                if key in ai_states and ai_states[key].get("sweep_active", False):
-                    send_keyboard_key(p_serial, p_lock, KEY_F4, 0)
-                    ai_states[key]["sweep_active"] = False
-                if key in ai_states and ai_states[key].get("body_held", False):
-                    send_keyboard_key(p_serial, p_lock, KEY_F7, 0)
-                    ai_states[key]["body_held"] = False
-                send_keyboard_key(p_serial, p_lock, 129, 0)
-                h_sleep(0.05, 0.09)
+                try:
+                    reset_hw_key_states(p_serial)
+                    send_keyboard_key(p_serial, p_lock, 129, 0, is_manual=True)
+                    h_sleep(0.08, 0.12)
 
-                k_tap(ord('y'))
-                h_sleep(0.10, 0.18)
-                k_tap(176) # Enter
-                # 💡 피코가 실제로 y + 엔터를 다 친 직후에 파티 합류 완료 도장을 찍음!
-                if key in ai_states:
-                    ai_states[key]["in_ingame_party"] = True
-                    ai_states[key]["solo_red_arrow_streak"] = 0
-                    ai_states[key]["party_accept_grace_until"] = time.time() + 5.0
-                dprint(key, "🎉 [파티 수락 타건 완료] 피코가 'y + 엔터' 입력을 마쳤습니다! 파장에게 합류 완료 신호를 보냅니다.")
-                h_sleep(0.15, 0.25)
+                    k_tap(ord('y'))
+                    h_sleep(0.10, 0.18)
+                    k_tap(176) # Enter
+                    if key in ai_states:
+                        ai_states[key]["in_ingame_party"] = True
+                        ai_states[key]["need_party_invite_req"] = False
+                        ai_states[key]["solo_red_arrow_streak"] = 0
+                        ai_states[key]["party_accept_grace_until"] = time.time() + 5.0
+                    dprint(key, "🎉 [파티 수락 타건 완료] 피코가 'y + 엔터' 입력을 마쳤습니다! 파장에게 합류 완료 신호를 보냅니다.")
+                    h_sleep(0.15, 0.25)
+                finally:
+                    if key in ai_states:
+                        ai_states[key]["is_chat_typing"] = False
+                        ai_states[key]["cooldown"] = time.time() + 0.2
 
             elif action == "MOUSE_WHEEL":
                 amount = cmd.get("amount", -1)
@@ -6069,6 +6002,7 @@ def ai_commander_worker(target_pc):
                         state["loot_state"] = "IDLE"
                         state["certi_from_closed_game"] = False # 💡 인게임 감지 시 무조건 12.png(게임종료) 거치도록 초기화!
                         state["in_ingame_party"] = False
+                        state["need_party_invite_req"] = True
                         state["is_invite_leader"] = False
                         state["had_party_as_leader"] = False
                         state["invite_group_join_time"] = 0.0
@@ -8100,16 +8034,43 @@ def ai_commander_worker(target_pc):
             # ====================================================================
             # 🤝 [다중 중앙컴 자동 파티 초대 & 초대순서 파장 자동위임 & 파탈 감지 엔진]
             # ====================================================================
-            # 💡 기존에 구현된 current_facing_angle(미니맵 빨간 화살표 감지)로 파탈 여부 판별!
+            # 🛡️ 파티 초대/수락 명령어를 타이핑하는 도중에는 다른 모든 행동(이동/공격/루팅/버프)을 완벽히 중단!
+            if state.get("is_chat_typing", False):
+                if curr_time < state.get("chat_typing_timeout", 0.0):
+                    if DEBUG_MODE and debug_img is not None:
+                        try:
+                            if debug_queues[key].full(): debug_queues[key].get_nowait()
+                            debug_queues[key].put_nowait(debug_img)
+                        except Exception: pass
+                    time.sleep(0.02)
+                    continue
+                else:
+                    state["is_chat_typing"] = False
+
+            fsm_inv_chk = str(state.get("target_fsm", "IDLE"))
+            is_ui_busy_for_chat = (
+                fsm_inv_chk.startswith("TOWN_MAINT") or
+                fsm_inv_chk.startswith("WEAPON_REPAIR") or
+                fsm_inv_chk.startswith("INV_CLEAN") or
+                fsm_inv_chk.startswith("HK_HEAL") or
+                fsm_inv_chk.startswith("DEATH") or
+                fsm_inv_chk.startswith("BUFFING") or
+                fsm_inv_chk.startswith("F1_INIT") or
+                fsm_inv_chk in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] or
+                state.get("town_thread_running", False)
+            )
+
+            # 💡 미니맵 빨간 화살표(current_facing_angle) 감지 시에만 파탈로 확정하고 초대 요청 활성화!
             if current_facing_angle is not None:
                 # 미니맵에 빨간 화살표가 보임 == 솔플(파탈) 상태
                 state["no_red_arrow_streak"] = 0
                 if curr_time > state.get("party_accept_grace_until", 0.0):
                     state["solo_red_arrow_streak"] = state.get("solo_red_arrow_streak", 0) + 1
                     if state["solo_red_arrow_streak"] >= 5:
-                        if state.get("in_ingame_party", False):
-                            dprint(key, "🚨 [미니맵 파탈 감지] 미니맵에 빨간 화살표가 감지되었습니다! 파장에게 파티 초대를 요청합니다.")
+                        if state.get("in_ingame_party", True):
+                            dprint(key, "🚨 [미니맵 파탈 감지] 미니맵 빨간 화살표 확인! 파장에게 파티 초대를 요청합니다.")
                         state["in_ingame_party"] = False
+                        state["need_party_invite_req"] = True
             else:
                 # 미니맵은 열려 있는데 빨간 화살표가 안 보임 == 파티 맺어진 상태
                 state["solo_red_arrow_streak"] = 0
@@ -8117,6 +8078,7 @@ def ai_commander_worker(target_pc):
                     state["no_red_arrow_streak"] = state.get("no_red_arrow_streak", 0) + 1
                     if state["no_red_arrow_streak"] >= 5:
                         state["in_ingame_party"] = True
+                        state["need_party_invite_req"] = False
                         if state.get("is_invite_leader", False):
                             state["had_party_as_leader"] = True
 
@@ -8136,6 +8098,7 @@ def ai_commander_worker(target_pc):
                     state["invite_listen_until"] = curr_time + 0.6
                 else:
                     state["invite_group_join_time"] = 0.0
+                    state["need_party_invite_req"] = False
 
             if my_inv_grp != "선택안함" and state.get("is_hunt_active", False) and not state.get("is_paused", False) and active_manual_target != key:
                 if state.get("invite_group_join_time", 0.0) == 0.0:
@@ -8149,6 +8112,14 @@ def ai_commander_worker(target_pc):
                 except: my_m_int = 1
                 my_uid = f"{my_c_int}-{key}"
 
+                # 💡 파티원이 사냥터에서 정상 대기/사냥 중(UI 안 바쁨)이고 파탈 확인된 상태일 때만 초대 요청!
+                my_need_invite_now = bool(
+                    state.get("need_party_invite_req", False) and
+                    not state.get("in_ingame_party", True) and
+                    not state.get("is_invite_leader", False) and
+                    not is_ui_busy_for_chat
+                )
+
                 # 1) 같은 초대조의 인게임(비인증) 멤버 수집
                 online_inv_members = {
                     my_uid: {
@@ -8157,8 +8128,8 @@ def ai_commander_worker(target_pc):
                         "mini_num": my_m_int,
                         "char_name": my_char_name,
                         "in_game": True,
-                        "in_party": state.get("in_ingame_party", False),
-                        "need_invite": (not state.get("in_ingame_party", False) and not state.get("is_invite_leader", False)),
+                        "in_party": state.get("in_ingame_party", True),
+                        "need_invite": my_need_invite_now,
                         "is_invite_leader": state.get("is_invite_leader", False),
                         "group_join_time": state.get("invite_group_join_time", curr_time),
                         "leader_since": state.get("invite_leader_since", 0.0),
@@ -8172,13 +8143,14 @@ def ai_commander_worker(target_pc):
                                 online_inv_members[p_uid] = p_info
 
                 # 2) 파장 단독 파탈 시 자동 권위 이양 체크 (기존 파장만 파탈되고 다른 파티원들은 파티 유지 중인 경우)
-                if state.get("is_invite_leader", False) and state.get("had_party_as_leader", False) and not state.get("in_ingame_party", False):
+                if state.get("is_invite_leader", False) and state.get("had_party_as_leader", False) and not state.get("in_ingame_party", True):
                     other_in_party = [u for u, m in online_inv_members.items() if u != my_uid and m.get("in_party", False)]
                     if other_in_party:
                         dprint(key, "🔄 [파장 단독 파탈 감지] 나만 파티에서 이탈되었습니다! 기존 수락 순서 다음 캐릭터에게 파장을 넘기고 초대를 요청합니다.")
                         state["is_invite_leader"] = False
                         state["had_party_as_leader"] = False
                         state["invite_leader_since"] = 0.0
+                        state["need_party_invite_req"] = True
                         if my_uid in state.get("party_order", []):
                             state["party_order"].remove(my_uid)
                         online_inv_members[my_uid]["is_invite_leader"] = False
@@ -8188,7 +8160,6 @@ def ai_commander_worker(target_pc):
                 active_leaders = [m for m in online_inv_members.values() if m.get("is_invite_leader", False)]
 
                 if len(active_leaders) > 1:
-                    # 만약 동시에 파장이 겹쳤을 경우: 이미 파티가 있는 파장 우선 -> 먼저 파장이 된(또는 먼저 조를 선택한) 순서대로 단일화
                     active_leaders.sort(key=lambda m: (
                         0 if m.get("in_party", False) else 1,
                         m.get("leader_since", 0.0) if m.get("leader_since", 0.0) > 0 else m.get("group_join_time", curr_time),
@@ -8213,17 +8184,16 @@ def ai_commander_worker(target_pc):
                             state["known_party_order"] = list(l_order)
                     else:
                         state["is_invite_leader"] = True
+                        state["need_party_invite_req"] = False
                         if state.get("invite_leader_since", 0.0) == 0.0:
                             state["invite_leader_since"] = curr_time
                         cur_order = state.get("party_order", [])
-                        # 1) 기존에 등록된 순서 중 현재 파티 유지 중(in_party == True)인 멤버만 순서 그대로 유지
                         cleaned_order = [my_uid]
                         for u in cur_order:
                             if u == my_uid:
                                 continue
                             if u in online_inv_members and online_inv_members[u].get("in_party", False):
                                 cleaned_order.append(u)
-                        # 2) 새로 'y + 엔터'를 쳐서 in_party == True가 된 멤버를 수락 완료된 순서대로 뒤에 추가!
                         for u, m_obj in online_inv_members.items():
                             if u != my_uid and m_obj.get("in_party", False) and u not in cleaned_order:
                                 cleaned_order.append(u)
@@ -8232,7 +8202,6 @@ def ai_commander_worker(target_pc):
                         state["known_party_order"] = list(cleaned_order)
 
                 elif len(active_leaders) == 0 and curr_time >= state.get("invite_listen_until", 0.0):
-                    # 활성 파장이 없는 경우: (A) 기존 파티 유지 중이면 수락 순서(known_party_order) 1순위가 위임 / (B) 전원 노파티면 최초 조 선택(최초 접속) 캐릭터가 파장!
                     in_party_members = [m for m in online_inv_members.values() if m.get("in_party", False)]
                     if in_party_members:
                         known_order = state.get("known_party_order", [])
@@ -8248,6 +8217,7 @@ def ai_commander_worker(target_pc):
                         if delegated_uid == my_uid:
                             state["is_invite_leader"] = True
                             state["had_party_as_leader"] = True
+                            state["need_party_invite_req"] = False
                             state["invite_leader_since"] = curr_time
                             new_order = [u for u in known_order if u in online_inv_members and online_inv_members[u].get("in_party", False)]
                             if my_uid not in new_order:
@@ -8262,31 +8232,18 @@ def ai_commander_worker(target_pc):
                         if first_uid == my_uid:
                             state["is_invite_leader"] = True
                             state["had_party_as_leader"] = False
+                            state["need_party_invite_req"] = False
                             state["invite_leader_since"] = curr_time
                             state["party_order"] = [my_uid]
                             state["known_party_order"] = [my_uid]
                             dprint(key, f"👑 [초대조 파장 선출] 초대조({my_inv_grp}) 최초 진입 확인! 내가 파티장({my_uid}) 역할을 시작합니다.")
 
-                # 4) [파티장 역할]: 파티가 안 맺어진 조원에게 '/초대 케릭명' 발송 (마을 정비 중에는 보류하고 사냥터 복귀 후 실행!)
-                fsm_inv_chk = str(state.get("target_fsm", "IDLE"))
-                is_ui_busy_for_chat = (
-                    fsm_inv_chk.startswith("TOWN_MAINT") or
-                    fsm_inv_chk.startswith("WEAPON_REPAIR") or
-                    fsm_inv_chk.startswith("INV_CLEAN") or
-                    fsm_inv_chk.startswith("HK_HEAL") or
-                    fsm_inv_chk.startswith("DEATH") or
-                    fsm_inv_chk.startswith("BUFFING") or
-                    fsm_inv_chk.startswith("F1_INIT") or
-                    fsm_inv_chk in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] or
-                    state.get("town_thread_running", False) or
-                    state.get("hw_busy", False)
-                )
-
+                # 4) [파티장 역할]: 오직 파티원이 명시적으로 초대 요청(need_invite == True)을 보냈을 때만 큐 폭파 후 '/초대 케릭명' 발송!
                 if state.get("is_invite_leader", False) and not is_ui_busy_for_chat and curr_time > state.get("party_invite_global_cd", 0.0):
                     inv_time_map = state.setdefault("invited_time_map", {})
                     requesters = [
                         m for u, m in online_inv_members.items()
-                        if u != my_uid and (m.get("need_invite", False) or not m.get("in_party", False))
+                        if u != my_uid and m.get("need_invite", False)
                         and str(m.get("char_name", "")).strip() != ""
                         and (curr_time - inv_time_map.get(u, 0.0) >= 6.0)
                     ]
@@ -8298,6 +8255,28 @@ def ai_commander_worker(target_pc):
                         t_eng_name = kor_to_eng_typo(t_char_name)
                         is_yungta_now = check_chat_template_match(img_bgr, "yungta.png", th=0.80)
 
+                        # 💥 큐 폭파 및 진행 중인 모든 공격/이동/줍기 즉시 정지 후 초대 명령 단독 실행!
+                        state["abort_macro"] = True
+                        with pico_queues[key].mutex:
+                            pico_queues[key].queue.clear()
+                        pico_queues[key].put({"action": "FORCE_RELEASE"})
+                        if state.get("sweep_active", False):
+                            pico_queues[key].put({"action": "SWEEP_STOP"})
+                            state["sweep_active"] = False
+                        if state.get("body_held", False):
+                            if picos.get(key) and pico_locks.get(key):
+                                send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                            state["body_held"] = False
+
+                        state["is_attacking"] = False
+                        state["arrow_is_firing"] = False
+                        state["has_fired_arrow"] = False
+                        state["is_pulling"] = False
+                        state["target_fsm"] = "IDLE"
+
+                        state["is_chat_typing"] = True
+                        state["chat_typing_timeout"] = curr_time + 3.5
+
                         pico_queues[key].put({
                             "action": "PARTY_INVITE_CMD",
                             "eng_name": t_eng_name,
@@ -8305,20 +8284,43 @@ def ai_commander_worker(target_pc):
                             "need_han_eng": is_yungta_now
                         })
                         inv_time_map[t_uid] = curr_time
-                        state["party_invite_global_cd"] = curr_time + 3.0
+                        state["party_invite_global_cd"] = curr_time + 3.5
                         state["party_accept_grace_until"] = curr_time + 5.0
-                        state["cooldown"] = max(state.get("cooldown", 0.0), curr_time + 1.2)
-                        dprint(key, f"📨 [자동 파티초대 발송] {t_uid}('{t_char_name}' ➔ 영타:'{t_eng_name}') 초대 명령 전송! (영타전환:{is_yungta_now} / 상대 y+엔터 대기중)")
+                        state["cooldown"] = curr_time + 2.5
+                        dprint(key, f"📨 [파티원 요청 수신 ➔ 큐폭파 초대] {t_uid}('{t_char_name}' ➔ 영타:'{t_eng_name}') 초대 명령 단독 전송! (영타감지:{is_yungta_now})")
+                        continue
 
-                # 5) [파티원 역할]: 채팅창 ROI에 party.png가 감지되면 즉시 'y + 엔터' 큐 등록 (합류 완료 판정은 피코가 엔터 친 직후에!)
+                # 5) [파티원 역할]: 채팅창 ROI에 party.png가 컬러 그대로 감지되면 큐 폭파 후 'y + 엔터' 수락!
                 if not state.get("is_invite_leader", False) and not is_ui_busy_for_chat:
                     if curr_time > state.get("next_party_png_scan", 0.0) and curr_time > state.get("party_accept_cd", 0.0):
-                        state["next_party_png_scan"] = curr_time + 0.25
-                        if check_chat_template_match(img_bgr, "party.png", th=0.74):
+                        state["next_party_png_scan"] = curr_time + 0.20
+                        if check_chat_template_match(img_bgr, "party.png", th=0.80):
+                            state["abort_macro"] = True
+                            with pico_queues[key].mutex:
+                                pico_queues[key].queue.clear()
+                            pico_queues[key].put({"action": "FORCE_RELEASE"})
+                            if state.get("sweep_active", False):
+                                pico_queues[key].put({"action": "SWEEP_STOP"})
+                                state["sweep_active"] = False
+                            if state.get("body_held", False):
+                                if picos.get(key) and pico_locks.get(key):
+                                    send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                                state["body_held"] = False
+
+                            state["is_attacking"] = False
+                            state["arrow_is_firing"] = False
+                            state["has_fired_arrow"] = False
+                            state["is_pulling"] = False
+                            state["target_fsm"] = "IDLE"
+
+                            state["is_chat_typing"] = True
+                            state["chat_typing_timeout"] = curr_time + 2.0
+
                             pico_queues[key].put({"action": "PARTY_ACCEPT_CMD"})
                             state["party_accept_cd"] = curr_time + 4.0
-                            state["cooldown"] = max(state.get("cooldown", 0.0), curr_time + 0.8)
-                            dprint(key, "✅ [파티 초대 감지] 채팅창 'party.png' 포착! 피코에 'y + 엔터' 수락 명령을 지시합니다.")
+                            state["cooldown"] = curr_time + 1.2
+                            dprint(key, "✅ [파티 초대 감지] 채팅창 'party.png' 컬러 매칭 성공! 큐 폭파 후 'y + 엔터' 수락 명령을 실행합니다.")
+                            continue
             # ====================================================================
 
             if role == "DUNGEON":
@@ -26156,8 +26158,42 @@ for i, pc in enumerate(MINI_PCS):
     p_char_frame = tk.Frame(tab_party, bg=BG_PANEL)
     p_char_frame.pack(side="top", fill="x", padx=2, pady=(2, 4))
     tk.Label(p_char_frame, text="■ 내 케릭명:", bg=BG_PANEL, fg="#B2FF59", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0, 4))
-    tk.Entry(p_char_frame, textvariable=vars_dict["char_name"], width=16, justify="center", bg="#3E3E42", fg="white", insertbackground="white", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=2)
-    tk.Label(p_char_frame, text="(한글 입력 시 자동 영타 변환)", bg=BG_PANEL, fg="#9E9E9E", font=("맑은 고딕", 8)).pack(side="left", padx=(4, 0))
+
+    char_edit_var = tk.BooleanVar(value=False)
+    ent_char_name = tk.Entry(
+        p_char_frame,
+        textvariable=vars_dict["char_name"],
+        width=14,
+        justify="center",
+        bg="#3E3E42",
+        fg="white",
+        insertbackground="white",
+        disabledbackground="#252526",
+        disabledforeground="#B0BEC5",
+        state="disabled",
+        font=("맑은 고딕", 9, "bold")
+    )
+    ent_char_name.pack(side="left", padx=2)
+
+    def toggle_char_name_edit(ent=ent_char_name, var=char_edit_var):
+        ent.config(state="normal" if var.get() else "disabled")
+        if not var.get():
+            save_settings()
+
+    tk.Checkbutton(
+        p_char_frame,
+        text="수정",
+        variable=char_edit_var,
+        command=toggle_char_name_edit,
+        bg=BG_PANEL,
+        fg="#FF9800",
+        selectcolor="#3E3E42",
+        activebackground=BG_PANEL,
+        activeforeground="#FF9800",
+        font=("맑은 고딕", 8, "bold")
+    ).pack(side="left", padx=(4, 2))
+
+    tk.Label(p_char_frame, text="(자동 영타 변환)", bg=BG_PANEL, fg="#9E9E9E", font=("맑은 고딕", 8)).pack(side="left", padx=(2, 0))
 
     ttk.Separator(tab_party, orient="horizontal").pack(fill="x", padx=2, pady=4)
 
