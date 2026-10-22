@@ -2810,78 +2810,96 @@ try:
         img_nopotion_mask = None
 except: img_nopotion, img_nopotion_mask = None, None
 
-def check_minimap_party_marker(minimap_bgr):
-    """미니맵 중앙 화살표 색상으로 파탈(SOLO: 빨간화살표) vs 파티중(PARTY: 노란마커) 여부를 판별합니다."""
-    if minimap_bgr is None or minimap_bgr.size == 0:
-        return "UNKNOWN"
-    try:
-        h, w = minimap_bgr.shape[:2]
-        center_x, center_y = w // 2, h // 2
-        roi_size = 14
-        x1, y1 = max(0, center_x - roi_size), max(0, center_y - roi_size)
-        x2, y2 = min(w, center_x + roi_size), min(h, center_y + roi_size)
-
-        roi = minimap_bgr[y1:y2, x1:x2]
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-
-        mask_red1 = cv2.inRange(hsv, (0, 140, 140), (10, 255, 255))
-        mask_red2 = cv2.inRange(hsv, (170, 140, 140), (180, 255, 255))
-        mask_red = cv2.bitwise_or(mask_red1, mask_red2)
-        mask_yellow = cv2.inRange(hsv, (15, 100, 100), (45, 255, 255))
-
-        if cv2.countNonZero(mask_red) > 10:
-            return "SOLO"
-        elif cv2.countNonZero(mask_yellow) > 10:
-            return "PARTY"
-        return "UNKNOWN"
-    except Exception:
-        return "UNKNOWN"
-
-def check_chat_template_match(img_bgr, fname, th=0.80):
-    """하단 채팅창 ROI(X:125~600, Y:490~600) 영역에서 qq/party.png 또는 qq/yungta.png를 감지합니다."""
+def check_chat_template_match(img_bgr, fname, th=0.75):
+    """하단 채팅창 ROI(X:125~600, Y:490~600)에서 배경색을 자동 제거(누끼)하여 글자만 정밀 매칭합니다."""
     if img_bgr is None:
         return False
+    h, w = img_bgr.shape[:2]
+    if w < 600 or h <= 490:
+        return False
+
+    # 💡 1. 'yungta.png' 검사 시: 채팅창 좌측 하단 한/영 표시칸(X:135~168, Y:570~600)의 빨간/주황색 [A] 박스 픽셀 직접 감지!
+    if "yungta" in fname.lower():
+        try:
+            ime_roi = img_bgr[max(0, min(h, 570)):h, 135:168]
+            if ime_roi.size > 0:
+                hsv_ime = cv2.cvtColor(ime_roi, cv2.COLOR_BGR2HSV)
+                mask_red1 = cv2.inRange(hsv_ime, np.array([0, 110, 90]), np.array([18, 255, 255]))
+                mask_red2 = cv2.inRange(hsv_ime, np.array([165, 110, 90]), np.array([180, 255, 255]))
+                if cv2.countNonZero(cv2.bitwise_or(mask_red1, mask_red2)) >= 18:
+                    return True
+        except Exception:
+            pass
+
+    # 💡 2. 채팅 텍스트(party.png 등) 자동 배경 마스킹(누끼) 및 다중 배율 매칭
     path = f"qq/{fname}" if not fname.startswith("qq/") else fname
     if not os.path.exists(path):
         return False
-    cache_key = f"chat_tmpl_{path}"
+    cache_key = f"chat_tmpl_v2_{path}"
     if cache_key not in loaded_models:
         try:
             with open(path, "rb") as f:
                 np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
             bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
             if bgra is not None:
+                color = bgra[:, :, :3] if len(bgra.shape) == 3 else cv2.cvtColor(bgra, cv2.COLOR_GRAY2BGR)
+                gray = cv2.cvtColor(color, cv2.COLOR_BGR2GRAY)
+                hsv = cv2.cvtColor(color, cv2.COLOR_BGR2HSV)
+
+                # 기존 알파 채널(투명 배경)이 있으면 그대로 쓰고, 없으면(갈색 바닥 등) 글자(밝은 획 + 검은 테두리)만 자동 추출!
                 if len(bgra.shape) == 3 and bgra.shape[2] == 4 and np.min(bgra[:, :, 3]) < 250:
-                    loaded_models[cache_key] = {"color": bgra[:, :, :3], "mask": bgra[:, :, 3]}
+                    mask = bgra[:, :, 3]
                 else:
-                    color = bgra[:, :, :3] if len(bgra.shape) == 3 else cv2.cvtColor(bgra, cv2.COLOR_GRAY2BGR)
-                    loaded_models[cache_key] = {"color": color, "mask": None}
+                    # 밝은 글자 알맹이(채도 낮고 밝음) + 검은색 글자 테두리(밝기 낮음)만 255로 남기고 갈색 배경은 0으로 제거
+                    bright_text = cv2.inRange(hsv, np.array([0, 0, 155]), np.array([180, 90, 255]))
+                    black_outline = cv2.inRange(gray, 0, 60)
+                    mask = cv2.bitwise_or(bright_text, black_outline)
+                    if cv2.countNonZero(mask) < (gray.size * 0.10):
+                        mask = None
+
+                loaded_models[cache_key] = {"color": color, "gray": gray, "mask": mask}
             else:
                 loaded_models[cache_key] = None
         except Exception:
             loaded_models[cache_key] = None
 
     tmpl_data = loaded_models.get(cache_key)
-    if not tmpl_data or tmpl_data["color"] is None:
+    if not tmpl_data or tmpl_data.get("gray") is None:
         return False
 
-    h, w = img_bgr.shape[:2]
-    if w < 600 or h <= 490:
-        return False
-    chat_roi = img_bgr[490:h, 125:600]
-    tmpl = tmpl_data["color"]
-    mask = tmpl_data["mask"]
-    if chat_roi.shape[0] < tmpl.shape[0] or chat_roi.shape[1] < tmpl.shape[1]:
-        return False
-    try:
-        if mask is not None:
-            res = cv2.matchTemplate(chat_roi, tmpl, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask]*3))
-        else:
-            res = cv2.matchTemplate(chat_roi, tmpl, cv2.TM_CCOEFF_NORMED)
-        _, max_val, _, _ = cv2.minMaxLoc(res)
-        return max_val >= th
-    except Exception:
-        return False
+    chat_roi_bgr = img_bgr[490:h, 125:600]
+    chat_roi_gray = cv2.cvtColor(chat_roi_bgr, cv2.COLOR_BGR2GRAY)
+    base_gray = tmpl_data["gray"]
+    base_mask = tmpl_data.get("mask")
+    bh, bw = base_gray.shape[:2]
+
+    for sc in (1.0, 0.95, 1.05, 0.9, 0.85, 0.8, 0.75, 0.7, 0.6, 0.5):
+        nh, nw = int(round(bh * sc)), int(round(bw * sc))
+        if nh < 8 or nw < 8 or nh > chat_roi_gray.shape[0] or nw > chat_roi_gray.shape[1]:
+            continue
+        try:
+            interp = cv2.INTER_AREA if sc < 1.0 else cv2.INTER_CUBIC
+            r_gray = base_gray if sc == 1.0 else cv2.resize(base_gray, (nw, nh), interpolation=interp)
+
+            # 1차: 자동 누끼 마스크 적용 매칭 (사냥터 바닥색 완전 무시)
+            if base_mask is not None:
+                r_mask = base_mask if sc == 1.0 else cv2.resize(base_mask, (nw, nh), interpolation=cv2.INTER_NEAREST)
+                res_m = cv2.matchTemplate(chat_roi_gray, r_gray, cv2.TM_CCOEFF_NORMED, mask=r_mask)
+                _, max_val_m, _, _ = cv2.minMaxLoc(res_m)
+                if not np.isnan(max_val_m) and not np.isinf(max_val_m) and max_val_m >= th:
+                    return True
+
+            # 2차: 순수 밝은 글자 획(이진화) 매칭 보조
+            _, roi_bin = cv2.threshold(chat_roi_gray, 160, 255, cv2.THRESH_BINARY)
+            _, tmpl_bin = cv2.threshold(r_gray, 160, 255, cv2.THRESH_BINARY)
+            if cv2.countNonZero(tmpl_bin) >= 15:
+                res_b = cv2.matchTemplate(roi_bin, tmpl_bin, cv2.TM_CCOEFF_NORMED)
+                _, max_val_b, _, _ = cv2.minMaxLoc(res_b)
+                if max_val_b >= th:
+                    return True
+        except Exception:
+            continue
+    return False
 
 try:
     cursor_bgra = cv2.imread("qq/cursor_custom.png", cv2.IMREAD_UNCHANGED)
@@ -4446,15 +4464,23 @@ def pico_worker_thread(key):
                 eng_name = str(cmd.get("eng_name", "")).strip()
                 need_han_eng = cmd.get("need_han_eng", False)
                 if eng_name:
-                    def _press_shift_space():
-                        send_keyboard_key(p_serial, p_lock, 129, 1)
-                        h_sleep(0.04, 0.08)
-                        send_keyboard_key(p_serial, p_lock, 32, 1)
-                        h_sleep(0.04, 0.08)
-                        send_keyboard_key(p_serial, p_lock, 32, 0)
-                        h_sleep(0.04, 0.08)
-                        send_keyboard_key(p_serial, p_lock, 129, 0)
-                        h_sleep(0.20, 0.28)
+                    is_central_13 = (str(get_my_central_num()).strip() == "13")
+
+                    def _toggle_han_eng():
+                        if is_central_13:
+                            # 💡 13번 중앙컴 소속 미니컴: 일반 한/영 키(234) 단독 타건
+                            k_tap(234)
+                            h_sleep(0.20, 0.28)
+                        else:
+                            # 💡 1~12번 중앙컴 소속 미니컴: Shift + Space 조합키 타건
+                            send_keyboard_key(p_serial, p_lock, 129, 1)
+                            h_sleep(0.04, 0.08)
+                            send_keyboard_key(p_serial, p_lock, 32, 1)
+                            h_sleep(0.04, 0.08)
+                            send_keyboard_key(p_serial, p_lock, 32, 0)
+                            h_sleep(0.04, 0.08)
+                            send_keyboard_key(p_serial, p_lock, 129, 0)
+                            h_sleep(0.20, 0.28)
 
                     # 1) 누르고 있던 F4(줍기) / F7(바디) / Shift 안전 해제
                     if key in ai_states and ai_states[key].get("sweep_active", False):
@@ -4466,21 +4492,23 @@ def pico_worker_thread(key):
                     send_keyboard_key(p_serial, p_lock, 129, 0)
                     h_sleep(0.05, 0.09)
 
-                    # 2) [1차 검사] '/' 입력 전 채팅창 ROI에서 yungta.png 감지 시 Shift + Space 전환
+                    key_type_str = "한영키(234)" if is_central_13 else "Shift+Space"
+
+                    # 2) [1차 검사] '/' 입력 전 채팅창 ROI에서 yungta.png 감지 시 한글 전환
                     scr_now = latest_frames.get(key)
                     if need_han_eng or (scr_now is not None and check_chat_template_match(scr_now, "yungta.png", th=0.80)):
-                        dprint(key, "🔄 [파장 한/영 전환 1차] 채팅창 'yungta.png' 감지! Shift+Space로 한글 전환합니다.")
-                        _press_shift_space()
+                        dprint(key, f"🔄 [파장 한/영 전환 1차] 채팅창 'yungta.png' 감지! {key_type_str}로 한글 전환합니다.")
+                        _toggle_han_eng()
 
                     # 3) '/' 키를 먼저 눌러 채팅 입력창 활성화
                     k_tap(ord('/'))
                     h_sleep(0.15, 0.22)
 
-                    # 4) [2차 팩트체크] '/' 입력 후에도 yungta.png가 남아있다면 Shift + Space 재시전!
+                    # 4) [2차 팩트체크] '/' 입력 후에도 yungta.png가 남아있다면 한/영 재전환!
                     scr_after_slash = latest_frames.get(key)
                     if scr_after_slash is not None and check_chat_template_match(scr_after_slash, "yungta.png", th=0.80):
-                        dprint(key, "🔄 [파장 한/영 전환 2차] '/' 입력 후에도 영타('yungta.png') 유지 감지! Shift+Space 재전환합니다.")
-                        _press_shift_space()
+                        dprint(key, f"🔄 [파장 한/영 전환 2차] '/' 입력 후에도 영타('yungta.png') 유지 감지! {key_type_str} 재전환합니다.")
+                        _toggle_han_eng()
 
                     # 5) '초대 ' 입력 (cheo + Space)
                     for ch_cmd in "cheo":
@@ -8072,19 +8100,25 @@ def ai_commander_worker(target_pc):
             # ====================================================================
             # 🤝 [다중 중앙컴 자동 파티 초대 & 초대순서 파장 자동위임 & 파탈 감지 엔진]
             # ====================================================================
-            marker_status = check_minimap_party_marker(minimap_bgr)
-            if marker_status == "PARTY":
-                state["solo_red_arrow_streak"] = 0
-                state["in_ingame_party"] = True
-                if state.get("is_invite_leader", False):
-                    state["had_party_as_leader"] = True
-            elif marker_status == "SOLO":
+            # 💡 기존에 구현된 current_facing_angle(미니맵 빨간 화살표 감지)로 파탈 여부 판별!
+            if current_facing_angle is not None:
+                # 미니맵에 빨간 화살표가 보임 == 솔플(파탈) 상태
+                state["no_red_arrow_streak"] = 0
                 if curr_time > state.get("party_accept_grace_until", 0.0):
                     state["solo_red_arrow_streak"] = state.get("solo_red_arrow_streak", 0) + 1
-                    if state["solo_red_arrow_streak"] >= 8:
+                    if state["solo_red_arrow_streak"] >= 5:
                         if state.get("in_ingame_party", False):
-                            dprint(key, "🚨 [미니맵 파탈 감지] 미니맵에 빨간 화살표가 감지되었습니다! 파티 재가입 대기 상태로 전환합니다.")
+                            dprint(key, "🚨 [미니맵 파탈 감지] 미니맵에 빨간 화살표가 감지되었습니다! 파장에게 파티 초대를 요청합니다.")
                         state["in_ingame_party"] = False
+            else:
+                # 미니맵은 열려 있는데 빨간 화살표가 안 보임 == 파티 맺어진 상태
+                state["solo_red_arrow_streak"] = 0
+                if check_minimap_marker_exists(minimap_bgr):
+                    state["no_red_arrow_streak"] = state.get("no_red_arrow_streak", 0) + 1
+                    if state["no_red_arrow_streak"] >= 5:
+                        state["in_ingame_party"] = True
+                        if state.get("is_invite_leader", False):
+                            state["had_party_as_leader"] = True
 
             my_inv_grp = str(settings.get("invite_group", "선택안함"))
             my_char_name = str(settings.get("char_name", "")).strip()
@@ -8276,11 +8310,11 @@ def ai_commander_worker(target_pc):
                         state["cooldown"] = max(state.get("cooldown", 0.0), curr_time + 1.2)
                         dprint(key, f"📨 [자동 파티초대 발송] {t_uid}('{t_char_name}' ➔ 영타:'{t_eng_name}') 초대 명령 전송! (영타전환:{is_yungta_now} / 상대 y+엔터 대기중)")
 
-                # 5) [파티원 역할]: 파탈 상태일 때 채팅창 ROI에 party.png 감지 시 'y + 엔터' 큐 등록 (합류 완료 판정은 피코가 엔터 친 직후에!)
-                if not state.get("in_ingame_party", False) and not is_ui_busy_for_chat:
+                # 5) [파티원 역할]: 채팅창 ROI에 party.png가 감지되면 즉시 'y + 엔터' 큐 등록 (합류 완료 판정은 피코가 엔터 친 직후에!)
+                if not state.get("is_invite_leader", False) and not is_ui_busy_for_chat:
                     if curr_time > state.get("next_party_png_scan", 0.0) and curr_time > state.get("party_accept_cd", 0.0):
                         state["next_party_png_scan"] = curr_time + 0.25
-                        if check_chat_template_match(img_bgr, "party.png", th=0.80):
+                        if check_chat_template_match(img_bgr, "party.png", th=0.74):
                             pico_queues[key].put({"action": "PARTY_ACCEPT_CMD"})
                             state["party_accept_cd"] = curr_time + 4.0
                             state["cooldown"] = max(state.get("cooldown", 0.0), curr_time + 0.8)
