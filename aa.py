@@ -1085,7 +1085,7 @@ def local_ipc_broadcaster_thread(my_key):
                 raw_fsm = str(st.get("target_fsm", "IDLE"))
                 party_state = "IDLE"
 
-                if "DEATH" in raw_fsm or "TOWN_MAINT" in raw_fsm or "SHUTDOWN" in raw_fsm:
+                if "DEATH" in raw_fsm or "TOWN_MAINT" in raw_fsm or "SHUTDOWN" in raw_fsm or "CERTI" in raw_fsm:
                     if "MP_REST" in raw_fsm or "MOTHER" in raw_fsm: party_state = "MPTAM"
                     else: party_state = "TOWN"
                 elif st.get("is_mptam_mode", False): party_state = "MPTAM"
@@ -8252,7 +8252,12 @@ def ai_commander_worker(target_pc):
                         if state["solo_red_arrow_streak"] >= 5:
                             state["in_ingame_party"] = False
                             state["not_party_leader_locked"] = False
-                            if not state.get("party_invite_giveup", False):
+                            # 💡 초대조가 설정되어 있고, 내가 파장(is_invite_leader)이 아닐 때만 초대 요청을 켬 (무한 핑퐁 도배 원천 차단!)
+                            if (
+                                str(settings.get("invite_group", "선택안함")) != "선택안함" and
+                                not state.get("is_invite_leader", False) and
+                                not state.get("party_invite_giveup", False)
+                            ):
                                 if not state.get("need_party_invite_req", False):
                                     dprint(key, f"🚨 [미니맵 파탈 감지] 주황/노랑 없음({party_marker_px}개) & 빨간 화살표({solo_red_px}개) 확인! 초대를 요청합니다.")
                                 state["need_party_invite_req"] = True
@@ -8379,6 +8384,12 @@ def ai_commander_worker(target_pc):
                             state["party_order"].remove(my_uid)
                         online_inv_members[my_uid]["is_invite_leader"] = False
                         online_inv_members[my_uid]["need_invite"] = True
+                    else:
+                        # 💡 다른 파티원들이 모두 인증(CERTI_)이나 귀환 등으로 빠져서 파티가 자동 해산된 경우
+                        state["had_party_as_leader"] = False
+                        state["need_party_invite_req"] = False
+                        state["party_order"] = [my_uid]
+                        dprint(key, "ℹ️ [파티원 전원 이탈/인증] 다른 파티원이 모두 빠져 파티가 해산되었습니다. 파장 자격을 유지하며 파티원 복귀를 대기합니다.")
 
                 # 3) 현재 온라인 멤버 중 활성 파장 확인 및 선출/위임 (pratyjangx.png로 잠긴 캐릭터는 파장 후보에서 제외)
                 active_leaders = [m for m in online_inv_members.values() if m.get("is_invite_leader", False) and not m.get("not_leader_locked", False)]
@@ -9325,7 +9336,7 @@ def ai_commander_worker(target_pc):
                 is_vanguard = True
                 partner_data = None
 
-                same_zone_partners = [p for p in party_members if p.get("party_group") == my_team and p.get("dungeon_name") == my_dungeon]
+                same_zone_partners = [p for p in party_members if p.get("party_group") == my_team and p.get("dungeon_name") == my_dungeon and p.get("in_game", True)]
 
                 if same_zone_partners:
                     partner_data = same_zone_partners[0]
