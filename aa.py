@@ -2815,7 +2815,7 @@ except: img_nopotion, img_nopotion_mask = None, None
 _CHAT_MATCH_DBG_TIMER = {}
 
 def check_chat_template_match(img_bgr, fname, th=0.80):
-    """하단 채팅창 ROI(X:125~600, Y:490~600)에서 원본 컬러 이미지 그대로 1:1 매칭 + [A] 아이콘 감지를 수행합니다."""
+    """하단 채팅창 ROI(X:125~600, Y:490~600)에서 생컬러 + 위상보정 + 반투명 배경 채팅 비침 제거(글자추출) 매칭을 수행합니다."""
     if img_bgr is None:
         return False
     h, w = img_bgr.shape[:2]
@@ -2839,7 +2839,7 @@ def check_chat_template_match(img_bgr, fname, th=0.80):
         except Exception:
             red_cnt = 0
 
-    # 2) 원본 3채널 컬러 이미지 그대로 로드
+    # 2) 템플릿 로드 및 반투명 배경 뒤 채팅 비침 제거용 글자 레이어 생성
     path = f"qq/{fname}" if not fname.startswith("qq/") else fname
     if not os.path.exists(path):
         if now_t - _CHAT_MATCH_DBG_TIMER.get(fname, 0.0) >= 2.0:
@@ -2848,7 +2848,7 @@ def check_chat_template_match(img_bgr, fname, th=0.80):
         return (red_cnt >= 18) if is_yungta else False
 
     mtime = os.path.getmtime(path)
-    cache_key = f"chat_raw_color_{path}"
+    cache_key = f"chat_raw_color_v3_{path}"
     cached = loaded_models.get(cache_key)
     if not cached or cached.get("mtime") != mtime:
         try:
@@ -2856,7 +2856,18 @@ def check_chat_template_match(img_bgr, fname, th=0.80):
                 np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
             color_img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
             if color_img is not None:
-                loaded_models[cache_key] = {"color": color_img, "mtime": mtime}
+                blur_img = cv2.GaussianBlur(color_img, (3, 3), 0)
+                gray_t = cv2.cvtColor(color_img, cv2.COLOR_BGR2GRAY)
+                # 반투명 갈색 창 밑으로 비치는 일반 채팅(밝기 135 이하)을 0으로 눌러버리는 기준값 계산
+                bg_cut = int(max(135, min(165, float(np.mean(gray_t)) + 0.6 * float(np.std(gray_t)))))
+                fg_t = cv2.GaussianBlur(np.clip(gray_t.astype(np.int16) - bg_cut, 0, 255).astype(np.uint8), (3, 3), 0)
+                loaded_models[cache_key] = {
+                    "color": color_img,
+                    "blur": blur_img,
+                    "fg": fg_t,
+                    "bg_cut": bg_cut,
+                    "mtime": mtime
+                }
             else:
                 loaded_models[cache_key] = None
         except Exception:
@@ -2870,22 +2881,42 @@ def check_chat_template_match(img_bgr, fname, th=0.80):
         return (red_cnt >= 18) if is_yungta else False
 
     tmpl = tmpl_data["color"]
+    tmpl_blur = tmpl_data["blur"]
+    tmpl_fg = tmpl_data["fg"]
+    bg_cut = tmpl_data["bg_cut"]
     chat_roi = img_bgr[490:h, 125:600]
     bh, bw = tmpl.shape[:2]
 
     if bh > chat_roi.shape[0] or bw > chat_roi.shape[1]:
         return (red_cnt >= 18) if is_yungta else False
 
-    # 3) 전처리/리사이즈 없이 원본 컬러 이미지 1:1 그대로 매칭
-    color_val = 0.0
+    # 3) ① 생컬러 매칭 + ② 3x3 위상보정 컬러 매칭 + ③ 반투명 배경 채팅 비침 제거(글자추출) 매칭
+    raw_val = 0.0
+    blur_val = 0.0
+    fg_val = 0.0
     try:
-        res = cv2.matchTemplate(chat_roi, tmpl, cv2.TM_CCOEFF_NORMED)
-        _, val, _, _ = cv2.minMaxLoc(res)
-        if not (np.isnan(val) or np.isinf(val)):
-            color_val = float(val)
+        res_raw = cv2.matchTemplate(chat_roi, tmpl, cv2.TM_CCOEFF_NORMED)
+        _, v_raw, _, _ = cv2.minMaxLoc(res_raw)
+        if not (np.isnan(v_raw) or np.isinf(v_raw)):
+            raw_val = float(v_raw)
+
+        chat_roi_blur = cv2.GaussianBlur(chat_roi, (3, 3), 0)
+        res_blur = cv2.matchTemplate(chat_roi_blur, tmpl_blur, cv2.TM_CCOEFF_NORMED)
+        _, v_blur, _, _ = cv2.minMaxLoc(res_blur)
+        if not (np.isnan(v_blur) or np.isinf(v_blur)):
+            blur_val = float(v_blur)
+
+        if not is_yungta:
+            roi_gray = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
+            roi_fg = cv2.GaussianBlur(np.clip(roi_gray.astype(np.int16) - bg_cut, 0, 255).astype(np.uint8), (3, 3), 0)
+            res_fg = cv2.matchTemplate(roi_fg, tmpl_fg, cv2.TM_CCOEFF_NORMED)
+            _, v_fg, _, _ = cv2.minMaxLoc(res_fg)
+            if not (np.isnan(v_fg) or np.isinf(v_fg)):
+                fg_val = float(v_fg)
     except Exception:
         pass
 
+    color_val = max(raw_val, blur_val, fg_val)
     is_matched = (color_val >= th) or (is_yungta and red_cnt >= 18)
 
     # 4) 터미널 디버그 로그 출력
@@ -2893,7 +2924,7 @@ def check_chat_template_match(img_bgr, fname, th=0.80):
         _CHAT_MATCH_DBG_TIMER[fname] = now_t
         red_info = f" | [A]붉은픽셀:{red_cnt}개(기준:18개)" if is_yungta else ""
         verdict = "✅감지성공" if is_matched else "⚪미감지"
-        dprint(pc_k, f"🔎 [채팅매칭 디버그] {fname}(원본:{bw}x{bh}) | 1:1원본컬러:{color_val*100:.1f}%{red_info} ➔ {verdict}")
+        dprint(pc_k, f"🔎 [채팅매칭 디버그] {fname}(원본:{bw}x{bh}) | 생컬러:{raw_val*100:.1f}% | 위상보정:{blur_val*100:.1f}% | 글자추출:{fg_val*100:.1f}%{red_info} ➔ {verdict}")
 
     return is_matched
 
