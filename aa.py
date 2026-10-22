@@ -4446,6 +4446,16 @@ def pico_worker_thread(key):
                 eng_name = str(cmd.get("eng_name", "")).strip()
                 need_han_eng = cmd.get("need_han_eng", False)
                 if eng_name:
+                    def _press_shift_space():
+                        send_keyboard_key(p_serial, p_lock, 129, 1)
+                        h_sleep(0.04, 0.08)
+                        send_keyboard_key(p_serial, p_lock, 32, 1)
+                        h_sleep(0.04, 0.08)
+                        send_keyboard_key(p_serial, p_lock, 32, 0)
+                        h_sleep(0.04, 0.08)
+                        send_keyboard_key(p_serial, p_lock, 129, 0)
+                        h_sleep(0.20, 0.28)
+
                     # 1) 누르고 있던 F4(줍기) / F7(바디) / Shift 안전 해제
                     if key in ai_states and ai_states[key].get("sweep_active", False):
                         send_keyboard_key(p_serial, p_lock, KEY_F4, 0)
@@ -4456,19 +4466,24 @@ def pico_worker_thread(key):
                     send_keyboard_key(p_serial, p_lock, 129, 0)
                     h_sleep(0.05, 0.09)
 
-                    # 2) yungta.png 감지 시 Shift + Space 로 한글 전환
-                    if need_han_eng:
-                        send_keyboard_key(p_serial, p_lock, 129, 1)
-                        h_sleep(0.04, 0.08)
-                        send_keyboard_key(p_serial, p_lock, 32, 1)
-                        h_sleep(0.04, 0.08)
-                        send_keyboard_key(p_serial, p_lock, 32, 0)
-                        h_sleep(0.04, 0.08)
-                        send_keyboard_key(p_serial, p_lock, 129, 0)
-                        h_sleep(0.15, 0.24)
+                    # 2) [1차 검사] '/' 입력 전 채팅창 ROI에서 yungta.png 감지 시 Shift + Space 전환
+                    scr_now = latest_frames.get(key)
+                    if need_han_eng or (scr_now is not None and check_chat_template_match(scr_now, "yungta.png", th=0.80)):
+                        dprint(key, "🔄 [파장 한/영 전환 1차] 채팅창 'yungta.png' 감지! Shift+Space로 한글 전환합니다.")
+                        _press_shift_space()
 
-                    # 3) '/초대 ' 입력 (/cheo + Space)
-                    for ch_cmd in "/cheo":
+                    # 3) '/' 키를 먼저 눌러 채팅 입력창 활성화
+                    k_tap(ord('/'))
+                    h_sleep(0.15, 0.22)
+
+                    # 4) [2차 팩트체크] '/' 입력 후에도 yungta.png가 남아있다면 Shift + Space 재시전!
+                    scr_after_slash = latest_frames.get(key)
+                    if scr_after_slash is not None and check_chat_template_match(scr_after_slash, "yungta.png", th=0.80):
+                        dprint(key, "🔄 [파장 한/영 전환 2차] '/' 입력 후에도 영타('yungta.png') 유지 감지! Shift+Space 재전환합니다.")
+                        _press_shift_space()
+
+                    # 5) '초대 ' 입력 (cheo + Space)
+                    for ch_cmd in "cheo":
                         k_tap(ord(ch_cmd))
                         h_sleep(0.045, 0.085)
 
@@ -4476,7 +4491,7 @@ def pico_worker_thread(key):
                     # 💡 쌍자음(Shift) 첫 글자와 Space가 겹쳐 한/영이 풀리는 현상을 막는 물리적 안전 간격
                     h_sleep(0.14, 0.20)
 
-                    # 4) 변환된 케릭명(쌍자음 대문자 Shift 포함) 입력 후 엔터
+                    # 6) 변환된 케릭명(쌍자음 대문자 Shift 포함) 입력 후 엔터
                     for ch in eng_name:
                         if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
                             break
