@@ -2811,40 +2811,93 @@ try:
         img_nopotion_mask = None
 except: img_nopotion, img_nopotion_mask = None, None
 
+_CHAT_MATCH_DBG_TIMER = {}
+
 def check_chat_template_match(img_bgr, fname, th=0.80):
-    """하단 채팅창 ROI(X:125~600, Y:490~600)에서 컬러 이미지 있는 그대로 매칭합니다."""
+    """하단 채팅창 ROI(X:125~600, Y:490~600)에서 순수 컬러 매칭(다중 배율 포함) + [A] 아이콘 감지 + 실시간 디버그 로그를 수행합니다."""
     if img_bgr is None:
         return False
     h, w = img_bgr.shape[:2]
     if w < 600 or h <= 490:
         return False
 
+    now_t = time.time()
+    pc_k = globals().get("TARGET_PC_KEY", "SYSTEM")
+    is_yungta = ("yungta" in fname.lower())
+
+    # 1) yungta.png 검사 시: 채팅창 좌측 하단 한/영 표시칸(X:135~168, Y:570~600)의 주황/빨간색 [A] 박스 픽셀 수 측정 (aa_2.py에서 13번 컴이 성공했던 핵심 로직)
+    red_cnt = 0
+    if is_yungta:
+        try:
+            ime_roi = img_bgr[max(0, min(h, 570)):h, 135:168]
+            if ime_roi.size > 0:
+                hsv_ime = cv2.cvtColor(ime_roi, cv2.COLOR_BGR2HSV)
+                mask_red1 = cv2.inRange(hsv_ime, np.array([0, 110, 90]), np.array([18, 255, 255]))
+                mask_red2 = cv2.inRange(hsv_ime, np.array([165, 110, 90]), np.array([180, 255, 255]))
+                red_cnt = int(cv2.countNonZero(cv2.bitwise_or(mask_red1, mask_red2)))
+        except Exception:
+            red_cnt = 0
+
+    # 2) 한글 경로에서도 절대 실패하지 않도록 open + imdecode로 원본 3채널 컬러 이미지 로드
     path = f"qq/{fname}" if not fname.startswith("qq/") else fname
     if not os.path.exists(path):
-        return False
+        if now_t - _CHAT_MATCH_DBG_TIMER.get(fname, 0.0) >= 2.0:
+            _CHAT_MATCH_DBG_TIMER[fname] = now_t
+            dprint(pc_k, f"❌ [이미지 파일 없음] '{path}' 파일이 존재하지 않습니다! (붉은픽셀:{red_cnt}개)")
+        return (red_cnt >= 18) if is_yungta else False
 
-    cache_key = f"chat_color_raw_{path}"
+    cache_key = f"chat_color_v3_{path}"
     if cache_key not in loaded_models:
         try:
-            tmpl_color = cv2.imread(path, cv2.IMREAD_COLOR)
-            loaded_models[cache_key] = tmpl_color
+            with open(path, "rb") as f:
+                np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
+            decoded = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            loaded_models[cache_key] = decoded
         except Exception:
             loaded_models[cache_key] = None
 
     tmpl = loaded_models.get(cache_key)
     if tmpl is None:
-        return False
+        if now_t - _CHAT_MATCH_DBG_TIMER.get(fname, 0.0) >= 2.0:
+            _CHAT_MATCH_DBG_TIMER[fname] = now_t
+            dprint(pc_k, f"❌ [이미지 로드 실패] '{path}' 디코딩 실패! (붉은픽셀:{red_cnt}개)")
+        return (red_cnt >= 18) if is_yungta else False
 
     chat_roi = img_bgr[490:h, 125:600]
-    if chat_roi.shape[0] < tmpl.shape[0] or chat_roi.shape[1] < tmpl.shape[1]:
-        return False
+    bh, bw = tmpl.shape[:2]
 
-    try:
-        res = cv2.matchTemplate(chat_roi, tmpl, cv2.TM_CCOEFF_NORMED)
-        _, max_val, _, _ = cv2.minMaxLoc(res)
-        return max_val >= th
-    except Exception:
-        return False
+    # 3) 순수 컬러(BGR) 이미지 그대로 1:1 매칭 및 다중 배율(캡처 크기 차이 보정) 최고 점수 측정
+    raw_1to1_val = 0.0
+    best_val = 0.0
+    best_sc = 1.0
+
+    for sc in (1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.35, 0.3, 1.1, 1.2):
+        nh, nw = int(round(bh * sc)), int(round(bw * sc))
+        if nh < 8 or nw < 8 or nh > chat_roi.shape[0] or nw > chat_roi.shape[1]:
+            continue
+        try:
+            interp = cv2.INTER_AREA if sc < 1.0 else cv2.INTER_CUBIC
+            r_tmpl = tmpl if sc == 1.0 else cv2.resize(tmpl, (nw, nh), interpolation=interp)
+            res = cv2.matchTemplate(chat_roi, r_tmpl, cv2.TM_CCOEFF_NORMED)
+            _, val, _, _ = cv2.minMaxLoc(res)
+            if sc == 1.0:
+                raw_1to1_val = float(val)
+            if val > best_val:
+                best_val = float(val)
+                best_sc = sc
+        except Exception:
+            continue
+
+    is_matched = (best_val >= th) or (is_yungta and red_cnt >= 18)
+
+    # 4) 터미널에 원인 판독용 디버그 로그 출력 (yungta는 호출 시마다, party는 2초 간격 또는 감지 시 즉시 출력)
+    if is_yungta or is_matched or (now_t - _CHAT_MATCH_DBG_TIMER.get(fname, 0.0) >= 2.0):
+        _CHAT_MATCH_DBG_TIMER[fname] = now_t
+        red_info = f" | [A]붉은픽셀:{red_cnt}개(기준:18개)" if is_yungta else ""
+        verdict = "✅감지성공" if is_matched else "⚪미감지"
+        dprint(pc_k, f"🔎 [채팅매칭 디버그] {fname}(원본:{bw}x{bh}) | 1:1컬러:{raw_1to1_val*100:.1f}% | 최고컬러:{best_val*100:.1f}%(배율:{best_sc}x){red_info} ➔ {verdict}")
+
+    return is_matched
 
 try:
     cursor_bgra = cv2.imread("qq/cursor_custom.png", cv2.IMREAD_UNCHANGED)
@@ -4439,6 +4492,13 @@ def pico_worker_thread(key):
                                 h_sleep(0.08, 0.12)
                                 send_keyboard_key(p_serial, p_lock, 129, 0, is_manual=True) # Shift UP
                                 h_sleep(0.25, 0.35)
+
+                            # 🔎 [피코 타건 결과 팩트 체크] 키를 누른 뒤 실제로 영타(yungta.png)가 풀렸는지 즉시 확인!
+                            scr_verify = latest_frames.get(key)
+                            if scr_verify is not None and check_chat_template_match(scr_verify, "yungta.png", th=0.80):
+                                dprint(key, "🚨 [피코 타건 검증 실패] 한/영 전환 키를 보냈으나 인게임에서 여전히 영타('yungta.png') 상태입니다! (피코 키입력 씹힘)")
+                            else:
+                                dprint(key, "✅ [피코 타건 검증 완료] 인게임 한/영 전환 성공! ('yungta.png' 사라짐 확인)")
 
                         # 3) '/초대 ' 입력 (/cheo + Space) - 선엔터 없이 즉시 입력
                         for ch_cmd in "/cheo":
