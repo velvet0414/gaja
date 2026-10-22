@@ -2814,7 +2814,7 @@ except: img_nopotion, img_nopotion_mask = None, None
 _CHAT_MATCH_DBG_TIMER = {}
 
 def check_chat_template_match(img_bgr, fname, th=0.80):
-    """하단 채팅창 ROI(X:125~600, Y:490~600)에서 순수 컬러 매칭(다중 배율 포함) + [A] 아이콘 감지 + 실시간 디버그 로그를 수행합니다."""
+    """하단 채팅창 ROI(X:125~600, Y:490~600)에서 컬러/그레이/글자마스크 하이브리드 매칭 + [A] 아이콘 감지 + 실시간 디버그 로그를 수행합니다."""
     if img_bgr is None:
         return False
     h, w = img_bgr.shape[:2]
@@ -2838,7 +2838,7 @@ def check_chat_template_match(img_bgr, fname, th=0.80):
         except Exception:
             red_cnt = 0
 
-    # 2) 한글 경로에서도 절대 실패하지 않도록 open + imdecode로 원본 3채널 컬러 이미지 로드
+    # 2) 한글 경로에서도 절대 실패하지 않도록 open + imdecode(IMREAD_UNCHANGED)로 컬러/그레이/마스크 데이터 로드
     path = f"qq/{fname}" if not fname.startswith("qq/") else fname
     if not os.path.exists(path):
         if now_t - _CHAT_MATCH_DBG_TIMER.get(fname, 0.0) >= 2.0:
@@ -2846,45 +2846,107 @@ def check_chat_template_match(img_bgr, fname, th=0.80):
             dprint(pc_k, f"❌ [이미지 파일 없음] '{path}' 파일이 존재하지 않습니다! (붉은픽셀:{red_cnt}개)")
         return (red_cnt >= 18) if is_yungta else False
 
-    cache_key = f"chat_color_v3_{path}"
-    if cache_key not in loaded_models:
+    mtime = os.path.getmtime(path)
+    cache_key = f"chat_hybrid_v4_{path}"
+    cached = loaded_models.get(cache_key)
+    if not cached or cached.get("mtime") != mtime:
         try:
             with open(path, "rb") as f:
                 np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
-            decoded = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            loaded_models[cache_key] = decoded
+            bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
+            if bgra is not None:
+                if len(bgra.shape) == 3 and bgra.shape[2] == 4:
+                    color_img = bgra[:, :, :3]
+                    alpha_mask = bgra[:, :, 3]
+                elif len(bgra.shape) == 3:
+                    color_img = bgra
+                    alpha_mask = None
+                else:
+                    color_img = cv2.cvtColor(bgra, cv2.COLOR_GRAY2BGR)
+                    alpha_mask = None
+
+                gray_img = cv2.cvtColor(color_img, cv2.COLOR_BGR2GRAY)
+                # 💡 반투명 채팅창 배경 타일 간섭을 제거하기 위해 밝은 글자 획만 추출한 자동 마스크 생성
+                _, text_mask = cv2.threshold(gray_img, 125, 255, cv2.THRESH_BINARY)
+                if cv2.countNonZero(text_mask) < 10:
+                    _, text_mask = cv2.threshold(gray_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+                loaded_models[cache_key] = {
+                    "color": color_img,
+                    "gray": gray_img,
+                    "alpha_mask": alpha_mask,
+                    "text_mask": text_mask,
+                    "mtime": mtime
+                }
+            else:
+                loaded_models[cache_key] = None
         except Exception:
             loaded_models[cache_key] = None
 
-    tmpl = loaded_models.get(cache_key)
-    if tmpl is None:
+    tmpl_data = loaded_models.get(cache_key)
+    if not tmpl_data or tmpl_data.get("color") is None:
         if now_t - _CHAT_MATCH_DBG_TIMER.get(fname, 0.0) >= 2.0:
             _CHAT_MATCH_DBG_TIMER[fname] = now_t
             dprint(pc_k, f"❌ [이미지 로드 실패] '{path}' 디코딩 실패! (붉은픽셀:{red_cnt}개)")
         return (red_cnt >= 18) if is_yungta else False
 
+    tmpl = tmpl_data["color"]
+    tmpl_gray = tmpl_data["gray"]
+    alpha_mask = tmpl_data["alpha_mask"]
+    text_mask = tmpl_data["text_mask"]
+
     chat_roi = img_bgr[490:h, 125:600]
+    chat_roi_gray = cv2.cvtColor(chat_roi, cv2.COLOR_BGR2GRAY)
     bh, bw = tmpl.shape[:2]
 
-    # 3) 순수 컬러(BGR) 이미지 그대로 1:1 매칭 및 다중 배율(캡처 크기 차이 보정) 최고 점수 측정
+    # 3) ① 순수 컬러 매칭 + ② 그레이 매칭 + ③ 반투명 배경 무시(알파/글자 마스크) 매칭 중 최고 점수 측정
     raw_1to1_val = 0.0
     best_val = 0.0
     best_sc = 1.0
+    best_mode = "COLOR"
 
-    for sc in (1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.35, 0.3, 1.1, 1.2):
+    for sc in (1.0, 0.95, 0.9, 0.85, 0.8, 0.7, 0.6, 0.5, 0.4, 0.35, 0.3, 1.05, 1.1, 1.2):
         nh, nw = int(round(bh * sc)), int(round(bw * sc))
         if nh < 8 or nw < 8 or nh > chat_roi.shape[0] or nw > chat_roi.shape[1]:
             continue
         try:
             interp = cv2.INTER_AREA if sc < 1.0 else cv2.INTER_CUBIC
             r_tmpl = tmpl if sc == 1.0 else cv2.resize(tmpl, (nw, nh), interpolation=interp)
-            res = cv2.matchTemplate(chat_roi, r_tmpl, cv2.TM_CCOEFF_NORMED)
-            _, val, _, _ = cv2.minMaxLoc(res)
+            r_gray = tmpl_gray if sc == 1.0 else cv2.resize(tmpl_gray, (nw, nh), interpolation=interp)
+
+            # (A) 순수 컬러 매칭
+            res_c = cv2.matchTemplate(chat_roi, r_tmpl, cv2.TM_CCOEFF_NORMED)
+            _, val_c, _, _ = cv2.minMaxLoc(res_c)
+            if np.isnan(val_c) or np.isinf(val_c): val_c = 0.0
+
+            # (B) 그레이스케일 매칭 (캡처보드 색감 왜곡 보정)
+            res_g = cv2.matchTemplate(chat_roi_gray, r_gray, cv2.TM_CCOEFF_NORMED)
+            _, val_g, _, _ = cv2.minMaxLoc(res_g)
+            if np.isnan(val_g) or np.isinf(val_g): val_g = 0.0
+
+            # (C) 마스크 매칭 (누끼 마스크 또는 밝은 글자 마스크로 뒷배경 타일 간섭 제거)
+            val_m = 0.0
+            active_mask = alpha_mask if alpha_mask is not None else text_mask
+            if active_mask is not None:
+                r_mask = active_mask if sc == 1.0 else cv2.resize(active_mask, (nw, nh), interpolation=cv2.INTER_NEAREST)
+                if cv2.countNonZero(r_mask) >= 8:
+                    res_m = cv2.matchTemplate(chat_roi_gray, r_gray, cv2.TM_CCORR_NORMED, mask=r_mask)
+                    _, max_m, _, max_loc_m = cv2.minMaxLoc(res_m)
+                    if not (np.isnan(max_m) or np.isinf(max_m)):
+                        # 단색 밝은 배경 오매칭 방지를 위해 매칭된 패치의 대비(표준편차) 검증
+                        patch = chat_roi_gray[max_loc_m[1]:max_loc_m[1]+nh, max_loc_m[0]:max_loc_m[0]+nw]
+                        if patch.size > 0 and float(np.std(patch)) >= 12.0:
+                            val_m = float(max_m)
+
+            cand_list = [("COLOR", float(val_c)), ("GRAY", float(val_g)), ("MASK", float(val_m))]
+            cur_mode, cur_best = max(cand_list, key=lambda x: x[1])
+
             if sc == 1.0:
-                raw_1to1_val = float(val)
-            if val > best_val:
-                best_val = float(val)
+                raw_1to1_val = cur_best
+            if cur_best > best_val:
+                best_val = cur_best
                 best_sc = sc
+                best_mode = cur_mode
         except Exception:
             continue
 
@@ -2895,7 +2957,7 @@ def check_chat_template_match(img_bgr, fname, th=0.80):
         _CHAT_MATCH_DBG_TIMER[fname] = now_t
         red_info = f" | [A]붉은픽셀:{red_cnt}개(기준:18개)" if is_yungta else ""
         verdict = "✅감지성공" if is_matched else "⚪미감지"
-        dprint(pc_k, f"🔎 [채팅매칭 디버그] {fname}(원본:{bw}x{bh}) | 1:1컬러:{raw_1to1_val*100:.1f}% | 최고컬러:{best_val*100:.1f}%(배율:{best_sc}x){red_info} ➔ {verdict}")
+        dprint(pc_k, f"🔎 [채팅매칭 디버그] {fname}(원본:{bw}x{bh}) | 1:1:{raw_1to1_val*100:.1f}% | 최고:{best_val*100:.1f}%({best_mode}/{best_sc}x){red_info} ➔ {verdict}")
 
     return is_matched
 
@@ -4464,34 +4526,20 @@ def pico_worker_thread(key):
                     eng_name = str(cmd.get("eng_name", "")).strip()
                     need_han_eng = cmd.get("need_han_eng", False)
                     if eng_name:
-                        is_central_13 = (str(get_my_central_num()).strip() == "13")
-
                         # 1) 모든 눌린 키/마우스 상태 초기화 및 안정화 대기
                         reset_hw_key_states(p_serial)
                         send_keyboard_key(p_serial, p_lock, 129, 0, is_manual=True)
                         send_keyboard_key(p_serial, p_lock, 32, 0, is_manual=True)
                         h_sleep(0.15, 0.22)
 
-                        # 2) '/' 입력 전 채팅창 ROI에서 yungta.png 감지 시 한글 전환
+                        # 2) '/' 입력 전 채팅창 ROI에서 yungta.png 감지 시 피코 직결 한영키(234)로 한글 전환
                         scr_now = latest_frames.get(key)
                         if need_han_eng or (scr_now is not None and check_chat_template_match(scr_now, "yungta.png", th=0.80)):
-                            if is_central_13:
-                                dprint(key, "🔄 [파장 한/영 전환] 'yungta.png' 감지! 한영키(234)로 한글 전환합니다.")
-                                send_keyboard_key(p_serial, p_lock, 234, 1, is_manual=True)
-                                h_sleep(0.06, 0.10)
-                                send_keyboard_key(p_serial, p_lock, 234, 0, is_manual=True)
-                                h_sleep(0.25, 0.35)
-                            else:
-                                dprint(key, "🔄 [파장 한/영 전환] 'yungta.png' 감지! Shift(선입력 홀드)+Space로 한글 전환합니다.")
-                                # 💡 Shift를 먼저 누르고 0.12~0.18초간 확실히 유지한 뒤 Space를 타건해야 Space 단독 입력이 안 됨!
-                                send_keyboard_key(p_serial, p_lock, 129, 1, is_manual=True) # Shift DOWN
-                                h_sleep(0.12, 0.18)
-                                send_keyboard_key(p_serial, p_lock, 32, 1, is_manual=True)  # Space DOWN
-                                h_sleep(0.06, 0.10)
-                                send_keyboard_key(p_serial, p_lock, 32, 0, is_manual=True)  # Space UP
-                                h_sleep(0.08, 0.12)
-                                send_keyboard_key(p_serial, p_lock, 129, 0, is_manual=True) # Shift UP
-                                h_sleep(0.25, 0.35)
+                            dprint(key, "🔄 [파장 한/영 전환] 'yungta.png' 감지! 미니컴 직결 한영키(234)로 한글 전환합니다.")
+                            send_keyboard_key(p_serial, p_lock, 234, 1, is_manual=True)
+                            h_sleep(0.06, 0.10)
+                            send_keyboard_key(p_serial, p_lock, 234, 0, is_manual=True)
+                            h_sleep(0.25, 0.35)
 
                             # 🔎 [피코 타건 결과 팩트 체크] 키를 누른 뒤 실제로 영타(yungta.png)가 풀렸는지 즉시 확인!
                             scr_verify = latest_frames.get(key)
