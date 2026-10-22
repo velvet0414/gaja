@@ -8355,11 +8355,17 @@ def ai_commander_worker(target_pc):
                         dprint(key, f"📨 [파티원 요청 수신 ➔ 큐폭파 초대] {t_uid}('{t_char_name}' ➔ 영타:'{t_eng_name}') 초대 명령 단독 전송! (영타감지:{is_yungta_now})")
                         continue
 
-                # 5) [파티원 역할]: 채팅창 ROI에 party.png가 컬러 그대로 감지되면 큐 폭파 후 'y + 엔터' 수락!
+                # 5) [파티원 역할]: 채팅창 ROI에 party.png 또는 party2.png 중 하나라도 컬러 매칭되면 큐 폭파 후 'y + 엔터' 수락!
                 if not state.get("is_invite_leader", False) and not is_ui_busy_for_chat:
                     if curr_time > state.get("next_party_png_scan", 0.0) and curr_time > state.get("party_accept_cd", 0.0):
                         state["next_party_png_scan"] = curr_time + 0.20
-                        if check_chat_template_match(img_bgr, "party.png", th=0.80):
+                        matched_party_img = None
+                        for p_img_name in ("party.png", "party2.png"):
+                            if check_chat_template_match(img_bgr, p_img_name, th=0.80):
+                                matched_party_img = p_img_name
+                                break
+
+                        if matched_party_img:
                             state["abort_macro"] = True
                             with pico_queues[key].mutex:
                                 pico_queues[key].queue.clear()
@@ -8384,7 +8390,7 @@ def ai_commander_worker(target_pc):
                             pico_queues[key].put({"action": "PARTY_ACCEPT_CMD"})
                             state["party_accept_cd"] = curr_time + 4.0
                             state["cooldown"] = curr_time + 1.2
-                            dprint(key, "✅ [파티 초대 감지] 채팅창 'party.png' 컬러 매칭 성공! 큐 폭파 후 'y + 엔터' 수락 명령을 실행합니다.")
+                            dprint(key, f"✅ [파티 초대 감지] 채팅창 '{matched_party_img}' 컬러 매칭 성공! 큐 폭파 후 'y + 엔터' 수락 명령을 실행합니다.")
                             continue
             # ====================================================================
 
