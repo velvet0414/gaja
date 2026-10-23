@@ -1026,10 +1026,84 @@ CONFIG_SYNC_GROUPS = {
         "use_m_elf_pk", "use_m_wiz_pk", "use_f_knight_pk", "use_m_knight_pk", "use_m_prince_pk",
         "m_elf_conf", "m_wiz_conf", "f_knight_conf", "m_knight_conf", "m_prince_conf"
     ],
-    # 예시) 추후 메인탭 생존/버프 설정 동기화 확장용 슬롯
-    # "MAIN_SURVIVAL": ["heal_use", "heal_pct", "heal_mp_pct", "pot_use", "pot_pct", "hp_danger_pct", "hp_20_action"],
-    # "MAIN_BUFF": ["buff_set", "combat_buff", "use_dec_weight", "use_windwalk", "use_body", "body_pct", "body_stop_pct"],
+    "MAIN": [
+        # 사냥터(dungeon_name)를 제외한 메인 탭 전체 항목
+        "role", "tele_hunt_use", "tele_hunt_time",
+        "heal_pct", "heal_mp_pct", "heal_use", "abs_return_use", "abs_return_pct",
+        "pot_pct", "pot_use", "poison_type", "poison_delay",
+        "hp_danger_pct", "hp_20_action", "pk_drop_pct",
+        "return_cond", "max_combat_time",
+        "use_gb_detect", "gb_count_normal", "gb_count_dng", "motion_sensitivity", "gb_exc_user",
+        "buff_set", "combat_buff",
+        "use_dec_weight", "use_cc_buff", "buff_mp_pct",
+        "use_extra_f10", "extra_f10_dur", "use_windwalk",
+        "use_body", "body_pct", "body_stop_pct",
+        "use_mptam", "mptam_start_pct", "mptam_stop_pct", "is_wiz_mptam",
+        "use_blue_pot", "use_blue_pot_combat", "blue_mp_pct", "blue_cd_min"
+    ],
+    "SUB": [
+        # 보조 탭 전체 항목 (구매 / 판매 / 창고 찾기)
+        "buy_item", "buy_qty", "buy_count",
+        "sell_item", "sell_qty",
+        "pick_arrow", "pick_teleport", "pick_ent", "pick_bluepot"
+    ],
+    "AUTH": [
+        # 인증 탭 내 특정시간대 인증 딜레이 설정 4종
+        "auth_delay_use", "auth_delay_start_min", "auth_delay_end_min", "auth_delay_sec"
+    ]
 }
+
+SYNC_DUNGEON_OPTIONS = [
+    "모든사냥터",
+    "본던 1층", "본던 2층", "본던 3층", "본던 4층", "본던 5층", "본던 6층", "본던 7층",
+    "수던 (전체)", "개미굴 (전체)", "기란 (전체)", "사던 (전체)", "오땅 (전체)"
+]
+
+def check_sync_dng_filter(target_filter, my_gui_dng):
+    """드롭메뉴에서 선택한 사냥터 필터와 내 GUI 사냥터(본던 4-1~15, 수던1-1~16-2 등)가 일치하는지 판별합니다."""
+    import re
+    target_filter = str(target_filter or "모든사냥터").strip()
+    my_gui_dng = str(my_gui_dng or "").strip()
+
+    if not target_filter or target_filter == "모든사냥터":
+        return True
+
+    # 1) 본던 1~7층 판별 (예: '본던 4층' 선택 시 '본던 4-1' ~ '본던 4-15', '본던 4층' 모두 매칭)
+    if "본던" in target_filter:
+        if not ("본던" in my_gui_dng or "gludio" in my_gui_dng.lower()):
+            return False
+        f_nums = re.findall(r'\d+', target_filter)
+        m_nums = re.findall(r'\d+', my_gui_dng)
+        if f_nums and m_nums:
+            # '본던 5to6'은 5층으로 취급하되, 일반 '본던 4-12' 등은 첫 번째 숫자(층수)로 비교
+            return int(f_nums[0]) == int(m_nums[0])
+        return False
+
+    # 2) 수던 판별 ('수던1-1' ~ '수던16-2' 등 매칭)
+    if "수던" in target_filter:
+        if not ("수던" in my_gui_dng or "heine" in my_gui_dng.lower()):
+            return False
+        f_nums = re.findall(r'\d+', target_filter)
+        m_nums = re.findall(r'\d+', my_gui_dng)
+        if f_nums and m_nums:
+            return int(f_nums[0]) == int(m_nums[0])
+        return True
+
+    # 3) 그 외 사냥터 군 (개미굴, 기란, 사던, 오땅)
+    for kw in ["개미굴", "기란", "사던", "오땅"]:
+        if kw in target_filter:
+            if kw == "기란":
+                return ("기란" in my_gui_dng or "기던" in my_gui_dng)
+            return (kw in my_gui_dng)
+
+    return (target_filter == my_gui_dng)
+
+def popup_sync_dng_menu(event, dng_var):
+    """'동기화' 글자 클릭 시 마우스 위치에 사냥터 선택 드롭메뉴를 띄웁니다."""
+    menu = tk.Menu(root, tearoff=0, bg="#2D2D30", fg="white", activebackground="#0E639C", activeforeground="white", font=("맑은 고딕", 9, "bold"))
+    for opt in SYNC_DUNGEON_OPTIONS:
+        menu.add_command(label=opt, command=lambda v=opt: dng_var.set(v))
+    menu.tk_popup(event.x_root, event.y_root)
 
 _LAST_APPLIED_SYNC_ID = ""
 
@@ -1040,9 +1114,22 @@ def apply_received_config_sync(my_key, msg):
             return
         v_dict = gui_vars[my_key]
 
-        # 🛡️ [동기화 사용] 체크박스가 해제되어 있으면 동기화 패킷 무시!
+        # 🛡️ 1) [동기화 사용] 체크박스가 해제되어 있으면 동기화 패킷 무시!
         if "use_config_sync" in v_dict and not v_dict["use_config_sync"].get():
-            dprint(my_key, f"🛡️ [동기화 수신 거부] '동기화 사용'이 꺼져 있어 [{msg.get('sender_uid')}]의 [{msg.get('group')}] 동기화를 무시합니다.")
+            dprint(my_key, f"🛡️ [동기화 수신 거부] '동기화' 체크가 해제되어 있어 [{msg.get('sender_uid')}]의 동기화를 무시합니다.")
+            return
+
+        # 🎯 2) 내 현재 활성 GUI 사냥터 확인 (파티모드 ON이면 파티탭 사냥터, OFF이면 메인탭 사냥터)
+        is_party_on = (
+            v_dict.get("use_party_hunt", tk.BooleanVar(value=False)).get() or
+            v_dict.get("use_party_fixed", tk.BooleanVar(value=False)).get()
+        )
+        my_gui_dng = v_dict["party_dungeon_name"].get().strip() if is_party_on else v_dict["dungeon_name"].get().strip()
+        target_filter = str(msg.get("target_dng_filter", "모든사냥터")).strip()
+
+        if not check_sync_dng_filter(target_filter, my_gui_dng):
+            tab_src = "파티탭" if is_party_on else "메인탭"
+            dprint(my_key, f"⏭️ [동기화 사냥터 불일치] 요청 대상('{target_filter}') != 내 {tab_src} 사냥터('{my_gui_dng}') ➔ 동기화를 패스합니다.")
             return
 
         group_name = msg.get("group", "UNKNOWN")
@@ -1063,25 +1150,46 @@ def apply_received_config_sync(my_key, msg):
             save_settings()
             dprint(my_key, f"📡 [광역 동기화 적용] [{sender_uid}]로부터 [{group_name}] 설정({applied_cnt}개 항목)을 수신하여 즉시 반영했습니다!")
 
-            # PK 그룹 동기화 시, 만약 모든 PK 설정이 꺼졌는데 현재 PK 타겟을 공격 중이었다면 즉시 타겟 포기
-            if group_name == "PK" and my_key in ai_states:
+            if my_key in ai_states:
                 st = ai_states[my_key]
-                any_pk_on = any(
-                    v_dict.get(pk_k, tk.BooleanVar(value=False)).get()
-                    for pk_k in ["use_m_elf_pk", "use_m_wiz_pk", "use_f_knight_pk", "use_m_knight_pk", "use_m_prince_pk"]
-                )
-                if not any_pk_on and (st.get("current_is_m_elf", False) or st.get("next_is_m_elf", False)):
-                    dprint(my_key, "🛑 [PK 동기화 OFF] 교전 중이던 적대 PK 타겟 공격을 즉시 중단합니다!")
-                    st["abort_macro"] = True
-                    clear_movements_only(pico_queues[my_key])
-                    st["current_is_m_elf"] = False
-                    st["next_is_m_elf"] = False
-                    st["is_attacking"] = False
-                    st["arrow_is_firing"] = False
-                    st["has_fired_arrow"] = False
-                    if not str(st.get("target_fsm", "")).startswith("TOWN_MAINT") and not str(st.get("target_fsm", "")).startswith("CERTI_"):
-                        st["target_fsm"] = "IDLE"
-                    st["cooldown"] = time.time() + 0.1
+
+                # 1) PK 그룹 동기화 시: 모든 PK가 꺼졌는데 PK 타겟 공격 중이면 즉시 중단
+                if group_name == "PK":
+                    any_pk_on = any(
+                        v_dict.get(pk_k, tk.BooleanVar(value=False)).get()
+                        for pk_k in ["use_m_elf_pk", "use_m_wiz_pk", "use_f_knight_pk", "use_m_knight_pk", "use_m_prince_pk"]
+                    )
+                    if not any_pk_on and (st.get("current_is_m_elf", False) or st.get("next_is_m_elf", False)):
+                        dprint(my_key, "🛑 [PK 동기화 OFF] 교전 중이던 적대 PK 타겟 공격을 즉시 중단합니다!")
+                        st["abort_macro"] = True
+                        clear_movements_only(pico_queues[my_key])
+                        st["current_is_m_elf"] = False
+                        st["next_is_m_elf"] = False
+                        st["is_attacking"] = False
+                        st["arrow_is_firing"] = False
+                        st["has_fired_arrow"] = False
+                        if not str(st.get("target_fsm", "")).startswith("TOWN_MAINT") and not str(st.get("target_fsm", "")).startswith("CERTI_"):
+                            st["target_fsm"] = "IDLE"
+                        st["cooldown"] = time.time() + 0.1
+
+                # 2) MAIN 그룹 동기화 시: 바디나 엠탐이 꺼졌을 때 누르고 있던 F7(바디) 안전 해제
+                elif group_name == "MAIN":
+                    if not v_dict.get("use_body", tk.BooleanVar(value=True)).get():
+                        st["body_to_mind_active"] = False
+                        if st.get("body_held", False):
+                            if picos.get(my_key) and pico_locks.get(my_key):
+                                send_keyboard_key(picos[my_key], pico_locks[my_key], KEY_F7, 0, is_manual=True)
+                            st["body_held"] = False
+                    if not v_dict.get("use_mptam", tk.BooleanVar(value=True)).get():
+                        st["is_mptam_mode"] = False
+                        st["pending_mptam"] = False
+
+                # 3) AUTH 그룹 동기화 시: 딜레이 사용이 해제되었는데 현재 딜레이 대기 중이면 즉시 인증 진입
+                elif group_name == "AUTH":
+                    if not v_dict.get("auth_delay_use", tk.BooleanVar(value=False)).get():
+                        if str(st.get("target_fsm", "")) == "CERTI_DELAY_WAIT":
+                            st["certi_delay_until"] = 0.0
+                            dprint(my_key, "⚡ [인증 딜레이 동기화 OFF] 진행 중이던 인증 대기 시간을 즉시 종료하고 인증을 시작합니다!")
     except Exception as e:
         print(f"⚠️ [{my_key}] 동기화 반영 중 오류: {e}")
 
@@ -1103,10 +1211,13 @@ def broadcast_config_sync(sender_key, group_name, btn_widget=None):
     sender_uid = f"{my_c_num}-{sender_key}"
     sync_id = f"{time.time():.4f}_{random.randint(1000, 9999)}"
 
+    target_filter = v_dict.get("sync_target_dng", tk.StringVar(value="모든사냥터")).get().strip() or "모든사냥터"
+
     payload = {
         "msg_type": "CONFIG_SYNC",
         "sync_id": sync_id,
         "group": group_name,
+        "target_dng_filter": target_filter,
         "sender_uid": sender_uid,
         "pc_key": sender_key,
         "central_num": my_c_num,
@@ -1145,9 +1256,195 @@ def broadcast_config_sync(sender_key, group_name, btn_widget=None):
         btn_widget.config(text="✅ 1~13번 전체컴 동기화 완료!", bg="#2E7D32")
         root.after(1500, lambda: btn_widget.config(text=orig_text, bg=orig_bg))
 
+# ==============================================================================
+# 🏹 [1~13번 전체 중앙컴 연동 - 사냥터 은화살 소모량 정밀 측정 & 메모장 기록 엔진]
+# ==============================================================================
+_LAST_ARROW_CTRL_ID = ""
+_ARROW_FILE_LOCK = threading.Lock()
+arrow_status_labels = {}
+
+def get_active_dungeon_for_arrow(pc_key):
+    """현재 미니컴이 실제 사용 중인 사냥터(파티모드 시 파티탭, 솔플 시 메인탭) 이름을 반환합니다."""
+    if pc_key in ai_states and ai_states[pc_key].get("override_dungeon_name"):
+        return ai_states[pc_key]["override_dungeon_name"]
+    v_dict = gui_vars.get(pc_key, {})
+    if v_dict:
+        is_party = (
+            v_dict.get("use_party_hunt", tk.BooleanVar(value=False)).get() or
+            v_dict.get("use_party_fixed", tk.BooleanVar(value=False)).get()
+        )
+        return v_dict["party_dungeon_name"].get().strip() if is_party else v_dict["dungeon_name"].get().strip()
+    s_dict = current_settings.get(pc_key, {})
+    is_party = s_dict.get("use_party_hunt", False) or s_dict.get("use_party_fixed", False)
+    return s_dict.get("party_dungeon_name", "미지정") if is_party else s_dict.get("dungeon_name", "미지정")
+
+def update_arrow_log_file(pc_key, new_hourly_log_line=None, status_tag="측정중"):
+    """
+    매크로 폴더 내 '화살소모량_중앙X번컴.txt' 파일에
+    1) 미니1~4 실시간 소모 현황판 (1시간 미만이어도 언제든 열람 가능)
+    2) 순수 사냥 1시간(60분) 단위 누적 기록 로그
+    를 안전하게 병합 저장합니다.
+    """
+    if pc_key not in ai_states:
+        return
+    st = ai_states[pc_key]
+    c_num = str(get_my_central_num())
+    file_path = f"화살소모량_중앙{c_num}번컴.txt"
+
+    pure_sec = float(st.get("arrow_track_pure_sec", 0.0))
+    hr_cnt = int(st.get("arrow_track_hour_count", 0))
+    comp_hrs = int(st.get("arrow_track_completed_hours", 0))
+    tot_cnt = int(st.get("arrow_track_total_count", 0))
+    dng_name = get_active_dungeon_for_arrow(pc_key)
+
+    mins = int(pure_sec // 60)
+    secs = int(pure_sec % 60)
+    proj_1h = int(round((hr_cnt / pure_sec) * 3600.0)) if pure_sec >= 10.0 else 0
+
+    now_str = datetime.datetime.now().strftime("%H:%M:%S")
+    my_status_line = (
+        f" - [{pc_key}] ({status_tag}) 사냥터: {dng_name:<8} | "
+        f"현재시간({comp_hrs + 1}시간차): {mins:02d}분 {secs:02d}초 | "
+        f"현재소모: {hr_cnt:,}발 (1시간환산: 약 {proj_1h:,}발) | 누적총합: {tot_cnt:,}발 (갱신:{now_str})"
+    )
+
+    if pc_key in arrow_status_labels and arrow_status_labels[pc_key] is not None:
+        gui_txt = f"🏹 [{status_tag}] {mins:02d}분 {secs:02d}초 경과 | 현재: {hr_cnt:,}발 (시간당 약 {proj_1h:,}발)"
+        gui_col = "#B2FF59" if status_tag == "측정중" else "#B0BEC5"
+        try:
+            root.after(0, lambda l=arrow_status_labels[pc_key], t=gui_txt, c=gui_col: l.config(text=t, fg=c))
+        except Exception:
+            pass
+
+    with _ARROW_FILE_LOCK:
+        for _ in range(3):
+            try:
+                status_map = {
+                    f"미니{i}": f" - [미니{i}] (대기중) 아직 화살 체크 데이터가 없습니다."
+                    for i in range(1, 5)
+                }
+                hourly_logs = []
+
+                if os.path.exists(file_path):
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                    in_log_sec = False
+                    for line in lines:
+                        s_line = line.rstrip("\r\n")
+                        if "🕒 [순수 사냥 1시간(60분) 단위 누적 기록 로그]" in s_line:
+                            in_log_sec = True
+                            continue
+                        if not in_log_sec:
+                            for m_i in range(1, 5):
+                                m_k = f"미니{m_i}"
+                                if s_line.strip().startswith(f"- [{m_k}]"):
+                                    status_map[m_k] = s_line
+                        else:
+                            if s_line.startswith("[") and "시간차 완료" in s_line:
+                                hourly_logs.append(s_line)
+
+                status_map[pc_key] = my_status_line
+                if new_hourly_log_line:
+                    hourly_logs.append(new_hourly_log_line)
+
+                out_lines = [
+                    "==========================================================================================",
+                    f" 📊 [중앙 {c_num}번컴] 미니1~4 실시간 화살 소모 체크 현황 (최종갱신: {now_str})",
+                    " ※ 정비/인증/사망/수동제어 시간은 자동 제외되며, 1시간 전이라도 언제든 열어보실 수 있습니다.",
+                    "==========================================================================================",
+                    status_map["미니1"],
+                    status_map["미니2"],
+                    status_map["미니3"],
+                    status_map["미니4"],
+                    "",
+                    "==========================================================================================",
+                    " 🕒 [순수 사냥 1시간(60분) 단위 누적 기록 로그]",
+                    "=========================================================================================="
+                ]
+                if hourly_logs:
+                    out_lines.extend(hourly_logs)
+                else:
+                    out_lines.append(" (아직 순수 사냥 60분을 채운 내역이 없습니다. 위 실시간 현황에서 현재 소모량을 확인하세요.)")
+
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(out_lines) + "\n")
+                break
+            except Exception:
+                time.sleep(0.05)
+
+def start_arrow_tracking_local(pc_key):
+    if pc_key not in ai_states:
+        return
+    st = ai_states[pc_key]
+    now_t = time.time()
+    st["arrow_track_active"] = True
+    st["arrow_track_pure_sec"] = 0.0
+    st["arrow_track_hour_count"] = 0
+    st["arrow_track_total_count"] = 0
+    st["arrow_track_completed_hours"] = 0
+    st["arrow_track_last_tick"] = now_t
+    st["arrow_track_last_save"] = now_t
+    st["arrow_track_last_shot_t"] = 0.0
+    dprint(pc_key, "🏹 [화살 소모량 체크 시작] 순수 사냥 시간 기준 은화살 소모량 측정을 시작합니다!")
+    threading.Thread(target=update_arrow_log_file, args=(pc_key, None, "측정중"), daemon=True).start()
+
+def stop_arrow_tracking_local(pc_key):
+    if pc_key not in ai_states:
+        return
+    st = ai_states[pc_key]
+    was_active = st.get("arrow_track_active", False)
+    st["arrow_track_active"] = False
+    if was_active:
+        dprint(pc_key, "⏹ [화살 소모량 체크 중지] 측정을 종료하고 현재까지의 기록을 메모장에 최종 저장했습니다.")
+    threading.Thread(target=update_arrow_log_file, args=(pc_key, None, "측정중지"), daemon=True).start()
+
+def broadcast_arrow_tracking_ctrl(sender_key, cmd_str, btn_widget=None):
+    """내 미니컴을 포함해 1~13번 모든 중앙컴의 미니1~4에 화살 체크 시작/중지 명령을 전송합니다."""
+    if cmd_str == "START":
+        start_arrow_tracking_local(sender_key)
+    else:
+        stop_arrow_tracking_local(sender_key)
+
+    my_c_num = str(get_my_central_num())
+    ctrl_id = f"{time.time():.4f}_{random.randint(1000, 9999)}"
+    payload = {
+        "msg_type": "ARROW_TRACK_CTRL",
+        "ctrl_id": ctrl_id,
+        "cmd": cmd_str,
+        "sender_uid": f"{my_c_num}-{sender_key}"
+    }
+    raw_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    def _send_burst():
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            for _ in range(2):
+                for k, port in LOCAL_IPC_PORTS.items():
+                    if k != sender_key:
+                        try: sock.sendto(raw_bytes, ("127.0.0.1", port))
+                        except Exception: pass
+                for c_num, r_ip in CENTRAL_TAILSCALE_MAP.items():
+                    if str(c_num) != my_c_num and r_ip:
+                        for port in LOCAL_IPC_PORTS.values():
+                            try: sock.sendto(raw_bytes, (r_ip, port))
+                            except Exception: pass
+                time.sleep(0.05)
+        finally:
+            try: sock.close()
+            except Exception: pass
+
+    threading.Thread(target=_send_burst, daemon=True).start()
+
+    if btn_widget is not None:
+        orig_text = btn_widget.cget("text")
+        orig_bg = btn_widget.cget("bg")
+        done_txt = "✅ 전체컴 체크 시작됨!" if cmd_str == "START" else "⏹ 전체컴 체크 중지됨!"
+        btn_widget.config(text=done_txt, bg="#2E7D32" if cmd_str == "START" else "#C62828")
+        root.after(1500, lambda: btn_widget.config(text=orig_text, bg=orig_bg))
+
 def local_ipc_listener_thread(my_key):
     """내 전용 포트를 열고 로컬 및 타 중앙컴 파티원들의 외침을 듣는 귀(Receiver)"""
-    global _LAST_APPLIED_SYNC_ID
+    global _LAST_APPLIED_SYNC_ID, _LAST_ARROW_CTRL_ID
     my_port = LOCAL_IPC_PORTS.get(my_key)
     if not my_port: return
 
@@ -1169,6 +1466,18 @@ def local_ipc_listener_thread(my_key):
                     if sync_id and sync_id != _LAST_APPLIED_SYNC_ID and msg.get("sender_uid") != my_uid_chk:
                         _LAST_APPLIED_SYNC_ID = sync_id
                         root.after(0, apply_received_config_sync, my_key, msg)
+                    continue
+
+                # 🏹 [0순위: 1~13번 전체컴 화살 소모량 체크 시작/중지 신호 처리]
+                if msg.get("msg_type") == "ARROW_TRACK_CTRL":
+                    ctrl_id = msg.get("ctrl_id", "")
+                    my_uid_chk = f"{get_my_central_num()}-{my_key}"
+                    if ctrl_id and ctrl_id != _LAST_ARROW_CTRL_ID and msg.get("sender_uid") != my_uid_chk:
+                        _LAST_ARROW_CTRL_ID = ctrl_id
+                        if msg.get("cmd") == "START":
+                            root.after(0, start_arrow_tracking_local, my_key)
+                        else:
+                            root.after(0, stop_arrow_tracking_local, my_key)
                     continue
 
                 sender_key = msg.get("pc_key")
@@ -2736,6 +3045,7 @@ def _save_settings_internal():
                 "party_help_call_use": v["party_help_call_use"].get() if "party_help_call_use" in v else True,
                 "party_help_call_pct": v["party_help_call_pct"].get() if "party_help_call_pct" in v else "20",
                 "use_config_sync": v["use_config_sync"].get() if "use_config_sync" in v else True,
+                "sync_target_dng": v["sync_target_dng"].get() if "sync_target_dng" in v else "모든사냥터",
                 "use_m_elf_pk": v["use_m_elf_pk"].get() if "use_m_elf_pk" in v else False,
                 "use_m_wiz_pk": v["use_m_wiz_pk"].get() if "use_m_wiz_pk" in v else False,
                 "use_f_knight_pk": v["use_f_knight_pk"].get() if "use_f_knight_pk" in v else False,
@@ -3193,6 +3503,7 @@ for v in HOTKEY_IMGS_MAP.values():
                 loaded_models[path] = None
 
 TRASH_TEMPLATES = []
+TRASH_TEMPLATES_BY_TIER = {0: [], 1: [], 2: [], 3: []}
 LEAVE_TEMPLATES = []
 SELL_TEMPLATES = []
 PICK_TEMPLATES = {}
@@ -3200,9 +3511,11 @@ INVEN_BLACK_TEMPLATE = None
 
 os.makedirs("qq/sell", exist_ok=True)
 os.makedirs("qq/sell2", exist_ok=True)
+for _t_sub in ["00", "11", "22", "33"]:
+    os.makedirs(f"qq/trash/{_t_sub}", exist_ok=True)
 
 def load_all_templates():
-    global TRASH_TEMPLATES, LEAVE_TEMPLATES, SELL_TEMPLATES, PICK_TEMPLATES, INVEN_BLACK_TEMPLATE
+    global TRASH_TEMPLATES, TRASH_TEMPLATES_BY_TIER, LEAVE_TEMPLATES, SELL_TEMPLATES, PICK_TEMPLATES, INVEN_BLACK_TEMPLATE
 
     if os.path.exists("qq/inven_black.png"):
         INVEN_BLACK_TEMPLATE = cv2.imread("qq/inven_black.png", cv2.IMREAD_COLOR)
@@ -3210,19 +3523,44 @@ def load_all_templates():
             print("🎒 [인벤 스크롤] 빈 공간(여백) 감지 이미지 로드 완료!")
 
     TRASH_TEMPLATES.clear()
+    for _t_idx in range(4):
+        TRASH_TEMPLATES_BY_TIER[_t_idx].clear()
+
     if os.path.exists("qq/trash"):
-        for filename in os.listdir("qq/trash"):
-            if filename.lower().endswith((".png", ".jpg")):
-                path = os.path.join("qq/trash", filename)
-                img = cv2.imread(path, cv2.IMREAD_COLOR)
+        tier_folders = [(0, "00"), (1, "11"), (2, "22"), (3, "33")]
+        for t_idx, sub_name in tier_folders:
+            sub_dir = os.path.join("qq/trash", sub_name)
+            if os.path.exists(sub_dir):
+                for filename in sorted(os.listdir(sub_dir)):
+                    if filename.lower().endswith((".png", ".jpg")):
+                        path = os.path.join(sub_dir, filename)
+                        img = cv2.imread(path, cv2.IMREAD_COLOR)
+                        if img is not None:
+                            h, w = img.shape[:2]
+                            if h > 34 and w > 34:
+                                img = img[4:h-4, 4:w-4]
+                            item_dict = {"name": filename.lower(), "color": img, "mask": None, "tier": t_idx}
+                            TRASH_TEMPLATES_BY_TIER[t_idx].append(item_dict)
+                            TRASH_TEMPLATES.append(item_dict)
+
+        # 혹시 qq/trash 루트에 남아있는 이미지가 있다면 0순위(00)로 자동 편입
+        for filename in sorted(os.listdir("qq/trash")):
+            full_p = os.path.join("qq/trash", filename)
+            if os.path.isfile(full_p) and filename.lower().endswith((".png", ".jpg")):
+                img = cv2.imread(full_p, cv2.IMREAD_COLOR)
                 if img is not None:
                     h, w = img.shape[:2]
-                    if h > 34 and w > 34: 
-                        img = img[4:h-4, 4:w-4] 
-                        
-                    # 💡 파일 이름(name)을 딕셔너리에 추가로 저장합니다.
-                    TRASH_TEMPLATES.append({"name": filename.lower(), "color": img, "mask": None})
-        print(f"🗑️ [휴지통] 쓰레기 알맹이 추출 완료! (총 {len(TRASH_TEMPLATES)}개 장전)")
+                    if h > 34 and w > 34:
+                        img = img[4:h-4, 4:w-4]
+                    item_dict = {"name": filename.lower(), "color": img, "mask": None, "tier": 0}
+                    TRASH_TEMPLATES_BY_TIER[0].append(item_dict)
+                    TRASH_TEMPLATES.append(item_dict)
+
+        print(
+            f"🗑️ [휴지통 우선순위 로드] 총 {len(TRASH_TEMPLATES)}개 장전 완료! "
+            f"(00:{len(TRASH_TEMPLATES_BY_TIER[0])}개 / 11:{len(TRASH_TEMPLATES_BY_TIER[1])}개 / "
+            f"22:{len(TRASH_TEMPLATES_BY_TIER[2])}개 / 33:{len(TRASH_TEMPLATES_BY_TIER[3])}개)"
+        )
 
     LEAVE_TEMPLATES.clear()
     if os.path.exists("qq/leave"):
@@ -3411,6 +3749,7 @@ for pc in MINI_PCS:
         "party_help_call_use": tk.BooleanVar(value=pc_set.get("party_help_call_use", True)),
         "party_help_call_pct": tk.StringVar(value=pc_set.get("party_help_call_pct", "20")),
         "use_config_sync": tk.BooleanVar(value=pc_set.get("use_config_sync", True)),
+        "sync_target_dng": tk.StringVar(value=pc_set.get("sync_target_dng", "모든사냥터")),
         "use_m_elf_pk": tk.BooleanVar(value=pc_set.get("use_m_elf_pk", False)),
         "use_m_wiz_pk": tk.BooleanVar(value=pc_set.get("use_m_wiz_pk", False)),
         "use_f_knight_pk": tk.BooleanVar(value=pc_set.get("use_f_knight_pk", False)),
@@ -5578,6 +5917,14 @@ def update_arrow_status(key, img_bgr, curr_time):
             state["last_arrow_change_time"] = curr_time
             state["arrow_is_firing"] = True
             state["arrow_fire_count"] = state.get("arrow_fire_count", 0) + 1
+
+            # 🏹 [은화살 소모량 정밀 카운트] 실제 전투 공격 중일 때만 + 0.30초 잔상 중복 카운트 방지
+            if state.get("arrow_track_active", False):
+                is_combat_shooting = state.get("is_attacking", False) or str(state.get("target_fsm", "")) == "COMBAT"
+                if is_combat_shooting and (curr_time - state.get("arrow_track_last_shot_t", 0.0) >= 0.30):
+                    state["arrow_track_last_shot_t"] = curr_time
+                    state["arrow_track_hour_count"] = state.get("arrow_track_hour_count", 0) + 1
+                    state["arrow_track_total_count"] = state.get("arrow_track_total_count", 0) + 1
         else:
             if curr_time - state.get("last_arrow_change_time", curr_time) >= ARROW_STOP_TIMEOUT:
                 state["arrow_is_firing"] = False
@@ -6146,6 +6493,56 @@ def ai_commander_worker(target_pc):
 
         for pc in [target_pc]:
             k = pc["key"]; st = ai_states[k]
+
+            # 🏹 [화살 소모량 순수 사냥 타이머 & 메모장 자동 갱신]
+            if st.get("arrow_track_active", False):
+                dt_arrow = curr_time - st.get("arrow_track_last_tick", curr_time)
+                st["arrow_track_last_tick"] = curr_time
+                if 0.0 < dt_arrow < 2.0:
+                    real_hunt_on = st.get("backup_hunt_active", st.get("is_hunt_active", False))
+                    raw_fsm_a = str(st.get("target_fsm", "IDLE"))
+                    # 정비(TOWN_MAINT), 인증(CERTI_), 사망(DEATH/SHUTDOWN), 수동제어, 일시정지 시간은 철저히 제외!
+                    is_pure_hunting = (
+                        real_hunt_on and
+                        not st.get("is_paused", False) and
+                        (active_manual_target != k) and
+                        not raw_fsm_a.startswith("TOWN_MAINT") and
+                        not raw_fsm_a.startswith("CERTI_") and
+                        not raw_fsm_a.startswith("DEATH") and
+                        raw_fsm_a not in ["SHUTDOWN_WAIT", "GHOST_MODE"] and
+                        not st.get("town_thread_running", False)
+                    )
+                    if is_pure_hunting:
+                        st["arrow_track_pure_sec"] = st.get("arrow_track_pure_sec", 0.0) + dt_arrow
+
+                        # 1) 순수 사냥 1시간(3,600초) 달성 시 영구 로그 줄 추가 및 다음 시간차 카운트 리셋
+                        if st["arrow_track_pure_sec"] >= 3600.0:
+                            st["arrow_track_pure_sec"] -= 3600.0
+                            st["arrow_track_completed_hours"] = st.get("arrow_track_completed_hours", 0) + 1
+                            hr_idx = st["arrow_track_completed_hours"]
+                            hr_arrows = st.get("arrow_track_hour_count", 0)
+                            tot_arrows = st.get("arrow_track_total_count", 0)
+                            avg_arrows = int(round(tot_arrows / float(hr_idx)))
+                            per_min = hr_arrows / 60.0
+                            st["arrow_track_hour_count"] = 0
+
+                            c_num_str = str(get_my_central_num())
+                            dng_now = get_active_dungeon_for_arrow(k)
+                            t_stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            log_line = (
+                                f"[{t_stamp}] [{c_num_str}번컴-{k}] [{dng_now}] "
+                                f"{hr_idx}시간차 완료 | 소모량: {hr_arrows:,}발 (분당 {per_min:.1f}발) | "
+                                f"누적평균: {avg_arrows:,}발/시간"
+                            )
+                            dprint(k, f"📊 [화살 1시간 측정 완료] {log_line}")
+                            st["arrow_track_last_save"] = curr_time
+                            threading.Thread(target=update_arrow_log_file, args=(k, log_line, "측정중"), daemon=True).start()
+
+                        # 2) 1시간 전이라도 언제든 메모장을 열어볼 수 있도록 10초마다 실시간 현황판 갱신
+                        elif curr_time - st.get("arrow_track_last_save", 0.0) >= 10.0:
+                            st["arrow_track_last_save"] = curr_time
+                            threading.Thread(target=update_arrow_log_file, args=(k, None, "측정중"), daemon=True).start()
+
             if st.get("is_hunt_active", False):
                 img_bgr = latest_frames.get(k)
                 if img_bgr is not None and curr_time > st.get("next_arrow_check", 0):
@@ -16022,7 +16419,14 @@ def ai_commander_worker(target_pc):
                             tab_dur = g_val(0.05, 0.10)
                             pico_queues[key].put({"action": "HOLD_KEY", "keycode": 179, "duration": tab_dur})
 
-                            # 💡 FSM 초기화 (오인식 픽셀 비교 변수 완전히 삭제!)
+                            # 💡 0순위(00 폴더)부터 시작 (만약 00 폴더가 비어있다면 등록된 첫 순위부터 시작)
+                            start_tier = 0
+                            for _t_i in range(4):
+                                if TRASH_TEMPLATES_BY_TIER.get(_t_i):
+                                    start_tier = _t_i
+                                    break
+
+                            state["inv_clean_tier"] = start_tier
                             if INVEN_BLACK_TEMPLATE is not None:
                                 state["target_fsm"] = "INV_CLEAN_EVALUATE"
                             else:
@@ -16031,14 +16435,14 @@ def ai_commander_worker(target_pc):
                             state["inv_clean_last_action"] = "OPEN"
                             state["inv_up_scrolls"] = 0
                             state["inv_down_scrolls"] = 0
-                            
+
                             state["trash_blacklist"] = []
                             state["last_trash_x"] = -1000
                             state["last_trash_y"] = -1000
                             state["last_trash_fail_cnt"] = 0
 
                             state["cooldown"] = curr_time + tab_dur + g_time(0.5, 0.8, key)
-                            dprint(key, "🎒 [인벤 정리] 쾌속 모드 온! 인벤을 열고 탐색을 준비합니다.")
+                            dprint(key, f"🎒 [인벤 정리 개시] {start_tier}순위({start_tier}{start_tier} 폴더)부터 우선순위 정리를 시작합니다!")
 
                         elif fsm == "INV_CLEAN_EVALUATE":
                             real_cursor = find_cursor_pos(img_bgr, last_pos=(cur_x, cur_y))
@@ -16046,15 +16450,14 @@ def ai_commander_worker(target_pc):
                                 cur_x, cur_y = real_cursor[0], real_cursor[1]
                                 state["cursor_pos"] = [cur_x, cur_y]
 
-                            # 빈칸 개수 정밀 카운팅 (💡 형님 지시대로 Y축 120 -> 40 으로 80픽셀 확장!)
+                            # 빈칸 개수 정밀 카운팅 (Y축 40 ~ 355)
                             empty_count = 0
                             if INVEN_BLACK_TEMPLATE is not None:
-                                empty_x1, empty_y1 = 607, 40 
+                                empty_x1, empty_y1 = 607, 40
                                 empty_x2, empty_y2 = 765, 355
                                 inv_roi = img_bgr[empty_y1:empty_y2, empty_x1:empty_x2].copy()
                                 try:
                                     res = cv2.matchTemplate(inv_roi, INVEN_BLACK_TEMPLATE, cv2.TM_CCOEFF_NORMED)
-                                    # 💡 [지시 반영] 매칭률을 0.80 으로 빡빡하게 검사!
                                     locs = np.where(res >= 0.80)
                                     pts = []
                                     tmpl_h, tmpl_w = INVEN_BLACK_TEMPLATE.shape[:2]
@@ -16068,69 +16471,111 @@ def ai_commander_worker(target_pc):
                                         if not is_dup:
                                             pts.append((cx_pt, cy_pt))
                                     empty_count = len(pts)
-                                except Exception: pass
+                                except Exception:
+                                    pass
 
                             state["current_empty_count"] = empty_count
-                            
                             inv_cx, inv_cy = w - 100, int(h * 0.4)
                             is_cursor_in_inven = (inv_cx - 60 <= cur_x <= inv_cx + 60) and (inv_cy - 60 <= cur_y <= inv_cy + 60)
 
-                            # 💡 분기 1: 빈칸이 4개를 초과할 때 (즉, 5개 이상일 때) 무조건 위로 스크롤!
-                            if empty_count > 4:
-                                if state.get("inv_up_scrolls", 0) >= 60:
-                                    dprint(key, f"🎒 [분기1] 스크롤 60회 초과! 인벤이 비었거나 최상단입니다. 쓰레기 스캔 시작!")
+                            last_act = state.get("inv_clean_last_action", "OPEN")
+                            curr_tier = state.get("inv_clean_tier", 0)
+
+                            # ⚖️ [핵심 1] 아이템 1개 삭제 직후 무게 게이지 실시간 감지!
+                            if last_act == "DELETE":
+                                curr_w_status = check_weight_status(img_bgr)
+                                w_str = "정상(회색)" if curr_w_status == 0 else ("주황(50%↑)" if curr_w_status == 1 else "빨강(82%↑)")
+
+                                # 1순위(11) ~ 3순위(33)는 1개 지울 때마다 무게가 정상(회색, 0)으로 돌아오면 즉시 삭제 중단 후 인벤 닫기!
+                                if curr_tier >= 1 and curr_w_status == 0:
+                                    dprint(key, f"🎉 [인벤 정리 조기 종료] {curr_tier}순위({curr_tier}{curr_tier}) 템 1개 삭제 후 무게 [{w_str}] 복귀 확인! 상점 판매용 템 보존을 위해 즉시 인벤을 닫습니다.")
+                                    state["target_fsm"] = "INV_CLEAN_CLOSE"
+                                    state["cooldown"] = curr_time + g_val(0.08, 0.12)
+                                    continue
+                                else:
+                                    # 0순위(00)는 무게와 무관하게 끝까지 다 지우고, 1~3순위는 아직 무거우면(curr_w_status > 0) 계속 스캔!
+                                    dprint(key, f"⚖️ [삭제 후 무게 체크] 현재 {curr_tier}순위({curr_tier}{curr_tier}) 진행 중 | 무게: {w_str} ➔ 현재 위치에서 연속 스캔합니다.")
                                     state["target_fsm"] = "INV_CLEAN_SCAN"
                                     state["cooldown"] = curr_time + 0.05
-                                elif state.get("inv_clean_last_action") == "SCROLL_DOWN":
-                                    dprint(key, f"🎒 [인벤 조절] 아래로 내리다 바닥 감지! (현재 빈칸 {empty_count}개). 인벤을 닫습니다.")
-                                    state["target_fsm"] = "INV_CLEAN_CLOSE"
-                                    state["cooldown"] = curr_time + 0.1
-                                else:
-                                    # 마우스가 인벤 바깥에 있다면 먼저 인벤 안쪽으로 옮깁니다.
+                                    continue
+
+                            # 🔄 [핵심 2] 다음 순위(00 ➔ 11 ➔ 22 ➔ 33)로 넘어갈 때 스크롤을 맨 위로 복귀
+                            if last_act == "TIER_RESET":
+                                down_cnt = state.get("inv_down_scrolls", 0)
+                                if down_cnt > 0 or (empty_count > 4 and state.get("inv_up_scrolls", 0) < 60):
                                     if not is_cursor_in_inven:
-                                        dprint(key, f"🎒 [분기1] 발견된 빈칸 {empty_count}개 (기준 4개 초과). 스크롤을 위해 커서를 옮깁니다.")
                                         tx = inv_cx + random.randint(-15, 15)
                                         ty = inv_cy + random.randint(-15, 15)
                                         dx, dy = tx - cur_x, ty - cur_y
                                         dur = apply_human_variance(0.15 + 0.05 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if math.hypot(dx, dy) > 0 else 0.1) * 0.35
-                                        
                                         pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)})
                                         state["pico_arrived"] = False
                                         state["cursor_pos"] = [tx, ty]
-                                        
-                                        # 마우스 이동 후 다시 평가 상태로 와서 스크롤을 실행
+                                        state["target_fsm"] = "INV_CLEAN_WAIT_HW"
+                                        state["inv_wait_next_fsm"] = "INV_CLEAN_EVALUATE"
+                                        state["cooldown"] = curr_time + dur + 0.05
+                                        continue
+                                    else:
+                                        up_amt = max(8, down_cnt + 3) if down_cnt > 0 else 3
+                                        dprint(key, f"🔼 [{curr_tier}순위 상단 복귀] {curr_tier}{curr_tier} 폴더 스캔을 위해 인벤 스크롤을 맨 위로 올립니다.")
+                                        pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": up_amt})
+                                        state["inv_down_scrolls"] = 0
+                                        state["inv_up_scrolls"] = state.get("inv_up_scrolls", 0) + 1
+                                        state["inv_clean_last_action"] = "SCROLL_UP"
+                                        state["target_fsm"] = "INV_CLEAN_WAIT_HW"
+                                        state["inv_wait_next_fsm"] = "INV_CLEAN_EVALUATE"
+                                        state["cooldown"] = curr_time + g_val(0.15, 0.22)
+                                        continue
+                                else:
+                                    state["inv_clean_last_action"] = "SCROLL_UP"
+
+                            # 아래로 1줄 스크롤한 직후에는 바로 현재 화면에 대상 템이 있는지 스캔부터 수행
+                            if last_act == "SCROLL_DOWN":
+                                state["target_fsm"] = "INV_CLEAN_SCAN"
+                                state["cooldown"] = curr_time + 0.05
+                                continue
+
+                            # 처음 열었을 때(OPEN) 또는 위로 스크롤 중(SCROLL_UP) 빈칸이 4개 초과면 위로 스크롤
+                            if empty_count > 4:
+                                if state.get("inv_up_scrolls", 0) >= 60:
+                                    dprint(key, f"🎒 [상단 도달] 스크롤 60회 도달! {curr_tier}순위({curr_tier}{curr_tier}) 스캔 시작!")
+                                    state["target_fsm"] = "INV_CLEAN_SCAN"
+                                    state["cooldown"] = curr_time + 0.05
+                                else:
+                                    if not is_cursor_in_inven:
+                                        tx = inv_cx + random.randint(-15, 15)
+                                        ty = inv_cy + random.randint(-15, 15)
+                                        dx, dy = tx - cur_x, ty - cur_y
+                                        dur = apply_human_variance(0.15 + 0.05 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if math.hypot(dx, dy) > 0 else 0.1) * 0.35
+                                        pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)})
+                                        state["pico_arrived"] = False
+                                        state["cursor_pos"] = [tx, ty]
                                         state["target_fsm"] = "INV_CLEAN_WAIT_HW"
                                         state["inv_wait_next_fsm"] = "INV_CLEAN_EVALUATE"
                                         state["cooldown"] = curr_time + dur + 0.05
                                     else:
-                                        dprint(key, f"🎒 [분기1] 발견된 빈칸 {empty_count}개 (기준 4개 초과). 스크롤을 올립니다. ({state.get('inv_up_scrolls',0)+1}/60)")
-                                        scroll_amount = 3 if state.get("inv_clean_last_action") == "OPEN" else 1
+                                        scroll_amount = 3 if last_act == "OPEN" else 1
                                         pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": scroll_amount})
                                         state["inv_clean_last_action"] = "SCROLL_UP"
                                         state["inv_up_scrolls"] = state.get("inv_up_scrolls", 0) + 1
                                         state["inv_down_scrolls"] = 0
-                                        
                                         state["target_fsm"] = "INV_CLEAN_WAIT_HW"
                                         state["inv_wait_next_fsm"] = "INV_CLEAN_EVALUATE"
                                         state["cooldown"] = curr_time + g_val(0.12, 0.18)
                             else:
-                                # 💡 분기 2: 빈칸이 4개 이하일 때 (정상적으로 위쪽 템이 차있는 상태이므로 스캔 돌입)
-                                dprint(key, f"🎒 [분기2] 실제 발견된 빈칸: {empty_count}개 (기준 충족). 쓰레기 스캔 돌입!")
+                                dprint(key, f"🎒 [{curr_tier}순위 스캔 돌입] 빈칸 {empty_count}개 확인! {curr_tier}{curr_tier} 폴더 아이템 탐색을 시작합니다.")
                                 state["inv_up_scrolls"] = 0
                                 state["target_fsm"] = "INV_CLEAN_SCAN"
                                 state["cooldown"] = curr_time + 0.05
 
                         elif fsm == "INV_CLEAN_SCAN":
                             real_cursor = find_cursor_pos(img_bgr, last_pos=(cur_x, cur_y))
-                       
                             if real_cursor:
                                 cur_x, cur_y = real_cursor[0], real_cursor[1]
                                 state["cursor_pos"] = [cur_x, cur_y]
 
-                            # 👇 [지시 반영] 쓰레기 스캔 Y축 30px 위로 확장 (45 -> 15)
                             trash_x1, trash_y1 = 607, 15
                             trash_x2, trash_y2 = 765, 355
-                            inv_roi_x1 = trash_x1
                             inv_roi = img_bgr[trash_y1:trash_y2, trash_x1:trash_x2].copy()
 
                             for bx, by in state.get("trash_blacklist", []):
@@ -16138,14 +16583,17 @@ def ai_commander_worker(target_pc):
                                 local_y = by - trash_y1
                                 cv2.rectangle(inv_roi, (max(0, local_x - 18), max(0, local_y - 18)), (min(inv_roi.shape[1], local_x + 18), min(inv_roi.shape[0], local_y + 18)), (0, 0, 0), -1)
 
+                            curr_tier = state.get("inv_clean_tier", 0)
+                            tier_templates = TRASH_TEMPLATES_BY_TIER.get(curr_tier, [])
+
                             found = False
-                            if TRASH_TEMPLATES:
-                                for tmpl in TRASH_TEMPLATES:
+                            if tier_templates:
+                                for tmpl in tier_templates:
                                     try:
                                         template = tmpl["color"]
                                         mask = tmpl["mask"]
                                         tmpl_name = tmpl.get("name", "")
-                                        
+
                                         if mask is not None: res = cv2.matchTemplate(inv_roi, template, cv2.TM_CCORR_NORMED, mask=mask)
                                         else: res = cv2.matchTemplate(inv_roi, template, cv2.TM_CCOEFF_NORMED)
 
@@ -16179,7 +16627,6 @@ def ai_commander_worker(target_pc):
 
                                             dx, dy = tx - cur_x, ty - cur_y
                                             dist = math.hypot(dx, dy)
-                                            
                                             dur = apply_human_variance(0.15 + 0.05 * math.log2((dist / 20.0) + 1.0) if dist > 0 else 0.1) * 0.35
 
                                             deltas = generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)
@@ -16189,68 +16636,89 @@ def ai_commander_worker(target_pc):
 
                                             pico_queues[key].put({"action": "TRASH_DELETE"})
 
-                                            state["target_fsm"] = "INV_CLEAN_WAIT_HW" 
+                                            state["target_fsm"] = "INV_CLEAN_WAIT_HW"
                                             state["inv_clean_last_action"] = "DELETE"
                                             state["inv_wait_next_fsm"] = "INV_CLEAN_EVALUATE"
-                                            
                                             state["cooldown"] = curr_time + dur + g_time(0.04, 0.08, key)
 
                                             retry_str = f" ({state['last_trash_fail_cnt']}차 시도)" if state.get('last_trash_fail_cnt', 0) > 1 else ""
-                                            dprint(key, f"🗑️ [초고속 정리] 쓰레기 발견(일치율 {max_val*100:.1f}%)! 광속 삭제 중...{retry_str}")
+                                            dprint(key, f"🗑️ [{curr_tier}순위({curr_tier}{curr_tier}) 삭제] '{tmpl_name}' 발견({max_val*100:.1f}%)! 삭제 중...{retry_str}")
                                             found = True
                                             break
-                                    except Exception: pass
+                                    except Exception:
+                                        pass
 
                             if not found:
-                                # 지울 템이 없을 때
                                 empty_count = state.get("current_empty_count", 0)
+                                inv_cx, inv_cy = w - 100, int(h * 0.4)
                                 is_cursor_in_inven = (inv_cx - 60 <= cur_x <= inv_cx + 60) and (inv_cy - 60 <= cur_y <= inv_cy + 60)
-                                
-                                # 💡 정리 완료 조건: 쓰레기가 없는데 빈칸이 4개를 초과(5개 이상) 발견되면 바닥이거나 템이 없는 상태이므로 정리 끝!
-                                if empty_count > 4:
-                                    dprint(key, f"🎒 [정리 완료] 스캔 완료! 남은 쓰레기 없고, 현재 화면 빈칸 {empty_count}개 확인. 인벤 닫습니다.")
-                                    state["target_fsm"] = "INV_CLEAN_CLOSE"
-                                    state["cooldown"] = curr_time + g_val(0.10, 0.15)
-                                else:
-                                    if state.get("inv_down_scrolls", 0) >= 60:
-                                        dprint(key, "🎒 [인벤 정리 종료] 스크롤 다운 60회 한계. 더 이상 지울게 없으니 인벤을 닫습니다.")
+
+                                is_tier_bottom = (empty_count > 4) or (state.get("inv_down_scrolls", 0) >= 60) or (len(tier_templates) == 0)
+
+                                if is_tier_bottom:
+                                    # 현재 순위(curr_tier) 인벤 전체 스캔 완료 -> 무게 게이지 확인!
+                                    curr_w_status = check_weight_status(img_bgr)
+                                    if curr_w_status == 0:
+                                        dprint(key, f"✅ [{curr_tier}순위 정리 완료] {curr_tier}{curr_tier} 폴더 스캔 완료 및 무게 정상(회색) 확인! 인벤을 닫고 사냥을 재개합니다.")
                                         state["target_fsm"] = "INV_CLEAN_CLOSE"
                                         state["cooldown"] = curr_time + g_val(0.10, 0.15)
                                     else:
-                                        # 내리기 전 마우스가 인벤 바깥에 있다면 먼저 인벤 안쪽으로 옮깁니다.
-                                        if not is_cursor_in_inven:
-                                            dprint(key, "🎒 [인벤 스캔] 현재 화면에 지울 템 없음. 스크롤을 위해 커서를 옮깁니다.")
-                                            tx = inv_cx + random.randint(-15, 15)
-                                            ty = inv_cy + random.randint(-15, 15)
-                                            dx, dy = tx - cur_x, ty - cur_y
-                                            dur = apply_human_variance(0.15 + 0.05 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if dist > 0 else 0.1) * 0.35
-                                            
-                                            pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)})
-                                            state["pico_arrived"] = False
-                                            state["cursor_pos"] = [tx, ty]
-                                            
-                                            state["target_fsm"] = "INV_CLEAN_WAIT_HW"
-                                            state["inv_wait_next_fsm"] = "INV_CLEAN_SCAN" # 다시 SCAN으로 돌아와서 스크롤 시도
-                                            state["cooldown"] = curr_time + dur + 0.05
+                                        # 아직 무거우면(주황/빨강) 다음 순위(11 -> 22 -> 33) 중 이미지가 있는 폴더 탐색
+                                        next_tier = None
+                                        for cand_t in range(curr_tier + 1, 4):
+                                            if TRASH_TEMPLATES_BY_TIER.get(cand_t):
+                                                next_tier = cand_t
+                                                break
+
+                                        if next_tier is not None:
+                                            w_str = "주황(50%↑)" if curr_w_status == 1 else "빨강(82%↑)"
+                                            dprint(key, f"⚠️ [{curr_tier}순위 완료 후에도 무거움({w_str})] ➔ [{next_tier}순위({next_tier}{next_tier} 폴더)] 삭제 단계로 넘어갑니다!")
+                                            state["inv_clean_tier"] = next_tier
+                                            state["inv_clean_last_action"] = "TIER_RESET"
+                                            state["inv_up_scrolls"] = 0
+                                            state["last_trash_x"], state["last_trash_y"] = -1000, -1000
+                                            state["last_trash_fail_cnt"] = 0
+                                            state["target_fsm"] = "INV_CLEAN_EVALUATE"
+                                            state["cooldown"] = curr_time + 0.05
                                         else:
-                                            dprint(key, "🎒 [인벤 스캔] 지울 템 확인 불가. 아래로 1줄 스크롤합니다.")
-                                            pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": -1})
-                                            state["inv_clean_last_action"] = "SCROLL_DOWN"
-                                            state["inv_down_scrolls"] = state.get("inv_down_scrolls", 0) + 1
-                                            
-                                            state["target_fsm"] = "INV_CLEAN_WAIT_HW"
-                                            state["inv_wait_next_fsm"] = "INV_CLEAN_EVALUATE" 
-                                            state["cooldown"] = curr_time + g_val(0.12, 0.18)
+                                            dprint(key, "🛑 [인벤 정리 0~3순위 모두 완료] 더 이상 삭제할 쓰레기 템이 없어 인벤을 닫습니다.")
+                                            state["target_fsm"] = "INV_CLEAN_CLOSE"
+                                            state["cooldown"] = curr_time + g_val(0.10, 0.15)
+                                else:
+                                    # 아직 바닥이 아니면 아래로 1줄 스크롤하여 현재 순위(curr_tier) 계속 탐색
+                                    if not is_cursor_in_inven:
+                                        tx = inv_cx + random.randint(-15, 15)
+                                        ty = inv_cy + random.randint(-15, 15)
+                                        dx, dy = tx - cur_x, ty - cur_y
+                                        dur = apply_human_variance(0.15 + 0.05 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if math.hypot(dx, dy) > 0 else 0.1) * 0.35
+
+                                        pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)})
+                                        state["pico_arrived"] = False
+                                        state["cursor_pos"] = [tx, ty]
+
+                                        state["target_fsm"] = "INV_CLEAN_WAIT_HW"
+                                        state["inv_wait_next_fsm"] = "INV_CLEAN_SCAN"
+                                        state["cooldown"] = curr_time + dur + 0.05
+                                    else:
+                                        pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": -1})
+                                        state["inv_clean_last_action"] = "SCROLL_DOWN"
+                                        state["inv_down_scrolls"] = state.get("inv_down_scrolls", 0) + 1
+
+                                        state["target_fsm"] = "INV_CLEAN_WAIT_HW"
+                                        state["inv_wait_next_fsm"] = "INV_CLEAN_EVALUATE"
+                                        state["cooldown"] = curr_time + g_val(0.12, 0.18)
 
                         elif fsm == "INV_CLEAN_WAIT_HW":
                             if pico_queues[key].empty() and not state.get("hw_busy", False):
                                 next_fsm = state.pop("inv_wait_next_fsm", "INV_CLEAN_EVALUATE")
-                                state["target_fsm"] = next_fsm 
-                                state["cooldown"] = curr_time + g_val(0.05, 0.10)
-                                
+                                state["target_fsm"] = next_fsm
+
                                 last_action = state.get("inv_clean_last_action")
                                 if last_action == "DELETE" and next_fsm == "INV_CLEAN_EVALUATE":
-                                    dprint(key, "🎒 [하드웨어 대기 종료] 삭제 조작 완료! 빈칸 개수 재평가를 실시합니다.")
+                                    # 💡 삭제 완료 후 인게임 무게 게이지(회색/주황/빨강) 및 슬롯 화면이 갱신될 시간을 0.18~0.25초 보장!
+                                    state["cooldown"] = curr_time + g_val(0.18, 0.25)
+                                else:
+                                    state["cooldown"] = curr_time + g_val(0.05, 0.10)
                             else:
                                 state["cooldown"] = curr_time + 0.05
 
@@ -16262,12 +16730,18 @@ def ai_commander_worker(target_pc):
 
                             next_fsm = state.pop("inv_clean_done_next_fsm", "IDLE")
                             state["target_fsm"] = next_fsm
-                            state["inv_clean_done"] = True
+
+                            # 무게가 정상(0, 회색)으로 돌아왔다면 다음번 무거워질 때 지체 없이 바로 열리도록 False 처리,
+                            # 0~3순위를 다 지웠는데도 여전히 무겁다면 무한 재오픈 방지를 위해 True 유지!
+                            if check_weight_status(img_bgr) == 0:
+                                state["inv_clean_done"] = False
+                                state["red_weight_clean_cnt"] = 0
+                            else:
+                                state["inv_clean_done"] = True
 
                             state["inv_close_grace_time"] = curr_time + 1.5
-                            
                             state["cooldown"] = curr_time + tab_dur + g_time(0.25, 0.35, key)
-                            dprint(key, f"🎒 [인벤 정리 완료] 성공적으로 인벤을 닫고 이전 로직({next_fsm})으로 쾌속 복귀합니다.")
+                            dprint(key, f"🎒 [인벤 정리 완료] 인벤을 닫고 이전 로직({next_fsm})으로 복귀합니다.")
 
                     continue
 
@@ -26756,19 +27230,29 @@ for i, pc in enumerate(MINI_PCS):
     p_pk_sync_frame.pack(side="top", fill="x", padx=2, pady=(4, 2))
     tk.Checkbutton(
         p_pk_sync_frame,
-        text="동기화 사용",
+        text="",
         variable=vars_dict["use_config_sync"],
         bg=BG_PANEL,
-        fg="#B2FF59",
         selectcolor="#3E3E42",
-        activebackground=BG_PANEL,
-        activeforeground="#B2FF59",
-        font=("맑은 고딕", 8, "bold")
-    ).pack(side="left", padx=(0, 6))
+        activebackground=BG_PANEL
+    ).pack(side="left", padx=(0, 0))
+
+    lbl_pk_sync = tk.Label(p_pk_sync_frame, text="동기화▾", bg=BG_PANEL, fg="#B2FF59", font=("맑은 고딕", 8, "bold"), cursor="hand2")
+    lbl_pk_sync.pack(side="left", padx=(0, 2))
+    lbl_pk_sync.bind("<Button-1>", lambda e, dv=vars_dict["sync_target_dng"]: popup_sync_dng_menu(e, dv))
+
+    ttk.Combobox(
+        p_pk_sync_frame,
+        textvariable=vars_dict["sync_target_dng"],
+        values=SYNC_DUNGEON_OPTIONS,
+        state="readonly",
+        width=9,
+        font=("맑은 고딕", 8)
+    ).pack(side="left", padx=(0, 4))
 
     btn_pk_sync = tk.Button(
         p_pk_sync_frame,
-        text="📡 1~13번 전체컴 PK설정 동기화",
+        text="📡 PK설정 동기화",
         font=("맑은 고딕", 8, "bold"),
         bg="#0E639C",
         fg="white",
@@ -26896,7 +27380,7 @@ for i, pc in enumerate(MINI_PCS):
     tk.Checkbutton(mptam_frame, text="위즈", variable=vars_dict["is_wiz_mptam"], bg=BG_PANEL, fg="#B39DDB", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=1)
 
     blue_frame = tk.Frame(tab1, bg=BG_PANEL)
-    blue_frame.pack(side="top", fill="x", padx=2, pady=(2, 6))
+    blue_frame.pack(side="top", fill="x", padx=2, pady=(2, 2))
     tk.Checkbutton(blue_frame, text="파랭이(F3>F6)", variable=vars_dict["use_blue_pot"], bg=BG_PANEL, fg="#4FC3F7", selectcolor="#3E3E42", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=1)
     # 💡 [핵심 추가] 파랭이 옆에 '전투중' 옵션을 추가했습니다.
     tk.Checkbutton(blue_frame, text="전투중", variable=vars_dict["use_blue_pot_combat"], bg=BG_PANEL, fg="#FF9800", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=1)
@@ -26904,6 +27388,42 @@ for i, pc in enumerate(MINI_PCS):
     tk.Label(blue_frame, text="%↓쿨:", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left")
     tk.Entry(blue_frame, textvariable=vars_dict["blue_cd_min"], width=2, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
     tk.Label(blue_frame, text="분", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left")
+
+    main_sync_frame = tk.Frame(tab1, bg=BG_PANEL)
+    main_sync_frame.pack(side="top", fill="x", padx=2, pady=(2, 2))
+    tk.Checkbutton(
+        main_sync_frame,
+        text="",
+        variable=vars_dict["use_config_sync"],
+        bg=BG_PANEL,
+        selectcolor="#3E3E42",
+        activebackground=BG_PANEL
+    ).pack(side="left", padx=(0, 0))
+
+    lbl_main_sync = tk.Label(main_sync_frame, text="동기화▾", bg=BG_PANEL, fg="#B2FF59", font=("맑은 고딕", 8, "bold"), cursor="hand2")
+    lbl_main_sync.pack(side="left", padx=(0, 2))
+    lbl_main_sync.bind("<Button-1>", lambda e, dv=vars_dict["sync_target_dng"]: popup_sync_dng_menu(e, dv))
+
+    ttk.Combobox(
+        main_sync_frame,
+        textvariable=vars_dict["sync_target_dng"],
+        values=SYNC_DUNGEON_OPTIONS,
+        state="readonly",
+        width=9,
+        font=("맑은 고딕", 8)
+    ).pack(side="left", padx=(0, 4))
+
+    btn_main_sync = tk.Button(
+        main_sync_frame,
+        text="📡 메인설정 동기화(사냥터제외)",
+        font=("맑은 고딕", 8, "bold"),
+        bg="#0E639C",
+        fg="white",
+        relief="flat",
+        pady=1
+    )
+    btn_main_sync.config(command=lambda k=key, b=btn_main_sync: broadcast_config_sync(k, "MAIN", b))
+    btn_main_sync.pack(side="left", fill="x", expand=True, padx=2)
 
     supply_frame = tk.LabelFrame(tab2, text=" 🛒 마을 자동 정비 (구매/판매/창고) ", font=("맑은 고딕", 9, "bold"), bg=BG_PANEL, fg="#B2FF59", bd=1)
     supply_frame.pack(side="top", fill="x", padx=10, pady=(10, 5))
@@ -27868,432 +28388,81 @@ for i, pc in enumerate(MINI_PCS):
     btn_double_tap.pack(fill="x", expand=True, padx=2)
     '''
 
-    def run_weapon_shop_sell_test(target_key=key):
-        if not picos.get(target_key):
-            print(f"❌ [{target_key}] 피코 연결 안됨!")
-            return
-
-        global active_manual_target
-        if active_manual_target == target_key:
-            toggle_manual(None)
-            import time
-            time.sleep(0.15)
-
-        if target_key in ai_states and ai_states[target_key].get("is_hunt_active", False):
-            print(f"🔄 [{target_key}] 자동 사냥이 켜져 있어 상점 순회 판매 테스트를 위해 사냥을 잠시 멈춥니다.")
-            toggle_individual_hunt(target_key)
-            import time
-            time.sleep(0.2)
-
-        # 테스트 편의를 위해 버튼 클릭 시 qq/sell 폴더 이미지를 최신 상태로 다시 로드
-        load_all_templates()
-
-        print(f"\n🛒 [{target_key}] (수동 지시) 1~3단계 상점 순회 판매 테스트 시작! (qq/sell 등록 템: {len(SELL_TEMPLATES)}개)")
-        with pico_queues[target_key].mutex: pico_queues[target_key].queue.clear()
-
-        if target_key in ai_states:
-            ai_states[target_key]["abort_macro"] = False
-
-        def _weapon_shop_sell_worker():
-            import cv2, numpy as np, os, math, random
-            import time as builtin_time
-
-            p_serial = picos.get(target_key)
-            p_lock = pico_locks.get(target_key)
-            if not p_serial:
-                return
-
-            # 💡 NPC 이미지가 머리 위 이름표 기준일 때 아래로 내려 찍을 픽셀 오프셋 (몸통 직접 캡처 시 0으로 수정)
-            WEAPON1_NPC_OY = 50
-            WEAPON2_NPC_OY = 50
-            OTHERS_NPC_OY  = 50
-
-            class ManualAbort(BaseException): pass
-
-            def check_abort():
-                if active_manual_target == target_key or ai_states.get(target_key, {}).get("is_hunt_active", False):
-                    raise ManualAbort()
-                curr_f = str(ai_states.get(target_key, {}).get("target_fsm", ""))
-                if curr_f.startswith("DEATH_RESTART") or curr_f.startswith("CERTI_"):
-                    raise ManualAbort()
-
-            class SafeTime:
-                @staticmethod
-                def sleep(duration):
-                    end_t = builtin_time.time() + duration
-                    while builtin_time.time() < end_t:
-                        check_abort()
-                        builtin_time.sleep(0.02)
-                @staticmethod
-                def time():
-                    check_abort()
-                    return builtin_time.time()
-
-            time = SafeTime()
-
-            def m_click(tx, ty, jx=0, jy=0, d_min=0.2, d_max=0.35, double=False):
-                if target_key in ai_states: ai_states[target_key]["abort_macro"] = False
-
-                screen = latest_frames.get(target_key)
-                cur_x, cur_y = ai_states.get(target_key, {}).get("cursor_pos", [400, 300])
-
-                if screen is not None:
-                    real_c = find_cursor_pos(screen, last_pos=(cur_x, cur_y), allow_full_scan=True)
-                    if real_c:
-                        cur_x, cur_y = real_c[0], real_c[1]
-                        if target_key in ai_states: ai_states[target_key]["cursor_pos"] = [cur_x, cur_y]
-
-                fx = int(tx + (random.gauss(0, jx / 2.0) if jx > 0 else 0))
-                fy = int(ty + (random.gauss(0, jy / 2.0) if jy > 0 else 0))
-
-                h_s, w_s = screen.shape[:2] if screen is not None else (600, 800)
-                fx = max(5, min(w_s - 5, fx))
-                fy = max(5, min(h_s - 5, fy))
-
-                dur = apply_human_variance(0.06 + 0.03 * math.log2((math.hypot(fx - cur_x, fy - cur_y) / 20.0) + 1.0)) * 0.85
-
-                deltas = generate_human_deltas(fx - cur_x, fy - cur_y, duration=dur, behavior="NORMAL", key=target_key)
-                if deltas: send_macro_buffer(p_serial, p_lock, deltas, target_key)
-                time.sleep(dur + g_val(0.02, 0.05))
-                send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
-                time.sleep(g_val(0.04, 0.06))
-                send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
-
-                if double:
-                    time.sleep(g_val(0.04, 0.06))
-                    send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
-                    time.sleep(g_val(0.04, 0.06))
-                    send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
-
-                time.sleep(g_val(d_min, d_max))
-                if target_key in ai_states: ai_states[target_key]["cursor_pos"] = [fx, fy]
-                return fx, fy
-
-            def m_type_num(num_str):
-                for char in str(num_str):
-                    send_keyboard_key(p_serial, p_lock, ord(char), 1, is_manual=True); time.sleep(g_val(0.035, 0.06))
-                    send_keyboard_key(p_serial, p_lock, ord(char), 0, is_manual=True); time.sleep(g_val(0.035, 0.06))
-
-            def press_esc_clean():
-                for _ in range(2):
-                    send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True)
-                    time.sleep(g_val(0.04, 0.07))
-                    send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
-                    time.sleep(g_val(0.08, 0.12))
-
-            def find_img_universal(img_data_or_path, th=0.82, ui_only=True):
-                screen = latest_frames.get(target_key)
-                if screen is None: return None
-
-                h_scr, w_scr = screen.shape[:2]
-                if ui_only:
-                    search_area = screen[0:min(400, h_scr), 0:min(290, w_scr)]
-                else:
-                    search_area = screen[0:min(480, h_scr), 0:w_scr]
-
-                if isinstance(img_data_or_path, str):
-                    if not img_data_or_path.startswith("qq/"): img_data_or_path = f"qq/{img_data_or_path}"
-                    if not os.path.exists(img_data_or_path): return None
-                    with open(img_data_or_path, "rb") as f: np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
-                    tmpl_bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
-                    if tmpl_bgra is None: return None
-                    if len(tmpl_bgra.shape) == 3 and tmpl_bgra.shape[2] == 4:
-                        res = cv2.matchTemplate(search_area, tmpl_bgra[:,:,:3], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl_bgra[:,:,3]]*3))
-                    else:
-                        tmpl_bgr = tmpl_bgra[:,:,:3] if len(tmpl_bgra.shape)==3 else tmpl_bgra
-                        res = cv2.matchTemplate(search_area, tmpl_bgr, cv2.TM_CCOEFF_NORMED)
-                    tmpl_h, tmpl_w = tmpl_bgra.shape[:2]
-                else:
-                    tmpl, mask = img_data_or_path["color"], img_data_or_path["mask"]
-                    if mask is not None: res = cv2.matchTemplate(search_area, tmpl, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask]*3))
-                    else: res = cv2.matchTemplate(search_area, tmpl, cv2.TM_CCOEFF_NORMED)
-                    tmpl_h, tmpl_w = tmpl.shape[:2]
-
-                _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                if max_val >= th:
-                    return (max_loc[0] + tmpl_w//2, max_loc[1] + tmpl_h//2)
-                return None
-
-            def find_all_imgs_universal(img_data_or_path, th=0.82, ui_only=True):
-                screen = latest_frames.get(target_key)
-                if screen is None: return []
-
-                h_scr, w_scr = screen.shape[:2]
-                if ui_only:
-                    search_area = screen[0:min(400, h_scr), 0:min(290, w_scr)]
-                else:
-                    search_area = screen[0:min(480, h_scr), 0:w_scr]
-
-                if isinstance(img_data_or_path, str):
-                    if not img_data_or_path.startswith("qq/"): img_data_or_path = f"qq/{img_data_or_path}"
-                    if not os.path.exists(img_data_or_path): return []
-                    with open(img_data_or_path, "rb") as f: np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
-                    tmpl_bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
-                    if tmpl_bgra is None: return []
-                    if len(tmpl_bgra.shape) == 3 and tmpl_bgra.shape[2] == 4:
-                        res = cv2.matchTemplate(search_area, tmpl_bgra[:,:,:3], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl_bgra[:,:,3]]*3))
-                    else:
-                        tmpl_bgr = tmpl_bgra[:,:,:3] if len(tmpl_bgra.shape)==3 else tmpl_bgra
-                        res = cv2.matchTemplate(search_area, tmpl_bgr, cv2.TM_CCOEFF_NORMED)
-                    tmpl_h, tmpl_w = tmpl_bgra.shape[:2]
-                else:
-                    tmpl, mask = img_data_or_path["color"], img_data_or_path["mask"]
-                    if mask is not None: res = cv2.matchTemplate(search_area, tmpl, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask]*3))
-                    else: res = cv2.matchTemplate(search_area, tmpl, cv2.TM_CCOEFF_NORMED)
-                    tmpl_h, tmpl_w = tmpl.shape[:2]
-
-                locs = np.where(res >= th)
-                pts = []
-                for pt in zip(*locs[::-1]):
-                    cx, cy = pt[0] + tmpl_w//2, pt[1] + tmpl_h//2
-                    is_dup = False
-                    for ex, ey in pts:
-                        if abs(ex - cx) < 10 and abs(ey - cy) < 10:
-                            is_dup = True
-                            break
-                    if not is_dup:
-                        pts.append((cx, cy))
-
-                pts.sort(key=lambda p: p[1])
-                return pts
-
-            def click_img(img_data_or_path, desc, th=0.80, timeout=3.0, oy=0, jx=0, jy=0, d_min=0.3, d_max=0.45, ui_only=True, double=False):
-                start_t = time.time()
-                while time.time() - start_t < timeout:
-                    pos = find_img_universal(img_data_or_path, th, ui_only=ui_only)
-                    if pos:
-                        dprint(target_key, f"✅ {desc} 발견!")
-                        time.sleep(g_val(0.15, 0.25))
-                        return m_click(pos[0], pos[1] + oy, jx=jx, jy=jy, d_min=d_min, d_max=d_max, double=double)
-                    time.sleep(0.05)
-                dprint(target_key, f"❌ {desc} 인식 실패!")
-                return None
-
-            def sell_at_shop(npc_img_path, shop_label, npc_oy=50):
-                """공통 상점 판매 함수: NPC 클릭 ➔ sell.png ➔ 1.5초 sell2.png 확인 ➔ 다중 선택(99) 및 스크롤 ➔ sell2.png 완료"""
-                dprint(target_key, f"🏪 [{shop_label}] NPC({npc_img_path}) 탐색 및 클릭을 시도합니다.")
-                if not click_img(npc_img_path, f"[{shop_label}] NPC", th=0.80, timeout=4.0, oy=npc_oy, jx=2, jy=8, d_min=0.3, d_max=0.5, ui_only=False):
-                    dprint(target_key, f"⚠️ [{shop_label}] NPC 조준 실패! 다음 단계로 넘어갑니다.")
-                    press_esc_clean()
-                    return False
-
-                if not click_img("qq/sell.png", f"[{shop_label}] Sell 버튼", th=0.75, timeout=4.0, jx=3, jy=2, d_min=0.3, d_max=0.45, ui_only=True):
-                    dprint(target_key, f"⚠️ [{shop_label}] Sell 버튼 클릭 실패! ESC로 창을 닫습니다.")
-                    press_esc_clean()
-                    return False
-
-                dprint(target_key, f"🔎 [{shop_label}] 1.5초간 sell2.png 버튼 활성화 여부를 확인합니다...")
-                sell2_visible = False
-                chk_start_t = time.time()
-                while time.time() - chk_start_t < 1.5:
-                    if find_img_universal("qq/sell2.png", th=0.75, ui_only=True):
-                        sell2_visible = True
-                        break
-                    time.sleep(0.05)
-
-                if not sell2_visible:
-                    dprint(target_key, f"ℹ️ [{shop_label}] 1.5초간 sell2.png 미발견 (팔 수 있는 물건 없음)! ESC로 창을 닫고 다음 단계로 넘어갑니다.")
-                    press_esc_clean()
-                    time.sleep(g_val(0.4, 0.6))
-                    return True
-
-                dprint(target_key, f"✅ [{shop_label}] sell2.png 확인 완료! qq/sell 폴더 이미지 다중 선택(수량 99) 및 스크롤을 시작합니다.")
-
-                if SELL_TEMPLATES:
-                    stuck_scrolls = 0
-                    last_scroll_img = None
-                    has_handled_any = False
-                    just_scrolled = False
-
-                    for scroll_idx in range(50):
-                        found_any = False
-
-                        if just_scrolled:
-                            time.sleep(g_val(0.10, 0.14))
-                            just_scrolled = False
-
-                        for tmpl_dict in SELL_TEMPLATES:
-                            tmpl_name = tmpl_dict['name']
-                            pos_list = find_all_imgs_universal(tmpl_dict, th=0.82, ui_only=True)
-                            if not pos_list:
-                                continue
-
-                            for pos in pos_list:
-                                screen_chk = latest_frames.get(target_key)
-                                if screen_chk is None:
-                                    continue
-
-                                h_s, w_s = screen_chk.shape[:2]
-                                is_already_selected = False
-                                chk_x1 = int(pos[0])
-                                chk_y1 = int(pos[1])
-                                chk_x2 = min(w_s, chk_x1 + 60)
-                                chk_y2 = min(h_s, chk_y1 + 20)
-
-                                if chk_x2 > chk_x1 and chk_y2 > chk_y1:
-                                    chk_roi = screen_chk[chk_y1:chk_y2, chk_x1:chk_x2]
-                                    hsv_roi = cv2.cvtColor(chk_roi, cv2.COLOR_BGR2HSV)
-                                    mask_blue = cv2.inRange(hsv_roi, np.array([100, 50, 30]), np.array([140, 255, 150]))
-                                    if cv2.countNonZero(mask_blue) >= 20:
-                                        is_already_selected = True
-
-                                if is_already_selected:
-                                    continue
-
-                                dprint(target_key, f"💰 [{shop_label}] 판매 템({tmpl_name}) 고속 선택({pos[0]}, {pos[1]}) ➔ 수량(99) 입력!")
-                                m_click(pos[0], pos[1], jx=13, jy=3, d_min=0.05, d_max=0.08)
-                                m_type_num("99")
-                                time.sleep(g_val(0.08, 0.12))
-                                has_handled_any = True
-                                found_any = True
-
-                        if found_any:
-                            stuck_scrolls = 0
-                            continue
-
-                        screen = latest_frames.get(target_key)
-                        if screen is not None:
-                            h_scr, w_scr = screen.shape[:2]
-                            c_x, c_y = ai_states.get(target_key, {}).get("cursor_pos", [120, 200])
-
-                            chk_x1, chk_y1 = max(0, int(c_x) - 50), max(0, int(c_y) - 15)
-                            chk_x2, chk_y2 = min(w_scr, int(c_x) + 50), min(h_scr, int(c_y) + 15)
-
-                            if chk_x2 > chk_x1 and chk_y2 > chk_y1:
-                                curr_scroll_img = cv2.cvtColor(screen[chk_y1:chk_y2, chk_x1:chk_x2], cv2.COLOR_BGR2GRAY)
-
-                                if last_scroll_img is not None and last_scroll_img.shape == curr_scroll_img.shape:
-                                    diff = cv2.absdiff(last_scroll_img, curr_scroll_img)
-                                    _, thresh = cv2.threshold(diff, 10, 255, cv2.THRESH_BINARY)
-                                    if cv2.countNonZero(thresh) < 5: stuck_scrolls += 1
-                                    else: stuck_scrolls = 0
-                                last_scroll_img = curr_scroll_img
-
-                            if stuck_scrolls >= random.randint(5, 6):
-                                dprint(target_key, f"🛑 [{shop_label}] 스크롤 바닥 도달 확정.")
-                                break
-
-                        send_mouse_scroll(p_serial, p_lock, -3)
-                        time.sleep(g_val(0.04, 0.06))
-                        send_mouse_scroll(p_serial, p_lock, -3)
-                        time.sleep(g_val(0.05, 0.08))
-                        just_scrolled = True
-
-                    if has_handled_any:
-                        dprint(target_key, f"▶ [{shop_label} 판매 확정] sell2.png 버튼을 원클릭하여 일괄 매각합니다.")
-                        click_img("qq/sell2.png", f"[{shop_label}] 최종 판매(sell2) 버튼", th=0.75, jx=3, jy=2, d_min=0.3, d_max=0.45, ui_only=True)
-                    else:
-                        dprint(target_key, f"ℹ️ [{shop_label}] 목록에 qq/sell 대상 아이템이 없어 ESC로 창을 닫습니다.")
-                        press_esc_clean()
-                else:
-                    dprint(target_key, "⚠️ 'qq/sell' 폴더가 비어있습니다! ESC로 창을 닫습니다.")
-                    press_esc_clean()
-
-                time.sleep(g_val(0.5, 0.8))
-                return True
-
-            try:
-                # =========================================================================
-                # 1단계: F1 -> F9 (두루마리) weapon_shop.png 이동 후 1차 무기상 판매
-                # =========================================================================
-                dprint(target_key, "📜 [1단계] F1 -> F9 기억창을 열어 1차 무기상(weapon_shop.png)으로 이동합니다.")
-                send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
-                time.sleep(g_val(0.2, 0.3))
-                send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
-                time.sleep(g_val(0.6, 0.8))
-
-                if not click_img("qq/weapon_shop.png", "[1단계 무기상] 메뉴", th=0.80, timeout=3.0, oy=2, jx=2, jy=1, d_min=0.25, d_max=0.4, ui_only=True):
-                    dprint(target_key, "⚠️ weapon_shop.png 클릭 실패! ESC를 눌러 창을 닫고 테스트를 중단합니다.")
-                    press_esc_clean()
-                    return
-
-                time.sleep(g_val(2.3, 2.7))
-                sell_at_shop("qq/weapon_shop_npc.png", "1단계 무기상", npc_oy=WEAPON1_NPC_OY)
-
-                # =========================================================================
-                # 2단계: F3 -> F10 (축순) oren.png 더블클릭 이동 후 오렌 무기상(weapon2.png) 판매
-                # =========================================================================
-                dprint(target_key, "📜 [2단계] F3 -> F10 (축순)을 눌러 오렌(oren.png) 기억 장소로 이동합니다.")
-                send_keyboard_key(p_serial, p_lock, 196, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 196, 0, is_manual=True)
-                time.sleep(g_val(0.2, 0.3))
-                send_keyboard_key(p_serial, p_lock, 203, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 203, 0, is_manual=True)
-                time.sleep(g_val(0.7, 1.0))
-
-                oren_found = False
-                stuck_oren = 0
-                last_oren_img = None
-
-                for _ in range(30):
-                    pos_oren = find_img_universal("qq/oren.png", th=0.80, ui_only=True)
-                    if pos_oren:
-                        dprint(target_key, "✅ [2단계] 기억창에서 'oren.png' 발견! Y+2 보정 후 정밀 더블클릭합니다.")
-                        safe_x = pos_oren[0] + int(round(g_val(-2, 2)))
-                        safe_y = (pos_oren[1] + 2) + int(round(g_val(-1, 1)))
-                        m_click(safe_x, safe_y, jx=0, jy=0, d_min=0.25, d_max=0.4, double=True)
-                        oren_found = True
-                        break
-
-                    # 첫 화면에 안 보일 경우 기억창 안에서 휠 스크롤 탐색
-                    cur_x, cur_y = ai_states.get(target_key, {}).get("cursor_pos", [400, 300])
-                    if cur_x > 280 or cur_y > 380:
-                        m_click(150, 220, jx=10, jy=10, d_min=0.05, d_max=0.1, double=False)
-
-                    scr_o = latest_frames.get(target_key)
-                    if scr_o is not None:
-                        h_s, w_s = scr_o.shape[:2]
-                        ui_roi = scr_o[0:min(400, h_s), 0:min(290, w_s)]
-                        uh, uw = ui_roi.shape[:2]
-                        if uh > 200 and uw > 50:
-                            curr_o_img = cv2.cvtColor(ui_roi[150:uh-50, uw//2:uw], cv2.COLOR_BGR2GRAY)
-                            if last_oren_img is not None and last_oren_img.shape == curr_o_img.shape:
-                                diff = cv2.absdiff(last_oren_img, curr_o_img)
-                                _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
-                                if cv2.countNonZero(thresh) < 100: stuck_oren += 1
-                                else: stuck_oren = 0
-                            last_oren_img = curr_o_img
-                        if stuck_oren >= 6:
-                            break
-
-                    send_mouse_scroll(p_serial, p_lock, -5)
-                    time.sleep(g_val(0.12, 0.18))
-
-                if not oren_found:
-                    dprint(target_key, "❌ [2단계] 기억창에서 'oren.png'를 찾지 못했습니다! ESC를 누르고 F1 탭으로 복귀합니다.")
-                    press_esc_clean()
-                    send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
-                    return
-
-                # 축순 이동 직후 단축키 창을 F1 탭으로 즉시 복구
-                time.sleep(g_val(0.2, 0.3))
-                send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
-
-                time.sleep(g_val(2.1, 2.5))
-                sell_at_shop("qq/weapon2.png", "2단계 오렌무기상", npc_oy=WEAPON2_NPC_OY)
-
-                # =========================================================================
-                # 3단계: 현재 화면 바로 옆 오렌 잡화상(others.png) 원클릭 후 판매
-                # =========================================================================
-                dprint(target_key, "🛍️ [3단계] 현재 화면에서 오렌 잡화상(others.png)을 찾아 판매를 진행합니다.")
-                sell_at_shop("qq/others.png", "3단계 오렌잡화상", npc_oy=OTHERS_NPC_OY)
-
-                dprint(target_key, "🎉 [1~3단계 상점 순회 판매 완료] 모든 상점 판매 시퀀스가 정상적으로 끝났습니다!")
-
-            except ManualAbort:
-                print(f"\n🛑 [{target_key}] 수동 모드(`) 개입 또는 사냥 시작으로 상점 순회 판매 테스트를 중단합니다.")
-                with pico_queues[target_key].mutex: pico_queues[target_key].queue.clear()
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                print(f"❌ [{target_key}] 상점 순회 판매 테스트 중 에러: {e}")
-
-        import threading
-        threading.Thread(target=_weapon_shop_sell_worker, daemon=True).start()
-
-    measure_frame = tk.LabelFrame(tab2, text=" 🛒 1~3단계 상점 순회 자동 판매 테스트 (qq/sell 연동) ", font=("맑은 고딕", 9, "bold"), bg=BG_PANEL, fg="#FFD54F", bd=1)
+    measure_frame = tk.LabelFrame(tab2, text=" 🏹 사냥터 은화살 소모량 측정 (전체컴 연동 / 정비·인증 제외) ", font=("맑은 고딕", 9, "bold"), bg=BG_PANEL, fg="#FFD54F", bd=1)
     measure_frame.pack(side="top", fill="x", padx=10, pady=(5, 5))
 
-    btn_6f_test = tk.Button(measure_frame, text="▶ 1~3단계 상점 순회 판매 테스트 시작 (하이네무기 ➔ 오렌무기 ➔ 오렌잡화)", font=("맑은 고딕", 8, "bold"), bg="#E91E63", fg="white", relief="flat", command=lambda k=key: run_weapon_shop_sell_test(k))
-    btn_6f_test.pack(fill="x", expand=True, padx=5, pady=5)
+    arrow_btn_row = tk.Frame(measure_frame, bg=BG_PANEL)
+    arrow_btn_row.pack(side="top", fill="x", padx=5, pady=(5, 2))
+
+    btn_arrow_start = tk.Button(
+        arrow_btn_row,
+        text="▶ 전체컴 화살체크 시작",
+        font=("맑은 고딕", 8, "bold"),
+        bg="#2E7D32",
+        fg="white",
+        relief="flat",
+        pady=3
+    )
+    btn_arrow_start.config(command=lambda k=key, b=btn_arrow_start: broadcast_arrow_tracking_ctrl(k, "START", b))
+    btn_arrow_start.pack(side="left", fill="x", expand=True, padx=(0, 3))
+
+    btn_arrow_stop = tk.Button(
+        arrow_btn_row,
+        text="⏹ 전체컴 체크 중지",
+        font=("맑은 고딕", 8, "bold"),
+        bg="#C62828",
+        fg="white",
+        relief="flat",
+        pady=3
+    )
+    btn_arrow_stop.config(command=lambda k=key, b=btn_arrow_stop: broadcast_arrow_tracking_ctrl(k, "STOP", b))
+    btn_arrow_stop.pack(side="left", fill="x", expand=True, padx=(3, 0))
+
+    lbl_arrow_stat = tk.Label(
+        measure_frame,
+        text="🏹 [대기중] 시작 버튼을 누르면 '화살소모량_중앙X번컴.txt'에 실시간 기록됩니다.",
+        bg=BG_PANEL,
+        fg="#B0BEC5",
+        font=("맑은 고딕", 8)
+    )
+    lbl_arrow_stat.pack(side="top", fill="x", padx=5, pady=(1, 4))
+    arrow_status_labels[key] = lbl_arrow_stat
+
+    sub_sync_frame = tk.Frame(tab2, bg=BG_PANEL)
+    sub_sync_frame.pack(side="top", fill="x", padx=10, pady=(4, 2))
+    tk.Checkbutton(
+        sub_sync_frame,
+        text="",
+        variable=vars_dict["use_config_sync"],
+        bg=BG_PANEL,
+        selectcolor="#3E3E42",
+        activebackground=BG_PANEL
+    ).pack(side="left", padx=(0, 0))
+
+    lbl_sub_sync = tk.Label(sub_sync_frame, text="동기화▾", bg=BG_PANEL, fg="#B2FF59", font=("맑은 고딕", 8, "bold"), cursor="hand2")
+    lbl_sub_sync.pack(side="left", padx=(0, 2))
+    lbl_sub_sync.bind("<Button-1>", lambda e, dv=vars_dict["sync_target_dng"]: popup_sync_dng_menu(e, dv))
+
+    ttk.Combobox(
+        sub_sync_frame,
+        textvariable=vars_dict["sync_target_dng"],
+        values=SYNC_DUNGEON_OPTIONS,
+        state="readonly",
+        width=9,
+        font=("맑은 고딕", 8)
+    ).pack(side="left", padx=(0, 4))
+
+    btn_sub_sync = tk.Button(
+        sub_sync_frame,
+        text="📡 보조탭 전체 동기화",
+        font=("맑은 고딕", 8, "bold"),
+        bg="#0E639C",
+        fg="white",
+        relief="flat",
+        pady=2
+    )
+    btn_sub_sync.config(command=lambda k=key, b=btn_sub_sync: broadcast_config_sync(k, "SUB", b))
+    btn_sub_sync.pack(side="left", fill="x", expand=True, padx=2)
 
     debug_frame = tk.LabelFrame(tab2, text=" 🛠️ 시스템 유지보수 / 디버그 ", bg=BG_PANEL, fg="#FF9800", font=("맑은 고딕", 9, "bold"))
 
@@ -28390,7 +28559,7 @@ for i, pc in enumerate(MINI_PCS):
     tk.Checkbutton(d_row1, text="캡차자동(AI)", variable=vars_dict["auth_auto_captcha"], bg=BG_PANEL, fg="#FFD54F", selectcolor="#3E3E42", activebackground=BG_PANEL, activeforeground="#FFD54F", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(10, 0))
 
     d_row2 = tk.Frame(delay_frame, bg=BG_PANEL)
-    d_row2.pack(side="top", fill="x", padx=5, pady=(2, 6))
+    d_row2.pack(side="top", fill="x", padx=5, pady=(2, 2))
     tk.Label(d_row2, text="▶ 매 시간", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(2, 2))
     tk.Entry(d_row2, textvariable=vars_dict["auth_delay_start_min"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=1)
     tk.Label(d_row2, text="분 ~", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=1)
@@ -28398,6 +28567,42 @@ for i, pc in enumerate(MINI_PCS):
     tk.Label(d_row2, text="분 감지 시  |  대기:", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(1, 2))
     tk.Entry(d_row2, textvariable=vars_dict["auth_delay_sec"], width=5, justify="center", bg="#3E3E42", fg="#FFD54F", insertbackground="white", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=1)
     tk.Label(d_row2, text="초 후 인증", bg=BG_PANEL, fg="#FFD54F", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(2, 0))
+
+    d_row3 = tk.Frame(delay_frame, bg=BG_PANEL)
+    d_row3.pack(side="top", fill="x", padx=5, pady=(2, 5))
+    tk.Checkbutton(
+        d_row3,
+        text="",
+        variable=vars_dict["use_config_sync"],
+        bg=BG_PANEL,
+        selectcolor="#3E3E42",
+        activebackground=BG_PANEL
+    ).pack(side="left", padx=(0, 0))
+
+    lbl_auth_sync = tk.Label(d_row3, text="동기화▾", bg=BG_PANEL, fg="#B2FF59", font=("맑은 고딕", 8, "bold"), cursor="hand2")
+    lbl_auth_sync.pack(side="left", padx=(0, 2))
+    lbl_auth_sync.bind("<Button-1>", lambda e, dv=vars_dict["sync_target_dng"]: popup_sync_dng_menu(e, dv))
+
+    ttk.Combobox(
+        d_row3,
+        textvariable=vars_dict["sync_target_dng"],
+        values=SYNC_DUNGEON_OPTIONS,
+        state="readonly",
+        width=9,
+        font=("맑은 고딕", 8)
+    ).pack(side="left", padx=(0, 4))
+
+    btn_auth_sync = tk.Button(
+        d_row3,
+        text="📡 인증딜레이 동기화",
+        font=("맑은 고딕", 8, "bold"),
+        bg="#0E639C",
+        fg="white",
+        relief="flat",
+        pady=2
+    )
+    btn_auth_sync.config(command=lambda k=key, b=btn_auth_sync: broadcast_config_sync(k, "AUTH", b))
+    btn_auth_sync.pack(side="left", fill="x", expand=True, padx=2)
 
     # 하단 설명 문구 및 미니컴 sub 바로가기 원클릭 자동생성 UI
     tk.Label(tab_auth, text="※ IP 인증 한도 초과 시, 타 중앙컴 프록시(sub.png)로 자동 우회합니다.", font=("맑은 고딕", 8), bg=BG_PANEL, fg="#9E9E9E", anchor="w").pack(side="top", fill="x", padx=12, pady=2)
