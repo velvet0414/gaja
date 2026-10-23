@@ -1780,6 +1780,17 @@ DUNGEON_ASSETS = {
     "사던 3층": {"map": "silver/silver3map.png", "graph": "silver/silver3_graph.json", "model": "silver/silver.pt"},
     
     # === 본던 (gludio 폴더) ===
+    "본던 2-1": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-1.json", "model": "gludio/gludio.pt"},
+    "본던 2-2": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-2.json", "model": "gludio/gludio.pt"},
+    "본던 2-3": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-3.json", "model": "gludio/gludio.pt"},
+    "본던 2-4": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-4.json", "model": "gludio/gludio.pt"},
+    "본던 2-5": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-5.json", "model": "gludio/gludio.pt"},
+    "본던 2-6": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-6.json", "model": "gludio/gludio.pt"},
+    "본던 2-7": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-7.json", "model": "gludio/gludio.pt"},
+    "본던 2-8": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-8.json", "model": "gludio/gludio.pt"},
+    "본던 2-9": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-9.json", "model": "gludio/gludio.pt"},
+    "본던 2-10": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-10.json", "model": "gludio/gludio.pt"},
+
     "본던 3층": {"map": "gludio/gludio3map.png", "graph": "gludio/gludio3_graph.json", "model": "gludio/gludio.pt"},
     
     "본던 4-1": {"map": "gludio/gludio4.png", "graph": "gludio/gludio4-1.json", "model": "gludio/gludio.pt"},
@@ -13374,28 +13385,32 @@ def ai_commander_worker(target_pc):
                                     send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
                                     wait_with_heal(g_val(0.8, 1.2))
 
-                                    cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
-                                    scr_book = latest_frames.get(key)
-                                    if scr_book is not None:
-                                        real_c = find_cursor_pos(scr_book, last_pos=(cur_x, cur_y), allow_full_scan=True)
-                                        if real_c:
-                                            cur_x, cur_y = real_c[0], real_c[1]
-                                            ai_states[key]["cursor_pos"] = [cur_x, cur_y]
+                                    is_bondon_2f = ("2-" in dungeon_name or "2층" in dungeon_name)
+                                    if is_bondon_2f:
+                                        dprint(key, "⚡ [본던 2층 복귀] 최상단 목록이므로 휠 스크롤을 생략하고 즉시 탐색합니다.")
+                                    else:
+                                        cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
+                                        scr_book = latest_frames.get(key)
+                                        if scr_book is not None:
+                                            real_c = find_cursor_pos(scr_book, last_pos=(cur_x, cur_y), allow_full_scan=True)
+                                            if real_c:
+                                                cur_x, cur_y = real_c[0], real_c[1]
+                                                ai_states[key]["cursor_pos"] = [cur_x, cur_y]
 
-                                    park_x, park_y = 150, 250
-                                    dx, dy = park_x - cur_x, park_y - cur_y
-                                    dur = apply_human_variance(0.15 + 0.05 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if math.hypot(dx, dy) > 0 else 0.1)
+                                        park_x, park_y = 150, 250
+                                        dx, dy = park_x - cur_x, park_y - cur_y
+                                        dur = apply_human_variance(0.15 + 0.05 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if math.hypot(dx, dy) > 0 else 0.1)
 
-                                    pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)})
-                                    state["pico_arrived"] = False
-                                    state["cursor_pos"] = [park_x, park_y]
-                                    wait_with_heal(dur + g_val(0.3, 0.5))
+                                        pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)})
+                                        state["pico_arrived"] = False
+                                        state["cursor_pos"] = [park_x, park_y]
+                                        wait_with_heal(dur + g_val(0.3, 0.5))
 
-                                    dprint(key, "🔽 [강제 스크롤] 본던 항목을 찾기 위해 무조건 5회 휠을 먼저 내립니다.")
-                                    for _ in range(5):
-                                        send_mouse_scroll(p_serial, p_lock, -1 * int(round(g_val(3, 6))))
-                                        wait_with_heal(g_val(0.08, 0.12))
-                                    wait_with_heal(g_val(0.6, 0.8))
+                                        dprint(key, "🔽 [강제 스크롤] 본던 항목을 찾기 위해 무조건 5회 휠을 먼저 내립니다.")
+                                        for _ in range(5):
+                                            send_mouse_scroll(p_serial, p_lock, -1 * int(round(g_val(3, 6))))
+                                            wait_with_heal(g_val(0.08, 0.12))
+                                        wait_with_heal(g_val(0.6, 0.8))
 
                                     # -------------------------------------------------------------
                                     # [본던 층별 전용 이미지 세팅 (엉뚱한 층 클릭 유발하던 예비 이미지 분리)]
@@ -13403,7 +13418,10 @@ def ai_commander_worker(target_pc):
                                     book_img_list = []
                                     in_img_path = ""
                                     
-                                    if "4-" in dungeon_name or "4층" in dungeon_name:
+                                    if "2-" in dungeon_name or "2층" in dungeon_name:
+                                        book_img_list = ["qq/gludio22.png"]
+                                        in_img_path = "qq/gludio2_in.png"
+                                    elif "4-" in dungeon_name or "4층" in dungeon_name:
                                         book_img_list = ["qq/gludio44.png"]
                                         in_img_path = "qq/gludio4_in.png"
                                     elif "5-" in dungeon_name or "5층" in dungeon_name:
@@ -17437,7 +17455,7 @@ def ai_commander_worker(target_pc):
                 if "event" in dng_name_tele or "오땅" in dng_name_tele:
                     tele_hunt_enabled = False
 
-                is_solo_zone_tele = ("본던 4-" in dng_name_tele or "본던 5-" in dng_name_tele or "본던 6-" in dng_name_tele or "본던 7-" in dng_name_tele) and not (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False))
+                is_solo_zone_tele = ("본던 2-" in dng_name_tele or "본던 4-" in dng_name_tele or "본던 5-" in dng_name_tele or "본던 6-" in dng_name_tele or "본던 7-" in dng_name_tele) and not (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False))
 
                 if settings.get("use_party_hunt", False) or is_solo_zone_tele:
                     tele_hunt_enabled = False
@@ -17737,10 +17755,10 @@ def ai_commander_worker(target_pc):
 
             if "is_out_of_zone" not in state: state["is_out_of_zone"] = False
 
-            # 💡 [핵심 추가] 본던 4, 5, 6, 7층은 솔플이더라도 Zone 이탈 방지 로직을 똑같이 적용합니다.
+            # 💡 [핵심 추가] 본던 2, 4, 5, 6, 7층은 솔플이더라도 Zone 이탈 방지 로직을 똑같이 적용합니다.
             dng_zone_chk = settings.get("dungeon_name", "")
             is_party_any_zone = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
-            is_solo_zone_mode = ("본던 4-" in dng_zone_chk or "본던 5-" in dng_zone_chk or "본던 6-" in dng_zone_chk or "본던 7-" in dng_zone_chk) and not is_party_any_zone
+            is_solo_zone_mode = ("본던 2-" in dng_zone_chk or "본던 4-" in dng_zone_chk or "본던 5-" in dng_zone_chk or "본던 6-" in dng_zone_chk or "본던 7-" in dng_zone_chk) and not is_party_any_zone
 
             if (is_party_any_zone or is_solo_zone_mode) and state.get("dungeon_map_pos") and pc_graph and pc_graph.get("nodes"):
                 if curr_time - state.get("zone_check_time", 0) > 1.0:
@@ -18026,7 +18044,7 @@ def ai_commander_worker(target_pc):
                             # 💡 [핵심 추가] 본던 솔플 존 사냥 모드에서도 구역 이탈 시 시야를 파티모드처럼 제한합니다.
                             dng_chk_yolo = settings.get("dungeon_name", "")
                             is_bondon_zone_solo = False
-                            if not is_any_party and ("본던 4-" in dng_chk_yolo or "본던 5-" in dng_chk_yolo or "본던 6-" in dng_chk_yolo or "본던 7-" in dng_chk_yolo):
+                            if not is_any_party and ("본던 2-" in dng_chk_yolo or "본던 4-" in dng_chk_yolo or "본던 5-" in dng_chk_yolo or "본던 6-" in dng_chk_yolo or "본던 7-" in dng_chk_yolo):
                                 is_bondon_zone_solo = True
 
                             if is_party_hunt_active:
@@ -18172,7 +18190,7 @@ def ai_commander_worker(target_pc):
 
                 is_any_party_dbg = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
                 dng_chk_dbg = settings.get("dungeon_name", "")
-                is_bondon_zone_solo_dbg = ("본던 4-" in dng_chk_dbg or "본던 5-" in dng_chk_dbg or "본던 6-" in dng_chk_dbg or "본던 7-" in dng_chk_dbg) and not is_any_party_dbg
+                is_bondon_zone_solo_dbg = ("본던 2-" in dng_chk_dbg or "본던 4-" in dng_chk_dbg or "본던 5-" in dng_chk_dbg or "본던 6-" in dng_chk_dbg or "본던 7-" in dng_chk_dbg) and not is_any_party_dbg
 
                 # 👇👇 [핵심 픽스] 5to6 맵 스위칭 상태일 때도 디버그 원형 UI가 정상적으로 표시되도록 조건 추가
                 if is_any_party_dbg or is_bondon_zone_solo_dbg or state.get("override_dungeon_name") == "본던 5to6":
@@ -18353,7 +18371,7 @@ def ai_commander_worker(target_pc):
                     dng_zone_solo_chk = settings.get("dungeon_name", "")
                     is_bondon_zone_solo = False
                     if not (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)):
-                        if "본던 4-" in dng_zone_solo_chk or "본던 5-" in dng_zone_solo_chk or "본던 6-" in dng_zone_solo_chk or "본던 7-" in dng_zone_solo_chk:
+                        if "본던 2-" in dng_zone_solo_chk or "본던 4-" in dng_zone_solo_chk or "본던 5-" in dng_zone_solo_chk or "본던 6-" in dng_zone_solo_chk or "본던 7-" in dng_zone_solo_chk:
                             is_bondon_zone_solo = True
 
                     if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False) or is_bondon_zone_solo:
