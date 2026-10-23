@@ -1017,8 +1017,137 @@ def kor_to_eng_typo(text):
             res.append(ch)
     return "".join(res)
 
+# ==============================================================================
+# 📡 [1~13번 전체 중앙컴 통합 설정 동기화 프레임워크]
+# 추후 메인탭/보조탭 동기화 추가 시 아래 사전에 그룹명과 변수명 리스트만 추가하면 즉시 작동합니다.
+# ==============================================================================
+CONFIG_SYNC_GROUPS = {
+    "PK": [
+        "use_m_elf_pk", "use_m_wiz_pk", "use_f_knight_pk", "use_m_knight_pk", "use_m_prince_pk",
+        "m_elf_conf", "m_wiz_conf", "f_knight_conf", "m_knight_conf", "m_prince_conf"
+    ],
+    # 예시) 추후 메인탭 생존/버프 설정 동기화 확장용 슬롯
+    # "MAIN_SURVIVAL": ["heal_use", "heal_pct", "heal_mp_pct", "pot_use", "pot_pct", "hp_danger_pct", "hp_20_action"],
+    # "MAIN_BUFF": ["buff_set", "combat_buff", "use_dec_weight", "use_windwalk", "use_body", "body_pct", "body_stop_pct"],
+}
+
+_LAST_APPLIED_SYNC_ID = ""
+
+def apply_received_config_sync(my_key, msg):
+    """수신된 동기화 패킷을 메인 GUI 스레드에서 안전하게 반영하고 즉시 파일에 영구 저장합니다."""
+    try:
+        if my_key not in gui_vars:
+            return
+        v_dict = gui_vars[my_key]
+
+        # 🛡️ [동기화 사용] 체크박스가 해제되어 있으면 동기화 패킷 무시!
+        if "use_config_sync" in v_dict and not v_dict["use_config_sync"].get():
+            dprint(my_key, f"🛡️ [동기화 수신 거부] '동기화 사용'이 꺼져 있어 [{msg.get('sender_uid')}]의 [{msg.get('group')}] 동기화를 무시합니다.")
+            return
+
+        group_name = msg.get("group", "UNKNOWN")
+        settings_data = msg.get("settings_data", {})
+        sender_uid = msg.get("sender_uid", "알수없음")
+
+        applied_cnt = 0
+        for k_name, val in settings_data.items():
+            if k_name in v_dict:
+                try:
+                    v_dict[k_name].set(val)
+                    applied_cnt += 1
+                except Exception:
+                    pass
+
+        if applied_cnt > 0:
+            sync_gui_vars()
+            save_settings()
+            dprint(my_key, f"📡 [광역 동기화 적용] [{sender_uid}]로부터 [{group_name}] 설정({applied_cnt}개 항목)을 수신하여 즉시 반영했습니다!")
+
+            # PK 그룹 동기화 시, 만약 모든 PK 설정이 꺼졌는데 현재 PK 타겟을 공격 중이었다면 즉시 타겟 포기
+            if group_name == "PK" and my_key in ai_states:
+                st = ai_states[my_key]
+                any_pk_on = any(
+                    v_dict.get(pk_k, tk.BooleanVar(value=False)).get()
+                    for pk_k in ["use_m_elf_pk", "use_m_wiz_pk", "use_f_knight_pk", "use_m_knight_pk", "use_m_prince_pk"]
+                )
+                if not any_pk_on and (st.get("current_is_m_elf", False) or st.get("next_is_m_elf", False)):
+                    dprint(my_key, "🛑 [PK 동기화 OFF] 교전 중이던 적대 PK 타겟 공격을 즉시 중단합니다!")
+                    st["abort_macro"] = True
+                    clear_movements_only(pico_queues[my_key])
+                    st["current_is_m_elf"] = False
+                    st["next_is_m_elf"] = False
+                    st["is_attacking"] = False
+                    st["arrow_is_firing"] = False
+                    st["has_fired_arrow"] = False
+                    if not str(st.get("target_fsm", "")).startswith("TOWN_MAINT") and not str(st.get("target_fsm", "")).startswith("CERTI_"):
+                        st["target_fsm"] = "IDLE"
+                    st["cooldown"] = time.time() + 0.1
+    except Exception as e:
+        print(f"⚠️ [{my_key}] 동기화 반영 중 오류: {e}")
+
+def broadcast_config_sync(sender_key, group_name, btn_widget=None):
+    """현재 미니컴의 지정된 그룹(예: 'PK') 설정을 1~13번 모든 중앙컴의 미니1~4로 동시 전송합니다."""
+    if sender_key not in gui_vars or group_name not in CONFIG_SYNC_GROUPS:
+        return
+
+    sync_gui_vars()
+    save_settings()
+
+    v_dict = gui_vars[sender_key]
+    extracted = {}
+    for k_name in CONFIG_SYNC_GROUPS[group_name]:
+        if k_name in v_dict:
+            extracted[k_name] = v_dict[k_name].get()
+
+    my_c_num = str(get_my_central_num())
+    sender_uid = f"{my_c_num}-{sender_key}"
+    sync_id = f"{time.time():.4f}_{random.randint(1000, 9999)}"
+
+    payload = {
+        "msg_type": "CONFIG_SYNC",
+        "sync_id": sync_id,
+        "group": group_name,
+        "sender_uid": sender_uid,
+        "pc_key": sender_key,
+        "central_num": my_c_num,
+        "settings_data": extracted
+    }
+    raw_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    def _send_burst():
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # 테일스케일 원격망 패킷 유실 방지를 위해 0.05초 간격으로 2회 연속 발송
+            for _ in range(2):
+                # 1) 내 중앙컴 내부 미니1~4 전송
+                for k, port in LOCAL_IPC_PORTS.items():
+                    if k != sender_key:
+                        try: sock.sendto(raw_bytes, ("127.0.0.1", port))
+                        except Exception: pass
+
+                # 2) 1~13번 모든 타 중앙컴(테일스케일 IP)의 미니1~4 전송
+                for c_num, r_ip in CENTRAL_TAILSCALE_MAP.items():
+                    if str(c_num) != my_c_num and r_ip:
+                        for port in LOCAL_IPC_PORTS.values():
+                            try: sock.sendto(raw_bytes, (r_ip, port))
+                            except Exception: pass
+                time.sleep(0.05)
+        finally:
+            try: sock.close()
+            except Exception: pass
+
+    threading.Thread(target=_send_burst, daemon=True).start()
+    dprint(sender_key, f"📡 [광역 동기화 발신] 1~13번 전체 중앙컴으로 [{group_name}] 설정 동기화 신호를 전송했습니다!")
+
+    if btn_widget is not None:
+        orig_text = btn_widget.cget("text")
+        orig_bg = btn_widget.cget("bg")
+        btn_widget.config(text="✅ 1~13번 전체컴 동기화 완료!", bg="#2E7D32")
+        root.after(1500, lambda: btn_widget.config(text=orig_text, bg=orig_bg))
+
 def local_ipc_listener_thread(my_key):
     """내 전용 포트를 열고 로컬 및 타 중앙컴 파티원들의 외침을 듣는 귀(Receiver)"""
+    global _LAST_APPLIED_SYNC_ID
     my_port = LOCAL_IPC_PORTS.get(my_key)
     if not my_port: return
 
@@ -1032,6 +1161,15 @@ def local_ipc_listener_thread(my_key):
             while True:
                 data, _ = sock.recvfrom(4096)
                 msg = json.loads(data.decode('utf-8'))
+
+                # 📡 [0순위: 1~13번 전체컴 설정 동기화 신호 처리] 파티 조와 무관하게 즉시 처리!
+                if msg.get("msg_type") == "CONFIG_SYNC":
+                    sync_id = msg.get("sync_id", "")
+                    my_uid_chk = f"{get_my_central_num()}-{my_key}"
+                    if sync_id and sync_id != _LAST_APPLIED_SYNC_ID and msg.get("sender_uid") != my_uid_chk:
+                        _LAST_APPLIED_SYNC_ID = sync_id
+                        root.after(0, apply_received_config_sync, my_key, msg)
+                    continue
 
                 sender_key = msg.get("pc_key")
                 sender_c_num = str(msg.get("central_num", get_my_central_num()))
@@ -2597,14 +2735,17 @@ def _save_settings_internal():
 
                 "party_help_call_use": v["party_help_call_use"].get() if "party_help_call_use" in v else True,
                 "party_help_call_pct": v["party_help_call_pct"].get() if "party_help_call_pct" in v else "20",
+                "use_config_sync": v["use_config_sync"].get() if "use_config_sync" in v else True,
                 "use_m_elf_pk": v["use_m_elf_pk"].get() if "use_m_elf_pk" in v else False,
                 "use_m_wiz_pk": v["use_m_wiz_pk"].get() if "use_m_wiz_pk" in v else False,
                 "use_f_knight_pk": v["use_f_knight_pk"].get() if "use_f_knight_pk" in v else False,
                 "use_m_knight_pk": v["use_m_knight_pk"].get() if "use_m_knight_pk" in v else False,
+                "use_m_prince_pk": v["use_m_prince_pk"].get() if "use_m_prince_pk" in v else False,
                 "m_elf_conf": v["m_elf_conf"].get().strip() if "m_elf_conf" in v else "70",
                 "m_wiz_conf": v["m_wiz_conf"].get().strip() if "m_wiz_conf" in v else "70",
                 "f_knight_conf": v["f_knight_conf"].get().strip() if "f_knight_conf" in v else "70",
                 "m_knight_conf": v["m_knight_conf"].get().strip() if "m_knight_conf" in v else "70",
+                "m_prince_conf": v["m_prince_conf"].get().strip() if "m_prince_conf" in v else "70",
 
                 "dungeon_name": v["dungeon_name"].get(),
                 "heal_use": v["heal_use"].get(), "heal_pct": v["heal_pct"].get(),
@@ -3269,14 +3410,17 @@ for pc in MINI_PCS:
 
         "party_help_call_use": tk.BooleanVar(value=pc_set.get("party_help_call_use", True)),
         "party_help_call_pct": tk.StringVar(value=pc_set.get("party_help_call_pct", "20")),
+        "use_config_sync": tk.BooleanVar(value=pc_set.get("use_config_sync", True)),
         "use_m_elf_pk": tk.BooleanVar(value=pc_set.get("use_m_elf_pk", False)),
         "use_m_wiz_pk": tk.BooleanVar(value=pc_set.get("use_m_wiz_pk", False)),
         "use_f_knight_pk": tk.BooleanVar(value=pc_set.get("use_f_knight_pk", False)),
         "use_m_knight_pk": tk.BooleanVar(value=pc_set.get("use_m_knight_pk", False)),
+        "use_m_prince_pk": tk.BooleanVar(value=pc_set.get("use_m_prince_pk", False)),
         "m_elf_conf": tk.StringVar(value=str(pc_set.get("m_elf_conf", "70"))),
         "m_wiz_conf": tk.StringVar(value=str(pc_set.get("m_wiz_conf", "70"))),
         "f_knight_conf": tk.StringVar(value=str(pc_set.get("f_knight_conf", "70"))),
         "m_knight_conf": tk.StringVar(value=str(pc_set.get("m_knight_conf", "70"))),
+        "m_prince_conf": tk.StringVar(value=str(pc_set.get("m_prince_conf", "70"))),
 
         "dungeon_name": tk.StringVar(value=pc_set.get("dungeon_name", "개미굴 6층")),
         "heal_use": tk.BooleanVar(value=pc_set.get("heal_use", True)),
@@ -6109,7 +6253,8 @@ def ai_commander_worker(target_pc):
                             except: pass
 
                     if detected_popup_type is not None:
-                        # 💀 1. 사망 감지 타이머 및 변수 완전 폭파 (사망 로직 무효화)
+                        # 💀 1. 사망 감지 타이머 및 변수 완전 폭파 (사망 로직 무효화 전에 스레드 실행 여부 먼저 백업!)
+                        was_thread_running = state.get("town_thread_running", False)
                         state["death_detect_start"] = 0 
                         state["last_death_val"] = 0.0
                         state["town_thread_running"] = False
@@ -6141,13 +6286,18 @@ def ai_commander_worker(target_pc):
                         state["invite_leader_since"] = 0.0
                         state["party_order"] = []
                         
-                        # 📌 2. 진입 전 상태 정밀 백업 (판매 단계 1~3 / 창고 업무 / 버프 대기 / 사냥터 복귀 세부 기억)
-                        prev_fsm = str(state.get("target_fsm", "IDLE"))
+                        # 📌 2. 진입 전 상태 정밀 백업 (사망 오인식이 먼저 터졌던 경우 사망 직전 FSM을 먼저 복원!)
+                        raw_prev_fsm = str(state.get("target_fsm", "IDLE"))
+                        if raw_prev_fsm.startswith("DEATH") and "pre_death_fsm_backup" in state:
+                            prev_fsm = str(state.get("pre_death_fsm_backup", "IDLE"))
+                        else:
+                            prev_fsm = raw_prev_fsm
+
                         was_town_maint = (
                             prev_fsm.startswith("TOWN_MAINT") or
                             prev_fsm == "SHUTDOWN_WAIT" or
                             prev_fsm.startswith("WEAPON_REPAIR") or
-                            state.get("town_thread_running", False) or
+                            was_thread_running or
                             (prev_fsm.startswith("INV_CLEAN") and str(state.get("inv_clean_done_next_fsm", "")).startswith("TOWN_MAINT")) or
                             (prev_fsm.startswith("HK_HEAL") and str(state.get("hk_return_fsm", "")).startswith("TOWN_MAINT")) or
                             (prev_fsm.startswith("BUFFING") and str(state.get("buff_return_fsm", "")).startswith("TOWN_MAINT"))
@@ -6189,7 +6339,7 @@ def ai_commander_worker(target_pc):
                             state["backup_target_fsm_before_certi"] = "IDLE"
                         
                         # 🔄 만약 커서 가림 때문에 DEATH_RESTART가 먼저 터져 버프가 0으로 날아갔었다면 즉시 원상복구!
-                        if prev_fsm.startswith("DEATH") and "pre_death_buff_backup" in state:
+                        if raw_prev_fsm.startswith("DEATH") and "pre_death_buff_backup" in state:
                             for bk_k, bk_v in state["pre_death_buff_backup"].items():
                                 state[bk_k] = bk_v
                             dprint(key, "♻️ [버프 타이머 복원] 사망 오인식으로 초기화되었던 모든 버프/헤이 타이머를 완벽히 되살렸습니다!")
@@ -8627,7 +8777,15 @@ def ai_commander_worker(target_pc):
                             continue
             # ====================================================================
 
-            if role == "DUNGEON":
+            fsm_for_map_scan = str(state.get("target_fsm", ""))
+            is_in_town_or_death = (
+                fsm_for_map_scan.startswith("TOWN_MAINT") or
+                fsm_for_map_scan.startswith("DEATH") or
+                fsm_for_map_scan == "SHUTDOWN_WAIT" or
+                state.get("town_thread_running", False)
+            )
+
+            if role == "DUNGEON" and not is_in_town_or_death:
                 if minimap_bgr is not None and pc_map_edges is not None:
 
                     allow_full = False
@@ -9439,10 +9597,10 @@ def ai_commander_worker(target_pc):
                     # === [솔플/파티 공통] Zone 이탈 시 0순위 강제 복귀 로직 ===
                     is_m_out_of_zone = state.get("is_out_of_zone", False)
 
-                    # 💡 [버그 픽스] 고정 파티(use_party_fixed)도 Zone 이탈 검사에 포함시킵니다!
+                    # 💡 [버그 픽스] 고정 파티(use_party_fixed)도 Zone 이탈 검사에 포함시킵니다! (단, 마을 정비 중에는 절대 개입 금지)
                     is_party_zone_chk2 = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
 
-                    if (is_party_zone_chk2 or is_solo_zone_mode) and is_m_out_of_zone and curr_map_pos and pc_graph and pc_graph.get("nodes"):
+                    if not my_fsm.startswith("TOWN_MAINT") and my_fsm != "SHUTDOWN_WAIT" and (is_party_zone_chk2 or is_solo_zone_mode) and is_m_out_of_zone and curr_map_pos and pc_graph and pc_graph.get("nodes"):
                         curr_target_str = str(state.get("current_target_node", ""))
                         is_curr_target_valid_zone = False
 
@@ -9889,6 +10047,12 @@ def ai_commander_worker(target_pc):
                                         state["body_held"] = False
 
                                     state["is_pulling"] = False; state["is_attacking"] = False; state["arrow_is_firing"] = False; state["has_fired_arrow"] = False; state["loot_state"] = "IDLE"
+                                    
+                                    # 💡 [인증 오인식 대비 FSM 백업] 커서 가림으로 DEATH가 먼저 떴을 때 원래 하던 정비(TOWN_MAINT_BUFF 등)를 보존!
+                                    if state.get("town_thread_running", False) and not str(state.get("target_fsm", "")).startswith("TOWN_MAINT"):
+                                        state["pre_death_fsm_backup"] = "TOWN_MAINT_BUFF"
+                                    else:
+                                        state["pre_death_fsm_backup"] = str(state.get("target_fsm", "IDLE"))
                                     state["town_thread_running"] = False
 
                                     tmpl_h, tmpl_w = img_death.shape[:2]
@@ -11491,7 +11655,10 @@ def ai_commander_worker(target_pc):
 
                                         if check_manual_buff_chat(): manual_buff_done = True; break
 
-                                        dprint(key, f"🪄 [버프 이동] F9 기억창을 열어 버프 장소를 찾습니다.")
+                                        dprint(key, f"🪄 [버프 이동] F1 -> F9 기억창을 열어 버프 장소를 찾습니다.")
+                                        send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08))
+                                        send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+                                        time.sleep(g_val(0.2, 0.3))
                                         send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08))
                                         send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
                                         time.sleep(g_val(0.6, 0.8))
@@ -13852,8 +14019,9 @@ def ai_commander_worker(target_pc):
                                 dprint(key, "🛑 [정비 스레드 셧다운] 사냥 정지 확인! IDLE 상태로 전환합니다.")
                                 ai_states[key]["target_fsm"] = "IDLE"
                             else:
-                                dprint(key, "🛑 [정비 스레드 셧다운] 수동 모드 개입 확인! 정비 대기(TOWN_MAINT_START) 상태를 유지합니다.")
-                                ai_states[key]["target_fsm"] = "TOWN_MAINT_START"
+                                resume_maint_fsm = "TOWN_MAINT_BUFF" if step_name == "DO_BUFF" else ("TOWN_MAINT_RETURN" if step_name == "RETURN_HUNT" else "TOWN_MAINT_START")
+                                dprint(key, f"🛑 [정비 스레드 셧다운] 수동 모드 개입 확인! 정비 대기({resume_maint_fsm}) 상태를 유지합니다.")
+                                ai_states[key]["target_fsm"] = resume_maint_fsm
 
                         except Exception as e:
                             import traceback
@@ -14558,7 +14726,7 @@ def ai_commander_worker(target_pc):
                 if is_pvp_mode:
                     state["pvp_on_cmd_cd"] = 0.0
 
-                is_m_elf_pk_active = (settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False) or settings.get("use_f_knight_pk", False) or settings.get("use_m_knight_pk", False)) and (
+                is_m_elf_pk_active = (settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False) or settings.get("use_f_knight_pk", False) or settings.get("use_m_knight_pk", False) or settings.get("use_m_prince_pk", False)) and (
                     state.get("current_is_m_elf", False) or
                     state.get("next_is_m_elf", False) or
                     (str(state.get("target_fsm", "")) == "HEINE_GMOB_VERIFY" and state.get("switch_target_type") == "MELF") or
@@ -17250,7 +17418,8 @@ def ai_commander_worker(target_pc):
                         m_wiz_conf_th = max(0.10, min(0.99, float(settings.get("m_wiz_conf", 70.0)) / 100.0))
                         f_knight_conf_th = max(0.10, min(0.99, float(settings.get("f_knight_conf", 70.0)) / 100.0))
                         m_knight_conf_th = max(0.10, min(0.99, float(settings.get("m_knight_conf", 70.0)) / 100.0))
-                        min_predict_conf = min(YOLO_CONF, m_elf_conf_th, m_wiz_conf_th, f_knight_conf_th, m_knight_conf_th)
+                        m_prince_conf_th = max(0.10, min(0.99, float(settings.get("m_prince_conf", 70.0)) / 100.0))
+                        min_predict_conf = min(YOLO_CONF, m_elf_conf_th, m_wiz_conf_th, f_knight_conf_th, m_knight_conf_th, m_prince_conf_th)
 
                         results = pc_model.predict(source=yolo_img, conf=min_predict_conf, half=True, verbose=False)
 
@@ -17261,6 +17430,7 @@ def ai_commander_worker(target_pc):
                         M_ELF_CLASS_ID = 7
                         M_WIZ_CLASS_ID = 8
                         M_KNIGHT_CLASS_ID = 9
+                        M_PRINCE_CLASS_ID = 10
 
                         dng_yolo_check = settings.get("dungeon_name", "")
                         is_bondon_yolo = "본던" in dng_yolo_check or "gludio" in dng_yolo_check.lower()
@@ -17268,6 +17438,7 @@ def ai_commander_worker(target_pc):
                         use_m_wiz_pk = settings.get("use_m_wiz_pk", False)
                         use_f_knight_pk = settings.get("use_f_knight_pk", False)
                         use_m_knight_pk = settings.get("use_m_knight_pk", False)
+                        use_m_prince_pk = settings.get("use_m_prince_pk", False)
 
                         for box in results[0].boxes:
                             cls_id = int(box.cls[0]); conf_val = float(box.conf[0])
@@ -17279,6 +17450,8 @@ def ai_commander_worker(target_pc):
                                 if conf_val < (f_knight_conf_th if use_f_knight_pk else YOLO_CONF): continue
                             elif cls_id == M_KNIGHT_CLASS_ID:
                                 if conf_val < (m_knight_conf_th if use_m_knight_pk else YOLO_CONF): continue
+                            elif cls_id == M_PRINCE_CLASS_ID:
+                                if conf_val < (m_prince_conf_th if use_m_prince_pk else YOLO_CONF): continue
                             else:
                                 if conf_val < YOLO_CONF: continue
 
@@ -17287,7 +17460,8 @@ def ai_commander_worker(target_pc):
                                 (use_m_elf_pk and cls_id == M_ELF_CLASS_ID) or
                                 (use_m_wiz_pk and cls_id == M_WIZ_CLASS_ID) or
                                 (use_f_knight_pk and cls_id == F_KNIGHT_CLASS_ID) or
-                                (use_m_knight_pk and cls_id == M_KNIGHT_CLASS_ID)
+                                (use_m_knight_pk and cls_id == M_KNIGHT_CLASS_ID) or
+                                (use_m_prince_pk and cls_id == M_PRINCE_CLASS_ID)
                             )
 
                             if cls_id in [0, 5, 6] or (is_bondon_yolo and cls_id == AVOID_CLASS_ID) or is_pk_target_cls:
@@ -17306,13 +17480,14 @@ def ai_commander_worker(target_pc):
                                 m_obj.is_beast = (cls_id == BEAST_MOB_CLASS_ID)
                                 m_obj.is_normal = (cls_id == 0)
                                 m_obj.is_avoid = (cls_id == AVOID_CLASS_ID) # 💡 정식 avoid 속성 추가
-                                m_obj.is_m_elf = is_pk_target_cls                 # 💡 남요정/남법사/여기사/남기사 공통 PK 타겟 플래그
+                                m_obj.is_m_elf = is_pk_target_cls                 # 💡 적대 PK 공통 타겟 플래그
                                 m_obj.is_m_wiz = (cls_id == M_WIZ_CLASS_ID)       # 💡 디버그 구분용 남법사 속성
                                 m_obj.is_f_knight = (cls_id == F_KNIGHT_CLASS_ID) # 💡 디버그 구분용 여기사 속성
                                 m_obj.is_m_knight = (cls_id == M_KNIGHT_CLASS_ID) # 💡 디버그 구분용 남기사 속성
+                                m_obj.is_m_prince = (cls_id == M_PRINCE_CLASS_ID) # 💡 디버그 구분용 남군주 속성
                                 temp_mobs.append(m_obj)
 
-                            elif cls_id in [1, 3, 4] or (cls_id in [M_ELF_CLASS_ID, M_WIZ_CLASS_ID, M_KNIGHT_CLASS_ID] and not is_pk_target_cls):
+                            elif cls_id in [1, 3, 4] or (cls_id in [M_ELF_CLASS_ID, M_WIZ_CLASS_ID, M_KNIGHT_CLASS_ID, M_PRINCE_CLASS_ID] and not is_pk_target_cls):
                                 temp_users.append(MobTarget((x1_box + x2_box) // 2, (y1_box + y2_box) // 2, x1_box, y1_box, x2_box, y2_box))
 
                             elif cls_id == AVOID_CLASS_ID and not is_bondon_yolo:
@@ -17644,6 +17819,8 @@ def ai_commander_worker(target_pc):
                                     pk_lbl, pk_col = "F_KNIGHT(PK) (CLEAR)", (180, 105, 255)
                                 elif getattr(m, 'is_m_knight', False):
                                     pk_lbl, pk_col = "M_KNIGHT(PK) (CLEAR)", (0, 215, 255)
+                                elif getattr(m, 'is_m_prince', False):
+                                    pk_lbl, pk_col = "M_PRINCE(PK) (CLEAR)", (255, 80, 80)
                                 else:
                                     pk_lbl, pk_col = "M_ELF(PK) (CLEAR)", (128, 255, 0)
                                 cv2.rectangle(debug_img, (m.x1, m.y1), (m.x2, m.y2), pk_col, 3)
@@ -20526,7 +20703,7 @@ def ai_commander_worker(target_pc):
                 if not action_taken and state.get("is_hunt_active", False) and not state.get("is_paused", False):
                     dungeon_name_check = settings.get("dungeon_name", "")
                     is_heine_or_bondon = ("수던" in dungeon_name_check or "heine" in dungeon_name_check.lower() or "본던" in dungeon_name_check or "gludio" in dungeon_name_check.lower())
-                    if is_heine_or_bondon or settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False) or settings.get("use_f_knight_pk", False) or settings.get("use_m_knight_pk", False):
+                    if is_heine_or_bondon or settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False) or settings.get("use_f_knight_pk", False) or settings.get("use_m_knight_pk", False) or settings.get("use_m_prince_pk", False):
 
                         fsm_curr = str(state.get("target_fsm", ""))
                         # [수정 1] 무지성 F4 줍기(sweep_active)를 루팅 상태 판정에서 제거!
@@ -20545,8 +20722,8 @@ def ai_commander_worker(target_pc):
                                 best_switch_target = None
                                 switch_type = ""
 
-                                # 💡 0순위(최우선): 남요정/남법사/여기사/남기사 포착 시 최우선 스위칭
-                                if settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False) or settings.get("use_f_knight_pk", False) or settings.get("use_m_knight_pk", False):
+                                # 💡 0순위(최우선): 남요정/남법사/여기사/남기사/남군주 포착 시 최우선 스위칭
+                                if settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False) or settings.get("use_f_knight_pk", False) or settings.get("use_m_knight_pk", False) or settings.get("use_m_prince_pk", False):
                                     m_elf_nearby = [m for m in mobs if getattr(m, 'is_m_elf', False)]
                                     if m_elf_nearby:
                                         best_switch_target = min(m_elf_nearby, key=lambda m: math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy))
@@ -25703,6 +25880,7 @@ def sync_gui_vars():
             m_wiz_conf_val = safe_float(gui_vars[k]["m_wiz_conf"], 70.0) if "m_wiz_conf" in gui_vars[k] else 70.0
             f_knight_conf_val = safe_float(gui_vars[k]["f_knight_conf"], 70.0) if "f_knight_conf" in gui_vars[k] else 70.0
             m_knight_conf_val = safe_float(gui_vars[k]["m_knight_conf"], 70.0) if "m_knight_conf" in gui_vars[k] else 70.0
+            m_prince_conf_val = safe_float(gui_vars[k]["m_prince_conf"], 70.0) if "m_prince_conf" in gui_vars[k] else 70.0
 
             # --- [버그 수정] 체크박스의 실제 상태를 읽어서 내부 변수에 반영하도록 역전 ---
             _use_hunt = gui_vars[k]["use_party_hunt"].get()
@@ -25788,10 +25966,12 @@ def sync_gui_vars():
                 "use_m_wiz_pk": gui_vars[k]["use_m_wiz_pk"].get() if "use_m_wiz_pk" in gui_vars[k] else False,
                 "use_f_knight_pk": gui_vars[k]["use_f_knight_pk"].get() if "use_f_knight_pk" in gui_vars[k] else False,
                 "use_m_knight_pk": gui_vars[k]["use_m_knight_pk"].get() if "use_m_knight_pk" in gui_vars[k] else False,
+                "use_m_prince_pk": gui_vars[k]["use_m_prince_pk"].get() if "use_m_prince_pk" in gui_vars[k] else False,
                 "m_elf_conf": m_elf_conf_val,
                 "m_wiz_conf": m_wiz_conf_val,
                 "f_knight_conf": f_knight_conf_val,
                 "m_knight_conf": m_knight_conf_val,
+                "m_prince_conf": m_prince_conf_val,
 
                 "buff_set": gui_vars[k]["buff_set"].get(),
                 "combat_buff": gui_vars[k]["combat_buff"].get(),
@@ -26557,15 +26737,46 @@ for i, pc in enumerate(MINI_PCS):
 
     p_pk_frame2 = tk.Frame(tab_party, bg=BG_PANEL)
     p_pk_frame2.pack(side="top", fill="x", padx=2, pady=(1, 2))
-    tk.Label(p_pk_frame2, text="┗ 직 업 :", bg=BG_PANEL, fg="#FFD54F", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0, 4))
+    tk.Label(p_pk_frame2, text="┗ 직 업 :", bg=BG_PANEL, fg="#FFD54F", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0, 2))
     tk.Checkbutton(p_pk_frame2, text="여기사", variable=vars_dict["use_f_knight_pk"], bg=BG_PANEL, fg="#EA80FC", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
     tk.Entry(p_pk_frame2, textvariable=vars_dict["f_knight_conf"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
-    tk.Label(p_pk_frame2, text="%", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(0, 6))
+    tk.Label(p_pk_frame2, text="%", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(0, 3))
 
-    tk.Label(p_pk_frame2, text="|", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(0, 6))
+    tk.Label(p_pk_frame2, text="|", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(0, 3))
     tk.Checkbutton(p_pk_frame2, text="남기사", variable=vars_dict["use_m_knight_pk"], bg=BG_PANEL, fg="#FFD54F", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
     tk.Entry(p_pk_frame2, textvariable=vars_dict["m_knight_conf"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
+    tk.Label(p_pk_frame2, text="%", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(0, 3))
+
+    tk.Label(p_pk_frame2, text="|", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(0, 3))
+    tk.Checkbutton(p_pk_frame2, text="남군주", variable=vars_dict["use_m_prince_pk"], bg=BG_PANEL, fg="#FF8A80", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
+    tk.Entry(p_pk_frame2, textvariable=vars_dict["m_prince_conf"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
     tk.Label(p_pk_frame2, text="%", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=0)
+
+    p_pk_sync_frame = tk.Frame(tab_party, bg=BG_PANEL)
+    p_pk_sync_frame.pack(side="top", fill="x", padx=2, pady=(4, 2))
+    tk.Checkbutton(
+        p_pk_sync_frame,
+        text="동기화 사용",
+        variable=vars_dict["use_config_sync"],
+        bg=BG_PANEL,
+        fg="#B2FF59",
+        selectcolor="#3E3E42",
+        activebackground=BG_PANEL,
+        activeforeground="#B2FF59",
+        font=("맑은 고딕", 8, "bold")
+    ).pack(side="left", padx=(0, 6))
+
+    btn_pk_sync = tk.Button(
+        p_pk_sync_frame,
+        text="📡 1~13번 전체컴 PK설정 동기화",
+        font=("맑은 고딕", 8, "bold"),
+        bg="#0E639C",
+        fg="white",
+        relief="flat",
+        pady=2
+    )
+    btn_pk_sync.config(command=lambda k=key, b=btn_pk_sync: broadcast_config_sync(k, "PK", b))
+    btn_pk_sync.pack(side="left", fill="x", expand=True, padx=2)
 
     hp_top_frame = tk.Frame(tab1, bg=BG_PANEL)
     hp_top_frame.pack(side="top", fill="x", padx=2, pady=(0, 2))
