@@ -1253,7 +1253,7 @@ def broadcast_config_sync(sender_key, group_name, btn_widget=None):
     if btn_widget is not None:
         orig_text = btn_widget.cget("text")
         orig_bg = btn_widget.cget("bg")
-        btn_widget.config(text="✅ 1~13번 전체컴 동기화 완료!", bg="#2E7D32")
+        btn_widget.config(text="✅완료", bg="#2E7D32")
         root.after(1500, lambda: btn_widget.config(text=orig_text, bg=orig_bg))
 
 # ==============================================================================
@@ -1592,23 +1592,25 @@ def local_ipc_broadcaster_thread(my_key):
                 my_uid = f"{my_c_int}-{my_key}"
 
                 # 💡 오직 인증(CERTI_) 중일 때만 게임 이탈로 간주 (특정시간대 딜레이 CERTI_DELAY_WAIT 포함)
+                now_req_t = time.time()
                 real_hunt_on = st.get("backup_hunt_active", st.get("is_hunt_active", False))
                 real_fsm_str = str(st.get("backup_target_fsm", raw_fsm)) if raw_fsm == "GHOST_MODE" else raw_fsm
                 is_in_game = bool(real_hunt_on and not real_fsm_str.startswith("CERTI_"))
+                is_in_town_maint = (
+                    real_fsm_str.startswith("TOWN_MAINT") or
+                    real_fsm_str.startswith("WEAPON_REPAIR") or
+                    real_fsm_str.startswith("DEATH") or
+                    real_fsm_str == "SHUTDOWN_WAIT" or
+                    st.get("town_thread_running", False)
+                )
+                is_in_hunting_ground = bool(is_in_game and not is_in_town_maint)
                 in_party_now = bool(is_in_game and st.get("in_ingame_party", True))
                 is_inv_leader = bool(is_in_game and st.get("is_invite_leader", False) and not st.get("not_party_leader_locked", False))
 
-                # 💡 파티원이 정비/인증/전투 중이 아닌 순수 IDLE 대기 상태이며 3회 실패 포기 상태가 아닐 때만 요청 발송
-                is_idle_for_req = (
-                    real_fsm_str in ["IDLE", "PATROL", "PARTY_WAIT", "PARTY_ACTIVE_STANDBY", "SQUAD_WAIT"] and
-                    not st.get("town_thread_running", False) and
-                    not st.get("is_attacking", False) and
-                    not st.get("arrow_is_firing", False) and
-                    not st.get("sweep_active", False)
-                )
+                # 💡 사냥터에 있는 동안에는 전투/이동 중에도 초대 요청 신호를 상시 유지 (단, 1분 대기 쿨타임 및 3x3 9회 실패 포기 시 제외)
                 explicit_req = bool(
-                    is_in_game and
-                    is_idle_for_req and
+                    is_in_hunting_ground and
+                    now_req_t >= st.get("party_retry_wait_until", 0.0) and
                     not st.get("party_invite_giveup", False) and
                     not st.get("waiting_party_minimap_verify", False) and
                     not st.get("pending_leader_invite_sig", False) and
@@ -1626,6 +1628,8 @@ def local_ipc_broadcaster_thread(my_key):
                     "invite_group": my_inv_grp,
                     "char_name": current_settings.get(my_key, {}).get("char_name", ""),
                     "in_game": is_in_game,
+                    "in_hunting_ground": is_in_hunting_ground,
+                    "is_demoted": bool(now_req_t < st.get("leader_demoted_until", 0.0)),
                     "in_party": in_party_now,
                     "need_invite": explicit_req,
                     "is_invite_leader": is_inv_leader,
@@ -1776,8 +1780,25 @@ DUNGEON_ASSETS = {
     "개미굴 8층": {"map": "ant/ant8map.png", "graph": "ant/ant8_graph.json", "model": "ant/ant.pt"},
     
     # === 사던 (silver 폴더) ===
-    "사던 2층": {"map": "silver/silver2map.png", "graph": "silver/silver2_graph.json", "model": "silver/silver.pt"},
-    "사던 3층": {"map": "silver/silver3map.png", "graph": "silver/silver3_graph.json", "model": "silver/silver.pt"},
+    "사던 2층": {"map": "silver/silver2map.png", "graph": "silver/silver2.json", "model": "silver/silver.pt"},
+    "사던 3층": {"map": "silver/silver3map.png", "graph": "silver/silver3.json", "model": "silver/silver.pt"},
+    "사던 3to4": {"map": "silver/silver3to4map.png", "graph": "silver/silver3to4.json", "model": "silver/silver.pt"},
+
+    "사던 4-1": {"map": "silver/silver4map.png", "graph": "silver/silver4-1.json", "model": "silver/silver.pt"},
+    "사던 4-2": {"map": "silver/silver4map.png", "graph": "silver/silver4-2.json", "model": "silver/silver.pt"},
+    "사던 4-3": {"map": "silver/silver4map.png", "graph": "silver/silver4-3.json", "model": "silver/silver.pt"},
+    "사던 4-4": {"map": "silver/silver4map.png", "graph": "silver/silver4-4.json", "model": "silver/silver.pt"},
+    "사던 4-5": {"map": "silver/silver4map.png", "graph": "silver/silver4-5.json", "model": "silver/silver.pt"},
+    "사던 4-6": {"map": "silver/silver4map.png", "graph": "silver/silver4-6.json", "model": "silver/silver.pt"},
+    "사던 4-7": {"map": "silver/silver4map.png", "graph": "silver/silver4-7.json", "model": "silver/silver.pt"},
+    "사던 4-8": {"map": "silver/silver4map.png", "graph": "silver/silver4-8.json", "model": "silver/silver.pt"},
+    "사던 4-9": {"map": "silver/silver4map.png", "graph": "silver/silver4-9.json", "model": "silver/silver.pt"},
+    "사던 4-10": {"map": "silver/silver4map.png", "graph": "silver/silver4-10.json", "model": "silver/silver.pt"},
+    "사던 4-11": {"map": "silver/silver4map.png", "graph": "silver/silver4-11.json", "model": "silver/silver.pt"},
+    "사던 4-12": {"map": "silver/silver4map.png", "graph": "silver/silver4-12.json", "model": "silver/silver.pt"},
+    "사던 4-13": {"map": "silver/silver4map.png", "graph": "silver/silver4-13.json", "model": "silver/silver.pt"},
+    "사던 4-14": {"map": "silver/silver4map.png", "graph": "silver/silver4-14.json", "model": "silver/silver.pt"},
+    "사던 4-15": {"map": "silver/silver4map.png", "graph": "silver/silver4-15.json", "model": "silver/silver.pt"},
     
     # === 본던 (gludio 폴더) ===
     "본던 2-1": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-1.json", "model": "gludio/gludio.pt"},
@@ -2069,7 +2090,7 @@ def get_robust_map_pos(img_bgr, full_map_edges_ref, last_pos=None, allow_full_sc
             current_dng = ai_states[TARGET_PC_KEY]["override_dungeon_name"]
             
         is_bondon = False
-        if "본던" in current_dng or "gludio" in current_dng.lower():
+        if "본던" in current_dng or "gludio" in current_dng.lower() or "사던" in current_dng or "silver" in current_dng.lower():
             is_bondon = True
             OFFSET_X = 1
             OFFSET_Y = 1
@@ -2348,13 +2369,13 @@ def check_line_of_sight(map_gray, start_point, end_point, margin_steps=3):
 
     if map_gray is None: return True
 
-    # 💡 글로벌 변수에서 현재 사냥터가 본던(gludio)인지 팩트 체크
+    # 💡 글로벌 변수에서 현재 사냥터가 본던(gludio) 또는 사던(silver)인지 팩트 체크
     is_bondon = False
     try:
         current_dng = current_settings.get(TARGET_PC_KEY, {}).get("dungeon_name", "")
         if TARGET_PC_KEY in ai_states and ai_states[TARGET_PC_KEY].get("override_dungeon_name"):
             current_dng = ai_states[TARGET_PC_KEY]["override_dungeon_name"]
-        if "본던" in current_dng or "gludio" in current_dng.lower():
+        if "본던" in current_dng or "gludio" in current_dng.lower() or "사던" in current_dng or "silver" in current_dng.lower():
             is_bondon = True
     except:
         pass
@@ -2739,8 +2760,8 @@ def calculate_graph_astar_path(graph, start_pos, goal_node_id, map_gray, blocked
 
             dng_name_astar = graph.get("dungeon_name", "") if graph else ""
             
-            # 💡 [핵심 수정] 본던(gludio) 사냥 시에도 수던처럼 북쪽(길 위쪽) 벽 타기 가중치를 무효화합니다.
-            is_sudeon_astar = "수던" in dng_name_astar or "heine" in dng_name_astar.lower() or "본던" in dng_name_astar or "gludio" in dng_name_astar.lower()
+            # 💡 [핵심 수정] 본던(gludio)/사던(silver) 사냥 시에도 수던처럼 북쪽(길 위쪽) 벽 타기 가중치를 무효화합니다.
+            is_sudeon_astar = "수던" in dng_name_astar or "heine" in dng_name_astar.lower() or "본던" in dng_name_astar or "gludio" in dng_name_astar.lower() or "사던" in dng_name_astar or "silver" in dng_name_astar.lower()
 
             if is_sudeon_astar:
                 wall_penalty = 1.0
@@ -6465,7 +6486,7 @@ def ai_commander_worker(target_pc):
         
         if g_nums and j_nums:
             if g_nums == j_nums: return True
-            is_bd = "본던" in gui_name or "gludio" in gui_name.lower()
+            is_bd = "본던" in gui_name or "gludio" in gui_name.lower() or "사던" in gui_name or "silver" in gui_name.lower()
             if is_bd and len(g_nums) >= 2 and g_nums[1] == j_nums[0]:
                 return True
             if g_nums[0] == j_nums[0]:
@@ -8783,26 +8804,44 @@ def ai_commander_worker(target_pc):
                     state["waiting_party_minimap_verify"] = False
                     state["pending_leader_invite_sig"] = False
                     state["party_accept_try_cnt"] = 0
+                    state["party_accept_cycle_cnt"] = 0
+                    state["party_retry_wait_until"] = 0.0
                     state["party_invite_giveup"] = False
                     if state.get("is_invite_leader", False):
                         state["had_party_as_leader"] = True
             else:
                 state["no_red_arrow_streak"] = 0
-                # 1) 'y + 엔터' 입력 후 미니맵 파티 합류 여부를 검증 중인 경우 (3.5초 대기)
+                # 0) 3회 실패 후 1분(60초) 대기 쿨타임이 끝났다면 다시 초대 요청 재개!
+                if state.get("party_retry_wait_until", 0.0) > 0.0 and curr_time >= state.get("party_retry_wait_until", 0.0):
+                    state["party_retry_wait_until"] = 0.0
+                    if not state.get("in_ingame_party", True) and not state.get("is_invite_leader", False) and not state.get("party_invite_giveup", False):
+                        state["need_party_invite_req"] = True
+                        dprint(key, f"🔄 [1분 대기 완료 ➔ 파티 재요청 개시] {state.get('party_accept_cycle_cnt', 1) + 1}/3세트(3회) 파티 초대 요청을 다시 시작합니다!")
+
+                # 1) 'y + 엔터' 입력 후 미니맵 파티 합류 여부를 검증 중인 경우 (3.5초 대기 -> 3x3 총 9회 시도)
                 if state.get("waiting_party_minimap_verify", False):
                     if curr_time >= state.get("party_verify_deadline", 0.0):
                         state["waiting_party_minimap_verify"] = False
                         try_cnt = state.get("party_accept_try_cnt", 0) + 1
                         state["party_accept_try_cnt"] = try_cnt
+                        cycle_cnt = state.get("party_accept_cycle_cnt", 0)
                         if try_cnt < 3:
                             state["in_ingame_party"] = False
                             state["need_party_invite_req"] = True
-                            dprint(key, f"🔄 [파티 합류 미확인 ({try_cnt}/3회 실패)] 'y + 엔터' 후 미니맵 주황/노랑 마커 미감지! 파장에게 재초대를 요청합니다. (남은 시도: {3 - try_cnt}회)")
+                            dprint(key, f"🔄 [파티 합류 미확인 ({cycle_cnt + 1}세트 {try_cnt}/3회 실패)] 'y + 엔터' 후 미니맵 마커 미감지! 파장에게 재초대를 요청합니다.")
                         else:
+                            cycle_cnt += 1
+                            state["party_accept_cycle_cnt"] = cycle_cnt
+                            state["party_accept_try_cnt"] = 0
                             state["in_ingame_party"] = False
-                            state["need_party_invite_req"] = False
-                            state["party_invite_giveup"] = True
-                            dprint(key, "🚫 [파티 수락 3회 연속 실패 ➔ 요청 중단] 총 3회 시도에도 미니맵 파티가 확인되지 않아, 수동 개입(`) 또는 사냥 껐다 켜기 전까지 파티 요청을 중단합니다!")
+                            if cycle_cnt < 3:
+                                state["need_party_invite_req"] = False
+                                state["party_retry_wait_until"] = curr_time + 60.0
+                                dprint(key, f"⏳ [파티 수락 {cycle_cnt}/3세트(3회) 실패 ➔ 1분 대기] 60초 후 다시 3회 재시도합니다! (남은 세트: {3 - cycle_cnt}회)")
+                            else:
+                                state["need_party_invite_req"] = False
+                                state["party_invite_giveup"] = True
+                                dprint(key, "🚫 [파티 수락 3x3(총 9회) 모두 실패 ➔ 요청 중단] 총 9회 시도에도 미니맵 파티가 확인되지 않아, 수동 개입(`) 또는 사냥 껐다 켜기 전까지 파티 요청을 중단합니다!")
                 # 2) 일반 상태에서 순수 빨간 화살표 픽셀(5개 이상) 감지 == 솔플(파탈) 상태!
                 elif solo_red_px >= 5:
                     if curr_time > state.get("party_accept_grace_until", 0.0):
@@ -8810,11 +8849,12 @@ def ai_commander_worker(target_pc):
                         if state["solo_red_arrow_streak"] >= 5:
                             state["in_ingame_party"] = False
                             state["not_party_leader_locked"] = False
-                            # 💡 초대조가 설정되어 있고, 내가 파장(is_invite_leader)이 아닐 때만 초대 요청을 켬 (무한 핑퐁 도배 원천 차단!)
+                            # 💡 초대조가 설정되어 있고, 내가 파장이 아니며, 1분 대기 중이거나 9회 실패 포기 상태가 아닐 때만 요청 ON
                             if (
                                 str(settings.get("invite_group", "선택안함")) != "선택안함" and
                                 not state.get("is_invite_leader", False) and
-                                not state.get("party_invite_giveup", False)
+                                not state.get("party_invite_giveup", False) and
+                                curr_time >= state.get("party_retry_wait_until", 0.0)
                             ):
                                 if not state.get("need_party_invite_req", False):
                                     dprint(key, f"🚨 [미니맵 파탈 감지] 주황/노랑 없음({party_marker_px}개) & 빨간 화살표({solo_red_px}개) 확인! 초대를 요청합니다.")
@@ -8834,6 +8874,10 @@ def ai_commander_worker(target_pc):
                 state["known_party_order"] = []
                 state["party_invite_giveup"] = False
                 state["party_accept_try_cnt"] = 0
+                state["party_accept_cycle_cnt"] = 0
+                state["party_retry_wait_until"] = 0.0
+                state["leader_demoted_until"] = 0.0
+                state["no_party_2m_start"] = 0.0
                 state["waiting_party_minimap_verify"] = False
                 state["pending_leader_invite_sig"] = False
                 if my_inv_grp != "선택안함":
@@ -8848,7 +8892,7 @@ def ai_commander_worker(target_pc):
                     state["invite_group_join_time"] = curr_time
                     state["invite_listen_until"] = curr_time + 0.6
 
-                # 🔎 내가 파장이라고 생각 중일 때 채팅창에 pratyjangx.png(헤이없음과 동일 방식)가 뜨면 즉시 파장 권한 해제!
+                # 🔎 내가 파장이라고 생각 중일 때 채팅창에 pratyjangx.png가 뜨면 즉시 파장 권한 해제!
                 if state.get("is_invite_leader", False) and curr_time > state.get("next_pj_x_scan", 0.0):
                     state["next_pj_x_scan"] = curr_time + 0.15
                     if check_pratyjangx_in_chat(img_bgr):
@@ -8865,22 +8909,30 @@ def ai_commander_worker(target_pc):
                 except: my_m_int = 1
                 my_uid = f"{my_c_int}-{key}"
 
-                # 💡 파티원이 정비/인증/전투 중이 아닌 IDLE 대기 상태이고 3회 실패 포기 상태가 아닐 때만 초대 요청!
-                is_idle_for_invite = (
-                    fsm_inv_chk in ["IDLE", "PATROL", "PARTY_WAIT", "PARTY_ACTIVE_STANDBY", "SQUAD_WAIT"] and
-                    not is_ui_busy_for_chat and
-                    not state.get("is_attacking", False) and
-                    not state.get("arrow_is_firing", False) and
-                    not state.get("sweep_active", False)
+                # 💡 사냥터 여부 판별 (마을 정비/사망/수리 중이 아니면 사냥터 인게임 상태로 인정)
+                is_in_town_or_maint_inv = (
+                    fsm_inv_chk.startswith("TOWN_MAINT") or
+                    fsm_inv_chk.startswith("WEAPON_REPAIR") or
+                    fsm_inv_chk.startswith("DEATH") or
+                    fsm_inv_chk == "SHUTDOWN_WAIT" or
+                    state.get("town_thread_running", False)
                 )
+                is_in_hunting_ground = not is_in_town_or_maint_inv
+
+                # 만약 파장 초대 신호를 받았으나 인벤 정리 등 UI 동작 때문에 10초 이상 수락을 못 했다면 신호 리셋하여 재초대 유도
+                if state.get("pending_leader_invite_sig", False) and (curr_time - state.get("leader_invite_sig_time", 0.0) > 10.0):
+                    state["pending_leader_invite_sig"] = False
+
+                # 💡 사냥터에 있는 동안에는 이동/전투/루팅 중이어도 초대 요청(need_invite)을 상시 True로 유지!
                 my_need_invite_now = bool(
+                    is_in_hunting_ground and
+                    curr_time >= state.get("party_retry_wait_until", 0.0) and
                     state.get("need_party_invite_req", False) and
                     not state.get("in_ingame_party", True) and
                     not state.get("is_invite_leader", False) and
                     not state.get("party_invite_giveup", False) and
                     not state.get("waiting_party_minimap_verify", False) and
-                    not state.get("pending_leader_invite_sig", False) and
-                    is_idle_for_invite
+                    not state.get("pending_leader_invite_sig", False)
                 )
 
                 # 1) 같은 초대조의 인게임(비인증) 멤버 수집
@@ -8891,6 +8943,8 @@ def ai_commander_worker(target_pc):
                         "mini_num": my_m_int,
                         "char_name": my_char_name,
                         "in_game": True,
+                        "in_hunting_ground": is_in_hunting_ground,
+                        "is_demoted": bool(curr_time < state.get("leader_demoted_until", 0.0)),
                         "in_party": state.get("in_ingame_party", True),
                         "need_invite": my_need_invite_now,
                         "is_invite_leader": bool(state.get("is_invite_leader", False) and not state.get("not_party_leader_locked", False)),
@@ -8906,30 +8960,29 @@ def ai_commander_worker(target_pc):
                     for p_uid, p_info in list(global_invite_states.items()):
                         if curr_time - p_info.get("recv_time", 0.0) <= 3.0 and str(p_info.get("invite_group", "선택안함")) == my_inv_grp:
                             if p_info.get("in_game", False):
+                                if "in_hunting_ground" not in p_info:
+                                    p_info["in_hunting_ground"] = (str(p_info.get("party_state", "")) != "TOWN")
                                 online_inv_members[p_uid] = p_info
 
-                # 🔓 [핵심] pratyjangx.png로 파장 잠금(not_party_leader_locked)된 상태라도,
-                # 당시 파티원 중 누군가(기존 파장 등)가 파탈/인증/튕김으로 빠졌거나 파티원 전원이 잠금 상태가 되면 즉시 잠금을 해제하여 왕관을 이어받을 수 있게 함!
+                # 🔓 pratyjangx.png 파장 잠금(not_party_leader_locked) 해제 체크
                 curr_in_party_set = {u for u, m in online_inv_members.items() if m.get("in_party", False)}
                 if state.pop("need_lock_snapshot", False):
                     state["locked_party_snapshot"] = set(curr_in_party_set)
 
                 if state.get("not_party_leader_locked", False):
                     snap_set = state.get("locked_party_snapshot", set())
-                    # ① 당시 파티에 있던 캐릭터 중 하나라도 파티에서 빠졌거나 오프라인이 된 경우
                     someone_left_party = bool(snap_set and not snap_set.issubset(curr_in_party_set))
-                    # ② 현재 파티 중인 모든 캐릭터가 전부 잠금 상태에 빠져 아무도 파장을 못 잡는 경우
                     all_in_party_locked = bool(
-                        curr_in_party_set and
+                        not curr_in_party_set or
                         all(online_inv_members[u].get("not_leader_locked", False) for u in curr_in_party_set)
                     )
                     if someone_left_party or all_in_party_locked:
                         state["not_party_leader_locked"] = False
                         state["locked_party_snapshot"] = set()
                         online_inv_members[my_uid]["not_leader_locked"] = False
-                        dprint(key, "🔓 [파장 잠금 자동 해제] 기존 파티원 이탈(또는 전원 잠금) 감지! 인게임 왕관 승계 가능 상태이므로 파장 후보 자격을 복구합니다.")
+                        dprint(key, "🔓 [파장 잠금 자동 해제] 기존 파티원 이탈(또는 전원 미파티/잠금) 감지! 파장 후보 자격을 복구합니다.")
 
-                # 2) 파장 단독 파탈 시 자동 권위 이양 체크 (기존 파장만 파탈되고 다른 파티원들은 파티 유지 중인 경우)
+                # 2) 파장 단독 파탈 시 자동 권위 이양 체크
                 if state.get("is_invite_leader", False) and state.get("had_party_as_leader", False) and not state.get("in_ingame_party", True):
                     other_in_party = [u for u, m in online_inv_members.items() if u != my_uid and m.get("in_party", False)]
                     if other_in_party:
@@ -8943,35 +8996,101 @@ def ai_commander_worker(target_pc):
                         online_inv_members[my_uid]["is_invite_leader"] = False
                         online_inv_members[my_uid]["need_invite"] = True
                     else:
-                        # 💡 다른 파티원들이 모두 인증(CERTI_)이나 귀환 등으로 빠져서 파티가 자동 해산된 경우
                         state["had_party_as_leader"] = False
                         state["need_party_invite_req"] = False
                         state["party_order"] = [my_uid]
                         dprint(key, "ℹ️ [파티원 전원 이탈/인증] 다른 파티원이 모두 빠져 파티가 해산되었습니다. 파장 자격을 유지하며 파티원 복귀를 대기합니다.")
 
-                # 3) 현재 온라인 멤버 중 활성 파장 확인 및 선출/위임 (pratyjangx.png로 잠긴 캐릭터는 파장 후보에서 제외)
-                active_leaders = [m for m in online_inv_members.values() if m.get("is_invite_leader", False) and not m.get("not_leader_locked", False)]
+                # ⏱️ [2분 무파티 워치독 & 파장 강제 교체]
+                # 같은 초대조에서 2캐릭 이상이 사냥터(in_hunting_ground)에 있는데 파티 맺어진 캐릭이 하나도 없는 상태가 2분(120초) 이상 지속되면,
+                # 기존 파장(마을 정비 중 포함)을 강등시키고 사냥터에서 사냥 중인 다른 캐릭터에게 파장을 넘깁니다!
+                demoted_map = state.setdefault("demoted_leaders", {})
+                for d_u in list(demoted_map.keys()):
+                    if curr_time >= demoted_map[d_u]:
+                        demoted_map.pop(d_u, None)
+
+                hunting_ground_members = [m for m in online_inv_members.values() if m.get("in_hunting_ground", True)]
+                partied_members = [m for m in online_inv_members.values() if m.get("in_party", False)]
+                raw_leaders_now = [
+                    m for m in online_inv_members.values()
+                    if m.get("is_invite_leader", False)
+                    and not m.get("not_leader_locked", False)
+                    and curr_time >= demoted_map.get(m.get("uid", ""), 0.0)
+                ]
+                curr_leader_uid_chk = raw_leaders_now[0]["uid"] if raw_leaders_now else ""
+
+                if curr_leader_uid_chk != state.get("watchdog_leader_uid", ""):
+                    state["watchdog_leader_uid"] = curr_leader_uid_chk
+                    state["no_party_2m_start"] = curr_time if (len(hunting_ground_members) >= 2 and len(partied_members) == 0) else 0.0
+
+                if len(hunting_ground_members) >= 2 and len(partied_members) == 0:
+                    if state.get("no_party_2m_start", 0.0) == 0.0:
+                        state["no_party_2m_start"] = curr_time
+                    elif curr_time - state.get("no_party_2m_start", curr_time) >= 120.0:
+                        state["no_party_2m_start"] = curr_time
+                        if state.get("is_invite_leader", False) or curr_leader_uid_chk == my_uid:
+                            dprint(key, "🚨 [2분 무파티 워치독 발동] 사냥터 2인 이상 상태에서 2분간 파티 결성 실패! 내 파장 권한을 내려놓고 사냥 중인 다음 캐릭터에게 파장을 넘깁니다!")
+                            state["is_invite_leader"] = False
+                            state["had_party_as_leader"] = False
+                            state["invite_leader_since"] = 0.0
+                            state["invite_group_join_time"] = curr_time
+                            state["leader_demoted_until"] = curr_time + 180.0
+                            state["need_party_invite_req"] = True
+                            if not state.get("party_invite_giveup", False):
+                                state["party_accept_try_cnt"] = 0
+                                state["party_retry_wait_until"] = 0.0
+                            demoted_map[my_uid] = curr_time + 180.0
+                            online_inv_members[my_uid]["is_invite_leader"] = False
+                            online_inv_members[my_uid]["is_demoted"] = True
+                            online_inv_members[my_uid]["group_join_time"] = curr_time
+                        elif curr_leader_uid_chk:
+                            dprint(key, f"🚨 [2분 무파티 워치독 발동] 기존 파장({curr_leader_uid_chk}) 체제에서 2분간 파티 결성 실패! 기존 파장을 제외하고 사냥 중인 캐릭터로 새 파장을 선출합니다!")
+                            demoted_map[curr_leader_uid_chk] = curr_time + 180.0
+                            if curr_leader_uid_chk in online_inv_members:
+                                online_inv_members[curr_leader_uid_chk]["is_invite_leader"] = False
+                                online_inv_members[curr_leader_uid_chk]["is_demoted"] = True
+                            if not state.get("party_invite_giveup", False):
+                                state["party_accept_try_cnt"] = 0
+                                state["party_retry_wait_until"] = 0.0
+                                state["need_party_invite_req"] = True
+                else:
+                    state["no_party_2m_start"] = 0.0
+
+                # 3) 현재 온라인 멤버 중 활성 파장 확인 및 선출/위임 (잠금 또는 강등된 파장은 후보에서 제외)
+                active_leaders = [
+                    m for m in online_inv_members.values()
+                    if m.get("is_invite_leader", False)
+                    and not m.get("not_leader_locked", False)
+                    and not m.get("is_demoted", False)
+                    and curr_time >= demoted_map.get(m.get("uid", ""), 0.0)
+                ]
 
                 if len(active_leaders) > 1:
                     active_leaders.sort(key=lambda m: (
                         0 if m.get("in_party", False) else 1,
+                        0 if m.get("in_hunting_ground", True) else 1,
                         m.get("leader_since", 0.0) if m.get("leader_since", 0.0) > 0 else m.get("group_join_time", curr_time),
                         m.get("uid", "")
                     ))
                     winner_uid = active_leaders[0]["uid"]
                     if winner_uid != my_uid and state.get("is_invite_leader", False):
-                        dprint(key, f"🤝 [파장 단일화 양보] 먼저 대기 중이던 {winner_uid} 캐릭터에게 파티장 권한을 양보합니다.")
+                        dprint(key, f"🤝 [파장 단일화 양보] 사냥터 활성 파장({winner_uid})에게 파티장 권한을 양보합니다.")
                         state["is_invite_leader"] = False
                         state["had_party_as_leader"] = False
                         state["invite_leader_since"] = 0.0
+                        state["invite_group_join_time"] = curr_time
+                        state["need_party_invite_req"] = True
                     active_leaders = [active_leaders[0]]
 
                 if len(active_leaders) == 1:
                     leader_info = active_leaders[0]
                     leader_uid = leader_info["uid"]
                     if leader_uid != my_uid:
-                        state["is_invite_leader"] = False
-                        state["invite_leader_since"] = 0.0
+                        if state.get("is_invite_leader", False):
+                            state["is_invite_leader"] = False
+                            state["had_party_as_leader"] = False
+                            state["invite_leader_since"] = 0.0
+                            state["need_party_invite_req"] = True
                         l_order = leader_info.get("party_order", [])
                         if l_order:
                             state["known_party_order"] = list(l_order)
@@ -8984,7 +9103,7 @@ def ai_commander_worker(target_pc):
                             if not state.get("in_ingame_party", True) and not state.get("party_invite_giveup", False) and not state.get("waiting_party_minimap_verify", False):
                                 state["pending_leader_invite_sig"] = True
                                 state["leader_invite_sig_time"] = curr_time
-                                dprint(key, f"📩 [파장 초대신호 수신] 파장({leader_uid})이 나에게 초대 명령어를 보냈습니다! 이미지 매칭 및 수락을 진행합니다. ({state.get('party_accept_try_cnt', 0) + 1}/3회차)")
+                                dprint(key, f"📩 [파장 초대신호 수신] 파장({leader_uid})이 나에게 초대 명령어를 보냈습니다! 이미지 매칭 및 수락을 진행합니다. ({state.get('party_accept_cycle_cnt', 0) + 1}세트 {state.get('party_accept_try_cnt', 0) + 1}/3회차)")
                     else:
                         state["is_invite_leader"] = True
                         state["need_party_invite_req"] = False
@@ -9029,20 +9148,40 @@ def ai_commander_worker(target_pc):
                             state["known_party_order"] = list(new_order)
                             dprint(key, f"👑 [파장 자동 위임] 기존 파장 이탈 또는 권한 이양! 순서에 따라 내가 새 파티장({my_uid})이 됩니다! (현재 순서: {new_order})")
                     else:
+                        # 💡 파티가 아예 없을 때는 현재 사냥터(in_hunting_ground)에서 사냥 중인 캐릭터를 최우선으로 파장으로 선출!
                         all_online = [m for m in online_inv_members.values() if not m.get("not_leader_locked", False)]
-                        if all_online:
-                            all_online.sort(key=lambda m: (m.get("group_join_time", curr_time), m.get("uid", "")))
-                            first_uid = all_online[0]["uid"]
+                        hunting_cands = [m for m in all_online if m.get("in_hunting_ground", True)]
+                        target_pool = hunting_cands if hunting_cands else all_online
+
+                        non_demoted_pool = [
+                            m for m in target_pool
+                            if not m.get("is_demoted", False) and curr_time >= demoted_map.get(m.get("uid", ""), 0.0)
+                        ]
+                        if non_demoted_pool:
+                            target_pool = non_demoted_pool
+                        else:
+                            # 모든 사냥터 후보가 한 바퀴 다 돌았다면 강등 쿨타임 즉시 해제 후 다시 순환
+                            demoted_map.clear()
+                            state["leader_demoted_until"] = 0.0
+
+                        if target_pool:
+                            target_pool.sort(key=lambda m: (
+                                0 if m.get("in_hunting_ground", True) else 1,
+                                m.get("group_join_time", curr_time),
+                                m.get("uid", "")
+                            ))
+                            first_uid = target_pool[0]["uid"]
                             if first_uid == my_uid:
                                 state["is_invite_leader"] = True
                                 state["had_party_as_leader"] = False
                                 state["need_party_invite_req"] = False
+                                state["leader_demoted_until"] = 0.0
                                 state["invite_leader_since"] = curr_time
                                 state["party_order"] = [my_uid]
                                 state["known_party_order"] = [my_uid]
-                                dprint(key, f"👑 [초대조 파장 선출] 초대조({my_inv_grp}) 최초 진입 확인! 내가 파티장({my_uid}) 역할을 시작합니다.")
+                                dprint(key, f"👑 [초대조 파장 선출] 사냥터 활성 캐릭터 기준 내가 파티장({my_uid}) 역할을 시작합니다!")
 
-                # 4) [파티장 역할]: 전투가 모두 끝났고 독이 없는 상태일 때만 '/초대 케릭명' 발송! (독 감염 시 GUI 딜레이 무시 즉시 해독 우선)
+                # 4) [파티장 역할]: 실제로 활을 쏘며 교전 중인 순간만 아니면 즉시 멈춰서 '/초대 케릭명' 발송! (독 감염 시 GUI 딜레이 무시 즉시 해독 우선)
                 if state.get("is_invite_leader", False) and not state.get("not_party_leader_locked", False) and not is_ui_busy_for_chat and curr_time > state.get("party_invite_global_cd", 0.0):
                     inv_time_map = state.setdefault("invited_time_map", {})
                     requesters = [
@@ -9052,21 +9191,16 @@ def ai_commander_worker(target_pc):
                         and (curr_time - inv_time_map.get(u, 0.0) >= 6.0)
                     ]
                     if requesters:
-                        # 🛡️ 파장 전투/루팅 중인지 체크 (전투가 모두 끝난 뒤에 초대 명령어 입력)
+                        # 🛡️ 화면 멀리에 몹이 있다는 이유(len(mobs) > 0)로 초대를 막지 않고, 현재 실제로 공격/조준 사격 중인 순간에만 대기
                         is_leader_in_combat = (
-                            len(mobs) > 0 or
                             state.get("is_attacking", False) or
                             state.get("arrow_is_firing", False) or
-                            state.get("is_pulling", False) or
-                            state.get("sweep_active", False) or
-                            fsm_inv_chk.startswith("LOOT") or
-                            fsm_inv_chk not in ["IDLE", "PATROL", "PARTY_WAIT", "PARTY_ACTIVE_STANDBY", "SQUAD_WAIT"] or
-                            (curr_time - state.get("last_exp_time", 0.0) < 1.2)
+                            fsm_inv_chk in ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "MOTION_SNAP_CHECK_SWORD", "HEINE_GMOB_VERIFY"]
                         )
                         if is_leader_in_combat:
                             if curr_time - state.get("leader_combat_wait_log_t", 0.0) >= 3.0:
                                 state["leader_combat_wait_log_t"] = curr_time
-                                dprint(key, "⏳ [파장 전투 중 초대 보류] 현재 전투/루팅 중이므로 교전이 모두 끝난 뒤 파티 초대를 진행합니다.")
+                                dprint(key, "⏳ [파장 사격 중 초대 보류] 현재 몹 타격 중이므로 처치 직후 즉시 파티 초대를 진행합니다.")
                         else:
                             # 🧪 파장이 독에 걸려 있는지 즉시 픽셀 검사 ➔ 독 상태면 GUI 딜레이 무시하고 해독부터 실행!
                             _, _, raw_poison_leader, _ = get_hp_mp_percent(img_bgr, w, h, HP_Y_START, HP_Y_END)
@@ -9130,11 +9264,18 @@ def ai_commander_worker(target_pc):
                             state["party_invite_global_cd"] = curr_time + 3.5
                             state["party_accept_grace_until"] = curr_time + 5.0
                             state["cooldown"] = curr_time + 2.5
-                            dprint(key, f"📨 [파티원 요청 수신 ➔ 초대 실행] 전투/독 없음 확인! {t_uid}('{t_char_name}' ➔ 영타:'{t_eng_name}') 초대 명령 전송! (영타감지:{is_yungta_now})")
+                            dprint(key, f"📨 [파티원 요청 수신 ➔ 초대 실행] 비사격/독없음 확인! {t_uid}('{t_char_name}' ➔ 영타:'{t_eng_name}') 초대 명령 전송! (영타감지:{is_yungta_now})")
                             continue
 
-                # 5) [파티원 역할]: 미파티 상태(not in_ingame_party)일 때만 party.png / party2.png 매칭 ➔ 파장 초대신호 수신 시 미매칭이어도 강제 'y + 엔터' 수락!
-                if not state.get("is_invite_leader", False) and not is_ui_busy_for_chat and not state.get("in_ingame_party", True) and not state.get("party_invite_giveup", False) and not state.get("waiting_party_minimap_verify", False):
+                # 5) [파티원 역할]: 파장이 실제로 나에게 초대를 보냈다는 신호(pending_leader_invite_sig)가 있을 때만 party.png 매칭 및 'y + 엔터' 수락! (과거 채팅 잔상 오수락 원천 차단)
+                if (
+                    not state.get("is_invite_leader", False) and
+                    not is_ui_busy_for_chat and
+                    not state.get("in_ingame_party", True) and
+                    not state.get("party_invite_giveup", False) and
+                    not state.get("waiting_party_minimap_verify", False) and
+                    state.get("pending_leader_invite_sig", False)
+                ):
                     if curr_time > state.get("next_party_png_scan", 0.0) and curr_time > state.get("party_accept_cd", 0.0):
                         state["next_party_png_scan"] = curr_time + 0.20
                         matched_party_img = None
@@ -9144,9 +9285,8 @@ def ai_commander_worker(target_pc):
                                 break
 
                         force_accept_by_sig = False
-                        if not matched_party_img and state.get("pending_leader_invite_sig", False):
-                            if curr_time - state.get("leader_invite_sig_time", 0.0) >= 0.8:
-                                force_accept_by_sig = True
+                        if not matched_party_img and (curr_time - state.get("leader_invite_sig_time", 0.0) >= 0.8):
+                            force_accept_by_sig = True
 
                         if matched_party_img or force_accept_by_sig:
                             state["pending_leader_invite_sig"] = False
@@ -9177,11 +9317,12 @@ def ai_commander_worker(target_pc):
                             pico_queues[key].put({"action": "PARTY_ACCEPT_CMD"})
                             state["party_accept_cd"] = curr_time + 3.5
                             state["cooldown"] = curr_time + 1.2
+                            curr_cycle_num = state.get("party_accept_cycle_cnt", 0) + 1
                             curr_try_num = state.get("party_accept_try_cnt", 0) + 1
                             if matched_party_img:
-                                dprint(key, f"✅ [파티 초대 감지 ({curr_try_num}/3회차)] 채팅창 '{matched_party_img}' 매칭 성공! 'y + 엔터' 입력 후 미니맵 검사를 진행합니다.")
+                                dprint(key, f"✅ [파티 초대 감지 ({curr_cycle_num}세트 {curr_try_num}/3회차)] 채팅창 '{matched_party_img}' 매칭 성공! 'y + 엔터' 입력 후 미니맵 검사를 진행합니다.")
                             else:
-                                dprint(key, f"⚠️ [이미지 미매칭 ➔ 강제 수락 ({curr_try_num}/3회차)] 파장 초대 신호 확인 후 이미지가 안 잡혀 강제로 'y + 엔터' 입력 후 미니맵을 검사합니다!")
+                                dprint(key, f"⚠️ [이미지 미매칭 ➔ 강제 수락 ({curr_cycle_num}세트 {curr_try_num}/3회차)] 파장 초대 신호 확인 후 이미지가 안 잡혀 강제로 'y + 엔터' 입력 후 미니맵을 검사합니다!")
                             continue
             # ====================================================================
 
@@ -9210,9 +9351,11 @@ def ai_commander_worker(target_pc):
                     
                     map_pos, minimap_processed = get_robust_map_pos(minimap_bgr, pc_map_edges, last_pos=state.get("dungeon_map_pos"), allow_full_scan=allow_full, map_gray=pc_map_gray, is_open_map=is_oak_active)
 
-                    is_bondon = "본던" in active_dungeon or "gludio" in active_dungeon.lower()
+                    is_bondon_only = "본던" in active_dungeon or "gludio" in active_dungeon.lower()
+                    is_sadeon = "사던" in active_dungeon or "silver" in active_dungeon.lower()
+                    is_bondon = is_bondon_only or is_sadeon
 
-                    # 👇👇 [핵심 버그 수정] 본던 5층/6층 억지 매칭 방지 및 이진화 맵 정밀 스캔
+                    # 👇👇 [핵심 버그 수정] 본던/사던 억지 매칭 방지 및 이진화 맵 정밀 스캔
                     if map_pos is not None and allow_full and is_bondon and not settings.get("use_party_hunt", False):
                         # 이미 이진화된 pc_map_gray 와 minimap_processed 로 점수 정밀 재검증
                         thresh_val = int(settings.get("oak_thresh", 127))
@@ -9220,7 +9363,7 @@ def ai_commander_worker(target_pc):
                         try:
                             res_verify = cv2.matchTemplate(f_target, minimap_processed, cv2.TM_CCOEFF_NORMED)
                             _, max_v, _, _ = cv2.minMaxLoc(res_verify)
-                            # 💡 40% 미만이면 5층인데 6층맵에 억지로 끼워맞춘 것으로 간주하여 폐기!
+                            # 💡 40% 미만이면 다른 층 맵에 억지로 끼워맞춘 것으로 간주하여 폐기!
                             if max_v < 0.40: 
                                 map_pos = None
                         except: pass
@@ -9229,7 +9372,7 @@ def ai_commander_worker(target_pc):
                         is_ant = "개미굴" in active_dungeon
                         is_giran = "기란" in active_dungeon or "기던" in active_dungeon
 
-                        # 💡 [수정] 본던(is_bondon)도 오입장/불일치 감지 엔진에 편입!
+                        # 💡 [수정] 본던 및 사던도 오입장/불일치 감지 엔진에 편입!
                         if is_ant or is_giran or is_bondon:
                             if curr_time - state.get("last_floor_detect_time", 0) > 10.0:
                                 state["last_floor_detect_time"] = curr_time
@@ -9238,6 +9381,13 @@ def ai_commander_worker(target_pc):
                                     candidates = [k for k in DUNGEON_ASSETS.keys() if "개미굴" in k]
                                 elif is_giran:
                                     candidates = [k for k in DUNGEON_ASSETS.keys() if "기란" in k or "기던" in k]
+                                elif is_sadeon:
+                                    gui_tgt_check = settings.get("dungeon_name", "")
+                                    # 💡 사던 4층(4-x) 목표일 때만 '사던 3to4'(silver3to4map.png)를 최우선 스캔 후보로 배치합니다.
+                                    if "4-" in gui_tgt_check or "4층" in gui_tgt_check:
+                                        candidates = ["사던 3to4"] + [k for k in DUNGEON_ASSETS.keys() if ("사던" in k or "silver" in k.lower()) and k not in ["사던 3to4", "사던 3층"]]
+                                    else:
+                                        candidates = [k for k in DUNGEON_ASSETS.keys() if ("사던" in k or "silver" in k.lower()) and k != "사던 3to4"]
                                 else:
                                     gui_tgt_check = settings.get("dungeon_name", "")
                                     # 💡 [버그 픽스 1] GUI 사냥터 목표가 6층(6-x)일 때만 '5to6' 맵을 스캔 후보 최우선으로 넣습니다!
@@ -9260,11 +9410,11 @@ def ai_commander_worker(target_pc):
                                         cand_map_file = DUNGEON_ASSETS.get(f_name, {}).get("map", "")
                                         
                                         # 동일한 지도 이미지를 쓰는 구역은 검사 패스 (연산 낭비 방어)
-                                        # 단, 5to6은 특별 취급하여 스캔을 허용합니다.
-                                        if cand_map_file in tested_map_files and "5to6" not in f_name:
+                                        # 단, 5to6 및 3to4는 특별 취급하여 스캔을 허용합니다.
+                                        if cand_map_file in tested_map_files and "5to6" not in f_name and "3to4" not in f_name:
                                             continue
                                             
-                                        if "5to6" not in f_name:
+                                        if "5to6" not in f_name and "3to4" not in f_name:
                                             tested_map_files.add(cand_map_file)
 
                                         f_assets = get_pc_assets(f_name)
@@ -9303,17 +9453,25 @@ def ai_commander_worker(target_pc):
                                         detected_map_file = DUNGEON_ASSETS.get(best_f_name, {}).get("map", "")
                                         gui_target_map_file = DUNGEON_ASSETS.get(gui_target_dng, {}).get("map", "")
                                         
-                                        is_goal_6f = "6-" in gui_target_dng or "6층" in gui_target_dng
-                                        is_current_5f = "5-" in best_f_name or "5층" in best_f_name or "5to6" in best_f_name
+                                        is_goal_6f = is_bondon_only and ("6-" in gui_target_dng or "6층" in gui_target_dng)
+                                        is_current_5f = is_bondon_only and ("5-" in best_f_name or "5층" in best_f_name or "5to6" in best_f_name)
+
+                                        is_goal_4f_sadeon = is_sadeon and ("4-" in gui_target_dng or "4층" in gui_target_dng)
+                                        is_current_3f_sadeon = is_sadeon and ("3층" in best_f_name or "3to4" in best_f_name)
                                         
-                                        # 💡 1. 6층 목표인데 5층 미니맵이 팩트 확인된 경우 -> 무조건 5to6 발동!
-                                        if is_bondon and is_goal_6f and is_current_5f:
+                                        # 💡 1-A. 본던 6층 목표인데 5층 미니맵이 팩트 확인된 경우 -> 무조건 본던 5to6 발동!
+                                        if is_bondon_only and is_goal_6f and is_current_5f:
                                             best_f_name = "본던 5to6"
                                             dprint(key, f"🚨 [6층 돌입 스마트 인지] 목표는 6층이나 현재 위치가 5층으로 확인되었습니다! 즉각 6층 진입 작전을 가동합니다!")
+
+                                        # 💡 1-B. 사던 4층 목표인데 3층 미니맵이 팩트 확인된 경우 -> 무조건 사던 3to4 발동!
+                                        elif is_sadeon and is_goal_4f_sadeon and is_current_3f_sadeon:
+                                            best_f_name = "사던 3to4"
+                                            dprint(key, f"🚨 [사던 4층 돌입 스마트 인지] 목표는 4층이나 현재 위치가 3층으로 확인되었습니다! 즉각 4층 진입 작전(사던 3to4)을 가동합니다!")
                                             
-                                        # 💡 2. 내가 방금 감지한 맵(예: 6층 맵)이 GUI 설정(예: 6-3)과 완벽히 같은 층인 경우
-                                        elif detected_map_file and detected_map_file == gui_target_map_file and "5to6" not in best_f_name:
-                                            # 👇 [오인식 방어막] 5to6 맵을 통해 6층으로 진격 중일 때는 미니맵 모양만으로 6층 도착 판정 절대 금지!
+                                        # 💡 2. 내가 방금 감지한 맵(예: 6층/4층 맵)이 GUI 설정과 완벽히 같은 층인 경우
+                                        elif detected_map_file and detected_map_file == gui_target_map_file and "5to6" not in best_f_name and "3to4" not in best_f_name:
+                                            # 👇 [오인식 방어막] 본던 5to6 맵을 통해 6층으로 진격 중일 때는 미니맵 모양만으로 6층 도착 판정 절대 금지!
                                             if state.get("override_dungeon_name") == "본던 5to6" and is_goal_6f:
                                                 best_f_name = "본던 5to6"
                                             else:
@@ -9323,6 +9481,11 @@ def ai_commander_worker(target_pc):
                                                 else:
                                                     dprint(key, f"🎉 [목표 층수 도착] 실제 위치가 목표한 층({gui_target_dng})과 일치합니다! 임시 지도를 파기하고 정상 사냥을 개시합니다.")
                                                     state.pop("override_dungeon_name", None)
+                                                    state["scan_6f_continuous"] = False
+                                                    state["waiting_for_6f_in"] = False
+                                                    state["portal_retry_mode"] = False
+                                                    state["portal_entry_start_time"] = 0
+                                                    state["target_fsm"] = "IDLE"
                                         
                                         # 💡 3. 그 외 엉뚱한 층일 경우
                                         else:
@@ -9341,8 +9504,8 @@ def ai_commander_worker(target_pc):
                                         state["current_target_node"], state["hidden_track_node"] = None, None
                                         state["astar_fail_count"] = 0
                                         
-                                        # 5층에서 6층 작전 켤 때 몹사 방지용 위치 섞기 텔레포트 1회
-                                        if best_f_name == "본던 5to6" and is_bondon and is_goal_6f and is_current_5f:
+                                        # 5층->6층(본던) 또는 3층->4층(사던) 작전 개시 시 몹사 방지용 위치 섞기 텔레포트 1회
+                                        if (best_f_name == "본던 5to6" and is_bondon_only and is_goal_6f and is_current_5f) or (best_f_name == "사던 3to4" and is_sadeon and is_goal_4f_sadeon and is_current_3f_sadeon):
                                             with pico_queues[key].mutex: pico_queues[key].queue.clear()
                                             if state.get("sweep_active", False):
                                                 pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
@@ -9387,7 +9550,7 @@ def ai_commander_worker(target_pc):
                                             min_portal_dist = dist
 
                                 dng_name = settings.get("dungeon_name", "")
-                                is_sudeon_bondon = ("수던" in dng_name or "본던" in dng_name)
+                                is_sudeon_bondon = ("수던" in dng_name or "본던" in dng_name or "사던" in dng_name or "silver" in dng_name.lower())
 
                                 if is_sudeon_bondon:
 
@@ -9692,12 +9855,16 @@ def ai_commander_worker(target_pc):
                 state["special_ack_arrived"] = True
                 state["loot_ack_arrived"] = True
 
-                # 💡 수동 개입(`) 후 복귀 시 파티 초대 3회 실패 락아웃 및 파장 잠금 해제
+                # 💡 수동 개입(`) 후 복귀 시 파티 초대 3x3(9회) 실패 락아웃 및 파장 잠금/강등 해제
                 state["party_invite_giveup"] = False
                 state["party_accept_try_cnt"] = 0
+                state["party_accept_cycle_cnt"] = 0
+                state["party_retry_wait_until"] = 0.0
                 state["waiting_party_minimap_verify"] = False
                 state["pending_leader_invite_sig"] = False
                 state["not_party_leader_locked"] = False
+                state["leader_demoted_until"] = 0.0
+                state["no_party_2m_start"] = 0.0
 
                 state["f1_retry_cnt"] = 0
                 state["cooldown"] = curr_time + 0.1
@@ -14419,6 +14586,216 @@ def ai_commander_worker(target_pc):
                                             ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
                                             ai_states[key]["reentry_wait_start"] = time.time()
 
+                                elif "사던" in dungeon_name or "silver" in dungeon_name.lower():
+                                    ensure_minimap_open(check_time=1.5, pre_teleport=True)
+
+                                    dprint(key, f"▶ [사던 복귀] F3 -> F10 (축순) 눌러 '{dungeon_name}' 베란다 기억 장소를 엽니다.")
+                                    send_keyboard_key(p_serial, p_lock, 196, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 196, 0, is_manual=True)
+                                    wait_with_heal(g_val(0.2, 0.3))
+                                    send_keyboard_key(p_serial, p_lock, 203, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 203, 0, is_manual=True)
+                                    wait_with_heal(g_val(0.8, 1.2))
+
+                                    # qq/silver 폴더 또는 qq 폴더 내 사던 축순 북마크 이미지 탐색
+                                    silver_bm_candidates = [
+                                        "qq/silver/silver333.png", "qq/silver/silver3.png", "qq/silver/silver4.png", "qq/silver/silver.png",
+                                        "qq/silver333.png", "qq/silver3.png", "qq/silver4.png", "qq/silver.png"
+                                    ]
+                                    if "2층" in dungeon_name:
+                                        silver_bm_candidates = ["qq/silver/silver222.png", "qq/silver/silver2.png", "qq/silver222.png", "qq/silver2.png"] + silver_bm_candidates
+
+                                    stuck_scrolls = 0
+                                    last_scroll_img = None
+                                    found = False
+
+                                    for scroll_idx in range(50):
+                                        pos = None
+                                        for bm_path in silver_bm_candidates:
+                                            pos = find_img_universal(bm_path, th=0.82, ui_only=True)
+                                            if pos:
+                                                break
+                                        if pos:
+                                            dprint(key, f"✅ 사던 기억 장소 발견! 더블 클릭하여 베란다로 텔레포트합니다.")
+                                            safe_x = pos[0] + random.randint(-2, 2)
+                                            safe_y = pos[1] + random.randint(-2, 2)
+                                            m_click_ack(safe_x, safe_y, jx=0, jy=0, double=True, pre_delay=g_val(0.37, 0.72))
+                                            found = True
+                                            break
+
+                                        screen = latest_frames.get(key)
+                                        if screen is not None:
+                                            h_scr, w_scr = screen.shape[:2]
+                                            ui_roi = screen[0:min(400, h_scr), 0:min(290, w_scr)]
+                                            uh, uw = ui_roi.shape[:2]
+                                            if uh > 200 and uw > 50:
+                                                curr_scroll_img = cv2.cvtColor(ui_roi[150:uh-50, uw//2:uw], cv2.COLOR_BGR2GRAY)
+                                                if last_scroll_img is not None and last_scroll_img.shape == curr_scroll_img.shape:
+                                                    diff = cv2.absdiff(last_scroll_img, curr_scroll_img)
+                                                    _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
+                                                    if cv2.countNonZero(thresh) < 100: stuck_scrolls += 1
+                                                    else: stuck_scrolls = 0
+                                                last_scroll_img = curr_scroll_img
+
+                                            if stuck_scrolls >= random.randint(6, 7):
+                                                dprint(key, "🛑 [스크롤 끝] 바닥 도달. 사던 기억 장소를 찾지 못했습니다.")
+                                                break
+
+                                        send_mouse_scroll(p_serial, p_lock, -1 * int(round(g_val(3, 6))))
+                                        wait_with_heal(g_val(0.20, 0.30) if random.random() < 0.15 else g_val(0.12, 0.18))
+
+                                    if found:
+                                        wait_with_heal(g_val(1.8, 2.5))
+                                        ensure_minimap_open(check_time=1.5, pre_teleport=False)
+
+                                        dprint(key, "🛡️ [생존 셋팅] 베란다 도착 완료. 즉시 F1 탭으로 복귀합니다.")
+                                        send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+                                        wait_with_heal(g_val(0.2, 0.4))
+
+                                        # 4층 목표일 경우 3층 진입 즉시 3to4 모드로 작동하도록 선제 지정
+                                        if "4-" in dungeon_name or "4층" in dungeon_name:
+                                            ai_states[key]["override_dungeon_name"] = "사던 3to4"
+                                            ai_states[key]["dungeon_map_pos"] = None
+
+                                        def find_silver3f_portal_on_screen():
+                                            scr = latest_frames.get(key)
+                                            if scr is None: return None
+                                            h_s, w_s = scr.shape[:2]
+                                            sx1, sy1 = 145, 0
+                                            sx2, sy2 = w_s - 80, int(h_s * 0.68)
+                                            if sx2 <= sx1 or sy2 <= sy1: return None
+                                            search_roi = scr[sy1:sy2, sx1:sx2]
+                                            for img_name in ["qq/silver/silver3f_portal.png", "qq/silver3f_portal.png"]:
+                                                if os.path.exists(img_name):
+                                                    if img_name not in loaded_models:
+                                                        bgra = cv2.imread(img_name, cv2.IMREAD_UNCHANGED)
+                                                        if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4:
+                                                            loaded_models[img_name] = {"color": bgra[:,:,:3], "mask": bgra[:,:,3]}
+                                                        else:
+                                                            loaded_models[img_name] = {"color": cv2.imread(img_name, cv2.IMREAD_COLOR), "mask": None}
+                                                    tmpl = loaded_models.get(img_name)
+                                                    if tmpl and tmpl["color"] is not None:
+                                                        if tmpl["mask"] is not None:
+                                                            res = cv2.matchTemplate(search_roi, tmpl["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl["mask"]]*3))
+                                                        else:
+                                                            res = cv2.matchTemplate(search_roi, tmpl["color"], cv2.TM_CCOEFF_NORMED)
+                                                        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                                                        if max_val >= 0.72:
+                                                            return sx1 + max_loc[0] + tmpl["color"].shape[1]//2, sy1 + max_loc[1] + tmpl["color"].shape[0]//2
+                                            return None
+
+                                        dprint(key, "▶ [사던 베란다 ➔ 3층 진입] silver3f_portal.png 매칭(1순위) + 미니맵 파란 포탈 추적(2순위) 가동!")
+                                        door_found_and_entered = False
+                                        global_start_t = time.time()
+                                        evade_flip = 1
+
+                                        while time.time() - global_start_t < 90.0:
+                                            wait_with_heal(0.1)
+
+                                            # 1) 이미 3층 내부 미니맵 좌표가 잡혔는지 확인
+                                            if ai_states.get(key, {}).get("dungeon_map_pos") is not None:
+                                                dprint(key, "🚪 [사던 3층 진입 완료] 3층 미니맵 좌표 인식 성공!")
+                                                door_found_and_entered = True
+                                                break
+
+                                            # 2) 좌측 하단 진입 텍스트(silver3_in.png) 확인
+                                            for in_img_p in ["qq/silver/silver3_in.png", "qq/silver3_in.png"]:
+                                                if os.path.exists(in_img_p):
+                                                    scr_in = latest_frames.get(key)
+                                                    if scr_in is not None:
+                                                        h_s, w_s = scr_in.shape[:2]
+                                                        ui_check_roi = scr_in[max(0, min(h_s, 420)):max(0, min(h_s, 485)), 0:min(w_s, 150)]
+                                                        try:
+                                                            if in_img_p not in loaded_models:
+                                                                bgra = cv2.imread(in_img_p, cv2.IMREAD_UNCHANGED)
+                                                                if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4:
+                                                                    loaded_models[in_img_p] = {"color": cv2.cvtColor(bgra[:, :, :3], cv2.COLOR_BGR2GRAY), "mask": bgra[:, :, 3]}
+                                                                else:
+                                                                    loaded_models[in_img_p] = {"color": cv2.imread(in_img_p, cv2.IMREAD_GRAYSCALE), "mask": None}
+                                                            s3_tmpl = loaded_models.get(in_img_p)
+                                                            if s3_tmpl and s3_tmpl["color"] is not None:
+                                                                roi_gray = cv2.cvtColor(ui_check_roi, cv2.COLOR_BGR2GRAY)
+                                                                res = cv2.matchTemplate(roi_gray, s3_tmpl["color"], cv2.TM_CCOEFF_NORMED)
+                                                                if cv2.minMaxLoc(res)[1] >= 0.85:
+                                                                    dprint(key, "🚪 [사던 3층 진입 완료] 진입 텍스트(silver3_in) 포착!")
+                                                                    door_found_and_entered = True
+                                                                    break
+                                                        except: pass
+                                            if door_found_and_entered:
+                                                break
+
+                                            # 3) 1순위: 화면에서 silver3f_portal.png 직접 찾아서 클릭
+                                            portal_scr_pos = find_silver3f_portal_on_screen()
+                                            if portal_scr_pos is not None:
+                                                ptx, pty = portal_scr_pos
+                                                if key in ai_states: ai_states[key]["debug_door_pos"] = (ptx, pty)
+                                                dprint(key, f"🎯 [베란다 포탈 포착] silver3f_portal.png({ptx}, {pty}) 발견! 클릭하여 3층으로 진입합니다.")
+                                                m_click_ack(ptx, pty, jx=3, jy=3, double=True, pre_delay=g_val(0.1, 0.2))
+                                                wait_with_heal(g_val(1.2, 1.6))
+                                                continue
+
+                                            # 4) 2순위: 화면에 포탈이 안 보이면 미니맵 파란 포탈 마커 방향으로 이동
+                                            angle = get_minimap_marker_angle()
+                                            if angle == "ARRIVED":
+                                                # 파란점 바로 앞인데 포탈 이미지가 가려진 경우 캐릭터 위쪽(12시~1시 동굴 입구 방향) 클릭
+                                                m_click_ack(400 + random.randint(-15, 15), 195 + random.randint(-10, 10), jx=3, jy=3, double=True)
+                                                wait_with_heal(g_val(1.0, 1.4))
+                                            elif angle is not None:
+                                                move_dist = g_val(120.0, 150.0)
+                                                raw_tx = int(400 + math.cos(angle) * move_dist)
+                                                raw_ty = int(245 + math.sin(angle) * (move_dist * 0.85))
+                                                cx_s = int(max(10, min(740, raw_tx)))
+                                                cy_s = int(max(5, min(int(600 * 0.68), raw_ty)))
+                                                if cx_s < 165 and cy_s < 150:
+                                                    if (165 - cx_s) < (150 - cy_s): cx_s = 165
+                                                    else: cy_s = 150
+                                                dprint(key, f"🧭 [베란다 파란점 추적] 포탈 마커 방향({cx_s}, {cy_s})으로 접근합니다.")
+                                                m_click_ack(cx_s, cy_s, jx=4, jy=4)
+                                                wait_with_heal(g_val(0.8, 1.2))
+                                            else:
+                                                wait_with_heal(0.4)
+
+                                        if key in ai_states: ai_states[key]["debug_door_pos"] = None
+
+                                        if door_found_and_entered:
+                                            if "4-" in dungeon_name or "4층" in dungeon_name:
+                                                ai_states[key]["override_dungeon_name"] = "사던 3to4"
+                                                dprint(key, "🚀 [사던 4층 진격 개시] 3층 진입 확인 완료! '사던 3to4' 네비게이션을 가동합니다.")
+                                            ai_states[key]["target_fsm"] = "IDLE"
+                                            ai_states[key]["town_done_logged"] = False
+                                            ai_states[key]["dungeon_map_pos"] = None
+                                            ai_states[key]["dungeon_last_map_pos"] = None
+                                            ai_states[key]["dungeon_global_path"] = []
+                                            ai_states[key]["current_target_node"] = None
+                                            ai_states[key]["is_pulling"] = False
+                                            ai_states[key]["is_attacking"] = False
+                                            ai_states[key]["arrow_is_firing"] = False
+                                            ai_states[key]["reentry_retry_cnt"] = 0
+                                            send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+                                            ai_states[key]["cooldown"] = time.time() + 1.0
+                                        else:
+                                            retry_cnt = ai_states.get(key, {}).get("reentry_retry_cnt", 0) + 1
+                                            ai_states[key]["reentry_retry_cnt"] = retry_cnt
+                                            if retry_cnt > 3:
+                                                send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
+                                                ai_states[key]["reentry_retry_cnt"] = 0
+                                                ai_states[key]["target_fsm"] = "SHUTDOWN_WAIT"
+                                                ai_states[key]["shutdown_timer"] = time.time() + 2.0
+                                            else:
+                                                ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
+                                                ai_states[key]["reentry_wait_start"] = time.time()
+                                    else:
+                                        dprint(key, f"❌ 축순 기억창에서 사던 북마크({silver_bm_candidates[0]})를 찾지 못했습니다.")
+                                        send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
+                                        send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+                                        retry_cnt = ai_states.get(key, {}).get("reentry_retry_cnt", 0) + 1
+                                        ai_states[key]["reentry_retry_cnt"] = retry_cnt
+                                        if retry_cnt > 3:
+                                            ai_states[key]["reentry_retry_cnt"] = 0
+                                            ai_states[key]["target_fsm"] = "SHUTDOWN_WAIT"
+                                            ai_states[key]["shutdown_timer"] = time.time() + 2.0
+                                        else:
+                                            ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
+                                            ai_states[key]["reentry_wait_start"] = time.time()
+
                                 else:
                                     dprint(key, f"🚨 '{dungeon_name}' 사냥터 복귀 미구현! 마을 학살 방지를 위해 매크로를 일시 정지합니다.")
                                     ai_states[key]["is_paused"] = True
@@ -14832,9 +15209,9 @@ def ai_commander_worker(target_pc):
                             haste_elapsed = curr_time - last_haste
 
                             dng_name_for_buff = settings.get("dungeon_name", "")
-                            if "수던" in dng_name_for_buff or "heine" in dng_name_for_buff.lower() or "본던" in dng_name_for_buff or "gludio" in dng_name_for_buff.lower():
+                            if "수던" in dng_name_for_buff or "heine" in dng_name_for_buff.lower() or "본던" in dng_name_for_buff or "gludio" in dng_name_for_buff.lower() or "사던" in dng_name_for_buff or "silver" in dng_name_for_buff.lower():
                                 buff_threshold = 2400.0
-                                threshold_str = "40분(수던/본던)"
+                                threshold_str = "40분(수던/본던/사던)"
                             else:
                                 buff_threshold = 6600.0
                                 threshold_str = "1시간 50분(일반)"
@@ -15719,7 +16096,7 @@ def ai_commander_worker(target_pc):
                 dng_name_debug_haste = settings.get("dungeon_name", "")
                 is_oak_event_dbg = "오땅" in dng_name_debug_haste or "event" in dng_name_debug_haste.lower()
                 is_sudeon_dbg = "수던" in dng_name_debug_haste or "heine" in dng_name_debug_haste.lower()
-                is_bondon_dbg = "본던" in dng_name_debug_haste or "gludio" in dng_name_debug_haste.lower()
+                is_bondon_dbg = "본던" in dng_name_debug_haste or "gludio" in dng_name_debug_haste.lower() or "사던" in dng_name_debug_haste or "silver" in dng_name_debug_haste.lower()
 
                 if is_oak_event_dbg or is_sudeon_dbg or is_bondon_dbg:
                     CHAT_X1, CHAT_X2 = 125, 600
@@ -16000,7 +16377,7 @@ def ai_commander_worker(target_pc):
                 gb_cnt = state.get("current_gb_count", 0)
                 m_sens = settings.get("motion_sensitivity", 35)
                 d_name_debug = settings.get("dungeon_name", "")
-                gb_limit_debug = int(settings.get("gangbang_count_dungeon", 4)) if ("본던" in d_name_debug or "본토" in d_name_debug or "개미" in d_name_debug) else int(settings.get("gangbang_count_normal", 3))
+                gb_limit_debug = int(settings.get("gangbang_count_dungeon", 4)) if ("본던" in d_name_debug or "본토" in d_name_debug or "개미" in d_name_debug or "사던" in d_name_debug or "silver" in d_name_debug.lower()) else int(settings.get("gangbang_count_normal", 3))
 
                 gb_color = (0, 0, 255) if state.get("is_gangbang", False) else (0, 255, 0)
                 cv2.putText(debug_img, f"GB_MOB: {gb_cnt} / {gb_limit_debug} (Sens: {m_sens})", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.5, gb_color, 2)
@@ -17455,7 +17832,7 @@ def ai_commander_worker(target_pc):
                 if "event" in dng_name_tele or "오땅" in dng_name_tele:
                     tele_hunt_enabled = False
 
-                is_solo_zone_tele = ("본던 2-" in dng_name_tele or "본던 4-" in dng_name_tele or "본던 5-" in dng_name_tele or "본던 6-" in dng_name_tele or "본던 7-" in dng_name_tele) and not (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False))
+                is_solo_zone_tele = ("본던 2-" in dng_name_tele or "본던 4-" in dng_name_tele or "본던 5-" in dng_name_tele or "본던 6-" in dng_name_tele or "본던 7-" in dng_name_tele or "사던 4-" in dng_name_tele) and not (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False))
 
                 if settings.get("use_party_hunt", False) or is_solo_zone_tele:
                     tele_hunt_enabled = False
@@ -17504,7 +17881,7 @@ def ai_commander_worker(target_pc):
                         is_chain_kill_on = settings.get("chain_kill", False)
                         
                         dng_name_aim1 = settings.get("dungeon_name", "")
-                        is_bondon_aim = "본던" in dng_name_aim1 or "gludio" in dng_name_aim1.lower()
+                        is_bondon_aim = "본던" in dng_name_aim1 or "gludio" in dng_name_aim1.lower() or "사던" in dng_name_aim1 or "silver" in dng_name_aim1.lower()
 
                         # ================= [ 변경 코드 ] =================
                         if is_party_mode or is_chain_kill_on or is_bondon_aim:
@@ -17519,7 +17896,7 @@ def ai_commander_worker(target_pc):
 
                             state["aiming_start_time"] = curr_time
                             dng_name_aim2 = settings.get("dungeon_name", "")
-                            if "수던" in dng_name_aim2 or "heine" in dng_name_aim2.lower() or "본던" in dng_name_aim2 or "gludio" in dng_name_aim2.lower():
+                            if "수던" in dng_name_aim2 or "heine" in dng_name_aim2.lower() or "본던" in dng_name_aim2 or "gludio" in dng_name_aim2.lower() or "사던" in dng_name_aim2 or "silver" in dng_name_aim2.lower():
                                 state["aiming_limit"] = g_val(0.9, 1.3)
                             else:
                                 state["aiming_limit"] = g_val(1.5, 2.1)
@@ -17600,7 +17977,7 @@ def ai_commander_worker(target_pc):
                             is_party_f4_mode = (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)) and not settings.get("is_puller", False)
                             
                             dng_name_f4 = settings.get("dungeon_name", "")
-                            is_bondon_f4 = "본던" in dng_name_f4 or "gludio" in dng_name_f4.lower()
+                            is_bondon_f4 = "본던" in dng_name_f4 or "gludio" in dng_name_f4.lower() or "사던" in dng_name_f4 or "silver" in dng_name_f4.lower()
 
                             if is_party_f4_mode or is_bondon_f4:
                                 state["party_blind_sweep_start"] = curr_time + 0.1
@@ -17700,7 +18077,7 @@ def ai_commander_worker(target_pc):
                         if combat_dur > 15.0 and not state.get("combat_took_damage", False):
                             force_timeout = True
                             
-                    elif "본던" in dng_combat_name or "gludio" in dng_combat_name.lower():
+                    elif "본던" in dng_combat_name or "gludio" in dng_combat_name.lower() or "사던" in dng_combat_name or "silver" in dng_combat_name.lower():
                         if state.get("current_is_normal", True):
                             max_combat_time = 5.0
 
@@ -17755,10 +18132,10 @@ def ai_commander_worker(target_pc):
 
             if "is_out_of_zone" not in state: state["is_out_of_zone"] = False
 
-            # 💡 [핵심 추가] 본던 2, 4, 5, 6, 7층은 솔플이더라도 Zone 이탈 방지 로직을 똑같이 적용합니다.
+            # 💡 [핵심 추가] 본던 2, 4, 5, 6, 7층 및 사던 4층은 솔플이더라도 Zone 이탈 방지 로직을 똑같이 적용합니다.
             dng_zone_chk = settings.get("dungeon_name", "")
             is_party_any_zone = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
-            is_solo_zone_mode = ("본던 2-" in dng_zone_chk or "본던 4-" in dng_zone_chk or "본던 5-" in dng_zone_chk or "본던 6-" in dng_zone_chk or "본던 7-" in dng_zone_chk) and not is_party_any_zone
+            is_solo_zone_mode = ("본던 2-" in dng_zone_chk or "본던 4-" in dng_zone_chk or "본던 5-" in dng_zone_chk or "본던 6-" in dng_zone_chk or "본던 7-" in dng_zone_chk or "사던 4-" in dng_zone_chk) and not is_party_any_zone
 
             if (is_party_any_zone or is_solo_zone_mode) and state.get("dungeon_map_pos") and pc_graph and pc_graph.get("nodes"):
                 if curr_time - state.get("zone_check_time", 0) > 1.0:
@@ -17925,7 +18302,7 @@ def ai_commander_worker(target_pc):
                         M_PRINCE_CLASS_ID = 10
 
                         dng_yolo_check = settings.get("dungeon_name", "")
-                        is_bondon_yolo = "본던" in dng_yolo_check or "gludio" in dng_yolo_check.lower()
+                        is_bondon_yolo = "본던" in dng_yolo_check or "gludio" in dng_yolo_check.lower() or "사던" in dng_yolo_check or "silver" in dng_yolo_check.lower()
                         use_m_elf_pk = settings.get("use_m_elf_pk", False)
                         use_m_wiz_pk = settings.get("use_m_wiz_pk", False)
                         use_f_knight_pk = settings.get("use_f_knight_pk", False)
@@ -18011,7 +18388,7 @@ def ai_commander_worker(target_pc):
                             is_close_combat = curr_time < state.get("close_combat_timer", 0)
 
                             dng_name_chk = settings.get("dungeon_name", "")
-                            is_sudeon_or_party = ("수던" in dng_name_chk or "heine" in dng_name_chk.lower() or "본던" in dng_name_chk or "gludio" in dng_name_chk.lower() or settings.get("use_party_hunt", False))
+                            is_sudeon_or_party = ("수던" in dng_name_chk or "heine" in dng_name_chk.lower() or "본던" in dng_name_chk or "gludio" in dng_name_chk.lower() or "사던" in dng_name_chk or "silver" in dng_name_chk.lower() or settings.get("use_party_hunt", False))
 
                             FIXED_ELLIPSE_RX = 340
                             FIXED_ELLIPSE_RY = 240
@@ -18041,10 +18418,10 @@ def ai_commander_worker(target_pc):
                             fsm_for_yolo = str(state.get("target_fsm", ""))
                             is_buff_retreat = fsm_for_yolo == "PARTY_RETREAT_NAV" and "팟바람" in state.get("retreat_reason", "")
 
-                            # 💡 [핵심 추가] 본던 솔플 존 사냥 모드에서도 구역 이탈 시 시야를 파티모드처럼 제한합니다.
+                            # 💡 [핵심 추가] 본던/사던 솔플 존 사냥 모드에서도 구역 이탈 시 시야를 파티모드처럼 제한합니다.
                             dng_chk_yolo = settings.get("dungeon_name", "")
                             is_bondon_zone_solo = False
-                            if not is_any_party and ("본던 2-" in dng_chk_yolo or "본던 4-" in dng_chk_yolo or "본던 5-" in dng_chk_yolo or "본던 6-" in dng_chk_yolo or "본던 7-" in dng_chk_yolo):
+                            if not is_any_party and ("본던 2-" in dng_chk_yolo or "본던 4-" in dng_chk_yolo or "본던 5-" in dng_chk_yolo or "본던 6-" in dng_chk_yolo or "본던 7-" in dng_chk_yolo or "사던 4-" in dng_chk_yolo):
                                 is_bondon_zone_solo = True
 
                             if is_party_hunt_active:
@@ -18117,11 +18494,12 @@ def ai_commander_worker(target_pc):
                                     gy_y = gn_node.get("y", 0) if isinstance(gn_node, dict) else gn_node[1]
                                     dist_to_portal_yolo = math.hypot(char_map_pos[0] - gx_y, char_map_pos[1] - gy_y)
                                     
+                                portal_stop_dist_yolo = 8.0 if ("사던" in active_dungeon or "silver" in active_dungeon.lower()) else 7.2
                                 # 💡 재시도 모드(후퇴) 중일 때는 주변 몹 사냥을 위해 120px 오픈
                                 if state.get("portal_retry_mode", False):
                                     yolo_radius = min(yolo_radius, 120)
-                                # 💡 7.2픽셀 이내 도착하여 진입 시도 중일 때는 다른 곳 못 보게 0px!
-                                elif dist_to_portal_yolo <= 7.2:
+                                # 💡 포탈 도착 반경(사던 8.0px / 본던 7.2px) 이내 진입 시도 중일 때는 다른 곳 못 보게 0px!
+                                elif dist_to_portal_yolo <= portal_stop_dist_yolo:
                                     yolo_radius = 0
                                 # 120픽셀(약 12칸) 이상 멀 때는 눈 감고 달리기 (0px)
                                 elif dist_to_portal_yolo > 120.0:
@@ -18190,12 +18568,12 @@ def ai_commander_worker(target_pc):
 
                 is_any_party_dbg = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
                 dng_chk_dbg = settings.get("dungeon_name", "")
-                is_bondon_zone_solo_dbg = ("본던 2-" in dng_chk_dbg or "본던 4-" in dng_chk_dbg or "본던 5-" in dng_chk_dbg or "본던 6-" in dng_chk_dbg or "본던 7-" in dng_chk_dbg) and not is_any_party_dbg
+                is_bondon_zone_solo_dbg = ("본던 2-" in dng_chk_dbg or "본던 4-" in dng_chk_dbg or "본던 5-" in dng_chk_dbg or "본던 6-" in dng_chk_dbg or "본던 7-" in dng_chk_dbg or "사던 4-" in dng_chk_dbg) and not is_any_party_dbg
 
-                # 👇👇 [핵심 픽스] 5to6 맵 스위칭 상태일 때도 디버그 원형 UI가 정상적으로 표시되도록 조건 추가
-                if is_any_party_dbg or is_bondon_zone_solo_dbg or state.get("override_dungeon_name") == "본던 5to6":
+                # 👇👇 [핵심 픽스] 5to6 및 3to4 맵 스위칭 상태일 때도 디버그 원형 UI가 정상적으로 표시되도록 조건 추가
+                if is_any_party_dbg or is_bondon_zone_solo_dbg or state.get("override_dungeon_name") in ["본던 5to6", "사던 3to4"]:
                     
-                    if state.get("override_dungeon_name") == "본던 5to6":
+                    if state.get("override_dungeon_name") in ["본던 5to6", "사던 3to4"]:
                         path_len_dbg = len(state.get("dungeon_global_path", []))
                         # 포탈에 이미 도착했거나(path_len==0) 120칸 밖일 때는 시야 차단 UI
                         if path_len_dbg > 120 or path_len_dbg == 0:
@@ -18217,7 +18595,7 @@ def ai_commander_worker(target_pc):
 
                 if curr_time < state.get("close_combat_timer", 0):
                     dng_name_chk = settings.get("dungeon_name", "")
-                    is_sudeon_or_party = ("수던" in dng_name_chk or "heine" in dng_name_chk.lower() or "본던" in dng_name_chk or "gludio" in dng_name_chk.lower() or settings.get("use_party_hunt", False))
+                    is_sudeon_or_party = ("수던" in dng_name_chk or "heine" in dng_name_chk.lower() or "본던" in dng_name_chk or "gludio" in dng_name_chk.lower() or "사던" in dng_name_chk or "silver" in dng_name_chk.lower() or settings.get("use_party_hunt", False))
 
                     if is_sudeon_or_party:
 
@@ -18371,7 +18749,7 @@ def ai_commander_worker(target_pc):
                     dng_zone_solo_chk = settings.get("dungeon_name", "")
                     is_bondon_zone_solo = False
                     if not (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)):
-                        if "본던 2-" in dng_zone_solo_chk or "본던 4-" in dng_zone_solo_chk or "본던 5-" in dng_zone_solo_chk or "본던 6-" in dng_zone_solo_chk or "본던 7-" in dng_zone_solo_chk:
+                        if "본던 2-" in dng_zone_solo_chk or "본던 4-" in dng_zone_solo_chk or "본던 5-" in dng_zone_solo_chk or "본던 6-" in dng_zone_solo_chk or "본던 7-" in dng_zone_solo_chk or "사던 4-" in dng_zone_solo_chk:
                             is_bondon_zone_solo = True
 
                     if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False) or is_bondon_zone_solo:
@@ -18622,7 +19000,7 @@ def ai_commander_worker(target_pc):
 
                             motion_thresh = settings.get("motion_sensitivity", 35)
                             d_name = settings.get("dungeon_name", "")
-                            is_2cell_dng = ("본던" in d_name or "본토" in d_name or "개미" in d_name)
+                            is_2cell_dng = ("본던" in d_name or "본토" in d_name or "개미" in d_name or "사던" in d_name or "silver" in d_name.lower())
                             gb_limit = int(settings.get("gangbang_count_dungeon", 4)) if is_2cell_dng else int(settings.get("gangbang_count_normal", 3))
 
                             active_motion_dirs = 0
@@ -19096,7 +19474,7 @@ def ai_commander_worker(target_pc):
                     state["target_fsm"] = "TARGET_AIMING"
                     state["aiming_start_time"] = curr_time
                     dng_name_aim3 = settings.get("dungeon_name", "")
-                    if "수던" in dng_name_aim3 or "heine" in dng_name_aim3.lower() or "본던" in dng_name_aim3 or "gludio" in dng_name_aim3.lower():
+                    if "수던" in dng_name_aim3 or "heine" in dng_name_aim3.lower() or "본던" in dng_name_aim3 or "gludio" in dng_name_aim3.lower() or "사던" in dng_name_aim3 or "silver" in dng_name_aim3.lower():
                         state["aiming_limit"] = g_val(0.9, 1.3)
                     else:
                         state["aiming_limit"] = g_val(1.5, 2.1)
@@ -19118,7 +19496,7 @@ def ai_commander_worker(target_pc):
                     state["target_fsm"] = "TARGET_AIMING"
                     state["aiming_start_time"] = curr_time
                     dng_name_aim4 = settings.get("dungeon_name", "")
-                    if "수던" in dng_name_aim4 or "heine" in dng_name_aim4.lower() or "본던" in dng_name_aim4 or "gludio" in dng_name_aim4.lower():
+                    if "수던" in dng_name_aim4 or "heine" in dng_name_aim4.lower() or "본던" in dng_name_aim4 or "gludio" in dng_name_aim4.lower() or "사던" in dng_name_aim4 or "silver" in dng_name_aim4.lower():
                         state["aiming_limit"] = g_val(0.9, 1.3)
                     else:
                         state["aiming_limit"] = g_val(1.5, 2.1)
@@ -19165,7 +19543,7 @@ def ai_commander_worker(target_pc):
                         state["target_fsm"] = "TARGET_AIMING"
                         state["aiming_start_time"] = curr_time
                         dng_name_aim4 = settings.get("dungeon_name", "")
-                        if "수던" in dng_name_aim4 or "heine" in dng_name_aim4.lower() or "본던" in dng_name_aim4 or "gludio" in dng_name_aim4.lower():
+                        if "수던" in dng_name_aim4 or "heine" in dng_name_aim4.lower() or "본던" in dng_name_aim4 or "gludio" in dng_name_aim4.lower() or "사던" in dng_name_aim4 or "silver" in dng_name_aim4.lower():
                             state["aiming_limit"] = g_val(0.9, 1.3)
                         else:
                             state["aiming_limit"] = g_val(1.5, 2.1)
@@ -19957,8 +20335,9 @@ def ai_commander_worker(target_pc):
                         is_party_wait_loot = settings.get("use_party_hunt", False) and (state.get("target_fsm") in ["PARTY_WAIT", "PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY"] or state.get("is_mptam_mode", False))
                         is_parked_loot_mode = is_fixed_dealer_loot or is_party_wait_loot
 
+                        is_bondon_or_sadeon_loot = ("본던" in active_dungeon or "gludio" in active_dungeon.lower() or "사던" in active_dungeon or "silver" in active_dungeon.lower())
                         if is_parked_loot_mode and not state.get("helping_who") and not state.get("help_requester", False):
-                            parked_dist_limit = 120.0 if ("본던" in active_dungeon or "gludio" in active_dungeon.lower()) else 57.0
+                            parked_dist_limit = 120.0 if is_bondon_or_sadeon_loot else 57.0
                             if dist_to_b >= parked_dist_limit:
                                 b['ignore_reason'] = f"PARKED_LIMIT(>{int(parked_dist_limit)}px)"
                                 ignored_boxes.append(b)
@@ -19968,8 +20347,8 @@ def ai_commander_worker(target_pc):
                             if not active_base_loot and pc_graph and pc_graph.get("buff_spot_nodes"):
                                 active_base_loot = str(pc_graph["buff_spot_nodes"][0])
 
-                            # ✅ 2번 수정: 본던은 제자리 엠탐이므로 엉뚱한 노드 기준의 목줄(Leash) 검사를 완전히 무시합니다!
-                            is_bondon_leash = ("본던" in active_dungeon or "gludio" in active_dungeon.lower())
+                            # ✅ 2번 수정: 본던/사던은 제자리 엠탐이므로 엉뚱한 노드 기준의 목줄(Leash) 검사를 완전히 무시합니다!
+                            is_bondon_leash = is_bondon_or_sadeon_loot
                             if not is_bondon_leash and char_map_pos and pc_graph and active_base_loot:
                                 bn_data_loot = pc_graph["nodes"].get(str(active_base_loot))
                                 if bn_data_loot:
@@ -19981,8 +20360,7 @@ def ai_commander_worker(target_pc):
 
                                     dist_item_to_base = math.hypot(item_map_x_chk - bx_l, item_map_y_chk - by_l)
                                     
-                                    # ✅ 본던일 경우 목줄 제한도 12.0(약 120px)으로 늘려줌
-                                    leash_limit = 12.0 if ("본던" in active_dungeon or "gludio" in active_dungeon.lower()) else 8.5
+                                    leash_limit = 12.0 if is_bondon_or_sadeon_loot else 8.5
                                     if dist_item_to_base > leash_limit:
                                         b['ignore_reason'] = f"LEASH_OUT({dist_item_to_base:.1f}px)"
                                         ignored_boxes.append(b)
@@ -20004,8 +20382,8 @@ def ai_commander_worker(target_pc):
                                 ignored_boxes.append(b)
 
                             # ✅ 1번 수정: 엠탐 거리(120px 등) 초과 시에만 걸러내고, 이내일 때는 정상 줍기로 통과시킴
-                            elif state.get("is_mptam_mode", False) and math.hypot(ix - char_screen_cx, iy + 15 - char_screen_cy) > (120.0 if ("본던" in active_dungeon or "gludio" in active_dungeon.lower()) else (60.0 if settings.get("use_party_hunt", False) else 120.0)):
-                                mptam_dist_limit = 120.0 if ("본던" in active_dungeon or "gludio" in active_dungeon.lower()) else (60.0 if settings.get("use_party_hunt", False) else 120.0)
+                            elif state.get("is_mptam_mode", False) and math.hypot(ix - char_screen_cx, iy + 15 - char_screen_cy) > (120.0 if is_bondon_or_sadeon_loot else (60.0 if settings.get("use_party_hunt", False) else 120.0)):
+                                mptam_dist_limit = 120.0 if is_bondon_or_sadeon_loot else (60.0 if settings.get("use_party_hunt", False) else 120.0)
                                 b['ignore_reason'] = f"MPTAM_FAR(>{int(mptam_dist_limit)}px)"
                                 ignored_boxes.append(b)
 
@@ -20030,7 +20408,7 @@ def ai_commander_worker(target_pc):
                                         b['ignore_reason'] = "RETRY_MODE_LIMIT(>100px)"
                                         ignored_boxes.append(b)
                                         continue
-                                elif is_heading_to_portal and dist_to_portal_loot <= 7.2:
+                                elif is_heading_to_portal and dist_to_portal_loot <= (8.0 if ("사던" in active_dungeon or "silver" in active_dungeon.lower()) else 7.2):
                                     b['ignore_reason'] = "PORTAL_DIVING(0px)"
                                     ignored_boxes.append(b)
                                     continue
@@ -20221,7 +20599,7 @@ def ai_commander_worker(target_pc):
                         state["target_fsm"] = "TARGET_AIMING"
                         state["aiming_start_time"] = curr_time
                         dng_name_aim5 = settings.get("dungeon_name", "")
-                        if "수던" in dng_name_aim5 or "heine" in dng_name_aim5.lower() or "본던" in dng_name_aim5 or "gludio" in dng_name_aim5.lower():
+                        if "수던" in dng_name_aim5 or "heine" in dng_name_aim5.lower() or "본던" in dng_name_aim5 or "gludio" in dng_name_aim5.lower() or "사던" in dng_name_aim5 or "silver" in dng_name_aim5.lower():
                             state["aiming_limit"] = g_val(0.9, 1.3)
                         else:
                             state["aiming_limit"] = g_val(1.5, 2.1)
@@ -20444,7 +20822,7 @@ def ai_commander_worker(target_pc):
 
                                         if is_close_combat:
                                             dng_name_chk = settings.get("dungeon_name", "")
-                                            is_sudeon_or_party = ("수던" in dng_name_chk or "heine" in dng_name_chk.lower() or "본던" in dng_name_chk or "gludio" in dng_name_chk.lower() or settings.get("use_party_hunt", False))
+                                            is_sudeon_or_party = ("수던" in dng_name_chk or "heine" in dng_name_chk.lower() or "본던" in dng_name_chk or "gludio" in dng_name_chk.lower() or "사던" in dng_name_chk or "silver" in dng_name_chk.lower() or settings.get("use_party_hunt", False))
 
                                             yolo_limit = 150 if is_sudeon_or_party else 70
                                             if math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy) > yolo_limit:
@@ -21194,7 +21572,7 @@ def ai_commander_worker(target_pc):
 
                 if not action_taken and state.get("is_hunt_active", False) and not state.get("is_paused", False):
                     dungeon_name_check = settings.get("dungeon_name", "")
-                    is_heine_or_bondon = ("수던" in dungeon_name_check or "heine" in dungeon_name_check.lower() or "본던" in dungeon_name_check or "gludio" in dungeon_name_check.lower())
+                    is_heine_or_bondon = ("수던" in dungeon_name_check or "heine" in dungeon_name_check.lower() or "본던" in dungeon_name_check or "gludio" in dungeon_name_check.lower() or "사던" in dungeon_name_check or "silver" in dungeon_name_check.lower())
                     if is_heine_or_bondon or settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False) or settings.get("use_f_knight_pk", False) or settings.get("use_m_knight_pk", False) or settings.get("use_m_prince_pk", False):
 
                         fsm_curr = str(state.get("target_fsm", ""))
@@ -21208,7 +21586,7 @@ def ai_commander_worker(target_pc):
                             is_curr_avoid = state.get("current_is_avoid", False) and not state.get("is_motion_target", False)
 
                             if not is_curr_m_elf:
-                                is_bondon_g_chk = "본던" in dungeon_name_check or "gludio" in dungeon_name_check.lower()
+                                is_bondon_g_chk = "본던" in dungeon_name_check or "gludio" in dungeon_name_check.lower() or "사던" in dungeon_name_check or "silver" in dungeon_name_check.lower()
                                 g_mob_limit = 150.0 if is_bondon_g_chk else 250.0
 
                                 best_switch_target = None
@@ -22261,12 +22639,12 @@ def ai_commander_worker(target_pc):
 
                         dng_n = settings.get("dungeon_name", "")
                         
-                        if "본던" in dng_n or "gludio" in dng_n.lower():
-                            # 💡 본던 avoid 몹을 G몹보다 높은 최우선(1,000만점 가산점)으로 타겟팅
+                        if "본던" in dng_n or "gludio" in dng_n.lower() or "사던" in dng_n or "silver" in dng_n.lower():
+                            # 💡 본던/사던 avoid 몹을 G몹보다 높은 최우선(1,000만점 가산점)으로 타겟팅
                             if getattr(p, "is_avoid", False):
                                 base_score -= 10000000
 
-                        if "수던" in dng_n or "heine" in dng_n.lower() or "본던" in dng_n or "gludio" in dng_n.lower():
+                        if "수던" in dng_n or "heine" in dng_n.lower() or "본던" in dng_n or "gludio" in dng_n.lower() or "사던" in dng_n or "silver" in dng_n.lower():
                             if getattr(p, "is_g_mob", False):
                                 base_score -= 5000000
 
@@ -22589,8 +22967,8 @@ def ai_commander_worker(target_pc):
 
                 target_fsm_nav = state.get("target_fsm")
 
-                # 👇👇 [수정] PORTAL_DIVE_HOVER_WAIT 추가
-                allow_nav_fsm = target_fsm_nav in ["IDLE", "PARTY_WAIT", "PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY", "SQUAD_WAIT", "PORTAL_DIVE_BRAKE_WAIT", "PORTAL_DIVE_SEARCH", "PORTAL_DIVE_HOVER_WAIT", "PORTAL_ENTER_STEP1", "PORTAL_ENTER_STEP2", "PORTAL_DIVE_STEP1", "PORTAL_DIVE_STEP2", "PORTAL_DIVE_6F_RUSH"]
+                # 👇👇 [수정] PORTAL_DIVE_HOVER_WAIT 및 사던 4층 정밀 입장 FSM 추가
+                allow_nav_fsm = target_fsm_nav in ["IDLE", "PARTY_WAIT", "PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY", "SQUAD_WAIT", "PORTAL_DIVE_BRAKE_WAIT", "PORTAL_DIVE_SEARCH", "PORTAL_DIVE_HOVER_WAIT", "PORTAL_ENTER_STEP1", "PORTAL_ENTER_STEP2", "PORTAL_DIVE_STEP1", "PORTAL_DIVE_STEP2", "PORTAL_DIVE_6F_RUSH", "SADEON_PORTAL_STEP_CHECK", "SADEON_PORTAL_STEP_HOVER_WAIT", "SADEON_PORTAL_STEP_WALK_WAIT", "SADEON_PORTAL_DIRECT_SEARCH", "SADEON_PORTAL_DIRECT_HOVER_WAIT"]
 
                 is_fleeing_state = target_fsm_nav in ["PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV"]
                 can_start_nav = not mobs or is_fleeing_state
@@ -23012,7 +23390,7 @@ def ai_commander_worker(target_pc):
                                 if dist_moved < 4.0:
                                     stuck_wait = 3.0 if (curr_time - state.get("last_body_time", 0) < 4.0) else 3.0
 
-                                    is_fsm_busy = state.get("target_fsm") in ["MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD", "MOTION_EVADING_CALC", "MOTION_EVADING_ACK_WAIT", "MOTION_EVADING_SPAM"]
+                                    is_fsm_busy = state.get("target_fsm") in ["MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD", "MOTION_EVADING_CALC", "MOTION_EVADING_ACK_WAIT", "MOTION_EVADING_SPAM", "PORTAL_DIVE_BRAKE_WAIT", "PORTAL_DIVE_SEARCH", "PORTAL_DIVE_HOVER_WAIT", "PORTAL_ENTER_STEP1", "PORTAL_ENTER_STEP2", "PORTAL_DIVE_6F_RUSH", "SADEON_PORTAL_STEP_CHECK", "SADEON_PORTAL_STEP_HOVER_WAIT", "SADEON_PORTAL_STEP_WALK_WAIT", "SADEON_PORTAL_DIRECT_SEARCH", "SADEON_PORTAL_DIRECT_HOVER_WAIT"]
 
                                     is_fixed_dealer_parked = settings.get("use_party_fixed", False) and not settings.get("is_puller", False) and state.get("arrived_at_base", False)
                                     is_squad_waiting = state.get("target_fsm") == "SQUAD_WAIT"
@@ -23236,72 +23614,143 @@ def ai_commander_worker(target_pc):
                                 is_puller = settings.get("is_puller", False)
                                 goal_node = None
 
-                                # 👇👇 [핵심 픽스] 다음 층 포탈 노드 및 재시도 노드 강제 주입!
+                                # 👇👇 [핵심 픽스] 다음 층 포탈 노드 및 단일/다중 재시도 노드(미설정 시 자동 생성) 강제 주입!
                                 is_next_floor_mode_hijack = False
                                 if pc_graph and pc_graph.get("next_floor_node"):
                                     portal_node = str(pc_graph["next_floor_node"])
-                                    retry_node = str(pc_graph.get("retry_node")) if pc_graph.get("retry_node") else None
-                                    
-                                    # 1️⃣ 진입 5초 실패 후 재시도 노드로 우회(후퇴) 중인 경우
-                                    if state.get("portal_retry_mode", False) and retry_node:
-                                        goal_node = retry_node
-                                        is_next_floor_mode_hijack = True
-                                        
-                                        rn_data = pc_graph["nodes"].get(retry_node)
-                                        if rn_data and char_map_pos:
-                                            rx = rn_data.get("x", 0) if isinstance(rn_data, dict) else rn_data[0]
-                                            ry = rn_data.get("y", 0) if isinstance(rn_data, dict) else rn_data[1]
-                                            if math.hypot(char_map_pos[0] - rx, char_map_pos[1] - ry) <= 15.0:
-                                                dprint(key, f"🔄 [포탈 재진입 준비] 재시도 노드 안착! 다시 포탈로 돌격합니다.")
+                                    nodes_dict = pc_graph.get("nodes", {})
+
+                                    # 1) 그래프 JSON에서 retry_node(단일 또는 리스트) 및 retry_nodes 모두 추출
+                                    raw_retry = pc_graph.get("retry_nodes") or pc_graph.get("retry_node")
+                                    retry_candidates = []
+                                    if isinstance(raw_retry, (list, tuple)):
+                                        retry_candidates = [str(x) for x in raw_retry if x is not None and str(x) in nodes_dict]
+                                    elif isinstance(raw_retry, str) and "," in raw_retry:
+                                        retry_candidates = [x.strip() for x in raw_retry.split(",") if x.strip() in nodes_dict]
+                                    elif raw_retry is not None and str(raw_retry) in nodes_dict:
+                                        retry_candidates = [str(raw_retry)]
+
+                                    # 2) 보조 후보군: JSON에 재시도 노드가 없거나, 1개뿐인데 연속 실패했을 때 쓸 주변 노드(18~38px) 수집
+                                    auto_candidates = []
+                                    if nodes_dict and portal_node in nodes_dict:
+                                        p_nd = nodes_dict[portal_node]
+                                        px_p = p_nd.get("x", 0) if isinstance(p_nd, dict) else p_nd[0]
+                                        py_p = p_nd.get("y", 0) if isinstance(p_nd, dict) else p_nd[1]
+                                        scored_auto = []
+                                        for cand_nid, cand_nd in nodes_dict.items():
+                                            s_nid = str(cand_nid)
+                                            if s_nid == portal_node or s_nid in retry_candidates: continue
+                                            cx_n = cand_nd.get("x", 0) if isinstance(cand_nd, dict) else cand_nd[0]
+                                            cy_n = cand_nd.get("y", 0) if isinstance(cand_nd, dict) else cand_nd[1]
+                                            d_p = math.hypot(cx_n - px_p, cy_n - py_p)
+                                            if 18.0 <= d_p <= 38.0:
+                                                scored_auto.append((abs(d_p - 25.0), s_nid))
+                                        scored_auto.sort(key=lambda x: x[0])
+                                        auto_candidates = [ s_nid for _, s_nid in scored_auto[:3] ]
+
+                                    # 그래프에 찍힌 재시도 노드를 1순위로 두고, 부족할 경우 자동 후보를 뒤에 배치
+                                    all_retry_pool = retry_candidates if len(retry_candidates) >= 2 else (retry_candidates + auto_candidates)
+
+                                    # 3) 현재 후퇴 모드일 때는 이미 고정된 retry_node를 유지하고, 새로 고를 때는 직전 실패 노드를 피해 내 방향 노드 선택
+                                    if state.get("portal_retry_mode", False) and state.get("active_retry_node") in nodes_dict:
+                                        retry_node = state["active_retry_node"]
+                                    else:
+                                        last_failed_rn = state.get("last_retry_node")
+                                        # 그래프에 찍힌 노드가 여러 개면 그중에서 직전 노드를 제외, 1개뿐인데 직전에 실패했다면 전체 풀에서 선택
+                                        primary_pool = retry_candidates if (retry_candidates and not (len(retry_candidates) == 1 and retry_candidates[0] == last_failed_rn)) else all_retry_pool
+                                        filtered_pool = [rn for rn in primary_pool if rn != last_failed_rn] or primary_pool
+
+                                        if filtered_pool and char_map_pos:
+                                            # 내 캐릭터에서 가장 가깝게 빠질 수 있는(포탈 반대편으로 넘어가지 않는) 재시도 노드 우선 선택
+                                            filtered_pool.sort(key=lambda rn: math.hypot(
+                                                char_map_pos[0] - (nodes_dict[rn].get("x", 0) if isinstance(nodes_dict[rn], dict) else nodes_dict[rn][0]),
+                                                char_map_pos[1] - (nodes_dict[rn].get("y", 0) if isinstance(nodes_dict[rn], dict) else nodes_dict[rn][1])
+                                            ))
+                                            retry_node = filtered_pool[0]
+                                        else:
+                                            retry_node = filtered_pool[0] if filtered_pool else None
+                                        state["active_retry_node"] = retry_node
+                                        if retry_node:
+                                            state["last_retry_node"] = retry_node
+
+                                    # 1️⃣ 진입 5초 실패 후 재시도 노드로 우회(후퇴 + 120px 몹 사냥) 중인 경우
+                                    if state.get("portal_retry_mode", False):
+                                        if retry_node and retry_node in pc_graph.get("nodes", {}):
+                                            goal_node = retry_node
+                                            is_next_floor_mode_hijack = True
+
+                                            rn_data = pc_graph["nodes"].get(retry_node)
+                                            if rn_data and char_map_pos:
+                                                rx = rn_data.get("x", 0) if isinstance(rn_data, dict) else rn_data[0]
+                                                ry = rn_data.get("y", 0) if isinstance(rn_data, dict) else rn_data[1]
+                                                if math.hypot(char_map_pos[0] - rx, char_map_pos[1] - ry) <= 15.0 or (curr_time - state.get("portal_retry_start_t", curr_time) > 6.0):
+                                                    dprint(key, f"🔄 [포탈 재진입 준비] 우회 후퇴 및 주변 정리 완료! 다시 포탈로 돌격합니다.")
+                                                    state["portal_retry_mode"] = False
+                                                    state["portal_entry_start_time"] = 0
+                                                    state["current_target_node"] = portal_node
+                                                    state["dungeon_global_path"] = []
+                                                    clear_movements_only(pico_queues[key])
+                                                    action_taken = True
+                                        else:
+                                            # 만일 주변 노드조차 없다면 2초 대기 후 즉시 재시도
+                                            if curr_time - state.get("portal_retry_start_t", curr_time) > 2.0:
                                                 state["portal_retry_mode"] = False
                                                 state["portal_entry_start_time"] = 0
                                                 state["current_target_node"] = portal_node
-                                                state["dungeon_global_path"] = []
-                                                clear_movements_only(pico_queues[key])
-                                                action_taken = True
-                                                
+
                                     # 2️⃣ 정상적으로 포탈 노드로 진격하는 경우
-                                    else:
+                                    if not state.get("portal_retry_mode", False) and not action_taken:
                                         goal_node = portal_node
                                         is_next_floor_mode_hijack = True
-                                        
+
                                         gn_data_hj = pc_graph["nodes"].get(portal_node)
                                         if gn_data_hj and char_map_pos:
-                                            gx_hj = gn_data_hj.get("x", 0) if isinstance(gn_data_hj, dict) else gn_data_hj[0]
-                                            gy_hj = gn_data_hj.get("y", 0) if isinstance(gn_data_hj, dict) else gn_data_hj[1]
+                                            gx_hj = gn_data_hj.get("x", 0) if isinstance(gn_data_hj, dict) else gn_data[0]
+                                            gy_hj = gn_data_hj.get("y", 0) if isinstance(gn_data_hj, dict) else gn_data[1]
                                             dist_to_portal_hj = math.hypot(char_map_pos[0] - gx_hj, char_map_pos[1] - gy_hj)
-                                            
-                                            # 7.2px 이내 도착 시 FSM 가동 및 5초 타이머 계산
-                                            if dist_to_portal_hj <= 7.2:
+
+                                            is_sadeon_hj = ("사던" in active_dungeon or "silver" in active_dungeon.lower())
+                                            portal_arrive_dist = 8.0 if is_sadeon_hj else 7.2
+                                            all_portal_fsms = [
+                                                "PORTAL_DIVE_BRAKE_WAIT", "PORTAL_DIVE_SEARCH", "PORTAL_DIVE_HOVER_WAIT",
+                                                "PORTAL_ENTER_STEP1", "PORTAL_ENTER_STEP2", "PORTAL_DIVE_6F_RUSH",
+                                                "SADEON_PORTAL_STEP_CHECK", "SADEON_PORTAL_STEP_HOVER_WAIT",
+                                                "SADEON_PORTAL_STEP_WALK_WAIT", "SADEON_PORTAL_DIRECT_SEARCH",
+                                                "SADEON_PORTAL_DIRECT_HOVER_WAIT"
+                                            ]
+
+                                            # 사던 8.0px (본던 7.2px) 이내 도착 또는 이미 포탈 정밀 진입 FSM 진행 중일 때
+                                            if dist_to_portal_hj <= portal_arrive_dist or state.get("target_fsm") in all_portal_fsms:
                                                 state["dungeon_global_path"] = []
-                                                
+                                                state["dungeon_stuck_timer"] = curr_time
+
                                                 if state.get("portal_entry_start_time", 0) == 0:
                                                     state["portal_entry_start_time"] = curr_time
-                                                    
-                                                # 5초 초과 시 실패(후퇴) 선언!
+
+                                                # 5초 초과 시 실패(후퇴 + 120px 몹 정리) 선언!
                                                 if curr_time - state.get("portal_entry_start_time", curr_time) > 5.0:
-                                                    dprint(key, "🚨 [포탈 진입 실패] 5초간 진입 불가! 재시도 노드(우회로)로 후퇴합니다!")
+                                                    dprint(key, f"🚨 [포탈 5초 진입 실패] 길막 감지! 우회 노드(ID:{retry_node})로 후퇴하며 주변 몹을 정리합니다!")
                                                     state["waiting_for_6f_in"] = False
                                                     state["portal_entry_start_time"] = 0
                                                     state["portal_retry_mode"] = True
-                                                    state["target_fsm"] = "PARTY_WAIT" # 🚨 [버그 픽스 1] IDLE ➔ PARTY_WAIT 로 변경!
+                                                    state["portal_retry_start_t"] = curr_time
+                                                    state["target_fsm"] = "IDLE" # 💡 후퇴 중 주변 120px 몹 사냥 및 A* 이동이 즉시 작동하도록 IDLE 전환
                                                     state["dungeon_global_path"] = []
                                                     state["current_target_node"] = retry_node if retry_node else portal_node
                                                     clear_movements_only(pico_queues[key])
                                                 else:
-                                                    # 5초 이내라면 계속 포탈 진입 FSM 갱신 (PORTAL_DIVE_HOVER_WAIT 추가)
-                                                    if state.get("target_fsm") not in ["PORTAL_DIVE_BRAKE_WAIT", "PORTAL_DIVE_SEARCH", "PORTAL_DIVE_HOVER_WAIT", "PORTAL_ENTER_STEP1", "PORTAL_ENTER_STEP2", "PORTAL_DIVE_6F_RUSH"]:
+                                                    if state.get("target_fsm") not in all_portal_fsms:
                                                         clear_movements_only(pico_queues[key])
                                                         if state.get("sweep_active", False):
                                                             pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
-                                                            
-                                                        # 💡 [핵심 픽스] 포탈(7.2px) 도달 즉시 Shift+Click으로 캐릭터를 강제 제동!
-                                                        dprint(key, "🛑 [포탈 앞 급제동] 포탈 진입 반경 도착! Shift+Click으로 캐릭터를 완벽히 멈춘 후 스캔합니다.")
+
+                                                        dprint(key, f"🛑 [포탈 {portal_arrive_dist}px 급제동] 포탈 반경({dist_to_portal_hj:.1f}px) 도착! Shift+Click으로 캐릭터를 멈춰 세웁니다.")
                                                         pico_queues[key].put({"action": "SHIFT_CLICK_BRAKE"})
-                                                        
-                                                        # 제동 후 0.4초간 대기하는 중간 FSM으로 넘김
+
+                                                        state["sadeon_step_try_cnt"] = 0
+                                                        state["sadeon_on_spot_timer_reset"] = False
                                                         state["target_fsm"] = "PORTAL_DIVE_BRAKE_WAIT"
-                                                        state["portal_brake_end_time"] = curr_time + 0.4
+                                                        state["portal_brake_end_time"] = curr_time + 0.45
                                                         state["cooldown"] = curr_time + 0.05
                                                 action_taken = True
                                                 
@@ -24337,7 +24786,7 @@ def ai_commander_worker(target_pc):
                                         is_retry_node_arr = pc_graph and state.get("portal_retry_mode", False) and str(state.get("current_target_node")) == str(pc_graph.get("retry_node", ""))
                                         
                                         if is_next_floor_arr:
-                                            if dist_to_final <= 7.2: is_arrived = True
+                                            if dist_to_final <= (8.0 if ("사던" in active_dungeon or "silver" in active_dungeon.lower()) else 7.2): is_arrived = True
                                         elif is_retry_node_arr:
                                             if dist_to_final <= 10.0: is_arrived = True
                                         # 👆👆 ----------------------------------------------------
@@ -24489,9 +24938,17 @@ def ai_commander_worker(target_pc):
 
                                 is_fixed_dealer_patrol = settings.get("use_party_fixed", False) and not settings.get("is_puller", False)
 
-                                # 👇👇 [독립 스캔 엔진] 6층 진입 이미지 검사는 FSM 방어막 밖으로 꺼내어 무조건 상시 스캔!
+                                # 👇👇 [독립 스캔 엔진] 본던 6층 / 사던 4층 진입 이미지 검사는 FSM 방어막 밖으로 꺼내어 상시 스캔!
                                 is_next_floor_dive = pc_graph and pc_graph.get("next_floor_node") and str(state.get("current_target_node")) == str(pc_graph.get("next_floor_node"))
-                                
+                                is_sadeon_dive = ("사던" in active_dungeon or "silver" in active_dungeon.lower())
+
+                                # 사던 3->4층 우클릭 입장 가능 9개 좌표 정의
+                                SADEON_4F_VALID_COORDS = [
+                                    (93, 185), (95, 184), (95, 187), (93, 188),
+                                    (90, 189), (88, 188), (85, 189), (92, 191),
+                                    (83, 190)
+                                ]
+
                                 if is_next_floor_dive:
                                     gn_data_scan = pc_graph["nodes"].get(str(pc_graph.get("next_floor_node")))
                                     if gn_data_scan and char_map_pos:
@@ -24500,106 +24957,75 @@ def ai_commander_worker(target_pc):
                                         if math.hypot(char_map_pos[0] - gx_scan, char_map_pos[1] - gy_scan) <= 10.0:
                                             state["scan_6f_continuous"] = True
                                             state["waiting_for_6f_in"] = True
-                                            
-                                # 💡 1프레임이라도 10px 내에 진입했거나 재시도 모드라면, 목표 노드 유지 여부와 무관하게 6f_in 이미지를 매 프레임 감시!
+
+                                # 💡 10px 내에 진입했거나 재시도 모드라면 gludio6_in.png / silver4_in.png 매 프레임 감시!
                                 if state.get("scan_6f_continuous", False) or state.get("waiting_for_6f_in", False) or state.get("portal_retry_mode", False):
                                     is_6f_entered = False
-                                    in_img_path = "qq/gludio6_in.png"
-                                    if os.path.exists(in_img_path):
-                                        scr_6f = latest_frames.get(key)
-                                        if scr_6f is not None:
-                                            try: ANT_IN_X1_v = globals().get("ANT_IN_X1", 1)
-                                            except: ANT_IN_X1_v = 1
-                                            try: ANT_IN_X2_v = globals().get("ANT_IN_X2", 130)
-                                            except: ANT_IN_X2_v = 130
-                                            c_y1, c_y2 = max(0, min(h, 430)), max(0, min(h, 480))
-                                            c_x1, c_x2 = max(0, min(w, ANT_IN_X1_v)), max(0, min(w, ANT_IN_X2_v))
-                                            if c_x2 > c_x1 and c_y2 > c_y1:
-                                                ui_check_roi = scr_6f[c_y1:c_y2, c_x1:c_x2]
-                                                try:
-                                                    if "gludio6_in_img" not in loaded_models:
-                                                        bgra = cv2.imread(in_img_path, cv2.IMREAD_UNCHANGED)
-                                                        if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4: loaded_models["gludio6_in_img"] = {"color": cv2.cvtColor(bgra[:, :, :3], cv2.COLOR_BGR2GRAY), "mask": bgra[:, :, 3]}
-                                                        else: loaded_models["gludio6_in_img"] = {"color": cv2.imread(in_img_path, cv2.IMREAD_GRAYSCALE), "mask": None}
-                                                    gludio6_in_tmpl = loaded_models.get("gludio6_in_img")
-                                                    if gludio6_in_tmpl and gludio6_in_tmpl["color"] is not None:
-                                                        roi_gray = cv2.cvtColor(ui_check_roi, cv2.COLOR_BGR2GRAY)
-                                                        if gludio6_in_tmpl["mask"] is not None: res_6f = cv2.matchTemplate(roi_gray, gludio6_in_tmpl["color"], cv2.TM_CCORR_NORMED, mask=gludio6_in_tmpl["mask"])
-                                                        else: res_6f = cv2.matchTemplate(roi_gray, gludio6_in_tmpl["color"], cv2.TM_CCOEFF_NORMED)
-                                                        # 💡 형님 세팅인 0.80 유지 (테스트 시 0.80으로 쓰셨다 하셔서)
-                                                        if cv2.minMaxLoc(res_6f)[1] >= 0.97: is_6f_entered = True
-                                                except: pass
+                                    in_img_candidates = ["qq/silver/silver4_in.png", "qq/silver4_in.png"] if is_sadeon_dive else ["qq/gludio6_in.png"]
+                                    for in_img_path in in_img_candidates:
+                                        if os.path.exists(in_img_path):
+                                            scr_6f = latest_frames.get(key)
+                                            if scr_6f is not None:
+                                                try: ANT_IN_X1_v = globals().get("ANT_IN_X1", 1)
+                                                except: ANT_IN_X1_v = 1
+                                                try: ANT_IN_X2_v = globals().get("ANT_IN_X2", 130)
+                                                except: ANT_IN_X2_v = 130
+                                                c_y1, c_y2 = max(0, min(h, 430)), max(0, min(h, 480))
+                                                c_x1, c_x2 = max(0, min(w, ANT_IN_X1_v)), max(0, min(w, ANT_IN_X2_v))
+                                                if c_x2 > c_x1 and c_y2 > c_y1:
+                                                    ui_check_roi = scr_6f[c_y1:c_y2, c_x1:c_x2]
+                                                    try:
+                                                        cache_k = f"next_fl_in_{in_img_path}"
+                                                        if cache_k not in loaded_models:
+                                                            bgra = cv2.imread(in_img_path, cv2.IMREAD_UNCHANGED)
+                                                            if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4: loaded_models[cache_k] = {"color": cv2.cvtColor(bgra[:, :, :3], cv2.COLOR_BGR2GRAY), "mask": bgra[:, :, 3]}
+                                                            else: loaded_models[cache_k] = {"color": cv2.imread(in_img_path, cv2.IMREAD_GRAYSCALE), "mask": None}
+                                                        fl_in_tmpl = loaded_models.get(cache_k)
+                                                        if fl_in_tmpl and fl_in_tmpl["color"] is not None:
+                                                            roi_gray = cv2.cvtColor(ui_check_roi, cv2.COLOR_BGR2GRAY)
+                                                            if fl_in_tmpl["mask"] is not None: res_6f = cv2.matchTemplate(roi_gray, fl_in_tmpl["color"], cv2.TM_CCORR_NORMED, mask=fl_in_tmpl["mask"])
+                                                            else: res_6f = cv2.matchTemplate(roi_gray, fl_in_tmpl["color"], cv2.TM_CCOEFF_NORMED)
+                                                            if cv2.minMaxLoc(res_6f)[1] >= (0.88 if is_sadeon_dive else 0.97):
+                                                                is_6f_entered = True
+                                                                break
+                                                    except: pass
 
                                     if is_6f_entered:
-                                        dprint(key, "🎉 [6층 진입 성공 판단] 6f_in 매칭 성공! 무지성 진입 돌격을 시작합니다!")
+                                        dprint(key, "🎉 [다음 층 진입 성공 판단] 진입 텍스트 매칭 성공! 입구 돌격을 시작합니다!")
                                         state.pop("override_dungeon_name", None)
                                         state["dungeon_map_pos"] = None
                                         state["dungeon_global_path"] = []
                                         state["current_target_node"] = None
-                                        
+
                                         state["scan_6f_continuous"] = False
                                         state["waiting_for_6f_in"] = False
                                         state["portal_retry_mode"] = False
                                         state["portal_entry_start_time"] = 0
-                                        
+
                                         state["target_fsm"] = "PORTAL_DIVE_6F_RUSH"
                                         state["cooldown"] = curr_time + 0.1
                                         action_taken = True
                                         continue
 
-                                # 👇👇 [수정] PORTAL_DIVE_HOVER_WAIT 추가
+                                all_portal_fsms = [
+                                    "PORTAL_DIVE_BRAKE_WAIT", "PORTAL_DIVE_SEARCH", "PORTAL_DIVE_HOVER_WAIT",
+                                    "PORTAL_ENTER_STEP1", "PORTAL_ENTER_STEP2", "PORTAL_DIVE_STEP1",
+                                    "PORTAL_DIVE_STEP2", "PORTAL_DIVE_6F_RUSH",
+                                    "SADEON_PORTAL_STEP_CHECK", "SADEON_PORTAL_STEP_HOVER_WAIT",
+                                    "SADEON_PORTAL_STEP_WALK_WAIT", "SADEON_PORTAL_DIRECT_SEARCH",
+                                    "SADEON_PORTAL_DIRECT_HOVER_WAIT"
+                                ]
                                 fsm_portal_check = str(state.get("target_fsm", ""))
-                                is_portal_diving = fsm_portal_check in ["PORTAL_DIVE_BRAKE_WAIT", "PORTAL_DIVE_SEARCH", "PORTAL_DIVE_HOVER_WAIT", "PORTAL_ENTER_STEP1", "PORTAL_ENTER_STEP2", "PORTAL_DIVE_STEP1", "PORTAL_DIVE_STEP2", "PORTAL_DIVE_6F_RUSH"]
+                                is_portal_diving = fsm_portal_check in all_portal_fsms
 
                                 if (not action_taken and not global_path and not is_fixed_dealer_patrol) or is_portal_diving:
-                                    
-                                    if is_next_floor_dive and not state.get("portal_retry_mode", False):
-                                        portal_node = str(pc_graph["next_floor_node"])
-                                        gn_data_hj = pc_graph["nodes"].get(portal_node)
-                                        if gn_data_hj and char_map_pos:
-                                            gx_hj = gn_data_hj.get("x", 0) if isinstance(gn_data_hj, dict) else gn_data_hj[0]
-                                            gy_hj = gn_data_hj.get("y", 0) if isinstance(gn_data_hj, dict) else gn_data_hj[1]
-                                            dist_to_portal_hj = math.hypot(char_map_pos[0] - gx_hj, char_map_pos[1] - gy_hj)
-                                            
-                                            # 7.2px 이내 도착 시 FSM 가동 및 5초 타이머 계산
-                                            if dist_to_portal_hj <= 7.2:
-                                                state["dungeon_global_path"] = []
-                                                
-                                                if state.get("portal_entry_start_time", 0) == 0:
-                                                    state["portal_entry_start_time"] = curr_time
-                                                    
-                                                # 💡 형님 지시대로 5초 유지! 5초 초과 시 실패(후퇴) 선언
-                                                if curr_time - state.get("portal_entry_start_time", curr_time) > 5.0:
-                                                    dprint(key, "🚨 [포탈 진입 실패] 5초간 진입 불가! 재시도 노드(우회로)로 후퇴합니다!")
-                                                    state["waiting_for_6f_in"] = False
-                                                    state["portal_entry_start_time"] = 0
-                                                    state["portal_retry_mode"] = True
-                                                    state["target_fsm"] = "PARTY_WAIT" # 🚨 [버그 픽스 2] 여기도 IDLE ➔ PARTY_WAIT 로 변경!
-                                                    state["dungeon_global_path"] = []
-                                                    
-                                                    retry_node = str(pc_graph.get("retry_node", ""))
-                                                    state["current_target_node"] = retry_node if retry_node else portal_node
-                                                    clear_movements_only(pico_queues[key])
-                                                else:
-                                                    # 5초 이내라면 계속 포탈 진입 FSM 갱신 (PORTAL_DIVE_HOVER_WAIT 추가)
-                                                    if state.get("target_fsm") not in ["PORTAL_DIVE_BRAKE_WAIT", "PORTAL_DIVE_SEARCH", "PORTAL_DIVE_HOVER_WAIT", "PORTAL_ENTER_STEP1", "PORTAL_ENTER_STEP2", "PORTAL_DIVE_6F_RUSH"]:
-                                                        clear_movements_only(pico_queues[key])
-                                                        if state.get("sweep_active", False):
-                                                            pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
-                                                            
-                                                        dprint(key, "🛑 [포탈 앞 급제동] 포탈 진입 반경 도착! Shift+Click으로 캐릭터를 완벽히 멈춘 후 스캔합니다.")
-                                                        pico_queues[key].put({"action": "SHIFT_CLICK_BRAKE"})
-                                                        
-                                                        # 제동 후 0.4초간 대기하는 중간 FSM으로 넘김
-                                                        state["target_fsm"] = "PORTAL_DIVE_BRAKE_WAIT"
-                                                        state["portal_brake_end_time"] = curr_time + 0.4
-                                                        state["cooldown"] = curr_time + 0.05
-                                                action_taken = True
-                                                
+
+                                    # (상단 1번 구간에서 5초 타임아웃 및 자동 retry_node 후퇴를 일괄 통제하므로 하단 중복 타임아웃 블록은 깔끔히 정리)
+
                                     fsm_portal = str(state.get("target_fsm", ""))
-                                    
+
                                     if fsm_portal == "PORTAL_DIVE_6F_RUSH":
-                                        dprint(key, "🏃‍♂️ [6층 진입 돌격] 캐릭터 발밑(6시) 방향으로 1초간 이동합니다!")
+                                        dprint(key, "🏃‍♂️ [층간 진입 돌격] 캐릭터 발밑(6시) 방향으로 1초간 이동합니다!")
                                         rad = math.radians(92.0)
                                         dist = random.randint(100, 150)
                                         tx = int(max(10, min(740, char_screen_cx + math.cos(rad) * dist)))
@@ -24623,42 +25049,124 @@ def ai_commander_worker(target_pc):
                                         state["cooldown"] = curr_time + dur + 1.1
                                         action_taken = True
 
-                                    # 💡 [제동 -> 탐색(HOVER) -> 대기 후 우클릭 -> 원형검사 -> 좌클릭]
+                                    # 💡 [포탈 정밀 진입 머신: 본던 5to6 & 사던 3to4 통합 제어]
                                     if is_next_floor_dive and not state.get("portal_retry_mode", False):
-                                        
-                                        # 🚨 [핵심 픽스 1] 쿨타임(마우스 이동/대기)을 무시하고 무한 루프를 도는 큐 마비 현상 방어!
+
+                                        def find_floor_portal_on_screen(is_sadeon_mode):
+                                            cand_imgs = ["qq/silver/silver4f_portal.png", "qq/silver4f_portal.png"] if is_sadeon_mode else ["qq/6f_portal.png"]
+                                            search_roi = img_bgr[0:int(h*0.68), 0:740]
+                                            for p_img_path in cand_imgs:
+                                                if os.path.exists(p_img_path):
+                                                    try:
+                                                        cache_k = f"portal_tmpl_{p_img_path}"
+                                                        if cache_k not in loaded_models:
+                                                            bgra = cv2.imread(p_img_path, cv2.IMREAD_UNCHANGED)
+                                                            if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4:
+                                                                loaded_models[cache_k] = {"color": bgra[:,:,:3], "mask": bgra[:,:,3]}
+                                                            else:
+                                                                loaded_models[cache_k] = {"color": cv2.imread(p_img_path, cv2.IMREAD_COLOR), "mask": None}
+                                                        tmpl = loaded_models.get(cache_k)
+                                                        if tmpl and tmpl["color"] is not None:
+                                                            if tmpl["mask"] is not None:
+                                                                res = cv2.matchTemplate(search_roi, tmpl["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl["mask"]]*3))
+                                                            else:
+                                                                res = cv2.matchTemplate(search_roi, tmpl["color"], cv2.TM_CCOEFF_NORMED)
+                                                            _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                                                            if max_val >= 0.70:
+                                                                return (max_loc[0] + tmpl["color"].shape[1]//2, max_loc[1] + tmpl["color"].shape[0]//2)
+                                                    except Exception:
+                                                        pass
+                                            return None
+
                                         if curr_time < state.get("cooldown", 0):
                                             action_taken = True
-                                        
-                                        # 💡 1단계: 0.4초 제동 대기 후 이미지 탐색 모드로 전환
+
+                                        # 💡 1단계: Shift+Click 급제동 후 대기 완료 -> 사던은 스윗스팟 좌표 점검, 본던은 즉시 포탈 탐색
                                         elif fsm_portal == "PORTAL_DIVE_BRAKE_WAIT":
                                             if curr_time >= state.get("portal_brake_end_time", 0):
-                                                state["target_fsm"] = "PORTAL_DIVE_SEARCH"
+                                                if is_sadeon_dive:
+                                                    state["target_fsm"] = "SADEON_PORTAL_STEP_CHECK"
+                                                else:
+                                                    state["target_fsm"] = "PORTAL_DIVE_SEARCH"
                                                 state["cooldown"] = curr_time + 0.05
                                             else:
                                                 state["cooldown"] = curr_time + 0.05
-                                                
-                                        # 💡 2단계: 6f_portal.png 탐색 후 마우스 이동(HOVER)
+
+                                        # 💡 [사던 전용 1-A단계] 우클릭 가능 8개 좌표 안착 여부 판독 및 1칸 이동 계산
+                                        elif fsm_portal == "SADEON_PORTAL_STEP_CHECK":
+                                            if not char_map_pos:
+                                                state["cooldown"] = curr_time + 0.1
+                                            else:
+                                                mx, my = char_map_pos[0], char_map_pos[1]
+                                                min_c_dist = float('inf')
+                                                for vx, vy in SADEON_4F_VALID_COORDS:
+                                                    d_c = math.hypot(mx - vx, my - vy)
+                                                    if d_c < min_c_dist:
+                                                        min_c_dist = d_c
+
+                                                # 지정된 8개 좌표 중 한 곳에 안착 완료(오차 1.2px 이내) 시 -> 5초 입장 타이머 리셋 후 우클릭 입장 시도!
+                                                if min_c_dist <= 1.2:
+                                                    if not state.get("sadeon_on_spot_timer_reset", False):
+                                                        state["sadeon_on_spot_timer_reset"] = True
+                                                        state["portal_entry_start_time"] = curr_time # 💡 안착 시점부터 5초간 입장 시도 보장!
+                                                    dprint(key, f"🎯 [사던4층 우클릭좌표 안착] 현재 미니맵({int(round(mx))}, {int(round(my))}) 안착 완료! 1차 우클릭 입장을 시도합니다.")
+                                                    state["target_fsm"] = "PORTAL_DIVE_SEARCH"
+                                                    state["cooldown"] = curr_time + 0.05
+                                                else:
+                                                    # 아직 안착하지 못한 경우 가장 가까운 스윗스팟 좌표로 딱 1칸(단타) 이동
+                                                    try_cnt = state.get("sadeon_step_try_cnt", 0)
+                                                    sorted_coords = sorted(SADEON_4F_VALID_COORDS, key=lambda c: math.hypot(mx - c[0], my - c[1]))
+                                                    target_coord = sorted_coords[min(try_cnt % len(sorted_coords), 2)]
+                                                    tx_m, ty_m = target_coord
+
+                                                    step_angle = math.atan2(ty_m - my, tx_m - mx)
+                                                    # 캐릭터가 회전만 하지 않고 정확히 1칸만 걸어가도록 화면상 1셀 거리(48px) 조준
+                                                    step_screen_dist = g_val(45.0, 52.0)
+                                                    tx = int(max(10, min(740, char_screen_cx + math.cos(step_angle) * step_screen_dist)))
+                                                    ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(step_angle) * (step_screen_dist * 0.85))))
+                                                    if tx < 165 and ty < 150:
+                                                        if (165 - tx) < (150 - ty): tx = 165
+                                                        else: ty = 150
+
+                                                    dprint(key, f"👣 [사던 1칸 정밀이동] 현재({mx:.0f},{my:.0f}) ➔ 목표좌표({tx_m},{ty_m}) 방향 1칸 이동 클릭({tx},{ty}) 준비!")
+                                                    pico_queues[key].put({"action": "HOVER", "dx": tx - cur_x, "dy": ty - cur_y})
+                                                    pico_queues[key].put({"action": "SPECIAL_ACK"})
+                                                    state["pico_arrived"] = False
+                                                    state["special_ack_arrived"] = False
+                                                    state["cursor_pos"] = [tx, ty]
+                                                    state["sadeon_step_try_cnt"] = try_cnt + 1
+                                                    state["sadeon_step_ack_timeout"] = curr_time + 1.0
+                                                    state["target_fsm"] = "SADEON_PORTAL_STEP_HOVER_WAIT"
+                                                    state["cooldown"] = curr_time + 0.05
+
+                                        # 💡 [사던 전용 1-B단계] 커서 도착 후 단 1회 좌클릭하여 1칸 이동 실행
+                                        elif fsm_portal == "SADEON_PORTAL_STEP_HOVER_WAIT":
+                                            if state.pop("special_ack_arrived", False) or curr_time > state.get("sadeon_step_ack_timeout", 0):
+                                                real_cursor = find_cursor_pos(img_bgr, last_pos=(cur_x, cur_y), check_circle=False, allow_full_scan=False)
+                                                if real_cursor:
+                                                    cur_x, cur_y = real_cursor[0], real_cursor[1]
+                                                    state["cursor_pos"] = [cur_x, cur_y]
+                                                pico_queues[key].put({"action": "SINGLE_ATTACK"})
+                                                state["sadeon_step_walk_end"] = curr_time + g_val(0.70, 0.82)
+                                                state["target_fsm"] = "SADEON_PORTAL_STEP_WALK_WAIT"
+                                                state["cooldown"] = curr_time + 0.05
+                                            else:
+                                                state["cooldown"] = curr_time + 0.03
+
+                                        # 💡 [사던 전용 1-C단계] 1칸 이동 완료 및 정지 대기 후 다시 좌표 재확인
+                                        elif fsm_portal == "SADEON_PORTAL_STEP_WALK_WAIT":
+                                            if curr_time >= state.get("sadeon_step_walk_end", 0) and state.get("is_completely_stopped", True):
+                                                state["target_fsm"] = "SADEON_PORTAL_STEP_CHECK"
+                                                state["cooldown"] = curr_time + 0.05
+                                            else:
+                                                state["cooldown"] = curr_time + 0.05
+
+                                        # 💡 2단계: 포탈 이미지(6f_portal.png / silver4f_portal.png) 탐색 후 마우스 이동(HOVER)
                                         elif fsm_portal == "PORTAL_DIVE_SEARCH":
-                                            portal_pos = None
-                                            portal_img_path = "qq/6f_portal.png"
-                                            if os.path.exists(portal_img_path):
-                                                try:
-                                                    if "img_6f_portal" not in loaded_models:
-                                                        bgra = cv2.imread(portal_img_path, cv2.IMREAD_UNCHANGED)
-                                                        if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4: loaded_models["img_6f_portal"] = {"color": cv2.cvtColor(bgra[:,:,:3], cv2.COLOR_BGR2GRAY), "mask": bgra[:,:,3]}
-                                                        else: loaded_models["img_6f_portal"] = {"color": cv2.imread(portal_img_path, cv2.IMREAD_COLOR), "mask": None}
-                                                    tmpl = loaded_models.get("img_6f_portal")
-                                                    if tmpl and tmpl["color"] is not None:
-                                                        search_roi = img_bgr[0:int(h*0.68), 0:740]
-                                                        if tmpl["mask"] is not None: res = cv2.matchTemplate(search_roi, tmpl["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl["mask"]]*3))
-                                                        else: res = cv2.matchTemplate(search_roi, tmpl["color"], cv2.TM_CCOEFF_NORMED)
-                                                        _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                                                        if max_val >= 0.70: portal_pos = (max_loc[0] + tmpl["color"].shape[1]//2, max_loc[1] + tmpl["color"].shape[0]//2)
-                                                except Exception: pass
-                                            
-                                            # 이미지가 없으면 맵(GPS) 기준 타일 절대좌표로 락온!
-                                            if not portal_pos:
+                                            portal_pos = find_floor_portal_on_screen(is_sadeon_dive)
+
+                                            # 이미지가 없으면 맵(GPS) 기준 포탈 타일 절대좌표로 락온!
+                                            if not portal_pos and char_map_pos:
                                                 gn_data = pc_graph["nodes"].get(str(pc_graph["next_floor_node"]))
                                                 gx = gn_data.get("x", 0) if isinstance(gn_data, dict) else gn_data[0]
                                                 gy = gn_data.get("y", 0) if isinstance(gn_data, dict) else gn_data[1]
@@ -24667,28 +25175,28 @@ def ai_commander_worker(target_pc):
                                                 tx = int(max(10, min(740, char_screen_cx + scr_dx)))
                                                 ty = int(max(5, min(int(h * 0.68), char_screen_cy + scr_dy)))
                                                 portal_pos = (tx, ty)
-                                            
-                                            tx, ty = portal_pos
-                                            dprint(key, f"🎯 [포탈 탐색] 포탈 좌표({tx}, {ty})로 커서를 부드럽게 이동합니다.")
-                                            
-                                            # ATTACK(좌클릭 이동)이 아니라 HOVER로 순수하게 마우스만 이동!
-                                            pico_queues[key].put({"action": "HOVER", "dx": tx - cur_x, "dy": ty - cur_y})
-                                            pico_queues[key].put({"action": "SPECIAL_ACK"})
-                                            
-                                            state["pico_arrived"] = False
-                                            state["special_ack_arrived"] = False
-                                            state["cursor_pos"] = [tx, ty]
-                                            state["portal_click_pos"] = (tx, ty)
-                                            
-                                            # 🚨 [핵심 픽스 2] 마우스가 완전히 도착할 때까지 무조건 기다리는 새로운 FSM 상태 진입!
-                                            state["target_fsm"] = "PORTAL_DIVE_HOVER_WAIT" 
-                                            state["cooldown"] = curr_time + 0.05
-                                            
+
+                                            if portal_pos:
+                                                tx, ty = portal_pos
+                                                dprint(key, f"🎯 [포탈 1차 우클릭 조준] 포탈 좌표({tx}, {ty})로 커서를 이동합니다.")
+                                                pico_queues[key].put({"action": "HOVER", "dx": tx - cur_x, "dy": ty - cur_y})
+                                                pico_queues[key].put({"action": "SPECIAL_ACK"})
+
+                                                state["pico_arrived"] = False
+                                                state["special_ack_arrived"] = False
+                                                state["cursor_pos"] = [tx, ty]
+                                                state["portal_click_pos"] = (tx, ty)
+
+                                                state["target_fsm"] = "PORTAL_DIVE_HOVER_WAIT"
+                                                state["cooldown"] = curr_time + 0.05
+                                            else:
+                                                state["cooldown"] = curr_time + 0.1
+
                                         # 💡 2.5단계: 커서 도착 완료 후 확정 우클릭 발사
                                         elif fsm_portal == "PORTAL_DIVE_HOVER_WAIT":
                                             if state.pop("special_ack_arrived", False):
-                                                dprint(key, "🎯 [포탈 안착] 마우스 이동 완료! 우클릭을 시전하여 원형(circle) 커서를 유도합니다!")
-                                                
+                                                dprint(key, "🎯 [포탈 1차 우클릭 발사] 마우스 이동 완료! 우클릭으로 입장을 시도합니다!")
+
                                                 def _right_click(k=key):
                                                     try:
                                                         if picos.get(k) and pico_locks.get(k):
@@ -24699,24 +25207,23 @@ def ai_commander_worker(target_pc):
                                                     except: pass
                                                 import threading
                                                 threading.Thread(target=_right_click, daemon=True).start()
-                                                
+
                                                 state["target_fsm"] = "PORTAL_ENTER_STEP1"
                                                 state["portal_rc_time"] = curr_time
                                                 state["cooldown"] = curr_time + 0.35
                                             else:
                                                 state["cooldown"] = curr_time + 0.05
-                                                
-                                        # 💡 3단계: 원형 커서(circle.png) 팩트 체크 후 ➔ 통과 시에만 좌클릭 발사!
+
+                                        # 💡 3단계: 원형 커서(circle.png) 체크 -> 통과 시 좌클릭 / 사던에서 실패 시 2차 직접 좌클릭(silver4f_portal.png)으로 전환!
                                         elif fsm_portal == "PORTAL_ENTER_STEP1":
                                             px, py = state.get("portal_click_pos", (cur_x, cur_y))
-                                            
-                                            # 커서 위치 동기화 보정 (포탈 커서 인식 적용됨)
+
                                             real_cursor = find_cursor_pos(img_bgr, last_pos=(px, py), check_circle=True, allow_full_scan=False)
                                             if real_cursor:
                                                 px, py = real_cursor[0], real_cursor[1]
                                                 state["cursor_pos"] = [px, py]
                                                 cur_x, cur_y = px, py
-                                                
+
                                             is_circle_found = False
                                             if img_circle is not None:
                                                 roi_x1, roi_y1 = max(0, int(px) - 60), max(0, int(py) - 60)
@@ -24726,28 +25233,81 @@ def ai_commander_worker(target_pc):
                                                     if img_circle_mask is not None: res_c = cv2.matchTemplate(c_roi, img_circle, cv2.TM_CCORR_NORMED, mask=cv2.merge([img_circle_mask]*3))
                                                     else: res_c = cv2.matchTemplate(c_roi, img_circle, cv2.TM_CCOEFF_NORMED)
                                                     if cv2.minMaxLoc(res_c)[1] >= 0.70: is_circle_found = True
-                                                        
+
                                             if is_circle_found:
-                                                dprint(key, "✅ [포탈 진입 2단계] 우클릭 후 원형 커서(circle.png) 확인! 포탈이 맞습니다. 좌클릭으로 최종 입장합니다!")
-                                                # 💡 원형 커서가 확인되었을 때만 좌클릭(SINGLE_ATTACK) 격발!
+                                                dprint(key, "✅ [포탈 원형 커서 확인] 우클릭 후 circle.png 확인 완료! 좌클릭으로 최종 입장합니다!")
                                                 pico_queues[key].put({"action": "SINGLE_ATTACK"})
+                                                state["portal_step2_time"] = curr_time
                                                 state["target_fsm"] = "PORTAL_ENTER_STEP2"
                                                 state["cooldown"] = curr_time + 0.5
                                             else:
                                                 if curr_time - state.get("portal_rc_time", curr_time) > 0.6:
-                                                    dprint(key, "⚠️ [원형 커서 확인 실패] 우클릭 후에도 서클이 안 뜹니다. 포탈을 다시 탐색합니다.")
-                                                    state["target_fsm"] = "PORTAL_DIVE_SEARCH"
+                                                    if is_sadeon_dive:
+                                                        dprint(key, "⚡ [사던 우클릭 미입장 ➔ 2차 직접 클릭] 우클릭으로 입장이 안 되어 silver4f_portal.png 직접 좌클릭 입장을 시도합니다!")
+                                                        state["target_fsm"] = "SADEON_PORTAL_DIRECT_SEARCH"
+                                                    else:
+                                                        dprint(key, "⚠️ [원형 커서 확인 실패] 우클릭 후에도 서클이 안 뜹니다. 포탈을 다시 탐색합니다.")
+                                                        state["target_fsm"] = "PORTAL_DIVE_SEARCH"
                                                     state["cooldown"] = curr_time + 0.1
                                                 else:
                                                     state["cooldown"] = curr_time + 0.05
-                                                    
-                                        # 💡 4단계: 입장 대기
+
+                                        # 💡 4단계: 우클릭+좌클릭 후 입장 대기 (사던에서 1.2초 내 입장 안 되면 2차 직접 클릭으로 전환!)
                                         elif fsm_portal == "PORTAL_ENTER_STEP2":
-                                            # 이미지를 누르고 입장 대기 중 (5초 타임아웃이 대기 상태를 통제함)
-                                            state["cooldown"] = curr_time + 0.2
-                                            
-                                        # 💡 허용 FSM 목록 업데이트
-                                        if fsm_portal in ["PORTAL_DIVE_BRAKE_WAIT", "PORTAL_DIVE_SEARCH", "PORTAL_DIVE_HOVER_WAIT", "PORTAL_ENTER_STEP1", "PORTAL_ENTER_STEP2"]:
+                                            if is_sadeon_dive and (curr_time - state.get("portal_step2_time", curr_time) > 1.2):
+                                                dprint(key, "⚡ [사던 우클릭 후 미입장 ➔ 2차 직접 클릭] 1.2초 경과! silver4f_portal.png 직접 클릭 입장으로 전환합니다.")
+                                                state["target_fsm"] = "SADEON_PORTAL_DIRECT_SEARCH"
+                                                state["cooldown"] = curr_time + 0.1
+                                            else:
+                                                state["cooldown"] = curr_time + 0.2
+
+                                        # 💡 [사던 전용 5-A단계] silver4f_portal.png 직접 매칭 후 커서 이동
+                                        elif fsm_portal == "SADEON_PORTAL_DIRECT_SEARCH":
+                                            portal_pos = find_floor_portal_on_screen(True)
+                                            if not portal_pos and char_map_pos:
+                                                gn_data = pc_graph["nodes"].get(str(pc_graph["next_floor_node"]))
+                                                gx = gn_data.get("x", 0) if isinstance(gn_data, dict) else gn_data[0]
+                                                gy = gn_data.get("y", 0) if isinstance(gn_data, dict) else gn_data[1]
+                                                scr_dx = (gx - char_map_pos[0]) / DUNGEON_SCALE_X
+                                                scr_dy = (gy - char_map_pos[1]) / DUNGEON_SCALE_Y
+                                                tx = int(max(10, min(740, char_screen_cx + scr_dx)))
+                                                ty = int(max(5, min(int(h * 0.68), char_screen_cy + scr_dy)))
+                                                portal_pos = (tx, ty)
+
+                                            if portal_pos:
+                                                tx, ty = portal_pos
+                                                dprint(key, f"🚪 [사던4층 포탈 직접 클릭 조준] silver4f_portal.png({tx}, {ty})로 커서를 이동합니다!")
+                                                pico_queues[key].put({"action": "HOVER", "dx": tx - cur_x, "dy": ty - cur_y})
+                                                pico_queues[key].put({"action": "SPECIAL_ACK"})
+                                                state["pico_arrived"] = False
+                                                state["special_ack_arrived"] = False
+                                                state["cursor_pos"] = [tx, ty]
+                                                state["portal_click_pos"] = (tx, ty)
+                                                state["sadeon_direct_ack_timeout"] = curr_time + 1.0
+                                                state["target_fsm"] = "SADEON_PORTAL_DIRECT_HOVER_WAIT"
+                                                state["cooldown"] = curr_time + 0.05
+                                            else:
+                                                state["target_fsm"] = "SADEON_PORTAL_STEP_CHECK"
+                                                state["cooldown"] = curr_time + 0.1
+
+                                        # 💡 [사던 전용 5-B단계] silver4f_portal.png 도착 후 직접 좌클릭(2연타) 입장 시도!
+                                        elif fsm_portal == "SADEON_PORTAL_DIRECT_HOVER_WAIT":
+                                            if state.pop("special_ack_arrived", False) or curr_time > state.get("sadeon_direct_ack_timeout", 0):
+                                                real_cursor = find_cursor_pos(img_bgr, last_pos=(cur_x, cur_y), check_circle=False, allow_full_scan=False)
+                                                if real_cursor:
+                                                    cur_x, cur_y = real_cursor[0], real_cursor[1]
+                                                    state["cursor_pos"] = [cur_x, cur_y]
+                                                dprint(key, f"🚪 [사던4층 포탈 직접 클릭 발사] ({cur_x}, {cur_y}) 직접 좌클릭으로 4층 입장을 시도합니다!")
+                                                pico_queues[key].put({"action": "SINGLE_ATTACK"})
+                                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.08, "delay_max": 0.14})
+                                                pico_queues[key].put({"action": "SINGLE_ATTACK"})
+                                                # 1.2초 대기 후에도 아직 3층이면 다시 스윗스팟 좌표 체크부터 재시도
+                                                state["target_fsm"] = "SADEON_PORTAL_STEP_CHECK"
+                                                state["cooldown"] = curr_time + 1.2
+                                            else:
+                                                state["cooldown"] = curr_time + 0.03
+
+                                        if fsm_portal in all_portal_fsms:
                                             action_taken = True
 
                                     if not action_taken:
@@ -26603,12 +27163,16 @@ def toggle_individual_hunt(key):
         state["designated_base_node"] = None
         state["is_combat_emergency_buff"] = False
 
-        # 💡 자동사냥 버튼을 다시 켤 때 파티 초대 3회 실패 락아웃 및 파장 잠금 초기화
+        # 💡 자동사냥 버튼을 다시 켤 때 파티 초대 3x3(9회) 실패 락아웃 및 파장 잠금/강등 초기화
         state["party_invite_giveup"] = False
         state["party_accept_try_cnt"] = 0
+        state["party_accept_cycle_cnt"] = 0
+        state["party_retry_wait_until"] = 0.0
         state["waiting_party_minimap_verify"] = False
         state["pending_leader_invite_sig"] = False
         state["not_party_leader_locked"] = False
+        state["leader_demoted_until"] = 0.0
+        state["no_party_2m_start"] = 0.0
         
         # 👇👇 [핵심 추가] 사냥 시작 버튼을 누른 직후 딱 1번 전 층수 딥스캔 발동 예약!
         state["force_floor_scan"] = True
@@ -27251,8 +27815,10 @@ for i, pc in enumerate(MINI_PCS):
         text="",
         variable=vars_dict["use_config_sync"],
         bg=BG_PANEL,
+        fg="#B2FF59",
         selectcolor="#3E3E42",
-        activebackground=BG_PANEL
+        activebackground=BG_PANEL,
+        activeforeground="#B2FF59"
     ).pack(side="left", padx=(0, 0))
 
     lbl_pk_sync = tk.Label(p_pk_sync_frame, text="동기화▾", bg=BG_PANEL, fg="#B2FF59", font=("맑은 고딕", 8, "bold"), cursor="hand2")
@@ -27270,15 +27836,17 @@ for i, pc in enumerate(MINI_PCS):
 
     btn_pk_sync = tk.Button(
         p_pk_sync_frame,
-        text="📡 PK설정 동기화",
+        text="동기화",
         font=("맑은 고딕", 8, "bold"),
         bg="#0E639C",
         fg="white",
         relief="flat",
-        pady=2
+        width=5,
+        padx=0,
+        pady=1
     )
     btn_pk_sync.config(command=lambda k=key, b=btn_pk_sync: broadcast_config_sync(k, "PK", b))
-    btn_pk_sync.pack(side="left", fill="x", expand=True, padx=2)
+    btn_pk_sync.pack(side="left", padx=2)
 
     hp_top_frame = tk.Frame(tab1, bg=BG_PANEL)
     hp_top_frame.pack(side="top", fill="x", padx=2, pady=(0, 2))
@@ -27414,8 +27982,10 @@ for i, pc in enumerate(MINI_PCS):
         text="",
         variable=vars_dict["use_config_sync"],
         bg=BG_PANEL,
+        fg="#B2FF59",
         selectcolor="#3E3E42",
-        activebackground=BG_PANEL
+        activebackground=BG_PANEL,
+        activeforeground="#B2FF59"
     ).pack(side="left", padx=(0, 0))
 
     lbl_main_sync = tk.Label(main_sync_frame, text="동기화▾", bg=BG_PANEL, fg="#B2FF59", font=("맑은 고딕", 8, "bold"), cursor="hand2")
@@ -27433,15 +28003,17 @@ for i, pc in enumerate(MINI_PCS):
 
     btn_main_sync = tk.Button(
         main_sync_frame,
-        text="📡 메인설정 동기화(사냥터제외)",
+        text="동기화",
         font=("맑은 고딕", 8, "bold"),
         bg="#0E639C",
         fg="white",
         relief="flat",
+        width=5,
+        padx=0,
         pady=1
     )
     btn_main_sync.config(command=lambda k=key, b=btn_main_sync: broadcast_config_sync(k, "MAIN", b))
-    btn_main_sync.pack(side="left", fill="x", expand=True, padx=2)
+    btn_main_sync.pack(side="left", padx=2)
 
     supply_frame = tk.LabelFrame(tab2, text=" 🛒 마을 자동 정비 (구매/판매/창고) ", font=("맑은 고딕", 9, "bold"), bg=BG_PANEL, fg="#B2FF59", bd=1)
     supply_frame.pack(side="top", fill="x", padx=10, pady=(10, 5))
@@ -28453,8 +29025,10 @@ for i, pc in enumerate(MINI_PCS):
         text="",
         variable=vars_dict["use_config_sync"],
         bg=BG_PANEL,
+        fg="#B2FF59",
         selectcolor="#3E3E42",
-        activebackground=BG_PANEL
+        activebackground=BG_PANEL,
+        activeforeground="#B2FF59"
     ).pack(side="left", padx=(0, 0))
 
     lbl_sub_sync = tk.Label(sub_sync_frame, text="동기화▾", bg=BG_PANEL, fg="#B2FF59", font=("맑은 고딕", 8, "bold"), cursor="hand2")
@@ -28472,15 +29046,17 @@ for i, pc in enumerate(MINI_PCS):
 
     btn_sub_sync = tk.Button(
         sub_sync_frame,
-        text="📡 보조탭 전체 동기화",
+        text="동기화",
         font=("맑은 고딕", 8, "bold"),
         bg="#0E639C",
         fg="white",
         relief="flat",
-        pady=2
+        width=5,
+        padx=0,
+        pady=1
     )
     btn_sub_sync.config(command=lambda k=key, b=btn_sub_sync: broadcast_config_sync(k, "SUB", b))
-    btn_sub_sync.pack(side="left", fill="x", expand=True, padx=2)
+    btn_sub_sync.pack(side="left", padx=2)
 
     debug_frame = tk.LabelFrame(tab2, text=" 🛠️ 시스템 유지보수 / 디버그 ", bg=BG_PANEL, fg="#FF9800", font=("맑은 고딕", 9, "bold"))
 
@@ -28593,8 +29169,10 @@ for i, pc in enumerate(MINI_PCS):
         text="",
         variable=vars_dict["use_config_sync"],
         bg=BG_PANEL,
+        fg="#B2FF59",
         selectcolor="#3E3E42",
-        activebackground=BG_PANEL
+        activebackground=BG_PANEL,
+        activeforeground="#B2FF59"
     ).pack(side="left", padx=(0, 0))
 
     lbl_auth_sync = tk.Label(d_row3, text="동기화▾", bg=BG_PANEL, fg="#B2FF59", font=("맑은 고딕", 8, "bold"), cursor="hand2")
@@ -28612,15 +29190,17 @@ for i, pc in enumerate(MINI_PCS):
 
     btn_auth_sync = tk.Button(
         d_row3,
-        text="📡 인증딜레이 동기화",
+        text="동기화",
         font=("맑은 고딕", 8, "bold"),
         bg="#0E639C",
         fg="white",
         relief="flat",
-        pady=2
+        width=5,
+        padx=0,
+        pady=1
     )
     btn_auth_sync.config(command=lambda k=key, b=btn_auth_sync: broadcast_config_sync(k, "AUTH", b))
-    btn_auth_sync.pack(side="left", fill="x", expand=True, padx=2)
+    btn_auth_sync.pack(side="left", padx=2)
 
     # 하단 설명 문구 및 미니컴 sub 바로가기 원클릭 자동생성 UI
     tk.Label(tab_auth, text="※ IP 인증 한도 초과 시, 타 중앙컴 프록시(sub.png)로 자동 우회합니다.", font=("맑은 고딕", 8), bg=BG_PANEL, fg="#9E9E9E", anchor="w").pack(side="top", fill="x", padx=12, pady=2)
