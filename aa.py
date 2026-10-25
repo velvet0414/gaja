@@ -1637,8 +1637,8 @@ def local_ipc_broadcaster_thread(my_key):
                     "group_join_time": st.get("invite_group_join_time", 0.0),
                     "leader_since": st.get("invite_leader_since", 0.0),
                     "party_order": st.get("party_order", []),
-                    "last_invited_uid": st.get("last_invited_uid", ""),
-                    "last_invited_ts": st.get("last_invited_ts", 0.0),
+                    "last_invited_uid": st.get("last_invited_uid", "") if (now_req_t - st.get("last_invited_ts", 0.0) <= 8.0) else "",
+                    "last_invited_ts": st.get("last_invited_ts", 0.0) if (now_req_t - st.get("last_invited_ts", 0.0) <= 8.0) else 0.0,
                     "is_party_inviter": current_settings.get(my_key, {}).get("is_party_inviter", False),
                     "party_state": party_state,
                     "mob_map_pos": mob_map_pos,
@@ -2935,6 +2935,8 @@ HP_X1, HP_X2 = 175, 350
 MP_X1, MP_X2 = 416, 585
 DRAGON_ROI_X1, DRAGON_ROI_X2 = 350, 416
 DRAGON_ROI_Y1, DRAGON_ROI_Y2 = 460, 510
+CHATUP_ROI_X1, CHATUP_ROI_X2 = 590, 628
+CHATUP_ROI_Y1, CHATUP_ROI_Y2 = 568, 600
 
 BUFF_DUR_SHIELD   = 1200
 BUFF_DUR_HOLY     = 1200
@@ -3515,6 +3517,101 @@ try:
         globals()["ticket2_color"] = cv2.imread(_t2_path, cv2.IMREAD_COLOR)
         globals()["ticket2_mask"] = None
 except: globals()["ticket2_color"], globals()["ticket2_mask"] = None, None
+
+def _load_cached_ui_tmpl(cand_paths):
+    for p in cand_paths:
+        if os.path.exists(p):
+            mtime = os.path.getmtime(p)
+            ckey = f"ui_tmpl_{p}"
+            cached = loaded_models.get(ckey)
+            if not cached or cached.get("mtime") != mtime:
+                try:
+                    with open(p, "rb") as f:
+                        arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
+                    bgra = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
+                    if bgra is not None:
+                        if len(bgra.shape) == 3 and bgra.shape[2] == 4:
+                            loaded_models[ckey] = {"color": bgra[:, :, :3], "mask": bgra[:, :, 3], "mtime": mtime}
+                        else:
+                            loaded_models[ckey] = {"color": bgra[:, :, :3] if len(bgra.shape) == 3 else cv2.cvtColor(bgra, cv2.COLOR_GRAY2BGR), "mask": None, "mtime": mtime}
+                except Exception:
+                    pass
+            if loaded_models.get(ckey) and loaded_models[ckey].get("color") is not None:
+                return loaded_models[ckey]
+    return None
+
+def check_dragon_head_1st_stage(img_bgr, th=0.80):
+    """채팅창이 1단(정상) 상태여서 용머리(dragon.png)가 원래 위치(Y:460~510)에 존재하는지 판독합니다."""
+    if img_bgr is None:
+        return False
+    h, w = img_bgr.shape[:2]
+    if w < DRAGON_ROI_X2 or h < DRAGON_ROI_Y2:
+        return False
+
+    # 1) PvP 붉은 용머리 상태면 1단 위치에 용머리가 존재하는 것으로 즉시 인정
+    if check_pvp_mode(img_bgr):
+        return True
+
+    # 2) dragon.png 템플릿 매칭 (1단 위치 기준 Y >= 458 검증으로 2단/3단 확장 상태와 100% 구분)
+    tmpl_data = _load_cached_ui_tmpl(["qq/certi/dragon.png", "qq/dragon.png", "dragon.png"])
+    if tmpl_data is not None:
+        tmpl = tmpl_data["color"]
+        mask = tmpl_data["mask"]
+        th_d, tw_d = tmpl.shape[:2]
+        pad_x = max(20, (tw_d - (DRAGON_ROI_X2 - DRAGON_ROI_X1)) // 2 + 15)
+        pad_y = max(15, (th_d - (DRAGON_ROI_Y2 - DRAGON_ROI_Y1)) // 2 + 12)
+        rx1 = max(0, DRAGON_ROI_X1 - pad_x)
+        ry1 = max(0, DRAGON_ROI_Y1 - pad_y)
+        rx2 = min(w, DRAGON_ROI_X2 + pad_x)
+        ry2 = min(h, DRAGON_ROI_Y2 + pad_y)
+        roi = img_bgr[ry1:ry2, rx1:rx2]
+        if roi.shape[0] >= th_d and roi.shape[1] >= tw_d:
+            try:
+                if mask is not None:
+                    res = cv2.matchTemplate(roi, tmpl, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask]*3))
+                else:
+                    res = cv2.matchTemplate(roi, tmpl, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, max_loc = cv2.minMaxLoc(res)
+                if not (np.isnan(max_val) or np.isinf(max_val)) and max_val >= th:
+                    abs_cy = ry1 + max_loc[1] + th_d // 2
+                    if abs_cy >= 458:
+                        return True
+            except Exception:
+                pass
+    return False
+
+def find_chatup_in_roi(img_bgr, th=0.75):
+    """우측 하단 CHATUP_ROI(X:590~628, Y:568~600) 내부에서 chatup.png를 찾아 클릭 좌표를 반환합니다."""
+    if img_bgr is None:
+        return None
+    h, w = img_bgr.shape[:2]
+    rx1, ry1 = max(0, CHATUP_ROI_X1), max(0, CHATUP_ROI_Y1)
+    rx2, ry2 = min(w, CHATUP_ROI_X2), min(h, CHATUP_ROI_Y2)
+    if rx2 <= rx1 or ry2 <= ry1:
+        return None
+
+    tmpl_data = _load_cached_ui_tmpl(["qq/chatup.png", "chatup.png", "qq/certi/chatup.png"])
+    if tmpl_data is None:
+        return None
+
+    tmpl = tmpl_data["color"]
+    mask = tmpl_data["mask"]
+    th_c, tw_c = tmpl.shape[:2]
+    roi = img_bgr[ry1:ry2, rx1:rx2]
+    if roi.shape[0] < th_c or roi.shape[1] < tw_c:
+        return None
+
+    try:
+        if mask is not None:
+            res = cv2.matchTemplate(roi, tmpl, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask]*3))
+        else:
+            res = cv2.matchTemplate(roi, tmpl, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        if not (np.isnan(max_val) or np.isinf(max_val)) and max_val >= th:
+            return (rx1 + max_loc[0] + tw_c // 2, ry1 + max_loc[1] + th_c // 2)
+    except Exception:
+        pass
+    return None
 # 👆👆 -----------------------------------------------------------------
 
 for v in HOTKEY_IMGS_MAP.values():
@@ -5100,6 +5197,14 @@ def pico_worker_thread(key):
 
                         h_sleep(0.12, 0.20)
                         k_tap(176) # Enter
+
+                        # 💡 엔터 타건 직후 즉시 초대 완료 신호를 먼저 기록하여 파티원에게 송출!
+                        inv_ts_now = time.time()
+                        if key in ai_states:
+                            ai_states[key]["last_invited_uid"] = str(cmd.get("target_uid", ""))
+                            ai_states[key]["last_invited_ts"] = inv_ts_now
+                        dprint(key, f"✅ [파장 초대 타건 완료] '{cmd.get('raw_name', '')}' 초대 엔터 입력 완료! 파티원에게 수락 신호를 송출합니다.")
+
                         h_sleep(0.30, 0.40) # 시스템 메시지('파티장만이 초대할 수 있습니다.') 출력 대기
 
                         scr_after_inv = latest_frames.get(key)
@@ -5109,11 +5214,8 @@ def pico_worker_thread(key):
                                 ai_states[key]["not_party_leader_locked"] = True
                                 ai_states[key]["need_lock_snapshot"] = True
                                 ai_states[key]["last_invited_uid"] = ""
+                                ai_states[key]["last_invited_ts"] = 0.0
                             dprint(key, "🚫 [파장 권한 없음 감지] 채팅창 'pratyjangx.png'(파티장만이 초대 가능) 확인! 현재 파티원 구성이 바뀔 때까지 파장 권한을 내려놓고 대기합니다.")
-                        else:
-                            if key in ai_states:
-                                ai_states[key]["last_invited_uid"] = str(cmd.get("target_uid", ""))
-                                ai_states[key]["last_invited_ts"] = time.time()
                 finally:
                     if key in ai_states:
                         ai_states[key]["is_chat_typing"] = False
@@ -8760,6 +8862,7 @@ def ai_commander_worker(target_pc):
 
             fsm_inv_chk = str(state.get("target_fsm", "IDLE"))
             is_ui_busy_for_chat = (
+                fsm_inv_chk.startswith("CHAT_RECOVER") or
                 fsm_inv_chk.startswith("TOWN_MAINT") or
                 fsm_inv_chk.startswith("WEAPON_REPAIR") or
                 fsm_inv_chk.startswith("INV_CLEAN") or
@@ -9095,10 +9198,10 @@ def ai_commander_worker(target_pc):
                         if l_order:
                             state["known_party_order"] = list(l_order)
 
-                        # 📩 파장이 나(my_uid)에게 초대 명령어를 방금 입력 완료했는지 신호 확인!
+                        # 📩 파장이 나(my_uid)에게 초대 명령어를 방금 입력 완료했는지 신호 확인! (PC 간 윈도우 시계 오차 무관하게 새 타임스탬프면 즉시 수신!)
                         l_inv_uid = str(leader_info.get("last_invited_uid", ""))
                         l_inv_ts = float(leader_info.get("last_invited_ts", 0.0))
-                        if l_inv_uid == my_uid and l_inv_ts > state.get("last_handled_invite_ts", 0.0) and (curr_time - l_inv_ts <= 10.0):
+                        if l_inv_uid == my_uid and l_inv_ts > 0.0 and l_inv_ts != state.get("last_handled_invite_ts", 0.0):
                             state["last_handled_invite_ts"] = l_inv_ts
                             if not state.get("in_ingame_party", True) and not state.get("party_invite_giveup", False) and not state.get("waiting_party_minimap_verify", False):
                                 state["pending_leader_invite_sig"] = True
@@ -9251,7 +9354,7 @@ def ai_commander_worker(target_pc):
                             state["target_fsm"] = "IDLE"
 
                             state["is_chat_typing"] = True
-                            state["chat_typing_timeout"] = curr_time + 3.5
+                            state["chat_typing_timeout"] = curr_time + 6.0
 
                             pico_queues[key].put({
                                 "action": "PARTY_INVITE_CMD",
@@ -9914,7 +10017,7 @@ def ai_commander_worker(target_pc):
                         else:
                             state["real_cursor_pos"] = None
 
-                            is_looting_or_inv = state.get("loot_state") != "IDLE" or target_fsm_sync.startswith("INV_CLEAN") or target_fsm_sync.startswith("TOWN_MAINT") or target_fsm_sync.startswith("HK_HEAL_") or target_fsm_sync.startswith("BUFFING")
+                            is_looting_or_inv = state.get("loot_state") != "IDLE" or target_fsm_sync.startswith("INV_CLEAN") or target_fsm_sync.startswith("TOWN_MAINT") or target_fsm_sync.startswith("HK_HEAL_") or target_fsm_sync.startswith("BUFFING") or target_fsm_sync.startswith("CHAT_RECOVER")
                             if not is_looting_or_inv:
                                 state["sync_fail_count"] = state.get("sync_fail_count", 0) + 1
                                 if state["sync_fail_count"] >= 3:
@@ -9942,7 +10045,8 @@ def ai_commander_worker(target_pc):
                 fact_c = state.get("real_cursor_pos")
                 check_y = max(cur_y, fact_c[1]) if fact_c else cur_y
 
-                if (check_y > ui_limit or state.get("cursor_lost", False)) and not fsm_for_ui.startswith("INV_CLEAN") and not fsm_for_ui.startswith("TOWN_MAINT") and not fsm_for_ui.startswith("HK_HEAL_") and not fsm_for_ui.startswith("BUFFING") and not fsm_for_ui.startswith("F1_INIT") and fsm_for_ui not in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"]:
+                # 💡 CHAT_RECOVER(채팅창 복구) 중일 때는 커서가 Y:588(하단 화살표)까지 내려갈 수 있도록 예외 처리!
+                if (check_y > ui_limit or state.get("cursor_lost", False)) and not fsm_for_ui.startswith("CHAT_RECOVER") and not fsm_for_ui.startswith("INV_CLEAN") and not fsm_for_ui.startswith("TOWN_MAINT") and not fsm_for_ui.startswith("HK_HEAL_") and not fsm_for_ui.startswith("BUFFING") and not fsm_for_ui.startswith("F1_INIT") and fsm_for_ui not in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"]:
 
                     if state.get("perc_ui", 0) == 0:
                         state["perc_ui"] = curr_time
@@ -9988,7 +10092,171 @@ def ai_commander_worker(target_pc):
                 else:
                     state["perc_ui"] = 0.0
 
+            # ====================================================================
+            # 🐉 [1단 용머리(dragon.png) 실시간 확인 & 미감지 중 가짜 HP/MP 동결 & 5초 후 채팅창 복구]
+            # ====================================================================
+            is_dragon_1st_ok = check_dragon_head_1st_stage(img_bgr)
             raw_hp, raw_mp, raw_poison, raw_curse = get_hp_mp_percent(img_bgr, w, h, HP_Y_START, HP_Y_END)
+
+            # 🛡️ 채팅창이 2단/3단으로 올라가 1단 용머리가 안 보이는 동안에는 채팅창 배경을 HP/MP 0%나 독/커스로 오인식하지 않도록 기존 정상 수치를 동결!
+            if state.get("is_hunt_active", False) and not is_dragon_1st_ok:
+                raw_poison = False
+                raw_curse = False
+                if "hp_buffer" not in state: state["hp_buffer"] = [100.0] * 5
+                if "mp_buffer" not in state: state["mp_buffer"] = [100.0] * 5
+            else:
+                if "hp_buffer" not in state: state["hp_buffer"] = [raw_hp] * 5
+                if "mp_buffer" not in state: state["mp_buffer"] = [raw_mp] * 5
+                state["hp_buffer"].append(raw_hp)
+                if len(state["hp_buffer"]) > 5: state["hp_buffer"].pop(0)
+                state["mp_buffer"].append(raw_mp)
+                if len(state["mp_buffer"]) > 5: state["mp_buffer"].pop(0)
+
+            hp = sorted(state["hp_buffer"])[2]
+            mp = sorted(state["mp_buffer"])[2]
+
+            # 🐉 사냥 중 1단 용머리 5초 연속 미감지 워치독 및 CHAT_RECOVER(chatup.png 클릭) 실행
+            if state.get("is_hunt_active", False) and not state.get("is_paused", False) and not is_manual_mode:
+                fsm_drg_chk = str(state.get("target_fsm", ""))
+                is_drg_exception = (
+                    fsm_drg_chk.startswith("CERTI_") or
+                    fsm_drg_chk.startswith("DEATH") or
+                    state.get("death_detect_start", 0) > 0 or
+                    fsm_drg_chk == "SHUTDOWN_WAIT" or
+                    state.get("town_thread_running", False)
+                )
+
+                if fsm_drg_chk.startswith("CHAT_RECOVER"):
+                    is_hw_busy_cr = state.get("hw_busy", False) or not pico_queues[key].empty()
+                    if curr_time >= state.get("cooldown", 0) and not is_hw_busy_cr:
+                        if fsm_drg_chk == "CHAT_RECOVER_FIND_AND_CLICK":
+                            # 이미 1단 용머리가 돌아왔다면 즉시 종료
+                            if is_dragon_1st_ok:
+                                dprint(key, "✅ [채팅창 복구 확인] 1단 용머리가 정상 감지되었습니다! 사냥으로 복귀합니다.")
+                                state["dragon_missing_start"] = 0.0
+                                state["target_fsm"] = state.pop("chat_recover_return_fsm", "IDLE")
+                                state["cooldown"] = curr_time + 0.2
+                            else:
+                                # 1) 화면 안쪽에서 현재 물리 커서 영점 정확히 잡기 (하단 블랙존에 빠져 있으면 중앙으로 먼저 견인)
+                                real_c_cr = find_cursor_pos(img_bgr, last_pos=state.get("cursor_pos", [400, 245]), allow_full_scan=True)
+                                if not real_c_cr or real_c_cr[1] > 430:
+                                    pull_x, pull_y = char_screen_cx, char_screen_cy
+                                    if real_c_cr:
+                                        pico_queues[key].put({"action": "HOVER", "dx": pull_x - real_c_cr[0], "dy": pull_y - real_c_cr[1]})
+                                    else:
+                                        pico_queues[key].put({"action": "HOVER", "dx": 0, "dy": -250})
+                                    state["cursor_pos"] = [pull_x, pull_y]
+                                    state["cooldown"] = curr_time + 0.35
+                                    dprint(key, "🔄 [채팅창 복구 준비] 정확한 조준을 위해 커서를 화면 중앙으로 먼저 정렬합니다.")
+                                else:
+                                    cur_x, cur_y = real_c_cr[0], real_c_cr[1]
+                                    state["cursor_pos"] = [cur_x, cur_y]
+                                    chatup_pos = find_chatup_in_roi(img_bgr, th=0.75)
+                                    if chatup_pos is not None:
+                                        tx, ty = chatup_pos
+                                        click_num = state.get("chat_recover_click_cnt", 0) + 1
+                                        state["chat_recover_click_cnt"] = click_num
+
+                                        dx, dy = tx - cur_x, ty - cur_y
+                                        dur_down = apply_human_variance(0.08 + 0.035 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if math.hypot(dx, dy) > 0 else 0.08) * 1.2
+                                        deltas_down = generate_human_deltas(dx, dy, duration=dur_down, behavior="CERTI", key=key)
+                                        if deltas_down:
+                                            pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas_down})
+
+                                        pico_queues[key].put({"action": "WAIT", "delay_min": 0.08, "delay_max": 0.14})
+                                        pico_queues[key].put({"action": "CERTI_CLICK", "double": False})
+                                        pico_queues[key].put({"action": "WAIT", "delay_min": 0.12, "delay_max": 0.18})
+
+                                        # 클릭 직후 커서가 화살표나 UI를 가리지 않도록 다시 중앙 안전지대로 복귀
+                                        safe_tx = char_screen_cx + int(round(g_val(-40, 40)))
+                                        safe_ty = char_screen_cy + int(round(g_val(-40, 40)))
+                                        dx_up, dy_up = safe_tx - tx, safe_ty - ty
+                                        dur_up = apply_human_variance(0.08 + 0.035 * math.log2((math.hypot(dx_up, dy_up) / 20.0) + 1.0)) * 1.1
+                                        deltas_up = generate_human_deltas(dx_up, dy_up, duration=dur_up, behavior="CERTI", key=key)
+                                        if deltas_up:
+                                            pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas_up})
+
+                                        state["cursor_pos"] = [safe_tx, safe_ty]
+                                        state["real_cursor_pos"] = [safe_tx, safe_ty]
+                                        state["target_fsm"] = "CHAT_RECOVER_VERIFY"
+                                        state["cooldown"] = curr_time + dur_down + dur_up + 0.65
+                                        dprint(key, f"🖱️ [채팅창 복구 {click_num}차 클릭] CHATUP_ROI 내 'chatup.png'({tx}, {ty}) 포착! 이동 후 클릭합니다.")
+                                    else:
+                                        if curr_time - state.get("chatup_miss_log_t", 0.0) >= 2.0:
+                                            state["chatup_miss_log_t"] = curr_time
+                                            dprint(key, "⚠️ [chatup.png 미발견] CHATUP_ROI(590~628, 568~600)에서 'qq/chatup.png'가 감지되지 않습니다!")
+                                        if curr_time - state.get("chat_recover_enter_t", curr_time) > 6.0:
+                                            state["dragon_missing_start"] = curr_time
+                                            state["target_fsm"] = state.pop("chat_recover_return_fsm", "IDLE")
+                                        state["cooldown"] = curr_time + 0.25
+
+                        elif fsm_drg_chk == "CHAT_RECOVER_VERIFY":
+                            if is_dragon_1st_ok:
+                                dprint(key, f"🎉 [채팅창 1단 복구 성공] {state.get('chat_recover_click_cnt', 1)}회 클릭 후 1단 용머리 정상 감지 완료! 사냥을 재개합니다.")
+                                state["dragon_missing_start"] = 0.0
+                                state["target_fsm"] = state.pop("chat_recover_return_fsm", "IDLE")
+                                state["cooldown"] = curr_time + 0.2
+                            else:
+                                if state.get("chat_recover_click_cnt", 0) < 2:
+                                    dprint(key, "🔄 [채팅창 2단➔3단 상태 확인] 1회 클릭 후에도 용머리 미감지! 한 번 더 chatup.png를 눌러 1단으로 내립니다.")
+                                    state["target_fsm"] = "CHAT_RECOVER_FIND_AND_CLICK"
+                                    state["cooldown"] = curr_time + 0.15
+                                else:
+                                    dprint(key, "⚠️ [채팅창 복구 2회 클릭 완료] 2회 클릭을 마쳤으나 용머리가 아직 안 보여 사냥 모드로 복귀 후 재감시합니다.")
+                                    state["dragon_missing_start"] = curr_time
+                                    state["target_fsm"] = state.pop("chat_recover_return_fsm", "IDLE")
+                                    state["cooldown"] = curr_time + 0.2
+
+                    if DEBUG_MODE and debug_img is not None:
+                        cv2.rectangle(debug_img, (CHATUP_ROI_X1, CHATUP_ROI_Y1), (CHATUP_ROI_X2, CHATUP_ROI_Y2), (0, 0, 255), 2)
+                        cv2.putText(debug_img, "CHATUP", (CHATUP_ROI_X1 - 10, max(0, CHATUP_ROI_Y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 1)
+                        cv2.putText(debug_img, f"[ CHAT RECOVER : {fsm_drg_chk} ]", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+                        try:
+                            if debug_queues[key].full(): debug_queues[key].get_nowait()
+                            debug_queues[key].put_nowait(debug_img)
+                        except Exception: pass
+                    time.sleep(0.02)
+                    continue
+
+                elif is_drg_exception or is_dragon_1st_ok:
+                    state["dragon_missing_start"] = 0.0
+                else:
+                    if state.get("dragon_missing_start", 0.0) == 0.0:
+                        state["dragon_missing_start"] = curr_time
+                    elif curr_time - state.get("dragon_missing_start", curr_time) >= 5.0:
+                        dprint(key, "🚨 [용머리 5초 미감지 ➔ 채팅창 복구 발동] 1단 용머리가 5초간 보이지 않습니다! 채팅창 축소(chatup.png) 모드로 진입합니다!")
+                        state["dragon_missing_start"] = 0.0
+                        state["abort_macro"] = True
+                        with pico_queues[key].mutex:
+                            pico_queues[key].queue.clear()
+                        clear_movements_only(pico_queues[key])
+                        pico_queues[key].put({"action": "FORCE_RELEASE"})
+                        if state.get("sweep_active", False):
+                            pico_queues[key].put({"action": "SWEEP_STOP"})
+                            state["sweep_active"] = False
+                        if state.get("body_held", False):
+                            if picos.get(key) and pico_locks.get(key):
+                                send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                            state["body_held"] = False
+
+                        state["is_attacking"] = False
+                        state["arrow_is_firing"] = False
+                        state["has_fired_arrow"] = False
+                        state["is_pulling"] = False
+                        state["loot_state"] = "IDLE"
+
+                        prev_f_cr = str(state.get("target_fsm", "IDLE"))
+                        if prev_f_cr.startswith("TOWN_MAINT") or prev_f_cr in ["PARTY_WAIT", "PARTY_ACTIVE_STANDBY"]:
+                            state["chat_recover_return_fsm"] = prev_f_cr
+                        else:
+                            state["chat_recover_return_fsm"] = "IDLE"
+
+                        state["chat_recover_click_cnt"] = 0
+                        state["chat_recover_enter_t"] = curr_time
+                        state["target_fsm"] = "CHAT_RECOVER_FIND_AND_CLICK"
+                        state["cooldown"] = curr_time + 0.2
+                        continue
+            # ====================================================================
 
             is_cursed_now = raw_curse
             was_cursed = state.get("was_cursed", False)
@@ -10041,18 +10309,6 @@ def ai_commander_worker(target_pc):
                         state["arrow_is_firing"] = False
                         state["cooldown"] = curr_time + 0.05
                         continue
-
-            if "hp_buffer" not in state: state["hp_buffer"] = [raw_hp] * 5
-            if "mp_buffer" not in state: state["mp_buffer"] = [raw_mp] * 5
-
-            state["hp_buffer"].append(raw_hp)
-            if len(state["hp_buffer"]) > 5: state["hp_buffer"].pop(0)
-
-            state["mp_buffer"].append(raw_mp)
-            if len(state["mp_buffer"]) > 5: state["mp_buffer"].pop(0)
-
-            hp = sorted(state["hp_buffer"])[2]
-            mp = sorted(state["mp_buffer"])[2]
 
             is_party_hunt = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
             my_team = settings.get("party_group", "선택안함")
@@ -16074,6 +16330,11 @@ def ai_commander_worker(target_pc):
                 cv2.putText(debug_img, "ICON", (ARROW_ICON_X1, max(0, ARROW_ICON_Y1 - 2)), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 255), 1)
                 cv2.rectangle(debug_img, (EXP_ROI_X1, EXP_ROI_Y1), (EXP_ROI_X2, EXP_ROI_Y2), (0, 165, 255), 1)
                 cv2.rectangle(debug_img, (DRAGON_ROI_X1, DRAGON_ROI_Y1), (DRAGON_ROI_X2, DRAGON_ROI_Y2), (255, 0, 0), 1)
+                cv2.rectangle(debug_img, (CHATUP_ROI_X1, CHATUP_ROI_Y1), (CHATUP_ROI_X2, CHATUP_ROI_Y2), (0, 0, 255), 2)
+                cv2.putText(debug_img, "CHATUP", (CHATUP_ROI_X1 - 10, max(0, CHATUP_ROI_Y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 1)
+                if state.get("dragon_missing_start", 0.0) > 0.0:
+                    drg_miss_sec = curr_time - state["dragon_missing_start"]
+                    cv2.putText(debug_img, f"NO DRAGON: {drg_miss_sec:.1f}s/5.0s", (DRAGON_ROI_X1 - 30, max(0, DRAGON_ROI_Y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 2)
 
                 cv2.rectangle(debug_img, (WEIGHT_ROI_X1, WEIGHT_ROI_Y1), (WEIGHT_ROI_X2, WEIGHT_ROI_Y2), (0, 165, 255), 2)
                 cv2.putText(debug_img, "WT", (WEIGHT_ROI_X1, max(0, WEIGHT_ROI_Y1 - 2)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
