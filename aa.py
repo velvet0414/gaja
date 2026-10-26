@@ -1773,7 +1773,10 @@ def _get_pc_assets_internal(dungeon_name):
 
                     nodes = {}
                     next_floor_node = None # 💡 [추가]
+                    back_nodes_set = {str(x) for x in data.get("back_nodes", [])}
+                    back_nodes_list = []
                     for n in data.get("nodes", []):
+                        is_back = bool(n.get("is_back_node", False) or (str(n["id"]) in back_nodes_set))
                         nodes[int(n["id"])] = {
                             "x": n["x"],
                             "y": n["y"],
@@ -1784,10 +1787,13 @@ def _get_pc_assets_internal(dungeon_name):
                             "is_special": n.get("is_special", False),
                             "is_buff_spot": n.get("is_buff_spot", False),
                             "is_next_floor": n.get("is_next_floor", False), # 💡 [추가]
+                            "is_back_node": is_back, # 💡 [추가] 5px 접근 시 빽무빙 복귀 노드
                             "zone": str(n.get("zone", ""))
                         }
                         if n.get("is_next_floor", False):
                             next_floor_node = str(n["id"])
+                        if is_back:
+                            back_nodes_list.append(str(n["id"]))
 
                     anchor_x, anchor_y = -1000, -1000
                     if nodes:
@@ -1877,6 +1883,7 @@ def _get_pc_assets_internal(dungeon_name):
                         "special_nodes": data.get("special_nodes", []),
                         "next_floor_node": next_floor_node, # 💡 [기존] 뇌에 저장
                         "retry_node": data.get("retry_node", None), # 💡 [추가] 진입 실패 시 우회할 재시도 노드
+                        "back_nodes": back_nodes_list, # 💡 [추가] 5px 근접 시 내 존 복귀 노드 목록
                         "dungeon_name": dungeon_name
                     }
             except Exception: pass
@@ -2529,11 +2536,13 @@ def calculate_graph_astar_path(graph, start_pos, goal_node_id, map_gray, blocked
     if goal_node_str not in nodes: return []
 
     portal_pts = []
+    back_pts = []
     for nid, ndata in nodes.items():
-        if isinstance(ndata, dict) and ndata.get("is_portal", False):
-            px = ndata.get("x", 0)
-            py = ndata.get("y", 0)
-            portal_pts.append((px, py))
+        if isinstance(ndata, dict):
+            if ndata.get("is_portal", False):
+                portal_pts.append((ndata.get("x", 0), ndata.get("y", 0)))
+            if ndata.get("is_back_node", False):
+                back_pts.append((ndata.get("x", 0), ndata.get("y", 0)))
 
     goal_n = nodes[goal_node_str]
     gx = goal_n.get("x", 0) if isinstance(goal_n, dict) else goal_n[0]
@@ -2616,6 +2625,12 @@ def calculate_graph_astar_path(graph, start_pos, goal_node_id, map_gray, blocked
 
                     if p_dist < 15.0:
                         portal_penalty += (15.0 - p_dist) * 5.0
+
+            if back_pts and nxt != goal_node_str:
+                for bpx, bpy in back_pts:
+                    b_dist = math.hypot(nx - bpx, ny - bpy)
+                    if b_dist <= 5.5:
+                        portal_penalty += 500.0
 
             try:
                 c_val = int(current)
@@ -9419,14 +9434,24 @@ def ai_commander_worker(target_pc):
                             if pc_graph and pc_graph.get("nodes"):
                                 mx, my = map_pos
                                 min_portal_dist = 9999.0
+                                min_back_dist = 9999.0
+                                closest_back_nid = None
+                                closest_back_pos = None
+                                back_nodes_set_local = {str(x) for x in pc_graph.get("back_nodes", [])}
 
                                 for nid, ndata in pc_graph["nodes"].items():
-                                    if ndata.get("is_portal", False):
-                                        px = ndata.get("x", 0) if isinstance(ndata, dict) else ndata[0]
-                                        py = ndata.get("y", 0) if isinstance(ndata, dict) else ndata[1]
+                                    px = ndata.get("x", 0) if isinstance(ndata, dict) else ndata[0]
+                                    py = ndata.get("y", 0) if isinstance(ndata, dict) else ndata[1]
+                                    if isinstance(ndata, dict) and ndata.get("is_portal", False):
                                         dist = math.hypot(mx - px, my - py)
                                         if dist < min_portal_dist:
                                             min_portal_dist = dist
+                                    if (isinstance(ndata, dict) and ndata.get("is_back_node", False)) or (str(nid) in back_nodes_set_local):
+                                        b_dist = math.hypot(mx - px, my - py)
+                                        if b_dist < min_back_dist:
+                                            min_back_dist = b_dist
+                                            closest_back_nid = str(nid)
+                                            closest_back_pos = (px, py)
 
                                 dng_name = settings.get("dungeon_name", "")
                                 is_sudeon_bondon = ("수던" in dng_name or "본던" in dng_name or "사던" in dng_name or "silver" in dng_name.lower())
@@ -9457,12 +9482,174 @@ def ai_commander_worker(target_pc):
 
                                             state["cooldown"] = curr_time + 0.15
 
-                                    elif state.get("portal_blind_mode", False) and min_portal_dist >= 15.0:
+                                    elif state.get("portal_blind_mode", False) and min_portal_dist >= 15.0 and not state.get("back_node_escape_mode", False):
                                         dprint(key, "✅ [포탈 이탈 성공] 포탈과 15px 이상 멀어졌습니다! YOLO 눈을 다시 뜨고 사냥을 개시합니다.")
                                         state["portal_blind_mode"] = False
                                         state["cooldown"] = curr_time + 0.1
                                 else:
-                                    state["portal_blind_mode"] = False
+                                    if not state.get("back_node_escape_mode", False):
+                                        state["portal_blind_mode"] = False
+
+                                # 🔙 [5px 이내 끼임/오인식 노드(is_back_node) 감지 시 즉각 빽무빙 & 가장 가까운 내 존 노드 복귀]
+                                curr_fsm_back = str(state.get("target_fsm", ""))
+                                is_safe_from_back_fsm = (
+                                    state.get("town_thread_running", False) or
+                                    curr_fsm_back.startswith("TOWN_MAINT") or
+                                    curr_fsm_back.startswith("DEATH") or
+                                    curr_fsm_back.startswith("CERTI_") or
+                                    curr_fsm_back.startswith("F1_INIT") or
+                                    curr_fsm_back in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"]
+                                )
+
+                                if not is_safe_from_back_fsm:
+                                    if min_back_dist <= 5.0 and closest_back_pos is not None:
+                                        # 1) 가장 가까운 내 존(Zone) 노드 탐색
+                                        raw_sp_set_b = {str(s) for s in pc_graph.get("special_nodes", [])}
+                                        zone_cands_b = []
+                                        sp_cands_b = []
+                                        any_cands_b = []
+
+                                        for b_nid, b_ndata in pc_graph["nodes"].items():
+                                            s_bnid = str(b_nid)
+                                            if not isinstance(b_ndata, dict):
+                                                continue
+                                            if b_ndata.get("is_portal", False) or b_ndata.get("is_back_node", False) or (s_bnid in back_nodes_set_local):
+                                                continue
+                                            nx_b = b_ndata.get("x", 0)
+                                            ny_b = b_ndata.get("y", 0)
+                                            if math.hypot(nx_b - closest_back_pos[0], ny_b - closest_back_pos[1]) <= 6.0:
+                                                continue
+
+                                            node_zone_b = str(b_ndata.get("zone", "")).strip()
+                                            is_buff_b = str(b_ndata.get("is_buff_spot", False)).lower() == "true"
+                                            is_sp_b = (str(b_ndata.get("is_special", False) or b_ndata.get("special", False)).lower() == "true") or (s_bnid in raw_sp_set_b)
+
+                                            matched_z = False
+                                            if is_buff_b:
+                                                matched_z = True
+                                            elif node_zone_b:
+                                                for z_str in [z.strip() for z in node_zone_b.split(",")]:
+                                                    if check_zone_match(active_dungeon, z_str):
+                                                        matched_z = True
+                                                        break
+                                            if matched_z:
+                                                zone_cands_b.append((s_bnid, nx_b, ny_b))
+                                            elif not node_zone_b and is_sp_b:
+                                                sp_cands_b.append((s_bnid, nx_b, ny_b))
+                                            else:
+                                                any_cands_b.append((s_bnid, nx_b, ny_b))
+
+                                        target_pool_b = zone_cands_b if zone_cands_b else (sp_cands_b if sp_cands_b else any_cands_b)
+                                        best_zone_node_los = None
+                                        best_zone_node_any = None
+                                        min_d_los_b = float('inf')
+                                        min_d_any_b = float('inf')
+
+                                        for s_bnid, nx_b, ny_b in target_pool_b:
+                                            d_sq_b = (nx_b - mx)**2 + (ny_b - my)**2
+                                            if d_sq_b < min_d_any_b:
+                                                min_d_any_b = d_sq_b
+                                                best_zone_node_any = s_bnid
+                                            has_los_b = True
+                                            if pc_map_gray_los is not None:
+                                                has_los_b = check_line_of_sight(pc_map_gray_los, (mx, my), (nx_b, ny_b), margin_steps=1)
+                                            if has_los_b and d_sq_b < min_d_los_b:
+                                                min_d_los_b = d_sq_b
+                                                best_zone_node_los = s_bnid
+
+                                        best_back_zone_node = best_zone_node_los if best_zone_node_los else best_zone_node_any
+
+                                        # 2) 현재 행동 강제 중단 및 시야 차단(몹/루팅 무시) 설정
+                                        if not state.get("back_node_escape_mode", False):
+                                            dprint(key, f"🔙 [끼임 노드 5px 접근] 노드({closest_back_nid}) {min_back_dist:.1f}px 근접 감지! 즉시 빽무빙하여 가장 가까운 내 존 노드(ID:{best_back_zone_node})로 복귀합니다!")
+                                            state["back_node_escape_mode"] = True
+                                            state["back_escape_start_time"] = curr_time
+                                            state["back_escape_try_cnt"] = 0
+
+                                        state["portal_blind_mode"] = True
+                                        state["is_out_of_zone"] = True
+                                        state["abort_macro"] = True
+                                        state["is_attacking"] = False
+                                        state["arrow_is_firing"] = False
+                                        state["has_fired_arrow"] = False
+                                        state["is_pulling"] = False
+                                        state["hidden_track_node"] = None
+                                        state["loot_state"] = "IDLE"
+                                        state["target_fsm"] = "IDLE"
+
+                                        clear_movements_only(pico_queues[key])
+                                        if state.get("sweep_active", False):
+                                            pico_queues[key].put({"action": "SWEEP_STOP"})
+                                            state["sweep_active"] = False
+
+                                        if best_back_zone_node:
+                                            state["back_escape_target_node"] = str(best_back_zone_node)
+                                            state["current_target_node"] = str(best_back_zone_node)
+                                            new_b_path = calculate_graph_astar_path(pc_graph, (mx, my), best_back_zone_node, pc_map_gray, set(), is_blind=True)
+                                            while len(new_b_path) > 1 and math.hypot(new_b_path[0][0] - closest_back_pos[0], new_b_path[0][1] - closest_back_pos[1]) <= 5.0:
+                                                new_b_path.pop(0)
+                                            if new_b_path:
+                                                state["dungeon_global_path"] = new_b_path
+                                                state["dungeon_path_time"] = curr_time
+                                                state["astar_fail_count"] = 0
+
+                                            # 3) 즉각적인 물리 빽무빙(뒷걸음질) 클릭 발사
+                                            if curr_time >= state.get("back_node_step_cd", 0):
+                                                zn_data_b = pc_graph["nodes"].get(int(best_back_zone_node)) if str(best_back_zone_node).isdigit() else pc_graph["nodes"].get(str(best_back_zone_node))
+                                                if zn_data_b is None:
+                                                    zn_data_b = pc_graph["nodes"].get(str(best_back_zone_node))
+                                                zx_b = zn_data_b.get("x", mx) if isinstance(zn_data_b, dict) else (zn_data_b[0] if zn_data_b else mx)
+                                                zy_b = zn_data_b.get("y", my) if isinstance(zn_data_b, dict) else (zn_data_b[1] if zn_data_b else my)
+
+                                                esc_mx, esc_my = new_b_path[0] if new_b_path else (zx_b, zy_b)
+                                                vx_b, vy_b = esc_mx - mx, esc_my - my
+                                                if math.hypot(vx_b, vy_b) < 1.0:
+                                                    vx_b, vy_b = mx - closest_back_pos[0], my - closest_back_pos[1]
+
+                                                if math.hypot(vx_b, vy_b) >= 0.5:
+                                                    esc_angle = math.atan2(vy_b, vx_b)
+                                                else:
+                                                    esc_angle = (state.get("dungeon_angle", 0.0) + math.pi) % (2 * math.pi)
+
+                                                try_cnt_b = state.get("back_escape_try_cnt", 0)
+                                                if try_cnt_b >= 1:
+                                                    esc_angle += (math.pi / 4.0) * (1 if try_cnt_b % 2 == 1 else -1)
+
+                                                char_cx_b, char_cy_b = 400, 245
+                                                cur_x_b, cur_y_b = state.get("cursor_pos", [400, 300])
+                                                back_dist_px = g_val(95.0, 130.0)
+                                                tx_b = int(max(10, min(740, char_cx_b + math.cos(esc_angle) * back_dist_px)))
+                                                ty_b = int(max(5, min(int(h * 0.68), char_cy_b + math.sin(esc_angle) * (back_dist_px * 0.85))))
+                                                if tx_b < 165 and ty_b < 150:
+                                                    if (165 - tx_b) < (150 - ty_b): tx_b = 165
+                                                    else: ty_b = 150
+
+                                                pico_queues[key].put({"action": "ATTACK", "dx": tx_b - cur_x_b, "dy": ty_b - cur_y_b, "is_combat": False})
+                                                state["pico_arrived"] = False
+                                                state["cursor_pos"] = [tx_b, ty_b]
+                                                state["dungeon_angle"] = esc_angle
+                                                state["back_escape_try_cnt"] = try_cnt_b + 1
+                                                state["back_node_step_cd"] = curr_time + g_time(0.45, 0.65, key)
+                                                state["cooldown"] = curr_time + g_time(0.35, 0.50, key)
+
+                                    elif state.get("back_node_escape_mode", False):
+                                        target_bn_str = str(state.get("back_escape_target_node", ""))
+                                        dist_to_target_bn = 0.0
+                                        if target_bn_str:
+                                            tn_obj = pc_graph["nodes"].get(int(target_bn_str)) if target_bn_str.isdigit() else pc_graph["nodes"].get(target_bn_str)
+                                            if tn_obj is None:
+                                                tn_obj = pc_graph["nodes"].get(target_bn_str)
+                                            if tn_obj:
+                                                tn_x = tn_obj.get("x", mx) if isinstance(tn_obj, dict) else tn_obj[0]
+                                                tn_y = tn_obj.get("y", my) if isinstance(tn_obj, dict) else tn_obj[1]
+                                                dist_to_target_bn = math.hypot(mx - tn_x, my - tn_y)
+
+                                        if dist_to_target_bn <= 8.0 or (not state.get("dungeon_global_path") and min_back_dist >= 8.0) or (curr_time - state.get("back_escape_start_time", 0) > 8.0 and min_back_dist >= 8.0):
+                                            dprint(key, f"✅ [끼임 노드 탈출 완료] 내 존 노드(ID:{target_bn_str}) 복귀 완료! 시야를 다시 열고 사냥을 재개합니다.")
+                                            state["back_node_escape_mode"] = False
+                                            state["portal_blind_mode"] = False
+                                            state["back_escape_try_cnt"] = 0
+                                            state["cooldown"] = curr_time + 0.1
 
                                 is_party_tele_mode = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
 
@@ -23677,8 +23864,10 @@ def ai_commander_worker(target_pc):
                                                     puller_routes[r_num][step_num] = str(nid)
                                                 except: pass
 
+                                            is_back_n = bool(ndata.get("is_back_node", False) or (str(nid) in {str(x) for x in pc_graph.get("back_nodes", [])}))
+
                                             # 👇👇 [이렇게 깔끔하게 바뀝니다] 👇👇
-                                            if node_zone:
+                                            if node_zone and not is_back_n:
                                                 zone_list = [z.strip() for z in node_zone.split(",")]
                                                 is_normal_zone = False
                                                 is_buff_zone = False
@@ -23695,10 +23884,11 @@ def ai_commander_worker(target_pc):
                                                 elif not is_buff and is_normal_zone:
                                                     zone_matched_nodes.append(str(nid))
 
-                                            elif is_sp:
+                                            elif is_sp and not is_back_n:
                                                 general_special_nodes.append(str(nid))
 
                                     pc_graph["buff_spot_nodes"] = buff_spot_nodes
+                                    back_set_filter = {str(x) for x in pc_graph.get("back_nodes", [])}
 
                                     if zone_matched_nodes:
 
@@ -23708,11 +23898,11 @@ def ai_commander_worker(target_pc):
                                         special_nodes_list = general_special_nodes
                                     elif pc_graph.get("special_nodes"):
 
-                                        special_nodes_list = [str(sn) for sn in pc_graph.get("special_nodes") if str(sn) in nodes_dict]
+                                        special_nodes_list = [str(sn) for sn in pc_graph.get("special_nodes") if str(sn) in nodes_dict and str(sn) not in back_set_filter and not nodes_dict[str(sn)].get("is_back_node", False)]
 
                                     if not special_nodes_list and not pc_graph.get("corners"):
                                         for nid, ndata in nodes_dict.items():
-                                            if isinstance(ndata, dict) and not ndata.get("is_portal", False):
+                                            if isinstance(ndata, dict) and not ndata.get("is_portal", False) and not ndata.get("is_back_node", False) and str(nid) not in back_set_filter:
                                                 special_nodes_list.append(str(nid))
 
                                     pc_graph["fixed_dealers"] = fixed_dealers
@@ -24332,7 +24522,11 @@ def ai_commander_worker(target_pc):
                                         rendezvous_node = state.get("rendezvous_target_node")
                                         pc_nodes_keys = {str(k) for k in pc_graph.get("nodes", {}).keys()}
 
-                                        if hidden_node is not None and str(hidden_node) in pc_nodes_keys:
+                                        if state.get("back_node_escape_mode", False) and state.get("back_escape_target_node") in pc_nodes_keys:
+                                            goal_node = str(state["back_escape_target_node"])
+                                            state["current_target_node"] = goal_node
+
+                                        elif hidden_node is not None and str(hidden_node) in pc_nodes_keys:
                                             goal_node = str(hidden_node)
                                             if curr_time - state.get("log_path_hidden", 0) > 5.0:
                                                 dprint(key, f"🕵️ [추적 경로 재탐색] 락온된 회색 몹 목적지(노드: {goal_node})로 우회로를 찾습니다!")
@@ -26576,21 +26770,86 @@ def manual_event_worker():
 
 threading.Thread(target=manual_event_worker, daemon=True).start()
 
+def _force_raise_overlay_win():
+    """OBS 프로젝터가 클릭 포커스를 뺏어가지 못하도록 overlay_win을 Win32 최상단으로 강제 고정하고 파섹 커서를 즉시 숨깁니다."""
+    global overlay_win
+    if not overlay_win or active_manual_target is None:
+        return
+    try:
+        overlay_win.update_idletasks()
+        ov_hwnd = win32gui.GetParent(overlay_win.winfo_id()) or overlay_win.winfo_id()
+
+        # 1) OBS 창이 쥐고 있는 마우스 클릭 캡처 강제 해제
+        ctypes.windll.user32.ReleaseCapture()
+
+        # 2) 현재 포그라운드 스레드(OBS)와 파이썬 스레드를 연결하여 Foreground Lock 우회 후 포커스 탈취
+        fg_hwnd = win32gui.GetForegroundWindow()
+        fg_tid = ctypes.windll.user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else 0
+        cur_tid = ctypes.windll.kernel32.GetCurrentThreadId()
+
+        attached = False
+        if fg_tid and fg_tid != cur_tid:
+            attached = bool(ctypes.windll.user32.AttachThreadInput(fg_tid, cur_tid, True))
+
+        try:
+            sw, sh = win32api.GetSystemMetrics(0), win32api.GetSystemMetrics(1)
+            win32gui.SetWindowPos(
+                ov_hwnd, win32con.HWND_TOPMOST, 0, 0, sw, sh,
+                win32con.SWP_SHOWWINDOW
+            )
+            win32gui.BringWindowToTop(ov_hwnd)
+            ctypes.windll.user32.SetForegroundWindow(ov_hwnd)
+            ctypes.windll.user32.SetActiveWindow(ov_hwnd)
+        finally:
+            if attached:
+                ctypes.windll.user32.AttachThreadInput(fg_tid, cur_tid, False)
+
+        overlay_win.lift()
+        overlay_win.focus_force()
+
+        # 3) 제자리 마우스 이벤트(WM_SETCURSOR)를 강제 발생시켜 파섹(Parsec)이 즉시 커서 숨김(cursor="none")을 인식하게 함
+        pt = win32api.GetCursorPos()
+        ctypes.windll.user32.SetCursorPos(pt[0], pt[1])
+        ctypes.windll.user32.SetCursor(0)
+    except Exception:
+        pass
+
 def sync_overlay_ui(key):
     global overlay_win
     if key is None:
         if overlay_win:
-            overlay_win.destroy()
+            try:
+                overlay_win.destroy()
+            except Exception:
+                pass
             overlay_win = None
+        update_gui_status()
+        try:
+            root.update_idletasks()
+        except Exception:
+            pass
     else:
         if not overlay_win:
             overlay_win = tk.Toplevel(root)
-            overlay_win.attributes("-fullscreen", True)
+            overlay_win.overrideredirect(True)
+            sw, sh = win32api.GetSystemMetrics(0), win32api.GetSystemMetrics(1)
+            overlay_win.geometry(f"{sw}x{sh}+0+0")
             overlay_win.attributes("-alpha", 0.01)
             overlay_win.attributes("-topmost", True)
             overlay_win.config(bg="black", cursor="none")
             overlay_win.bind("<Button>", lambda e: "break")
-    update_gui_status()
+
+        # 1) 마우스를 매크로 GUI로 옮기지 않아도 즉시 노란색 배경으로 강제 렌더링!
+        update_gui_status()
+        try:
+            root.update_idletasks()
+        except Exception:
+            pass
+
+        # 2) 생성 직후 + 0.08초 뒤 + 0.2초 뒤 3연속 최상단 고정으로 OBS 포커스 역전 원천 차단
+        _force_raise_overlay_win()
+        root.after(80, _force_raise_overlay_win)
+        root.after(200, _force_raise_overlay_win)
 
 def toggle_manual(key):
     global active_manual_target, sensor_raw_dx, sensor_raw_dy, ignore_clicks
@@ -26687,6 +26946,11 @@ def toggle_manual(key):
         ai_states[key]["sweep_active"] = False
 
     _GUI_TASK_QUEUE.put((sync_overlay_ui, (key,)))
+    try:
+        # 잠자고 있는 Tkinter 메시지 루프를 0ms 만에 즉시 깨움
+        ctypes.windll.user32.PostMessageW(root.winfo_id(), 0x0000, 0, 0)
+    except Exception:
+        pass
 
 def manual_transmitter_thread():
     global sensor_raw_dx, sensor_raw_dy, ignore_clicks
@@ -26820,6 +27084,12 @@ def on_click(x, y, button, pressed):
         if ignore_clicks:
             if not pressed:
                 ignore_clicks = False
+                # 💡 OBS 화면을 클릭했던 마우스 버튼을 떼는 순간, OBS가 가져갔던 포커스를 overlay_win으로 한 번 더 회수!
+                _GUI_TASK_QUEUE.put((_force_raise_overlay_win, ()))
+                try:
+                    ctypes.windll.user32.PostMessageW(root.winfo_id(), 0x0000, 0, 0)
+                except Exception:
+                    pass
             return
 
         p_serial = picos.get(active_manual_target)
@@ -27225,9 +27495,9 @@ def _poll_gui_task_queue():
                 pass
     except Exception:
         pass
-    root.after(50, _poll_gui_task_queue)
+    root.after(15, _poll_gui_task_queue)
 
-root.after(50, _poll_gui_task_queue)
+root.after(15, _poll_gui_task_queue)
 
 def toggle_individual_hunt(key):
     state = ai_states[key]
@@ -28148,11 +28418,9 @@ for i, pc in enumerate(MINI_PCS):
     buy_frame.pack(side="top", fill="x", padx=5, pady=4)
     tk.Label(buy_frame, text="[구매]", bg=BG_PANEL, fg="#4FC3F7", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=2)
     ttk.Combobox(buy_frame, textvariable=vars_dict["buy_item"], values=["은화살"], state="readonly", width=8, font=("맑은 고딕", 8)).pack(side="left", padx=2)
-    tk.Label(buy_frame, text="수량:", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=1)
-    tk.Entry(buy_frame, textvariable=vars_dict["buy_qty"], width=6, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
-    tk.Label(buy_frame, text="창고왕복:", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(5, 1))
-    tk.Entry(buy_frame, textvariable=vars_dict["buy_count"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
-    tk.Label(buy_frame, text="회", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=1)
+    tk.Label(buy_frame, text="총 목표수량:", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(4, 1))
+    tk.Entry(buy_frame, textvariable=vars_dict["buy_qty"], width=8, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
+    tk.Label(buy_frame, text="발 (무게82% 자동왕복)", bg=BG_PANEL, fg="#B2FF59", font=("맑은 고딕", 8)).pack(side="left", padx=2)
 
     sell_frame = tk.Frame(supply_frame, bg=BG_PANEL)
     sell_frame.pack(side="top", fill="x", padx=5, pady=4)
@@ -28181,14 +28449,18 @@ for i, pc in enumerate(MINI_PCS):
             import time
             time.sleep(0.2)
 
-        try:
-            buy_qty = int(gui_vars[target_key]["buy_qty"].get())
-            buy_count = int(gui_vars[target_key]["buy_count"].get())
-        except:
-            buy_qty = 5000
-            buy_count = 3
+        ARROW_PER_BUY = 4995
+        SINGLE_BUY_INPUT = "5000"
 
-        print(f"\n🛒 [{target_key}] 자동 구매 및 창고 쟁이기 시작! (1회방문 3연속 구매 / 왕복: {buy_count}회) [⚡30% 가속 모드]")
+        try:
+            raw_qty_str = str(gui_vars[target_key]["buy_qty"].get()).replace(",", "").strip()
+            target_total_arrows = int(float(raw_qty_str))
+            if target_total_arrows <= 0:
+                target_total_arrows = ARROW_PER_BUY
+        except:
+            target_total_arrows = 45000
+
+        print(f"\n🛒 [{target_key}] 스마트 은화살 쟁이기 시작! (목표 총수량: {target_total_arrows:,}발 / 1회 구매당 {ARROW_PER_BUY:,}발 / 무게 82% 빨간불 감지 자동 왕복)")
         with pico_queues[target_key].mutex: pico_queues[target_key].queue.clear()
 
         if target_key in ai_states:
@@ -28228,39 +28500,66 @@ for i, pc in enumerate(MINI_PCS):
 
             time = SafeTime()
 
+            # ⚡ [초고속 캡처] 매번 mss를 새로 열지 않고 백그라운드 비전 스레드의 최신 프레임을 0ms로 즉시 가져옴
             def get_screen():
+                frame = latest_frames.get(target_key)
+                if frame is not None:
+                    return frame
                 with mss.mss() as sct:
                     img = np.array(sct.grab(roi))
                     return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
 
-            def find_image_with_mask(screen_bgr, template_path, threshold=0.82, is_npc=False):
-                if not os.path.exists(template_path): return None
+            # ⚡ [메모리 캐싱 + 좌측 UI 전용 스캔] 디스크 반복 읽기 제거 및 스캔 영역 1/4 축소로 모든 PC에서 동일한 초고속 스크롤 보장
+            _tmpl_cache = {}
+            def find_image_with_mask(screen_bgr, template_path, threshold=0.82, is_npc=False, ui_only=True):
+                if screen_bgr is None:
+                    return None
+                if template_path not in _tmpl_cache:
+                    if not os.path.exists(template_path):
+                        return None
+                    try:
+                        with open(template_path, "rb") as f:
+                            np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
+                        tmpl_bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
+                        if tmpl_bgra is None:
+                            return None
+                        if len(tmpl_bgra.shape) == 3 and tmpl_bgra.shape[2] == 4:
+                            _tmpl_cache[template_path] = {
+                                "bgr": tmpl_bgra[:, :, :3],
+                                "mask": cv2.merge([tmpl_bgra[:, :, 3]] * 3)
+                            }
+                        else:
+                            _tmpl_cache[template_path] = {
+                                "bgr": tmpl_bgra[:, :, :3] if len(tmpl_bgra.shape) == 3 else tmpl_bgra,
+                                "mask": None
+                            }
+                    except Exception:
+                        return None
+
+                cached = _tmpl_cache[template_path]
+                tmpl_bgr = cached["bgr"]
+                mask_3c = cached["mask"]
 
                 h_scr, w_scr = screen_bgr.shape[:2]
                 if is_npc:
                     search_area = screen_bgr[0:min(480, h_scr), 0:w_scr]
+                elif ui_only:
+                    search_area = screen_bgr[0:min(400, h_scr), 0:min(290, w_scr)]
                 else:
                     search_area = screen_bgr
 
-                with open(template_path, "rb") as f:
-                    bytes_data = bytearray(f.read())
-                np_arr = np.asarray(bytes_data, dtype=np.uint8)
-                tmpl_bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
-                if tmpl_bgra is None: return None
+                if search_area.shape[0] < tmpl_bgr.shape[0] or search_area.shape[1] < tmpl_bgr.shape[1]:
+                    return None
 
-                if len(tmpl_bgra.shape) == 3 and tmpl_bgra.shape[2] == 4:
-                    tmpl_bgr = tmpl_bgra[:, :, :3]
-                    tmpl_alpha = tmpl_bgra[:, :, 3]
-                    mask_3c = cv2.merge([tmpl_alpha, tmpl_alpha, tmpl_alpha])
+                if mask_3c is not None:
                     res = cv2.matchTemplate(search_area, tmpl_bgr, cv2.TM_CCORR_NORMED, mask=mask_3c)
                 else:
-                    tmpl_bgr = tmpl_bgra[:, :, :3] if len(tmpl_bgra.shape) == 3 else tmpl_bgra
                     res = cv2.matchTemplate(search_area, tmpl_bgr, cv2.TM_CCOEFF_NORMED)
 
-                min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+                _, max_val, _, max_loc = cv2.minMaxLoc(res)
                 if max_val >= threshold:
-                    h, w = tmpl_bgr.shape[:2]
-                    return (max_loc[0] + w // 2, max_loc[1] + h // 2)
+                    th, tw = tmpl_bgr.shape[:2]
+                    return (max_loc[0] + tw // 2, max_loc[1] + th // 2)
                 return None
 
             def click_pos(tx, ty, jitter_x=0, jitter_y=0, delay_min=0.21, delay_max=0.35):
@@ -28319,7 +28618,7 @@ for i, pc in enumerate(MINI_PCS):
             def wait_and_click_image(img_name, desc, threshold=0.80, timeout=3.0, offset_y=0, jitter_x=0, jitter_y=0, d_min=0.21, d_max=0.35, is_npc=False):
                 start_t = time.time()
                 while time.time() - start_t < timeout:
-                    pos = find_image_with_mask(get_screen(), img_name, threshold, is_npc=is_npc)
+                    pos = find_image_with_mask(get_screen(), img_name, threshold, is_npc=is_npc, ui_only=(not is_npc))
                     if pos:
                         reaction_t = g_val(0.17, 0.28)
                         print(f"✅ {desc} 발견! ({reaction_t:.2f}초 인지 후 이동)")
@@ -28360,79 +28659,133 @@ for i, pc in enumerate(MINI_PCS):
                                 print("✅ 은화살 미장착 상태 확인 완료.")
                         except Exception: pass
 
-                for cycle in range(1, buy_count + 1):
+                total_bought = 0
+                cycle = 0
+
+                while total_bought < target_total_arrows:
+                    cycle += 1
+                    rem_arrows = max(0, target_total_arrows - total_bought)
                     print(f"\n==========================================")
-                    print(f"🔄 [{cycle}/{buy_count}회차] 왕복 루프 시작!")
+                    print(f"🔄 [{cycle}회차 왕복] 현재 누적: {total_bought:,} / {target_total_arrows:,}발 (남은 수량: {rem_arrows:,}발)")
                     print(f"==========================================")
 
-                    buy_cycle_success = False
-                    for retry in range(3):
-                        if retry > 0:
-                            print(f"\n⚠️ [무기 구매 재도전] 에러 발생! 텔레포트부터 다시 시도합니다. ({retry}/3회)")
-                            time.sleep(g_val(0.35, 0.56))
+                    # 만약 출발 전 이미 무게 게이지가 82% 이상(빨간색)이라면 상점 구매를 건너뛰고 창고 보관부터 수행
+                    if check_weight_status(get_screen()) == 2:
+                        print("⚖️ [사전 무게 감지] 이미 무게 게이지가 82% 이상(빨간불)입니다! 상점을 건너뛰고 창고 보관으로 직행합니다.")
+                        buy_cycle_success = True
+                    else:
+                        buy_cycle_success = False
+                        for retry in range(3):
+                            if retry > 0:
+                                print(f"\n⚠️ [무기 상인 이동 재도전] 에러 발생! 텔레포트부터 다시 시도합니다. ({retry}/3회)")
+                                time.sleep(g_val(0.35, 0.56))
 
-                        print("▶ 1. F1 -> F9 (두루마리)")
-                        send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
-                        time.sleep(g_val(0.17, 0.28))
-                        send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
-                        time.sleep(g_val(0.42, 0.63))
-
-                        if not wait_and_click_image("qq/weapon_shop.png", "[무기 방어구 상인] 메뉴", timeout=2.0, jitter_x=12, jitter_y=2):
-                            print("⚠️ 두루마리 메뉴 클릭 실패. 재시도합니다.")
-                            send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.03); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
-                            continue
-
-                        tele_wait = g_val(1.26, 1.61)
-                        print(f"▶ 2. 상점 텔레포트 대기 ({tele_wait:.1f}초)...")
-                        time.sleep(tele_wait)
-
-                        consecutive_buy_success = True
-                        for buy_idx in range(1, 4):
-                            print(f"\n   🛒 [연속 구매 {buy_idx}/3회차 시작]")
-
-                            print("   ▶ 무기 상인 NPC 조준 및 대화 걸기")
-                            if not wait_and_click_image("qq/weapon_shop_npc.png", "무기 상인 NPC", offset_y=50, jitter_x=2, jitter_y=10, is_npc=True):
-                                print("   ⚠️ NPC 클릭 빗나감! 구매 흐름이 끊겼습니다.")
-                                consecutive_buy_success = False
-                                break
-
-                            print("   ▶ Buy 버튼 출현 대기 및 클릭")
-                            if not wait_and_click_image("qq/buy.png", "Buy 버튼", timeout=3.0, jitter_x=3, jitter_y=2):
-                                print("   ⚠️ 상점창 팝업 실패! ESC 누르고 재시도합니다.")
-                                consecutive_buy_success = False
-                                break
-
-                            print("   ▶ 은화살 선택")
-                            if not wait_and_click_image("qq/arrow.png", "은화살", timeout=3.0, jitter_x=12, jitter_y=3):
-                                print("   ⚠️ 은화살 선택 실패! ESC 누르고 재시도합니다.")
-                                consecutive_buy_success = False
-                                break
-
-                            print(f"   ▶ 구매 세트 수량 입력: {buy_qty}세트")
+                            print("▶ 1. F1 -> F9 (두루마리)")
+                            send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
                             time.sleep(g_val(0.17, 0.28))
-                            input_number(buy_qty)
-                            time.sleep(g_val(0.14, 0.21))
-
-                            print("   ▶ Buy2(최종 구매) 버튼 클릭")
-                            if not wait_and_click_image("qq/buy2.png", "최종 구매 버튼", timeout=3.0, jitter_x=3, jitter_y=2):
-                                print("   ⚠️ 최종 구매 클릭 실패! ESC 누르고 재시도합니다.")
-                                consecutive_buy_success = False
-                                break
-
-                            print(f"   ✅ {buy_idx}번째 구매 세트 장바구니 담기 완료!")
+                            send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
                             time.sleep(g_val(0.42, 0.63))
 
-                        if consecutive_buy_success:
-                            buy_cycle_success = True
-                            break
-                        else:
-                            print("⚠️ [상점창 팝업/구매 실패] ESC 누르고 텔레포트부터 재시도합니다.")
-                            send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.03); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
-                            time.sleep(g_val(0.35, 0.56))
+                            if not wait_and_click_image("qq/weapon_shop.png", "[무기 방어구 상인] 메뉴", timeout=2.0, jitter_x=12, jitter_y=2):
+                                print("⚠️ 두루마리 메뉴 클릭 실패. 재시도합니다.")
+                                send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.03); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
+                                continue
 
-                    if not buy_cycle_success:
-                        print("🚨 3회 연속 무기 상인 텔/구매 실패! 루프를 강제 종료합니다.")
-                        return
+                            tele_wait = g_val(1.26, 1.61)
+                            print(f"▶ 2. 상점 텔레포트 대기 ({tele_wait:.1f}초)...")
+                            time.sleep(tele_wait)
+
+                            bought_this_trip = 0
+                            buy_idx = 0
+
+                            while True:
+                                if check_weight_status(get_screen()) == 2:
+                                    print("   ⚖️ [무게 82% 도달] 빨간 게이지 확인! 구매를 멈추고 창고로 이동합니다.")
+                                    buy_cycle_success = True
+                                    break
+
+                                if total_bought >= target_total_arrows:
+                                    print(f"   🎯 [목표 수량 달성] 총 {total_bought:,}발 구매 완료! 창고로 이동합니다.")
+                                    buy_cycle_success = True
+                                    break
+
+                                if bought_this_trip >= 15:
+                                    print("   ⚠️ [1회 방문 최대 구매 도달] 연속 15회 구매 완료. 창고로 이동합니다.")
+                                    buy_cycle_success = True
+                                    break
+
+                                buy_idx += 1
+                                print(f"\n   🛒 [무게 감지 연속 구매 {buy_idx}회차] (현재 누적: {total_bought:,} / {target_total_arrows:,}발)")
+
+                                step_ok = False
+                                for npc_try in range(2):
+                                    print("   ▶ 무기 상인 NPC 조준 및 대화 걸기")
+                                    if not wait_and_click_image("qq/weapon_shop_npc.png", "무기 상인 NPC", offset_y=50, jitter_x=2, jitter_y=10, is_npc=True):
+                                        send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.03); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
+                                        time.sleep(g_val(0.25, 0.40))
+                                        continue
+
+                                    print("   ▶ Buy 버튼 출현 대기 및 클릭")
+                                    if not wait_and_click_image("qq/buy.png", "Buy 버튼", timeout=3.0, jitter_x=3, jitter_y=2):
+                                        send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.03); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
+                                        time.sleep(g_val(0.25, 0.40))
+                                        continue
+
+                                    print("   ▶ 은화살 선택")
+                                    if not wait_and_click_image("qq/arrow.png", "은화살", timeout=3.0, jitter_x=12, jitter_y=3):
+                                        send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.03); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
+                                        time.sleep(g_val(0.25, 0.40))
+                                        continue
+
+                                    print(f"   ▶ 1회 최대 수량 입력 ({SINGLE_BUY_INPUT} 입력 ➔ {ARROW_PER_BUY:,}발)")
+                                    time.sleep(g_val(0.17, 0.28))
+                                    input_number(SINGLE_BUY_INPUT)
+                                    time.sleep(g_val(0.14, 0.21))
+
+                                    print("   ▶ Buy2(최종 구매) 버튼 클릭")
+                                    if not wait_and_click_image("qq/buy2.png", "최종 구매 버튼", timeout=3.0, jitter_x=3, jitter_y=2):
+                                        send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.03); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
+                                        time.sleep(g_val(0.25, 0.40))
+                                        continue
+
+                                    step_ok = True
+                                    break
+
+                                if not step_ok:
+                                    print("   ⚠️ 상점 NPC/구매창 클릭 실패!")
+                                    if bought_this_trip > 0:
+                                        print(f"   ℹ️ 이미 구매한 은화살({bought_this_trip}회분)을 먼저 창고에 맡기러 이동합니다.")
+                                        buy_cycle_success = True
+                                    break
+
+                                bought_this_trip += 1
+                                total_bought += ARROW_PER_BUY
+                                time.sleep(g_val(0.45, 0.65))
+
+                                w_status = check_weight_status(get_screen())
+                                w_label = "빨강(82%↑)" if w_status == 2 else ("주황(50%↑)" if w_status == 1 else "정상(50%↓)")
+                                print(f"   ✅ {buy_idx}회차 구매 완료! (+{ARROW_PER_BUY:,}발 ➔ 누적: {total_bought:,} / {target_total_arrows:,}발 | 무게: {w_label})")
+
+                                if w_status == 2:
+                                    print("   ⚖️ [무게 82% 도달] 무게 게이지가 빨갛게 변했습니다! 즉시 구매를 멈추고 창고로 이동합니다.")
+                                    buy_cycle_success = True
+                                    break
+
+                                if total_bought >= target_total_arrows:
+                                    print(f"   🎯 [목표 수량 달성] 목표치({target_total_arrows:,}발) 이상 구매 완료! 창고에 맡기러 이동합니다.")
+                                    buy_cycle_success = True
+                                    break
+
+                            if buy_cycle_success:
+                                break
+                            else:
+                                print("⚠️ [상점 구매 실패] ESC 누르고 텔레포트부터 재시도합니다.")
+                                send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.03); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
+                                time.sleep(g_val(0.35, 0.56))
+
+                        if not buy_cycle_success:
+                            print("🚨 3회 연속 무기 상인 텔/구매 실패! 루프를 강제 종료합니다.")
+                            return
 
                     store_success = False
                     for retry in range(3):
@@ -28473,51 +28826,60 @@ for i, pc in enumerate(MINI_PCS):
                         print("🚨 3회 연속 창고 보관 실패! 루프를 강제 종료합니다.")
                         return
 
-                    print("▶ 12. 은화살 찾기 (마을 정비 고속 스크롤 엔진 적용!)")
+                    print("▶ 12. 은화살 찾기 (메모리 캐싱 + latest_frames 초고속 스크롤 가동!)")
                     arrow_pos = None
                     stuck_scrolls = 0
                     last_scroll_img = None
 
+                    # 마우스 커서가 창고 목록(좌측) 밖에 있으면 휠이 헛돌 수 있으므로 안쪽(150, 220)으로 먼저 정렬
+                    c_x, c_y = ai_states.get(target_key, {}).get("cursor_pos", [150, 220])
+                    if c_x > 260 or c_y < 80 or c_y > 350:
+                        safe_sx, safe_sy = 150 + random.randint(-10, 10), 220 + random.randint(-10, 10)
+                        dur_s = apply_human_variance(0.10 + 0.03 * math.log2((math.hypot(safe_sx - c_x, safe_sy - c_y) / 20.0) + 1.0))
+                        deltas_s = generate_human_deltas(safe_sx - c_x, safe_sy - c_y, duration=dur_s, behavior="NORMAL", key=target_key)
+                        if deltas_s: send_macro_buffer(p_serial, p_lock, deltas_s, target_key)
+                        if target_key in ai_states: ai_states[target_key]["cursor_pos"] = [safe_sx, safe_sy]
+                        time.sleep(dur_s + 0.05)
+
                     for scroll_idx in range(50):
-                        arrow_pos = find_image_with_mask(get_screen(), "qq/arrow.png", threshold=0.82)
+                        screen_chk = get_screen()
+                        arrow_pos = find_image_with_mask(screen_chk, "qq/arrow.png", threshold=0.82, ui_only=True)
                         if arrow_pos:
-                            print(f"✅ {scroll_idx}번 스크롤 후 은화살 포착!")
-                            time.sleep(g_val(0.21, 0.31))
+                            print(f"✅ {scroll_idx}번 스크롤 후 은화살 포착! 스크롤 관성 안정화 대기...")
+                            time.sleep(g_val(0.18, 0.25))
+                            real_arrow_pos = find_image_with_mask(get_screen(), "qq/arrow.png", threshold=0.82, ui_only=True)
+                            if real_arrow_pos:
+                                arrow_pos = real_arrow_pos
                             break
 
-                        screen_chk = get_screen()
                         if screen_chk is not None:
                             h_scr, w_scr = screen_chk.shape[:2]
-                            c_x, c_y = ai_states.get(target_key, {}).get("cursor_pos", [400, 300])
-
-                            chk_x1, chk_y1 = max(0, int(c_x) - 50), max(0, int(c_y) - 15)
-                            chk_x2, chk_y2 = min(w_scr, int(c_x) + 50), min(h_scr, int(c_y) + 15)
-
-                            if chk_x2 > chk_x1 and chk_y2 > chk_y1:
-                                curr_scroll_img = cv2.cvtColor(screen_chk[chk_y1:chk_y2, chk_x1:chk_x2], cv2.COLOR_BGR2GRAY)
-
+                            ui_roi = screen_chk[0:min(400, h_scr), 0:min(290, w_scr)]
+                            uh, uw = ui_roi.shape[:2]
+                            if uh > 200 and uw > 50:
+                                curr_scroll_img = cv2.cvtColor(ui_roi[150:uh-50, uw//2:uw], cv2.COLOR_BGR2GRAY)
                                 if last_scroll_img is not None and last_scroll_img.shape == curr_scroll_img.shape:
                                     diff = cv2.absdiff(last_scroll_img, curr_scroll_img)
-                                    _, thresh = cv2.threshold(diff, 10, 255, cv2.THRESH_BINARY)
-                                    if cv2.countNonZero(thresh) < 5: stuck_scrolls += 1
+                                    _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
+                                    if cv2.countNonZero(thresh) < 80: stuck_scrolls += 1
                                     else: stuck_scrolls = 0
                                 last_scroll_img = curr_scroll_img
 
                             if stuck_scrolls >= random.randint(5, 6):
-                                print(f"🛑 [스크롤 끝] 커서 반경 픽셀 변화 없음. 바닥 도달 확정.")
+                                print("🛑 [스크롤 끝] 창고 목록 바닥 도달 확정.")
                                 break
 
-                        scroll_amount = -1 * int(round(g_val(7, 10)))
-                        send_mouse_scroll(p_serial, p_lock, scroll_amount)
-
-                        time.sleep(g_val(0.08, 0.13))
+                        send_mouse_scroll(p_serial, p_lock, -3)
+                        time.sleep(g_val(0.04, 0.06))
+                        send_mouse_scroll(p_serial, p_lock, -3)
+                        time.sleep(g_val(0.05, 0.08))
 
                     if not arrow_pos:
-                        print("❌ 스크롤 바닥 도달 후에도 가방에서 은화살을 찾을 수 없습니다! 루프 재시도.")
+                        print("❌ 스크롤 바닥 도달 후에도 가방에서 은화살을 찾을 수 없습니다! 창을 닫고 다음 루프로 넘어갑니다.")
                         send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.03); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
                         continue
 
-                    print("▶ 13. 은화살 클릭 완료 (선클릭 검증 완료)")
+                    print(f"▶ 13. 은화살 클릭 완료 ({arrow_pos[0]}, {arrow_pos[1]})")
                     click_pos(arrow_pos[0], arrow_pos[1], jitter_x=12, jitter_y=3, delay_min=0.10, delay_max=0.17)
 
                     time.sleep(g_val(0.10, 0.17))
@@ -28528,10 +28890,10 @@ for i, pc in enumerate(MINI_PCS):
                     if not wait_and_click_image("qq/ok.png", "O.K. 버튼", threshold=0.75, jitter_x=3, jitter_y=2):
                         continue
 
-                    print(f"🎉 [{cycle}회차] 쟁이기 완수!")
+                    print(f"🎉 [{cycle}회차 보관 완료] 현재까지 누적 {total_bought:,} / {target_total_arrows:,}발 창고 입고 완료!")
                     time.sleep(g_val(0.56, 0.84))
 
-                print(f"\n🎉🎉 [{target_key}] 설정된 {buy_count}회 구매/창고 루프가 모두 완료되었습니다! 🎉🎉")
+                print(f"\n🎉🎉 [{target_key}] 목표 수량({target_total_arrows:,}발) 달성! 총 {total_bought:,}발({cycle}회 왕복) 창고 쟁이기가 모두 완료되었습니다! 🎉🎉")
 
             except ManualAbort:
                 print(f"\n🛑 [{target_key}] 수동 모드(`) 개입 또는 사냥 시작을 감지하여 진행 중인 쟁이기 루프를 즉시 멈춥니다.")
