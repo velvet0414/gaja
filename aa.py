@@ -1475,6 +1475,7 @@ def local_ipc_broadcaster_thread(my_key):
                     "designated_base_node": st.get("designated_base_node", None),
 
                     "req_party_buff": st.get("req_party_buff", False),
+                    "pb_call_id": st.get("pb_call_id", 0),
                     "party_buff_status": st.get("party_buff_status", "IDLE"),
                     "party_buff_done": st.get("party_buff_done", False),
                     "dungeon_name": current_settings.get(my_key, {}).get("dungeon_name", ""),
@@ -1578,147 +1579,24 @@ EVADE_MAP = {
     268.0: [210.0, 330.0, 181.0, 359.0]   # 12시 막힘 -> 11시, 1시, 9시, 3시
 }
 
-# 👇 파일 경로에 폴더명(ant, gludio, silver, heine, giran)이 추가되었습니다.
+# 👇 파일 경로에 폴더명(ant, gludio, silver, heine, giran)이 추가되었습니다. (키/순서 100% 동일 압축)
 DUNGEON_ASSETS = {
-    # === 기던 (giran 폴더) ===
     "기란 1층": {"map": "giran/giran_full_map_topdown.png", "graph": "giran/giran1f_graph.json", "model": "giran/best.pt"},
     "기란 2층": {"map": "giran/giran2map.png", "graph": "giran/giran2f_graph.json", "model": "giran/best.pt"},
-    
-    # === 개미굴 (ant 폴더) ===
-    "개미굴 1층": {"map": "ant/ant1map.png", "graph": "ant/ant1_graph.json", "model": "ant/ant.pt"},
-    "개미굴 2층": {"map": "ant/ant2map.png", "graph": "ant/ant2_graph.json", "model": "ant/ant.pt"},
-    "개미굴 3층": {"map": "ant/ant3map.png", "graph": "ant/ant3_graph.json", "model": "ant/ant.pt"},
-    "개미굴 4층": {"map": "ant/ant4map.png", "graph": "ant/ant4_graph.json", "model": "ant/ant.pt"},
-    "개미굴 5층": {"map": "ant/ant5map.png", "graph": "ant/ant5_graph.json", "model": "ant/ant.pt"},
-    "개미굴 6층": {"map": "ant/ant6map.png", "graph": "ant/ant6_graph.json", "model": "ant/ant.pt"},
-    "개미굴 7층": {"map": "ant/ant7map.png", "graph": "ant/ant7_graph.json", "model": "ant/ant.pt"},
-    "개미굴 8층": {"map": "ant/ant8map.png", "graph": "ant/ant8_graph.json", "model": "ant/ant.pt"},
-    
-    # === 사던 (silver 폴더) ===
+    **{f"개미굴 {f}층": {"map": f"ant/ant{f}map.png", "graph": f"ant/ant{f}_graph.json", "model": "ant/ant.pt"} for f in range(1, 9)},
     "사던 2층": {"map": "silver/silver2map.png", "graph": "silver/silver2.json", "model": "silver/silver.pt"},
     "사던 3층": {"map": "silver/silver3map.png", "graph": "silver/silver3.json", "model": "silver/silver.pt"},
     "사던 3to4": {"map": "silver/silver3to4map.png", "graph": "silver/silver3to4.json", "model": "silver/silver.pt"},
-
-    "사던 4-1": {"map": "silver/silver4map.png", "graph": "silver/silver4-1.json", "model": "silver/silver.pt"},
-    "사던 4-2": {"map": "silver/silver4map.png", "graph": "silver/silver4-2.json", "model": "silver/silver.pt"},
-    "사던 4-3": {"map": "silver/silver4map.png", "graph": "silver/silver4-3.json", "model": "silver/silver.pt"},
-    "사던 4-4": {"map": "silver/silver4map.png", "graph": "silver/silver4-4.json", "model": "silver/silver.pt"},
-    "사던 4-5": {"map": "silver/silver4map.png", "graph": "silver/silver4-5.json", "model": "silver/silver.pt"},
-    "사던 4-6": {"map": "silver/silver4map.png", "graph": "silver/silver4-6.json", "model": "silver/silver.pt"},
-    "사던 4-7": {"map": "silver/silver4map.png", "graph": "silver/silver4-7.json", "model": "silver/silver.pt"},
-    "사던 4-8": {"map": "silver/silver4map.png", "graph": "silver/silver4-8.json", "model": "silver/silver.pt"},
-    "사던 4-9": {"map": "silver/silver4map.png", "graph": "silver/silver4-9.json", "model": "silver/silver.pt"},
-    "사던 4-10": {"map": "silver/silver4map.png", "graph": "silver/silver4-10.json", "model": "silver/silver.pt"},
-    "사던 4-11": {"map": "silver/silver4map.png", "graph": "silver/silver4-11.json", "model": "silver/silver.pt"},
-    "사던 4-12": {"map": "silver/silver4map.png", "graph": "silver/silver4-12.json", "model": "silver/silver.pt"},
-    "사던 4-13": {"map": "silver/silver4map.png", "graph": "silver/silver4-13.json", "model": "silver/silver.pt"},
-    "사던 4-14": {"map": "silver/silver4map.png", "graph": "silver/silver4-14.json", "model": "silver/silver.pt"},
-    "사던 4-15": {"map": "silver/silver4map.png", "graph": "silver/silver4-15.json", "model": "silver/silver.pt"},
-    
-    # === 본던 (gludio 폴더) ===
-    "본던 2-1": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-1.json", "model": "gludio/gludio.pt"},
-    "본던 2-2": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-2.json", "model": "gludio/gludio.pt"},
-    "본던 2-3": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-3.json", "model": "gludio/gludio.pt"},
-    "본던 2-4": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-4.json", "model": "gludio/gludio.pt"},
-    "본던 2-5": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-5.json", "model": "gludio/gludio.pt"},
-    "본던 2-6": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-6.json", "model": "gludio/gludio.pt"},
-    "본던 2-7": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-7.json", "model": "gludio/gludio.pt"},
-    "본던 2-8": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-8.json", "model": "gludio/gludio.pt"},
-    "본던 2-9": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-9.json", "model": "gludio/gludio.pt"},
-    "본던 2-10": {"map": "gludio/gludio2.png", "graph": "gludio/gludio2-10.json", "model": "gludio/gludio.pt"},
-
+    **{f"사던 4-{i}": {"map": "silver/silver4map.png", "graph": f"silver/silver4-{i}.json", "model": "silver/silver.pt"} for i in range(1, 16)},
+    **{f"본던 2-{i}": {"map": "gludio/gludio2.png", "graph": f"gludio/gludio2-{i}.json", "model": "gludio/gludio.pt"} for i in range(1, 11)},
     "본던 3층": {"map": "gludio/gludio3map.png", "graph": "gludio/gludio3_graph.json", "model": "gludio/gludio.pt"},
-    
-    "본던 4-1": {"map": "gludio/gludio4.png", "graph": "gludio/gludio4-1.json", "model": "gludio/gludio.pt"},
-    "본던 4-2": {"map": "gludio/gludio4.png", "graph": "gludio/gludio4-2.json", "model": "gludio/gludio.pt"},
-    "본던 4-3": {"map": "gludio/gludio4.png", "graph": "gludio/gludio4-3.json", "model": "gludio/gludio.pt"},
-    "본던 4-4": {"map": "gludio/gludio4.png", "graph": "gludio/gludio4-4.json", "model": "gludio/gludio.pt"},
-    "본던 4-5": {"map": "gludio/gludio4.png", "graph": "gludio/gludio4-5.json", "model": "gludio/gludio.pt"},
-    "본던 4-6": {"map": "gludio/gludio4.png", "graph": "gludio/gludio4-6.json", "model": "gludio/gludio.pt"},
-    "본던 4-7": {"map": "gludio/gludio4.png", "graph": "gludio/gludio4-7.json", "model": "gludio/gludio.pt"},
-    "본던 4-8": {"map": "gludio/gludio4.png", "graph": "gludio/gludio4-8.json", "model": "gludio/gludio.pt"},
-    "본던 4-9": {"map": "gludio/gludio4.png", "graph": "gludio/gludio4-9.json", "model": "gludio/gludio.pt"},
-    "본던 4-10": {"map": "gludio/gludio4.png", "graph": "gludio/gludio4-10.json", "model": "gludio/gludio.pt"},
-    "본던 4-11": {"map": "gludio/gludio4.png", "graph": "gludio/gludio4-11.json", "model": "gludio/gludio.pt"},
-    "본던 4-12": {"map": "gludio/gludio4.png", "graph": "gludio/gludio4-12.json", "model": "gludio/gludio.pt"},
-    "본던 4-13": {"map": "gludio/gludio4.png", "graph": "gludio/gludio4-13.json", "model": "gludio/gludio.pt"},
-    "본던 4-14": {"map": "gludio/gludio4.png", "graph": "gludio/gludio4-14.json", "model": "gludio/gludio.pt"},
-    "본던 4-15": {"map": "gludio/gludio4.png", "graph": "gludio/gludio4-15.json", "model": "gludio/gludio.pt"},
-
-    "본던 5-1": {"map": "gludio/gludio5.png", "graph": "gludio/gludio5-1.json", "model": "gludio/gludio.pt"},
-    "본던 5-2": {"map": "gludio/gludio5.png", "graph": "gludio/gludio5-2.json", "model": "gludio/gludio.pt"},
-    "본던 5-3": {"map": "gludio/gludio5.png", "graph": "gludio/gludio5-3.json", "model": "gludio/gludio.pt"},
-    "본던 5-4": {"map": "gludio/gludio5.png", "graph": "gludio/gludio5-4.json", "model": "gludio/gludio.pt"},
-    "본던 5-5": {"map": "gludio/gludio5.png", "graph": "gludio/gludio5-5.json", "model": "gludio/gludio.pt"},
-    "본던 5-6": {"map": "gludio/gludio5.png", "graph": "gludio/gludio5-6.json", "model": "gludio/gludio.pt"},
-    "본던 5-7": {"map": "gludio/gludio5.png", "graph": "gludio/gludio5-7.json", "model": "gludio/gludio.pt"},
-    "본던 5-8": {"map": "gludio/gludio5.png", "graph": "gludio/gludio5-8.json", "model": "gludio/gludio.pt"},
-    "본던 5-9": {"map": "gludio/gludio5.png", "graph": "gludio/gludio5-9.json", "model": "gludio/gludio.pt"},
-    "본던 5-10": {"map": "gludio/gludio5.png", "graph": "gludio/gludio5-10.json", "model": "gludio/gludio.pt"},
-    "본던 5-11": {"map": "gludio/gludio5.png", "graph": "gludio/gludio5-11.json", "model": "gludio/gludio.pt"},
-    "본던 5-12": {"map": "gludio/gludio5.png", "graph": "gludio/gludio5-12.json", "model": "gludio/gludio.pt"},
-    "본던 5-13": {"map": "gludio/gludio5.png", "graph": "gludio/gludio5-13.json", "model": "gludio/gludio.pt"},
-    "본던 5-14": {"map": "gludio/gludio5.png", "graph": "gludio/gludio5-14.json", "model": "gludio/gludio.pt"},
-    "본던 5-15": {"map": "gludio/gludio5.png", "graph": "gludio/gludio5-15.json", "model": "gludio/gludio.pt"},
+    **{f"본던 4-{i}": {"map": "gludio/gludio4.png", "graph": f"gludio/gludio4-{i}.json", "model": "gludio/gludio.pt"} for i in range(1, 16)},
+    **{f"본던 5-{i}": {"map": "gludio/gludio5.png", "graph": f"gludio/gludio5-{i}.json", "model": "gludio/gludio.pt"} for i in range(1, 16)},
     "본던 5to6": {"map": "gludio/gludio5.png", "graph": "gludio/gludio5_to_6.json", "model": "gludio/gludio.pt"},
-
-    "본던 6-1": {"map": "gludio/gludio6.png", "graph": "gludio/gludio6-1.json", "model": "gludio/gludio.pt"},
-    "본던 6-2": {"map": "gludio/gludio6.png", "graph": "gludio/gludio6-2.json", "model": "gludio/gludio.pt"},
-    "본던 6-3": {"map": "gludio/gludio6.png", "graph": "gludio/gludio6-3.json", "model": "gludio/gludio.pt"},
-    "본던 6-4": {"map": "gludio/gludio6.png", "graph": "gludio/gludio6-4.json", "model": "gludio/gludio.pt"},
-    "본던 6-5": {"map": "gludio/gludio6.png", "graph": "gludio/gludio6-5.json", "model": "gludio/gludio.pt"},
-    "본던 6-6": {"map": "gludio/gludio6.png", "graph": "gludio/gludio6-6.json", "model": "gludio/gludio.pt"},
-    "본던 6-7": {"map": "gludio/gludio6.png", "graph": "gludio/gludio6-7.json", "model": "gludio/gludio.pt"},
-    "본던 6-8": {"map": "gludio/gludio6.png", "graph": "gludio/gludio6-8.json", "model": "gludio/gludio.pt"},
-    "본던 6-9": {"map": "gludio/gludio6.png", "graph": "gludio/gludio6-9.json", "model": "gludio/gludio.pt"},
-    "본던 6-10": {"map": "gludio/gludio6.png", "graph": "gludio/gludio6-10.json", "model": "gludio/gludio.pt"},
-    "본던 6-11": {"map": "gludio/gludio6.png", "graph": "gludio/gludio6-11.json", "model": "gludio/gludio.pt"},
-    "본던 6-12": {"map": "gludio/gludio6.png", "graph": "gludio/gludio6-12.json", "model": "gludio/gludio.pt"},
-    "본던 6-13": {"map": "gludio/gludio6.png", "graph": "gludio/gludio6-13.json", "model": "gludio/gludio.pt"},
-    "본던 6-14": {"map": "gludio/gludio6.png", "graph": "gludio/gludio6-14.json", "model": "gludio/gludio.pt"},
-    "본던 6-15": {"map": "gludio/gludio6.png", "graph": "gludio/gludio6-15.json", "model": "gludio/gludio.pt"},
-
-    # === 이벤트 및 오땅 (지정된 폴더가 없으므로 루트 폴더 유지) ===
+    **{f"본던 6-{i}": {"map": "gludio/gludio6.png", "graph": f"gludio/gludio6-{i}.json", "model": "gludio/gludio.pt"} for i in range(1, 16)},
     "event1": {"map": "event1.png", "graph": "event1.json", "model": "event1.pt"},
-
-    "오땅-봄": {"map": "oak.png", "graph": "oak.json", "model": "oak.pt"},
-    "오땅-여름": {"map": "oak.png", "graph": "oak.json", "model": "oak.pt"},
-    "오땅-가을": {"map": "oak.png", "graph": "oak.json", "model": "oak.pt"},
-    "오땅-겨울": {"map": "oak.png", "graph": "oak.json", "model": "oak.pt"},
-
-    # === 수던 (heine 폴더) ===
-    "수던1-1": {"map": "heine/heine3.png", "graph": "heine/heines1.json", "model": "heine/heine.pt"},
-    "수던1-2": {"map": "heine/heine3.png", "graph": "heine/heines1.json", "model": "heine/heine.pt"},
-    "수던2-1": {"map": "heine/heine3.png", "graph": "heine/heines2.json", "model": "heine/heine.pt"},
-    "수던2-2": {"map": "heine/heine3.png", "graph": "heine/heines2.json", "model": "heine/heine.pt"},
-    "수던3-1": {"map": "heine/heine3.png", "graph": "heine/heines3.json", "model": "heine/heine.pt"},
-    "수던3-2": {"map": "heine/heine3.png", "graph": "heine/heines3.json", "model": "heine/heine.pt"},
-    "수던4-1": {"map": "heine/heine3.png", "graph": "heine/heines4.json", "model": "heine/heine.pt"},
-    "수던4-2": {"map": "heine/heine3.png", "graph": "heine/heines4.json", "model": "heine/heine.pt"},
-    "수던5-1": {"map": "heine/heine3.png", "graph": "heine/heines5.json", "model": "heine/heine.pt"},
-    "수던5-2": {"map": "heine/heine3.png", "graph": "heine/heines5.json", "model": "heine/heine.pt"},
-    "수던6-1": {"map": "heine/heine3.png", "graph": "heine/heines6.json", "model": "heine/heine.pt"},
-    "수던6-2": {"map": "heine/heine3.png", "graph": "heine/heines6.json", "model": "heine/heine.pt"},
-    "수던7-1": {"map": "heine/heine3.png", "graph": "heine/heines7.json", "model": "heine/heine.pt"},
-    "수던7-2": {"map": "heine/heine3.png", "graph": "heine/heines7.json", "model": "heine/heine.pt"},
-    "수던8-1": {"map": "heine/heine3.png", "graph": "heine/heines8.json", "model": "heine/heine.pt"},
-    "수던8-2": {"map": "heine/heine3.png", "graph": "heine/heines8.json", "model": "heine/heine.pt"},
-    "수던9-1": {"map": "heine/heine3.png", "graph": "heine/heines9.json", "model": "heine/heine.pt"},
-    "수던9-2": {"map": "heine/heine3.png", "graph": "heine/heines9.json", "model": "heine/heine.pt"},
-    "수던10-1": {"map": "heine/heine3.png", "graph": "heine/heines10.json", "model": "heine/heine.pt"},
-    "수던10-2": {"map": "heine/heine3.png", "graph": "heine/heines10.json", "model": "heine/heine.pt"},
-    "수던11-1": {"map": "heine/heine3.png", "graph": "heine/heines11.json", "model": "heine/heine.pt"},
-    "수던11-2": {"map": "heine/heine3.png", "graph": "heine/heines11.json", "model": "heine/heine.pt"},
-    "수던12-1": {"map": "heine/heine3.png", "graph": "heine/heines12.json", "model": "heine/heine.pt"},
-    "수던12-2": {"map": "heine/heine3.png", "graph": "heine/heines12.json", "model": "heine/heine.pt"},
-    "수던13-1": {"map": "heine/heine3.png", "graph": "heine/heines13.json", "model": "heine/heine.pt"},
-    "수던13-2": {"map": "heine/heine3.png", "graph": "heine/heines13.json", "model": "heine/heine.pt"},
-    "수던14-1": {"map": "heine/heine3.png", "graph": "heine/heines14.json", "model": "heine/heine.pt"},
-    "수던14-2": {"map": "heine/heine3.png", "graph": "heine/heines14.json", "model": "heine/heine.pt"},
-    "수던15-1": {"map": "heine/heine3.png", "graph": "heine/heines15.json", "model": "heine/heine.pt"},
-    "수던15-2": {"map": "heine/heine3.png", "graph": "heine/heines15.json", "model": "heine/heine.pt"},
-    "수던16-1": {"map": "heine/heine3.png", "graph": "heine/heines16.json", "model": "heine/heine.pt"},
-    "수던16-2": {"map": "heine/heine3.png", "graph": "heine/heines16.json", "model": "heine/heine.pt"}
+    **{f"오땅-{s}": {"map": "oak.png", "graph": "oak.json", "model": "oak.pt"} for s in ["봄", "여름", "가을", "겨울"]},
+    **{f"수던{i}-{j}": {"map": "heine/heine3.png", "graph": f"heine/heines{i}.json", "model": "heine/heine.pt"} for i in range(1, 17) for j in (1, 2)}
 }
 
 loaded_models = {}
@@ -2842,25 +2720,20 @@ def load_buff_times():
 def save_buff_times(states_dict):
     with buff_io_lock: return _save_buff_times_internal(states_dict)
 
+_BUFF_SAVE_KEYS = ("windwalk", "shield", "holy", "enchant", "blessed", "dex", "decrease", "extra_f10", "light", "blue_pot", "element")
+_STRIP_SETTING_KEYS = {
+    "com_port", "char_name", "m_elf_conf", "m_wiz_conf", "f_knight_conf", "m_knight_conf", "m_prince_conf",
+    "auth_main_id", "auth_main_pw", "auth_main_email", "auth_main_phone",
+    "auth_delay_start_min", "auth_delay_end_min", "auth_delay_sec"
+}
+
 def _save_buff_times_internal(states_dict):
     try:
-        data = {}
         curr_t = time.time()
-        for k, st in states_dict.items():
-            data[k] = {
-
-                "windwalk": max(0.0, st.get("buff_windwalk_time", 0) - curr_t),
-                "shield": max(0.0, st.get("buff_shield_time", 0) - curr_t),
-                "holy": max(0.0, st.get("buff_holy_time", 0) - curr_t),
-                "enchant": max(0.0, st.get("buff_enchant_time", 0) - curr_t),
-                "blessed": max(0.0, st.get("buff_blessed_time", 0) - curr_t),
-                "dex": max(0.0, st.get("buff_dex_time", 0) - curr_t),
-                "decrease": max(0.0, st.get("buff_decrease_time", 0) - curr_t),
-                "extra_f10": max(0.0, st.get("buff_extra_f10_time", 0) - curr_t),
-                "light": max(0.0, st.get("buff_light_time", 0) - curr_t),
-                "blue_pot": max(0.0, st.get("buff_blue_pot_time", 0) - curr_t),
-                "element": max(0.0, st.get("buff_element_time", 0) - curr_t)
-            }
+        data = {
+            k: {bk: max(0.0, st.get(f"buff_{bk}_time", 0) - curr_t) for bk in _BUFF_SAVE_KEYS}
+            for k, st in states_dict.items()
+        }
         with open(BUFF_SAVE_FILE, "w") as f: json.dump(data, f)
     except: pass
 
@@ -2884,125 +2757,27 @@ def _save_settings_internal():
         data = {}
         for k, v in gui_vars.items():
             st = ai_states.get(k, {})
-            data[k] = {
-                "com_port": v["com_port"].get().strip(),
+            pc_data = {}
+            for var_k, var_obj in v.items():
+                val = var_obj.get()
+                if var_k in _STRIP_SETTING_KEYS and isinstance(val, str):
+                    val = val.strip()
+                pc_data[var_k] = val
+
+            pc_data.update({
                 "pico_hwid": st.get("pico_hwid", saved_settings.get(k, {}).get("pico_hwid", "")),
-                "role": v["role"].get(),
-
-                "party_mode": v.get("party_mode", tk.StringVar(value="솔플 (사용안함)")).get(),
-                "use_party_hunt": v["use_party_hunt"].get(),
-                "use_party_fixed": v["use_party_fixed"].get(),
-                "is_puller": v["is_puller"].get(),
-                "is_party_inviter": v["is_party_inviter"].get(),
-                "party_group": v["party_group"].get(),
-                "invite_group": v["invite_group"].get() if "invite_group" in v else "선택안함",
-                "char_name": v["char_name"].get().strip() if "char_name" in v else "",
                 "party_to_main_migrated": True,
-                "party_dungeon_name": v["party_dungeon_name"].get(),
-
-                "party_heal_use": v["party_heal_use"].get(), "party_heal_pct": v["party_heal_pct"].get(),
-                "party_heal_mp_pct": v["party_heal_mp_pct"].get(),
-                "party_abs_return_use": v["party_abs_return_use"].get(), "party_abs_return_pct": v["party_abs_return_pct"].get(),
-                "party_pot_use": v["party_pot_use"].get(), "party_pot_pct": v["party_pot_pct"].get(),
-                "party_poison_type": v["party_poison_type"].get(), "party_poison_delay": v["party_poison_delay"].get(),
-                "party_hp_danger_pct": v["party_hp_danger_pct"].get(), "party_hp_20_action": v["party_hp_20_action"].get(),
-                "party_pk_drop_pct": v["party_pk_drop_pct"].get(),
-                "party_max_combat_time": v["party_max_combat_time"].get(),
-                "party_use_mptam": v["party_use_mptam"].get(), "party_mptam_start_pct": v["party_mptam_start_pct"].get(), "party_mptam_stop_pct": v["party_mptam_stop_pct"].get(),
-
-                "party_mptam_tele_use": v["party_mptam_tele_use"].get() if "party_mptam_tele_use" in v else False,
-                "party_mptam_tele_pct": v["party_mptam_tele_pct"].get() if "party_mptam_tele_pct" in v else "12",
-
-                "party_help_call_use": v["party_help_call_use"].get() if "party_help_call_use" in v else True,
-                "party_help_call_pct": v["party_help_call_pct"].get() if "party_help_call_pct" in v else "20",
-                "use_config_sync": v["use_config_sync"].get() if "use_config_sync" in v else True,
-                "sync_target_dng": v["sync_target_dng"].get() if "sync_target_dng" in v else "모든사냥터",
-                "use_m_elf_pk": v["use_m_elf_pk"].get() if "use_m_elf_pk" in v else False,
-                "use_m_wiz_pk": v["use_m_wiz_pk"].get() if "use_m_wiz_pk" in v else False,
-                "use_f_knight_pk": v["use_f_knight_pk"].get() if "use_f_knight_pk" in v else False,
-                "use_m_knight_pk": v["use_m_knight_pk"].get() if "use_m_knight_pk" in v else False,
-                "use_m_prince_pk": v["use_m_prince_pk"].get() if "use_m_prince_pk" in v else False,
-                "m_elf_conf": v["m_elf_conf"].get().strip() if "m_elf_conf" in v else "70",
-                "m_wiz_conf": v["m_wiz_conf"].get().strip() if "m_wiz_conf" in v else "70",
-                "f_knight_conf": v["f_knight_conf"].get().strip() if "f_knight_conf" in v else "70",
-                "m_knight_conf": v["m_knight_conf"].get().strip() if "m_knight_conf" in v else "70",
-                "m_prince_conf": v["m_prince_conf"].get().strip() if "m_prince_conf" in v else "70",
-
-                "dungeon_name": v["dungeon_name"].get(),
-                "heal_use": v["heal_use"].get(), "heal_pct": v["heal_pct"].get(),
-                "heal_mp_pct": v["heal_mp_pct"].get(),
-                "pot_use": v["pot_use"].get(), "pot_pct": v["pot_pct"].get(),
-                "poison_type": v["poison_type"].get(), "poison_delay": v["poison_delay"].get(), "buff_set": v["buff_set"].get(),
-                "combat_buff": v["combat_buff"].get(),
-                "use_dec_weight": v["use_dec_weight"].get(), "use_windwalk": v["use_windwalk"].get(),
-                "use_body": v["use_body"].get(), "body_pct": v["body_pct"].get(), "body_stop_pct": v["body_stop_pct"].get(),
-                "use_mptam": v["use_mptam"].get(), "mptam_start_pct": v["mptam_start_pct"].get(), "mptam_stop_pct": v["mptam_stop_pct"].get(),
-                
-                "is_wiz_mptam": v.get("is_wiz_mptam", tk.BooleanVar(value=False)).get() if "is_wiz_mptam" in v else False, # 💡 [버그픽스] 위즈 엠탐 체크박스 상태 영구 저장!
-
-                "use_extra_f10": v["use_extra_f10"].get(), "extra_f10_dur": v["extra_f10_dur"].get(),
-                "use_blue_pot": v["use_blue_pot"].get(), "use_blue_pot_combat": v.get("use_blue_pot_combat", tk.BooleanVar(value=False)).get() if "use_blue_pot_combat" in v else False, "blue_mp_pct": v["blue_mp_pct"].get(), "blue_cd_min": v["blue_cd_min"].get(),
-                "tele_hunt_use": v["tele_hunt_use"].get(), "tele_hunt_time": v["tele_hunt_time"].get(),
-                "hp_20_action": v["hp_20_action"].get(), "hp_danger_pct": v["hp_danger_pct"].get(),
-                "abs_return_use": v["abs_return_use"].get(),
-                "abs_return_pct": v["abs_return_pct"].get(),
-                "pk_drop_pct": v["pk_drop_pct"].get(),
-                "max_combat_time": v["max_combat_time"].get(),
-                "return_cond": v["return_cond"].get(),
-
-                "move_sens": v["move_sens"].get(),
-                "hunt_first": v["hunt_first"].get(),
-
-                "chain_kill": v.get("chain_kill", tk.BooleanVar(value=False)).get() if "chain_kill" in v else False,
-                "haste_match_rate": v["haste_match_rate"].get(),
-                "zone_tele_nodes": v.get("zone_tele_nodes", tk.StringVar(value="120")).get() if "zone_tele_nodes" in v else "120",
-
-                "oak_thresh": v.get("oak_thresh", tk.StringVar(value="127")).get() if "oak_thresh" in v else "127",
-
-                "motion_sensitivity": v["motion_sensitivity"].get(),
-                "gb_count_normal": v["gb_count_normal"].get(),
-                "gb_count_dng": v["gb_count_dng"].get(),
-                "use_gb_detect": v["use_gb_detect"].get(),
-                "gb_exc_user": v["gb_exc_user"].get(),
-
-                "buy_item": v["buy_item"].get(),
-                "buy_qty": v["buy_qty"].get(),
-                "buy_count": v["buy_count"].get(),
-                "sell_item": v["sell_item"].get(),
-                "sell_qty": v["sell_qty"].get(),
-
-                "pick_arrow": v["pick_arrow"].get(),
-                "pick_teleport": v["pick_teleport"].get(),
-                "pick_ent": v["pick_ent"].get(),
-                
-                "pick_bluepot": v.get("pick_bluepot", tk.StringVar(value="0")).get() if "pick_bluepot" in v else "0", # 💡 [버그픽스] 파랭이 창고 인출 수량 영구 저장!
-                
-                "use_cc_buff": v["use_cc_buff"].get(),
-                "buff_mp_pct": v["buff_mp_pct"].get(),
-
-                # 👇 웹 인증 내 계정 및 특정 시간대 딜레이 설정 영구 저장 👇
-                "auth_main_id": v["auth_main_id"].get().strip() if "auth_main_id" in v else "",
-                "auth_main_pw": v["auth_main_pw"].get().strip() if "auth_main_pw" in v else "",
-                "auth_main_email": v["auth_main_email"].get().strip() if "auth_main_email" in v else "",
-                "auth_main_phone": v["auth_main_phone"].get().strip() if "auth_main_phone" in v else "",
-
-                "auth_delay_use": v["auth_delay_use"].get() if "auth_delay_use" in v else False,
-                "auth_auto_captcha": v["auth_auto_captcha"].get() if "auth_auto_captcha" in v else False,
-                "auth_delay_start_min": v["auth_delay_start_min"].get().strip() if "auth_delay_start_min" in v else "55",
-                "auth_delay_end_min": v["auth_delay_end_min"].get().strip() if "auth_delay_end_min" in v else "58",
-                "auth_delay_sec": v["auth_delay_sec"].get().strip() if "auth_delay_sec" in v else "180",
-
                 "certi_curr_central": st.get("certi_curr_central", saved_settings.get(k, {}).get("certi_curr_central", "")),
                 "accum_hunt_time": st.get("accum_hunt_time", 0.0),
                 "fatigue_mult": st.get("fatigue_mult", 1.0),
                 "next_fatigue_target": st.get("next_fatigue_target", 0.0)
-            }
+            })
+            data[k] = pc_data
 
         data["GLOBAL"] = {
             "base_x": entry_base_x.get(), "base_y": entry_base_y.get(),
             "pc_num": pc_num_var.get(),
             "gui_x": entry_gui_x.get(), "gui_y": entry_gui_y.get(),
-
             "gui_w": root.winfo_width() if root.winfo_width() > 100 else 420,
             "gui_h": root.winfo_height() if root.winfo_height() > 100 else 700,
             "debug_mode": DEBUG_MODE,
@@ -3055,106 +2830,39 @@ EXP_ROI_Y1, EXP_ROI_Y2 = 480, 495
 ANT_IN_X1, ANT_IN_X2 = 0, 150
 ANT_IN_Y1, ANT_IN_Y2 = 420, 485
 
-try:
-    img_sword_bgra = cv2.imread("qq/sword.png", cv2.IMREAD_UNCHANGED)
-    if img_sword_bgra is not None and len(img_sword_bgra.shape) == 3 and img_sword_bgra.shape[2] == 4:
-        img_sword = img_sword_bgra[:, :, :3]
-        img_sword_mask = img_sword_bgra[:, :, 3]
-    else:
-        img_sword = cv2.imread("qq/sword.png", cv2.IMREAD_COLOR)
-        img_sword_mask = None
-except: img_sword, img_sword_mask = None, None
+def _load_img_and_mask(path, require_alpha=False):
+    """알파 채널(마스크) 유무를 자동 판별하여 (color, mask) 튜플로 반환하는 공통 로더"""
+    try:
+        bgra = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4:
+            return bgra[:, :, :3], bgra[:, :, 3]
+        if require_alpha:
+            return None, None
+        return cv2.imread(path, cv2.IMREAD_COLOR), None
+    except Exception:
+        return None, None
 
-try:
-    img_circle_bgra = cv2.imread("qq/circle.png", cv2.IMREAD_UNCHANGED)
-    if img_circle_bgra is not None and len(img_circle_bgra.shape) == 3 and img_circle_bgra.shape[2] == 4:
-        img_circle = img_circle_bgra[:, :, :3]
-        img_circle_mask = img_circle_bgra[:, :, 3]
-    else:
-        img_circle = cv2.imread("qq/circle.png", cv2.IMREAD_COLOR)
-        img_circle_mask = None
-except: img_circle, img_circle_mask = None, None
+img_sword, img_sword_mask = _load_img_and_mask("qq/sword.png")
+img_circle, img_circle_mask = _load_img_and_mask("qq/circle.png")
+img_inven, img_inven_mask = _load_img_and_mask("qq/inven.png")
+img_spell, img_spell_mask = _load_img_and_mask("qq/spell.png")
+img_death, img_death_mask = _load_img_and_mask("qq/death.png")
+img_on, img_on_mask = _load_img_and_mask("qq/on.png")
+img_haste, img_haste_mask = _load_img_and_mask("haste.png")
+img_haste2, img_haste2_mask = _load_img_and_mask("qq/haste2.png")
+img_haste_x, img_haste_x_mask = _load_img_and_mask("qq/haste_x.png")
+_pj_path = "qq/pratyjangx.png" if os.path.exists("qq/pratyjangx.png") else ("pratyjangx.png" if os.path.exists("pratyjangx.png") else "qq/partyjangx.png")
+img_pratyjang_x, img_pratyjang_x_mask = _load_img_and_mask(_pj_path)
+img_nopotion, img_nopotion_mask = _load_img_and_mask("qq/nopotion.png")
 
-try:
-    img_inven_bgra = cv2.imread("qq/inven.png", cv2.IMREAD_UNCHANGED)
-    if img_inven_bgra is not None and len(img_inven_bgra.shape) == 3 and img_inven_bgra.shape[2] == 4:
-        img_inven = img_inven_bgra[:, :, :3]
-        img_inven_mask = img_inven_bgra[:, :, 3]
-    else:
-        img_inven = cv2.imread("qq/inven.png", cv2.IMREAD_COLOR)
-        img_inven_mask = None
-except: img_inven, img_inven_mask = None, None
-
-try:
-    img_spell_bgra = cv2.imread("qq/spell.png", cv2.IMREAD_UNCHANGED)
-    if img_spell_bgra is not None and len(img_spell_bgra.shape) == 3 and img_spell_bgra.shape[2] == 4:
-        img_spell = img_spell_bgra[:, :, :3]
-        img_spell_mask = img_spell_bgra[:, :, 3]
-    else:
-        img_spell = cv2.imread("qq/spell.png", cv2.IMREAD_COLOR)
-        img_spell_mask = None
-except: img_spell, img_spell_mask = None, None
-
-try:
-    img_death_bgra = cv2.imread("qq/death.png", cv2.IMREAD_UNCHANGED)
-    if img_death_bgra is not None and len(img_death_bgra.shape) == 3 and img_death_bgra.shape[2] == 4:
-        img_death = img_death_bgra[:, :, :3]
-        img_death_mask = img_death_bgra[:, :, 3]
-    else:
-        img_death = cv2.imread("qq/death.png", cv2.IMREAD_COLOR)
-        img_death_mask = None
-except: img_death, img_death_mask = None, None
-
-try:
-    img_on_bgra = cv2.imread("qq/on.png", cv2.IMREAD_UNCHANGED)
-    if img_on_bgra is not None and len(img_on_bgra.shape) == 3 and img_on_bgra.shape[2] == 4:
-        img_on = img_on_bgra[:, :, :3]
-        img_on_mask = img_on_bgra[:, :, 3]
-    else:
-        img_on = cv2.imread("qq/on.png", cv2.IMREAD_COLOR)
-        img_on_mask = None
-except: img_on, img_on_mask = None, None
-
-try:
-    img_haste_bgra = cv2.imread("haste.png", cv2.IMREAD_UNCHANGED)
-    if img_haste_bgra is not None and len(img_haste_bgra.shape) == 3 and img_haste_bgra.shape[2] == 4:
-        img_haste = img_haste_bgra[:, :, :3]
-        img_haste_mask = img_haste_bgra[:, :, 3]
-    else:
-        img_haste = cv2.imread("haste.png", cv2.IMREAD_COLOR)
-        img_haste_mask = None
-except: img_haste, img_haste_mask = None, None
-
-try:
-    img_haste2_bgra = cv2.imread("qq/haste2.png", cv2.IMREAD_UNCHANGED)
-    if img_haste2_bgra is not None and len(img_haste2_bgra.shape) == 3 and img_haste2_bgra.shape[2] == 4:
-        img_haste2 = img_haste2_bgra[:, :, :3]
-        img_haste2_mask = img_haste2_bgra[:, :, 3]
-    else:
-        img_haste2 = cv2.imread("qq/haste2.png", cv2.IMREAD_COLOR)
-        img_haste2_mask = None
-except: img_haste2, img_haste2_mask = None, None
-
-try:
-    img_haste_x_bgra = cv2.imread("qq/haste_x.png", cv2.IMREAD_UNCHANGED)
-    if img_haste_x_bgra is not None and len(img_haste_x_bgra.shape) == 3 and img_haste_x_bgra.shape[2] == 4:
-        img_haste_x = img_haste_x_bgra[:, :, :3]
-        img_haste_x_mask = img_haste_x_bgra[:, :, 3]
-    else:
-        img_haste_x = cv2.imread("qq/haste_x.png", cv2.IMREAD_COLOR)
-        img_haste_x_mask = None
-except: img_haste_x, img_haste_x_mask = None, None
-
-try:
-    _pj_path = "qq/pratyjangx.png" if os.path.exists("qq/pratyjangx.png") else ("pratyjangx.png" if os.path.exists("pratyjangx.png") else "qq/partyjangx.png")
-    img_pratyjang_x_bgra = cv2.imread(_pj_path, cv2.IMREAD_UNCHANGED)
-    if img_pratyjang_x_bgra is not None and len(img_pratyjang_x_bgra.shape) == 3 and img_pratyjang_x_bgra.shape[2] == 4:
-        img_pratyjang_x = img_pratyjang_x_bgra[:, :, :3]
-        img_pratyjang_x_mask = img_pratyjang_x_bgra[:, :, 3]
-    else:
-        img_pratyjang_x = cv2.imread(_pj_path, cv2.IMREAD_COLOR)
-        img_pratyjang_x_mask = None
-except: img_pratyjang_x, img_pratyjang_x_mask = None, None
+cursor_color, cursor_mask = _load_img_and_mask("qq/cursor_custom.png", require_alpha=True)
+cursor2_color, cursor2_mask = _load_img_and_mask("qq/cursor2.png", require_alpha=True)
+cursor_portal_color, cursor_portal_mask = _load_img_and_mask("qq/cursor_portal.png")
+cursor3_color, cursor3_mask = _load_img_and_mask("qq/certi/cursor3.png")
+cursor4_color, cursor4_mask = _load_img_and_mask("qq/certi/cursor4.png")
+certi_color, certi_mask = _load_img_and_mask("qq/certi/certi.png")
+_t2_path = "qq/certi/ticket2.png" if os.path.exists("qq/certi/ticket2.png") else "qq/ticket2.png"
+ticket2_color, ticket2_mask = _load_img_and_mask(_t2_path)
 
 def check_pratyjangx_in_chat(img_bgr):
     """헤이없음(haste_x.png) 감지 방식과 100% 동일한 방식으로 채팅창의 pratyjangx.png를 감지합니다."""
@@ -3184,16 +2892,6 @@ def check_pratyjangx_in_chat(img_bgr):
     except Exception:
         pass
     return False
-
-try:
-    img_nopotion_bgra = cv2.imread("qq/nopotion.png", cv2.IMREAD_UNCHANGED)
-    if img_nopotion_bgra is not None and len(img_nopotion_bgra.shape) == 3 and img_nopotion_bgra.shape[2] == 4:
-        img_nopotion = img_nopotion_bgra[:, :, :3]
-        img_nopotion_mask = img_nopotion_bgra[:, :, 3]
-    else:
-        img_nopotion = cv2.imread("qq/nopotion.png", cv2.IMREAD_COLOR)
-        img_nopotion_mask = None
-except: img_nopotion, img_nopotion_mask = None, None
 
 _CHAT_MATCH_DBG_TIMER = {}
 
@@ -3293,68 +2991,6 @@ def check_chat_template_match(img_bgr, fname, th=0.80):
     color_val = max(raw_val, blur_val, fg_val)
     return (color_val >= th) or (is_yungta and red_cnt >= 18)
 
-try:
-    cursor_bgra = cv2.imread("qq/cursor_custom.png", cv2.IMREAD_UNCHANGED)
-    if cursor_bgra is not None: cursor_color, cursor_mask = cursor_bgra[:, :, :3], cursor_bgra[:, :, 3]
-    else: cursor_color, cursor_mask = None, None
-except: cursor_color, cursor_mask = None, None
-
-try:
-    cursor2_bgra = cv2.imread("qq/cursor2.png", cv2.IMREAD_UNCHANGED)
-    if cursor2_bgra is not None and len(cursor2_bgra.shape) == 3 and cursor2_bgra.shape[2] == 4:
-        cursor2_color, cursor2_mask = cursor2_bgra[:, :, :3], cursor2_bgra[:, :, 3]
-    else:
-        cursor2_color, cursor2_mask = None, None
-except: cursor2_color, cursor2_mask = None, None
-
-# 👇👇 [핵심 추가] 포탈 커서 로드
-try:
-    cursor_portal_bgra = cv2.imread("qq/cursor_portal.png", cv2.IMREAD_UNCHANGED)
-    if cursor_portal_bgra is not None and len(cursor_portal_bgra.shape) == 3 and cursor_portal_bgra.shape[2] == 4:
-        cursor_portal_color, cursor_portal_mask = cursor_portal_bgra[:, :, :3], cursor_portal_bgra[:, :, 3]
-    else:
-        cursor_portal_color = cv2.imread("qq/cursor_portal.png", cv2.IMREAD_COLOR)
-        cursor_portal_mask = None
-except: cursor_portal_color, cursor_portal_mask = None, None
-
-# 👇👇 [인증 추가 1] 윈도우 바탕화면/웹 인증용 커서 및 인증창 감지 이미지 로드
-try:
-    cursor3_bgra = cv2.imread("qq/certi/cursor3.png", cv2.IMREAD_UNCHANGED)
-    if cursor3_bgra is not None and len(cursor3_bgra.shape) == 3 and cursor3_bgra.shape[2] == 4:
-        globals()["cursor3_color"], globals()["cursor3_mask"] = cursor3_bgra[:, :, :3], cursor3_bgra[:, :, 3]
-    else:
-        globals()["cursor3_color"] = cv2.imread("qq/certi/cursor3.png", cv2.IMREAD_COLOR)
-        globals()["cursor3_mask"] = None
-except: globals()["cursor3_color"], globals()["cursor3_mask"] = None, None
-
-try:
-    cursor4_bgra = cv2.imread("qq/certi/cursor4.png", cv2.IMREAD_UNCHANGED)
-    if cursor4_bgra is not None and len(cursor4_bgra.shape) == 3 and cursor4_bgra.shape[2] == 4:
-        globals()["cursor4_color"], globals()["cursor4_mask"] = cursor4_bgra[:, :, :3], cursor4_bgra[:, :, 3]
-    else:
-        globals()["cursor4_color"] = cv2.imread("qq/certi/cursor4.png", cv2.IMREAD_COLOR)
-        globals()["cursor4_mask"] = None
-except: globals()["cursor4_color"], globals()["cursor4_mask"] = None, None
-
-try:
-    certi_bgra = cv2.imread("qq/certi/certi.png", cv2.IMREAD_UNCHANGED)
-    if certi_bgra is not None and len(certi_bgra.shape) == 3 and certi_bgra.shape[2] == 4:
-        globals()["certi_color"], globals()["certi_mask"] = certi_bgra[:, :, :3], certi_bgra[:, :, 3]
-    else:
-        globals()["certi_color"] = cv2.imread("qq/certi/certi.png", cv2.IMREAD_COLOR)
-        globals()["certi_mask"] = None
-except: globals()["certi_color"], globals()["certi_mask"] = None, None
-
-try:
-    _t2_path = "qq/certi/ticket2.png" if os.path.exists("qq/certi/ticket2.png") else "qq/ticket2.png"
-    ticket2_bgra = cv2.imread(_t2_path, cv2.IMREAD_UNCHANGED)
-    if ticket2_bgra is not None and len(ticket2_bgra.shape) == 3 and ticket2_bgra.shape[2] == 4:
-        globals()["ticket2_color"], globals()["ticket2_mask"] = ticket2_bgra[:, :, :3], ticket2_bgra[:, :, 3]
-    else:
-        globals()["ticket2_color"] = cv2.imread(_t2_path, cv2.IMREAD_COLOR)
-        globals()["ticket2_mask"] = None
-except: globals()["ticket2_color"], globals()["ticket2_mask"] = None, None
-
 def _load_cached_ui_tmpl(cand_paths):
     for p in cand_paths:
         if os.path.exists(p):
@@ -3449,24 +3085,13 @@ def find_chatup_in_roi(img_bgr, th=0.75):
     except Exception:
         pass
     return None
-# 👆👆 -----------------------------------------------------------------
 
 for v in HOTKEY_IMGS_MAP.values():
     for img_name in v["imgs"]:
         path = f"qq/{img_name}"
         if path not in loaded_models:
-            if os.path.exists(path):
-                try:
-                    bgra = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-                    if bgra is not None and len(bgra.shape) == 3 and bgra.shape[2] == 4:
-                        loaded_models[path] = {"color": bgra[:,:,:3], "mask": bgra[:,:,3]}
-                    else:
-                        color = cv2.imread(path, cv2.IMREAD_COLOR)
-                        loaded_models[path] = {"color": color, "mask": None} if color is not None else None
-                except:
-                    loaded_models[path] = None
-            else:
-                loaded_models[path] = None
+            c_img, m_img = _load_img_and_mask(path) if os.path.exists(path) else (None, None)
+            loaded_models[path] = {"color": c_img, "mask": m_img} if c_img is not None else None
 
 TRASH_TEMPLATES = []
 TRASH_TEMPLATES_BY_TIER = {0: [], 1: [], 2: [], 3: []}
@@ -3479,6 +3104,17 @@ os.makedirs("qq/sell", exist_ok=True)
 os.makedirs("qq/sell2", exist_ok=True)
 for _t_sub in ["00", "11", "22", "33"]:
     os.makedirs(f"qq/trash/{_t_sub}", exist_ok=True)
+
+def _load_cropped_folder_item(path, fname):
+    color, mask = _load_img_and_mask(path)
+    if color is None:
+        return None
+    h, w = color.shape[:2]
+    if h > 15 and w > 15:
+        color = color[4:h-4, 4:w-4]
+        if mask is not None:
+            mask = mask[4:h-4, 4:w-4]
+    return {"name": fname, "color": color, "mask": mask}
 
 def load_all_templates():
     global TRASH_TEMPLATES, TRASH_TEMPLATES_BY_TIER, LEAVE_TEMPLATES, SELL_TEMPLATES, PICK_TEMPLATES, INVEN_BLACK_TEMPLATE
@@ -3493,34 +3129,27 @@ def load_all_templates():
         TRASH_TEMPLATES_BY_TIER[_t_idx].clear()
 
     if os.path.exists("qq/trash"):
-        tier_folders = [(0, "00"), (1, "11"), (2, "22"), (3, "33")]
-        for t_idx, sub_name in tier_folders:
+        def _add_trash_file(full_p, fname, t_idx):
+            img = cv2.imread(full_p, cv2.IMREAD_COLOR)
+            if img is not None:
+                h, w = img.shape[:2]
+                if h > 34 and w > 34:
+                    img = img[4:h-4, 4:w-4]
+                item_dict = {"name": fname.lower(), "color": img, "mask": None, "tier": t_idx}
+                TRASH_TEMPLATES_BY_TIER[t_idx].append(item_dict)
+                TRASH_TEMPLATES.append(item_dict)
+
+        for t_idx, sub_name in [(0, "00"), (1, "11"), (2, "22"), (3, "33")]:
             sub_dir = os.path.join("qq/trash", sub_name)
             if os.path.exists(sub_dir):
                 for filename in sorted(os.listdir(sub_dir)):
                     if filename.lower().endswith((".png", ".jpg")):
-                        path = os.path.join(sub_dir, filename)
-                        img = cv2.imread(path, cv2.IMREAD_COLOR)
-                        if img is not None:
-                            h, w = img.shape[:2]
-                            if h > 34 and w > 34:
-                                img = img[4:h-4, 4:w-4]
-                            item_dict = {"name": filename.lower(), "color": img, "mask": None, "tier": t_idx}
-                            TRASH_TEMPLATES_BY_TIER[t_idx].append(item_dict)
-                            TRASH_TEMPLATES.append(item_dict)
+                        _add_trash_file(os.path.join(sub_dir, filename), filename, t_idx)
 
-        # 혹시 qq/trash 루트에 남아있는 이미지가 있다면 0순위(00)로 자동 편입
         for filename in sorted(os.listdir("qq/trash")):
             full_p = os.path.join("qq/trash", filename)
             if os.path.isfile(full_p) and filename.lower().endswith((".png", ".jpg")):
-                img = cv2.imread(full_p, cv2.IMREAD_COLOR)
-                if img is not None:
-                    h, w = img.shape[:2]
-                    if h > 34 and w > 34:
-                        img = img[4:h-4, 4:w-4]
-                    item_dict = {"name": filename.lower(), "color": img, "mask": None, "tier": 0}
-                    TRASH_TEMPLATES_BY_TIER[0].append(item_dict)
-                    TRASH_TEMPLATES.append(item_dict)
+                _add_trash_file(full_p, filename, 0)
 
         print(
             f"🗑️ [휴지통 우선순위 로드] 총 {len(TRASH_TEMPLATES)}개 장전 완료! "
@@ -3532,61 +3161,24 @@ def load_all_templates():
     if os.path.exists("qq/leave"):
         for f in os.listdir("qq/leave"):
             if f.lower().endswith((".png", ".jpg")):
-                path = os.path.join("qq/leave", f)
-                bgra = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-                if bgra is not None:
-                    if len(bgra.shape) == 3 and bgra.shape[2] == 4:
-                        color, mask = bgra[:, :, :3], bgra[:, :, 3]
-                        h, w = color.shape[:2]
-                        if h > 15 and w > 15: color, mask = color[4:h-4, 4:w-4], mask[4:h-4, 4:w-4]
-                        LEAVE_TEMPLATES.append({"name": f, "color": color, "mask": mask})
-                    else:
-                        color = cv2.imread(path, cv2.IMREAD_COLOR)
-                        if color is not None:
-                            h, w = color.shape[:2]
-                            if h > 15 and w > 15: color = color[4:h-4, 4:w-4]
-                            LEAVE_TEMPLATES.append({"name": f, "color": color, "mask": None})
+                item = _load_cropped_folder_item(os.path.join("qq/leave", f), f)
+                if item: LEAVE_TEMPLATES.append(item)
         print(f"📦 [창고 맡기기] 아이템 {len(LEAVE_TEMPLATES)}개 로드 완료!")
 
     SELL_TEMPLATES.clear()
     if os.path.exists("qq/sell"):
         for f in os.listdir("qq/sell"):
             if f.lower().endswith((".png", ".jpg")):
-                path = os.path.join("qq/sell", f)
-                bgra = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-                if bgra is not None:
-                    if len(bgra.shape) == 3 and bgra.shape[2] == 4:
-                        color, mask = bgra[:, :, :3], bgra[:, :, 3]
-                        h, w = color.shape[:2]
-                        if h > 15 and w > 15: color, mask = color[4:h-4, 4:w-4], mask[4:h-4, 4:w-4]
-                        SELL_TEMPLATES.append({"name": f, "color": color, "mask": mask})
-                    else:
-                        color = cv2.imread(path, cv2.IMREAD_COLOR)
-                        if color is not None:
-                            h, w = color.shape[:2]
-                            if h > 15 and w > 15: color = color[4:h-4, 4:w-4]
-                            SELL_TEMPLATES.append({"name": f, "color": color, "mask": None})
+                item = _load_cropped_folder_item(os.path.join("qq/sell", f), f)
+                if item: SELL_TEMPLATES.append(item)
         print(f"💰 [상점 자동판매] 아이템 {len(SELL_TEMPLATES)}개 로드 완료!")
 
     PICK_TEMPLATES.clear()
     if os.path.exists("qq/pick"):
         for f in os.listdir("qq/pick"):
             if f.lower().endswith((".png", ".jpg")):
-                path = os.path.join("qq/pick", f)
-                bgra = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-                if bgra is not None:
-                    key_name = os.path.splitext(f)[0].lower()
-                    if len(bgra.shape) == 3 and bgra.shape[2] == 4:
-                        color, mask = bgra[:, :, :3], bgra[:, :, 3]
-                        h, w = color.shape[:2]
-                        if h > 15 and w > 15: color, mask = color[4:h-4, 4:w-4], mask[4:h-4, 4:w-4]
-                        PICK_TEMPLATES[key_name] = {"name": f, "color": color, "mask": mask}
-                    else:
-                        color = cv2.imread(path, cv2.IMREAD_COLOR)
-                        if color is not None:
-                            h, w = color.shape[:2]
-                            if h > 15 and w > 15: color = color[4:h-4, 4:w-4]
-                            PICK_TEMPLATES[key_name] = {"name": f, "color": color, "mask": None}
+                item = _load_cropped_folder_item(os.path.join("qq/pick", f), f)
+                if item: PICK_TEMPLATES[os.path.splitext(f)[0].lower()] = item
         print(f"🛍️ [창고 찾기] 아이템 {len(PICK_TEMPLATES)}개 로드 완료!")
 
 load_all_templates()
@@ -3638,6 +3230,59 @@ DEBUG_MODE = global_settings.get("debug_mode", True)
 
 GLOBAL_FRAME_DELAY = global_settings.get("frame_delay", 0.025)
 
+_GUI_DEFAULT_SCHEMA = {
+    "role": "솔플 : 던전",
+    "use_party_hunt": False, "use_party_fixed": False, "is_puller": False, "is_party_inviter": False,
+    "party_group": "선택안함", "invite_group": "선택안함", "char_name": "", "party_dungeon_name": "수던1-1",
+    "party_heal_use": True, "party_heal_pct": "77", "party_heal_mp_pct": "12",
+    "party_abs_return_use": False, "party_abs_return_pct": "15",
+    "party_pot_use": True, "party_pot_pct": "47",
+    "party_poison_type": "해독제", "party_poison_delay": "4",
+    "party_hp_danger_pct": "30", "party_hp_20_action": "텔레포트 (F11)",
+    "party_pk_drop_pct": "40", "party_max_combat_time": "30",
+    "party_use_mptam": True, "party_mptam_start_pct": "30", "party_mptam_stop_pct": "65",
+    "party_mptam_tele_use": True, "party_mptam_tele_pct": "12",
+    "party_help_call_use": True, "party_help_call_pct": "20",
+    "use_config_sync": True, "sync_target_dng": "모든사냥터",
+    "use_m_elf_pk": False, "use_m_wiz_pk": False, "use_f_knight_pk": False, "use_m_knight_pk": False, "use_m_prince_pk": False,
+    "m_elf_conf": "70", "m_wiz_conf": "70", "f_knight_conf": "70", "m_knight_conf": "70", "m_prince_conf": "70",
+    "dungeon_name": "개미굴 6층",
+    "heal_use": True, "heal_pct": "70", "heal_mp_pct": "12",
+    "pot_use": True, "pot_pct": "45",
+    "poison_type": "해독제", "poison_delay": "8",
+    "buff_set": "3셋트 (실드, 웨폰, 아머, 계열)", "combat_buff": False,
+    "use_dec_weight": True, "use_windwalk": False,
+    "use_body": True, "body_pct": "80", "body_stop_pct": "85",
+    "use_mptam": True, "mptam_start_pct": "30", "mptam_stop_pct": "60", "is_wiz_mptam": False,
+    "use_extra_f10": False, "extra_f10_dur": "10분",
+    "use_blue_pot": False, "use_blue_pot_combat": False, "blue_mp_pct": "15", "blue_cd_min": "20",
+    "tele_hunt_use": True, "tele_hunt_time": "8",
+    "hp_20_action": "텔레포트 (F11)", "hp_danger_pct": "45",
+    "abs_return_use": False, "abs_return_pct": "15",
+    "pk_drop_pct": "12", "max_combat_time": "15", "return_cond": "은화살부족",
+    "move_sens": "2000", "hunt_first": False, "chain_kill": False,
+    "haste_match_rate": "92", "zone_tele_nodes": "120", "oak_thresh": "127",
+    "motion_sensitivity": "35", "gb_count_normal": "3", "gb_count_dng": "4",
+    "use_gb_detect": False, "gb_exc_user": True,
+    "buy_item": "은화살", "buy_qty": "5000", "buy_count": "3",
+    "sell_item": "촐기", "sell_qty": "50",
+    "pick_arrow": "4000", "pick_teleport": "20", "pick_ent": "10", "pick_bluepot": "0",
+    "use_cc_buff": True, "buff_mp_pct": "50",
+    "auth_main_id": "", "auth_main_pw": "", "auth_main_email": "", "auth_main_phone": "",
+    "auth_delay_use": False, "auth_auto_captcha": False,
+    "auth_delay_start_min": "55", "auth_delay_end_min": "58", "auth_delay_sec": "180"
+}
+
+_PARTY_TO_MAIN_MIGRATE_MAP = {
+    "party_heal_use": "heal_use", "party_heal_pct": "heal_pct", "party_heal_mp_pct": "heal_mp_pct",
+    "party_abs_return_use": "abs_return_use", "party_abs_return_pct": "abs_return_pct",
+    "party_pot_use": "pot_use", "party_pot_pct": "pot_pct",
+    "party_poison_type": "poison_type", "party_poison_delay": "poison_delay",
+    "party_hp_danger_pct": "hp_danger_pct", "party_hp_20_action": "hp_20_action",
+    "party_pk_drop_pct": "pk_drop_pct", "party_max_combat_time": "max_combat_time",
+    "party_use_mptam": "use_mptam", "party_mptam_start_pct": "mptam_start_pct", "party_mptam_stop_pct": "mptam_stop_pct"
+}
+
 for pc in MINI_PCS:
     k = pc["key"]
     pc_set = saved_settings.get(k, {})
@@ -3645,166 +3290,31 @@ for pc in MINI_PCS:
     if "com_port" in pc_set:
         pc["com_port"] = pc_set["com_port"]
 
-    # 💡 [최초 1회 자동 이관] 기존 파티 탭에 설정해둔 생존/힐/엠탐 수치들을 메인 탭 설정으로 덮어쓰기
     if pc_set and not pc_set.get("party_to_main_migrated", False):
-        migrate_map = {
-            "party_heal_use": "heal_use",
-            "party_heal_pct": "heal_pct",
-            "party_heal_mp_pct": "heal_mp_pct",
-            "party_abs_return_use": "abs_return_use",
-            "party_abs_return_pct": "abs_return_pct",
-            "party_pot_use": "pot_use",
-            "party_pot_pct": "pot_pct",
-            "party_poison_type": "poison_type",
-            "party_poison_delay": "poison_delay",
-            "party_hp_danger_pct": "hp_danger_pct",
-            "party_hp_20_action": "hp_20_action",
-            "party_pk_drop_pct": "pk_drop_pct",
-            "party_max_combat_time": "max_combat_time",
-            "party_use_mptam": "use_mptam",
-            "party_mptam_start_pct": "mptam_start_pct",
-            "party_mptam_stop_pct": "mptam_stop_pct",
-        }
-        for p_key_name, m_key_name in migrate_map.items():
+        for p_key_name, m_key_name in _PARTY_TO_MAIN_MIGRATE_MAP.items():
             if p_key_name in pc_set:
                 pc_set[m_key_name] = pc_set[p_key_name]
         pc_set["party_to_main_migrated"] = True
         print(f"🔄 [{k}] 최초 업데이트 감지: 기존 파티 탭의 생존/힐/엠탐 설정을 메인 탭으로 덮어썼습니다!")
 
-    gui_vars[k] = {
+    default_p_mode = (
+        "이동식 파티 (리더)" if pc_set.get("use_party_hunt", False) and pc_set.get("is_party_inviter", False) else
+        "이동식 파티 (멤버)" if pc_set.get("use_party_hunt", False) and not pc_set.get("is_party_inviter", False) else
+        "고정식 파티 (풀러)" if pc_set.get("use_party_fixed", False) and pc_set.get("is_puller", False) else
+        "고정식 파티 (딜러)" if pc_set.get("use_party_fixed", False) and not pc_set.get("is_puller", False) else
+        "솔플 (사용안함)"
+    )
+
+    v_dict = {
         "com_port": tk.StringVar(value=pc.get("com_port", "")),
-        "role": tk.StringVar(value=pc_set.get("role", "솔플 : 던전")),
-
-        "party_mode": tk.StringVar(value=pc_set.get("party_mode",
-            "이동식 파티 (리더)" if pc_set.get("use_party_hunt", False) and pc_set.get("is_party_inviter", False) else
-            "이동식 파티 (멤버)" if pc_set.get("use_party_hunt", False) and not pc_set.get("is_party_inviter", False) else
-            "고정식 파티 (풀러)" if pc_set.get("use_party_fixed", False) and pc_set.get("is_puller", False) else
-            "고정식 파티 (딜러)" if pc_set.get("use_party_fixed", False) and not pc_set.get("is_puller", False) else
-            "솔플 (사용안함)"
-        )),
-        "use_party_hunt": tk.BooleanVar(value=pc_set.get("use_party_hunt", False)),
-        "use_party_fixed": tk.BooleanVar(value=pc_set.get("use_party_fixed", False)),
-        "is_puller": tk.BooleanVar(value=pc_set.get("is_puller", False)),
-        "is_party_inviter": tk.BooleanVar(value=pc_set.get("is_party_inviter", False)),
-        "party_group": tk.StringVar(value=pc_set.get("party_group", "선택안함")),
-        "invite_group": tk.StringVar(value=pc_set.get("invite_group", "선택안함")),
-        "char_name": tk.StringVar(value=pc_set.get("char_name", "")),
-
-        "party_dungeon_name": tk.StringVar(value=pc_set.get("party_dungeon_name", "수던1-1")),
-
-        "party_heal_use": tk.BooleanVar(value=pc_set.get("party_heal_use", True)),
-        "party_heal_pct": tk.StringVar(value=pc_set.get("party_heal_pct", "77")),
-        "party_heal_mp_pct": tk.StringVar(value=pc_set.get("party_heal_mp_pct", "12")),
-        "party_abs_return_use": tk.BooleanVar(value=pc_set.get("party_abs_return_use", False)),
-        "party_abs_return_pct": tk.StringVar(value=pc_set.get("party_abs_return_pct", "15")),
-        "party_pot_use": tk.BooleanVar(value=pc_set.get("party_pot_use", True)),
-        "party_pot_pct": tk.StringVar(value=pc_set.get("party_pot_pct", "47")),
-        "party_poison_type": tk.StringVar(value=pc_set.get("party_poison_type", "해독제")),
-        "party_poison_delay": tk.StringVar(value=pc_set.get("party_poison_delay", "4")),
-        "party_hp_danger_pct": tk.StringVar(value=pc_set.get("party_hp_danger_pct", "30")),
-        "party_hp_20_action": tk.StringVar(value=pc_set.get("party_hp_20_action", "텔레포트 (F11)")),
-        "party_pk_drop_pct": tk.StringVar(value=pc_set.get("party_pk_drop_pct", "40")),
-        "party_max_combat_time": tk.StringVar(value=pc_set.get("party_max_combat_time", "30")),
-        "party_use_mptam": tk.BooleanVar(value=pc_set.get("party_use_mptam", True)),
-        "party_mptam_start_pct": tk.StringVar(value=pc_set.get("party_mptam_start_pct", "30")),
-        "party_mptam_stop_pct": tk.StringVar(value=pc_set.get("party_mptam_stop_pct", "65")),
-
-        "party_mptam_tele_use": tk.BooleanVar(value=pc_set.get("party_mptam_tele_use", True)),
-        "party_mptam_tele_pct": tk.StringVar(value=pc_set.get("party_mptam_tele_pct", "12")),
-
-        "party_help_call_use": tk.BooleanVar(value=pc_set.get("party_help_call_use", True)),
-        "party_help_call_pct": tk.StringVar(value=pc_set.get("party_help_call_pct", "20")),
-        "use_config_sync": tk.BooleanVar(value=pc_set.get("use_config_sync", True)),
-        "sync_target_dng": tk.StringVar(value=pc_set.get("sync_target_dng", "모든사냥터")),
-        "use_m_elf_pk": tk.BooleanVar(value=pc_set.get("use_m_elf_pk", False)),
-        "use_m_wiz_pk": tk.BooleanVar(value=pc_set.get("use_m_wiz_pk", False)),
-        "use_f_knight_pk": tk.BooleanVar(value=pc_set.get("use_f_knight_pk", False)),
-        "use_m_knight_pk": tk.BooleanVar(value=pc_set.get("use_m_knight_pk", False)),
-        "use_m_prince_pk": tk.BooleanVar(value=pc_set.get("use_m_prince_pk", False)),
-        "m_elf_conf": tk.StringVar(value=str(pc_set.get("m_elf_conf", "70"))),
-        "m_wiz_conf": tk.StringVar(value=str(pc_set.get("m_wiz_conf", "70"))),
-        "f_knight_conf": tk.StringVar(value=str(pc_set.get("f_knight_conf", "70"))),
-        "m_knight_conf": tk.StringVar(value=str(pc_set.get("m_knight_conf", "70"))),
-        "m_prince_conf": tk.StringVar(value=str(pc_set.get("m_prince_conf", "70"))),
-
-        "dungeon_name": tk.StringVar(value=pc_set.get("dungeon_name", "개미굴 6층")),
-        "heal_use": tk.BooleanVar(value=pc_set.get("heal_use", True)),
-        "heal_pct": tk.StringVar(value=pc_set.get("heal_pct", "70")),
-        "heal_mp_pct": tk.StringVar(value=pc_set.get("heal_mp_pct", "12")),
-        "pot_use": tk.BooleanVar(value=pc_set.get("pot_use", True)),
-        "pot_pct": tk.StringVar(value=pc_set.get("pot_pct", "45")),
-        "poison_type": tk.StringVar(value=pc_set.get("poison_type", "해독제")),
-        "poison_delay": tk.StringVar(value=pc_set.get("poison_delay", "8")),
-
-        "buff_set": tk.StringVar(value=pc_set.get("buff_set", "3셋트 (실드, 웨폰, 아머, 계열)")),
-        "combat_buff": tk.BooleanVar(value=pc_set.get("combat_buff", False)),
-        "use_dec_weight": tk.BooleanVar(value=pc_set.get("use_dec_weight", True)),
-        "use_windwalk": tk.BooleanVar(value=pc_set.get("use_windwalk", False)),
-        "use_body": tk.BooleanVar(value=pc_set.get("use_body", True)),
-        "body_pct": tk.StringVar(value=pc_set.get("body_pct", "80")),
-        "body_stop_pct": tk.StringVar(value=pc_set.get("body_stop_pct", "85")),
-
-        "use_mptam": tk.BooleanVar(value=pc_set.get("use_mptam", True)),
-        "mptam_start_pct": tk.StringVar(value=pc_set.get("mptam_start_pct", "30")),
-        "mptam_stop_pct": tk.StringVar(value=pc_set.get("mptam_stop_pct", "60")),
-        "is_wiz_mptam": tk.BooleanVar(value=pc_set.get("is_wiz_mptam", False)), # 💡 위즈 체크박스 추가
-
-        "use_extra_f10": tk.BooleanVar(value=pc_set.get("use_extra_f10", False)),
-        "extra_f10_dur": tk.StringVar(value=pc_set.get("extra_f10_dur", "10분")),
-        "use_blue_pot": tk.BooleanVar(value=pc_set.get("use_blue_pot", False)),
-        "use_blue_pot_combat": tk.BooleanVar(value=pc_set.get("use_blue_pot_combat", False)),
-        "blue_mp_pct": tk.StringVar(value=pc_set.get("blue_mp_pct", "15")),
-        "blue_cd_min": tk.StringVar(value=pc_set.get("blue_cd_min", "20")),
-        "tele_hunt_use": tk.BooleanVar(value=pc_set.get("tele_hunt_use", True)),
-        "tele_hunt_time": tk.StringVar(value=pc_set.get("tele_hunt_time", "8")),
-        "hp_20_action": tk.StringVar(value=pc_set.get("hp_20_action", "텔레포트 (F11)")),
-        "hp_danger_pct": tk.StringVar(value=pc_set.get("hp_danger_pct", "45")),
-        "abs_return_use": tk.BooleanVar(value=pc_set.get("abs_return_use", False)),
-        "abs_return_pct": tk.StringVar(value=pc_set.get("abs_return_pct", "15")),
-        "pk_drop_pct": tk.StringVar(value=pc_set.get("pk_drop_pct", "12")),
-        "max_combat_time": tk.StringVar(value=pc_set.get("max_combat_time", "15")),
-        "return_cond": tk.StringVar(value=pc_set.get("return_cond", "은화살부족")),
-
-        "move_sens": tk.StringVar(value=pc_set.get("move_sens", "2000")),
-        "hunt_first": tk.BooleanVar(value=pc_set.get("hunt_first", False)),
-
-        "chain_kill": tk.BooleanVar(value=pc_set.get("chain_kill", False)),
-        "haste_match_rate": tk.StringVar(value=pc_set.get("haste_match_rate", "92")),
-        "zone_tele_nodes": tk.StringVar(value=pc_set.get("zone_tele_nodes", "120")),
-
-        "oak_thresh": tk.StringVar(value=pc_set.get("oak_thresh", "127")),
-
-        "motion_sensitivity": tk.StringVar(value=pc_set.get("motion_sensitivity", "35")),
-        "gb_count_normal": tk.StringVar(value=pc_set.get("gb_count_normal", "3")),
-        "gb_count_dng": tk.StringVar(value=pc_set.get("gb_count_dng", "4")),
-        "use_gb_detect": tk.BooleanVar(value=pc_set.get("use_gb_detect", False)),
-        "gb_exc_user": tk.BooleanVar(value=pc_set.get("gb_exc_user", True)),
-        "buy_item": tk.StringVar(value=pc_set.get("buy_item", "은화살")),
-        "buy_qty": tk.StringVar(value=pc_set.get("buy_qty", "5000")),
-        "buy_count": tk.StringVar(value=pc_set.get("buy_count", "3")),
-        "sell_item": tk.StringVar(value=pc_set.get("sell_item", "촐기")),
-        "sell_qty": tk.StringVar(value=pc_set.get("sell_qty", "50")),
-
-        "pick_arrow": tk.StringVar(value=pc_set.get("pick_arrow", "4000")),
-        "pick_teleport": tk.StringVar(value=pc_set.get("pick_teleport", "20")),
-        "pick_ent": tk.StringVar(value=pc_set.get("pick_ent", "10")),
-        "pick_bluepot": tk.StringVar(value=pc_set.get("pick_bluepot", "0")), # 💡 파랭이 추가 (초기값 0)
-
-        "use_cc_buff": tk.BooleanVar(value=pc_set.get("use_cc_buff", True)),
-        "buff_mp_pct": tk.StringVar(value=pc_set.get("buff_mp_pct", "50")),
-
-        # 👇 웹 인증 내 계정 및 특정 시간대 딜레이 변수 👇
-        "auth_main_id": tk.StringVar(value=pc_set.get("auth_main_id", "")),
-        "auth_main_pw": tk.StringVar(value=pc_set.get("auth_main_pw", "")),
-        "auth_main_email": tk.StringVar(value=pc_set.get("auth_main_email", "")),
-        "auth_main_phone": tk.StringVar(value=pc_set.get("auth_main_phone", "")),
-
-        "auth_delay_use": tk.BooleanVar(value=pc_set.get("auth_delay_use", False)),
-        "auth_auto_captcha": tk.BooleanVar(value=pc_set.get("auth_auto_captcha", False)),
-        "auth_delay_start_min": tk.StringVar(value=str(pc_set.get("auth_delay_start_min", "55"))),
-        "auth_delay_end_min": tk.StringVar(value=str(pc_set.get("auth_delay_end_min", "58"))),
-        "auth_delay_sec": tk.StringVar(value=str(pc_set.get("auth_delay_sec", "180")))
+        "party_mode": tk.StringVar(value=pc_set.get("party_mode", default_p_mode))
     }
+    for var_k, def_val in _GUI_DEFAULT_SCHEMA.items():
+        if isinstance(def_val, bool):
+            v_dict[var_k] = tk.BooleanVar(value=bool(pc_set.get(var_k, def_val)))
+        else:
+            v_dict[var_k] = tk.StringVar(value=str(pc_set.get(var_k, def_val)))
+    gui_vars[k] = v_dict
 
 current_settings = {}
 
@@ -3814,40 +3324,24 @@ hunt_btn_dict = {}
 saved_buffs = load_buff_times()
 now_t = time.time()
 
+_BUFF_INIT_RANGES = {
+    "windwalk": (10, 60), "shield": (20, 120), "holy": (30, 180), "enchant": (40, 200),
+    "blessed": (50, 220), "dex": (60, 240), "decrease": (70, 260), "extra_f10": (80, 280),
+    "light": (90, 300), "blue_pot": (100, 300), "element": (110, 310)
+}
+
 for pc in MINI_PCS:
     k = pc["key"]
     pico_locks[k] = threading.Lock()
     pico_queues[k] = queue.Queue()
 
     sb = saved_buffs.get(k, {})
-    init_windwalk = sb.get("windwalk", 0); init_shield = sb.get("shield", 0); init_holy = sb.get("holy", 0)
-    init_enchant = sb.get("enchant", 0); init_blessed = sb.get("blessed", 0)
-    init_dex = sb.get("dex", 0); init_decrease = sb.get("decrease", 0)
-    init_extra_f10 = sb.get("extra_f10", 0); init_light = sb.get("light", 0)
-
-    sb = saved_buffs.get(k, {})
-
-    init_windwalk = now_t + sb.get("windwalk", 0); init_shield = now_t + sb.get("shield", 0); init_holy = now_t + sb.get("holy", 0)
-    init_enchant = now_t + sb.get("enchant", 0); init_blessed = now_t + sb.get("blessed", 0)
-    init_dex = now_t + sb.get("dex", 0); init_decrease = now_t + sb.get("decrease", 0)
-    init_extra_f10 = now_t + sb.get("extra_f10", 0); init_light = now_t + sb.get("light", 0)
-    init_blue_pot = now_t + sb.get("blue_pot", 0)
-    init_element = now_t + sb.get("element", 0)
-
-    if sb.get("windwalk", 0) == 0:  init_windwalk  = now_t + g_val(10, 60)
-    if sb.get("shield", 0) == 0: init_shield = now_t + g_val(20, 120)
-    if sb.get("holy", 0) == 0:   init_holy   = now_t + g_val(30, 180)
-    if sb.get("enchant", 0) == 0: init_enchant = now_t + g_val(40, 200)
-    if sb.get("blessed", 0) == 0: init_blessed = now_t + g_val(50, 220)
-    if sb.get("dex", 0) == 0:     init_dex     = now_t + g_val(60, 240)
-    if sb.get("decrease", 0) == 0: init_decrease = now_t + g_val(70, 260)
-    if sb.get("extra_f10", 0) == 0: init_extra_f10 = now_t + g_val(80, 280)
-    if sb.get("light", 0) == 0: init_light = now_t + g_val(90, 300)
-    if sb.get("blue_pot", 0) == 0: init_blue_pot = now_t + g_val(100, 300)
-    if sb.get("element", 0) == 0: init_element = now_t + g_val(110, 310)
+    buff_init_times = {
+        f"buff_{bk}_time": (now_t + sb.get(bk, 0)) if sb.get(bk, 0) != 0 else (now_t + g_val(r_min, r_max))
+        for bk, (r_min, r_max) in _BUFF_INIT_RANGES.items()
+    }
 
     ai_states[k] = {
-
         "bot_start_time": now_t, "accum_hunt_time": 0.0,
         "fatigue_mult": 1.0, "next_fatigue_target": 0.0,
         "last_g_time_call": now_t, "is_panic": False, "cooldown": 0, "cursor_pos": [400, 300],
@@ -3855,11 +3349,7 @@ for pc in MINI_PCS:
         "patrol_start": time.time(), "patrol_duration": g_val(2.0, 3.0),
         "last_chase_dist": 999.0, "stuck_start_time": time.time(), "is_paused": False, "is_hunt_active": False,
         "poison_timer": 0, "antidote_cd": 0, "heal_cd": 0, "potion_cd": 0,
-        "buff_windwalk_time": init_windwalk, "buff_shield_time": init_shield, "buff_holy_time": init_holy,
-        "buff_enchant_time": init_enchant, "buff_blessed_time": init_blessed,
-        "buff_dex_time": init_dex, "buff_decrease_time": init_decrease,
-        "buff_extra_f10_time": init_extra_f10, "buff_light_time": init_light, "buff_blue_pot_time": init_blue_pot,
-        "buff_element_time": init_element,
+        **buff_init_times,
         "last_haste_time": now_t,
         "arrow_image": None, "next_arrow_check": 0, "last_arrow_change_time": 0.0, "arrow_is_firing": False,
         "is_attacking": False, "attack_cmd_time": 0.0, "has_fired_arrow": False, "humanize_cd": 0.0,
@@ -3874,19 +3364,10 @@ for pc in MINI_PCS:
         "dungeon_stuck_timer": time.time(), "dungeon_map_lost_timer": 0.0,
         "abort_macro": False,
         "dungeon_global_path": [], "dungeon_path_time": 0.0, "dungeon_target_pt": None,
-        "dungeon_corner_idx": 0,
-        "dungeon_going_center": False,
-        "last_pause_time": 0.0,
-        "last_mob_pos": None,
-        "last_mob_time": 0.0,
-        "miss_count": 0,
-
-        "pre_target_data": None,
-        "exp_drop_wait_timer": 0.0,
-
-        "is_real_buff_received": True,
-        "real_buff_time": now_t
-
+        "dungeon_corner_idx": 0, "dungeon_going_center": False,
+        "last_pause_time": 0.0, "last_mob_pos": None, "last_mob_time": 0.0, "miss_count": 0,
+        "pre_target_data": None, "exp_drop_wait_timer": 0.0,
+        "is_real_buff_received": True, "real_buff_time": now_t
     }
 
 def init_hardware_picos():
@@ -6418,11 +5899,12 @@ def ai_commander_worker(target_pc):
         if g_nums and j_nums:
             if g_nums == j_nums: return True
             is_bd = "본던" in gui_name or "gludio" in gui_name.lower() or "사던" in gui_name or "silver" in gui_name.lower()
-            if is_bd and len(g_nums) >= 2 and g_nums[1] == j_nums[0]:
+            if is_bd and len(g_nums) >= 2 and len(j_nums) == 1 and g_nums[1] == j_nums[0]:
                 return True
             if g_nums[0] == j_nums[0]:
                 if len(g_nums) == 1 or len(j_nums) == 1: return True
                 if len(g_nums) >= 2 and len(j_nums) >= 2 and g_nums[1] == j_nums[1]: return True
+            return False
                 
         g_base = gui_name.rsplit("-", 1)[0] if "-" in gui_name else gui_name
         j_base = json_name.rsplit("-", 1)[0] if "-" in json_name else json_name
@@ -10328,18 +9810,18 @@ def ai_commander_worker(target_pc):
                     p_fsm = str(partner_data.get("party_state", ""))
                     my_fsm = str(state.get("target_fsm", ""))
 
-                    p_is_buffing_move = partner_data.get("req_party_buff", False) or (partner_data.get("party_buff_status") in ["MOVING", "ARRIVED"])
+                    p_is_buffing_now = partner_data.get("req_party_buff", False) or (partner_data.get("party_buff_status") in ["MOVING", "ARRIVED"])
                     p_is_help_move = str(p_fsm) == "PARTY_RETREAT_NAV" and ("구출" in str(partner_data.get("retreat_reason", "")) or "대피" in str(partner_data.get("retreat_reason", "")))
                     p_is_helping_or_fleeing = partner_data.get("is_help_req", False) or partner_data.get("helping_who") is not None
-                    is_partner_hunting = p_fsm in ["IDLE", "COMBAT", "LOOTING"] or p_is_buffing_move or p_is_help_move or p_is_helping_or_fleeing
+                    is_partner_hunting = (p_fsm in ["IDLE", "COMBAT", "LOOTING"] or p_is_help_move or p_is_helping_or_fleeing) and not p_is_buffing_now
 
-                    m_is_buffing_move = my_fsm == "PARTY_RETREAT_NAV" and "팟바람" in state.get("retreat_reason", "")
+                    m_is_buffing_now = state.get("req_party_buff", False) or (state.get("party_buff_status") in ["MOVING", "ARRIVED"]) or (my_fsm == "PARTY_RETREAT_NAV" and "팟바람" in state.get("retreat_reason", "")) or (my_fsm == "PARTY_ACTIVE_STANDBY" and "팟바람" in state.get("standby_reason", ""))
                     m_is_help_move = my_fsm == "PARTY_RETREAT_NAV" and ("구출" in str(state.get("retreat_reason", "")) or "대피" in str(state.get("retreat_reason", "")))
                     m_is_helping_or_fleeing = state.get("help_requester", False) or state.get("helping_who") is not None
 
-                    is_me_hunting = not state.get("is_mptam_mode", False) and not my_fsm.startswith("TOWN_MAINT") and my_fsm not in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] and not my_fsm.startswith("DEATH")
+                    is_me_hunting = not state.get("is_mptam_mode", False) and not m_is_buffing_now and not my_fsm.startswith("TOWN_MAINT") and my_fsm not in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] and not my_fsm.startswith("DEATH")
 
-                    if my_fsm.startswith("PARTY_") and not (m_is_buffing_move or m_is_help_move or m_is_helping_or_fleeing):
+                    if my_fsm.startswith("PARTY_") and not (m_is_help_move or m_is_helping_or_fleeing):
                         is_me_hunting = False
 
                     is_p_out_of_zone = partner_data.get("is_out_of_zone", False)
@@ -10388,128 +9870,6 @@ def ai_commander_worker(target_pc):
 
                                     state["target_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
 
-                    # === [솔플/파티 공통] Zone 이탈 시 0순위 강제 복귀 로직 ===
-                    is_m_out_of_zone = state.get("is_out_of_zone", False)
-
-                    # 💡 [버그 픽스] 고정 파티(use_party_fixed)도 Zone 이탈 검사에 포함시킵니다! (단, 마을 정비 중에는 절대 개입 금지)
-                    is_party_zone_chk2 = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
-
-                    if not my_fsm.startswith("TOWN_MAINT") and my_fsm != "SHUTDOWN_WAIT" and (is_party_zone_chk2 or is_solo_zone_mode) and is_m_out_of_zone and curr_map_pos and pc_graph and pc_graph.get("nodes"):
-                        curr_target_str = str(state.get("current_target_node", ""))
-                        is_curr_target_valid_zone = False
-
-                        if curr_target_str and curr_target_str in pc_graph["nodes"]:
-                            c_data = pc_graph["nodes"][curr_target_str]
-                            if str(c_data.get("is_buff_spot", False)).lower() == "true":
-                                is_curr_target_valid_zone = True
-                            else:
-                                c_zone = str(c_data.get("zone", "")).strip()
-                                if c_zone:
-                                    for z in [z.strip() for z in c_zone.split(",")]:
-                                        if check_zone_match(active_dungeon, z):
-                                            is_curr_target_valid_zone = True
-                                            break
-                                else:
-                                    c_sp = c_data.get("is_special", False) or c_data.get("special", False)
-                                    if str(c_sp).lower() == "true": is_curr_target_valid_zone = True
-                                    else: is_curr_target_valid_zone = False # 💡 변경 완료
-
-                        if not is_curr_target_valid_zone:
-                            best_zone_node_los = None
-                            best_zone_node_any = None
-                            min_d_los = float('inf')
-                            min_d_any = float('inf')
-
-                            for nid, ndata in pc_graph["nodes"].items():
-                                if isinstance(ndata, dict):
-                                    nx = ndata.get("x", 0) if isinstance(ndata, dict) else ndata[0]
-                                    ny = ndata.get("y", 0) if isinstance(ndata, dict) else ndata[1]
-
-                                    node_zone = str(ndata.get("zone", "")).strip()
-                                    is_buff = ndata.get("is_buff_spot", False)
-                                    if str(is_buff).lower() == "true": is_buff = True
-
-                                    is_my_zone = False
-                                    if is_buff:
-                                        is_my_zone = True
-                                    elif node_zone:
-                                        for z in [z.strip() for z in node_zone.split(",")]:
-                                            if check_zone_match(active_dungeon, z):
-                                                is_my_zone = True
-                                                break
-                                    else:
-                                        is_sp = ndata.get("is_special", False) or ndata.get("special", False)
-                                        if str(is_sp).lower() == "true": is_sp = True
-                                        if is_sp: is_my_zone = True
-                                        else: is_my_zone = False # 💡 변경 완료
-
-                                    if is_my_zone:
-                                        d = (nx - curr_map_pos[0])**2 + (ny - curr_map_pos[1])**2
-
-                                        if d < min_d_any:
-                                            min_d_any = d
-                                            best_zone_node_any = str(nid)
-
-                                        has_los = True
-                                        if pc_map_gray_los is not None:
-                                            has_los = check_line_of_sight(pc_map_gray_los, curr_map_pos, (nx, ny), margin_steps=1)
-
-                                        if has_los and d < min_d_los:
-                                            min_d_los = d
-                                            best_zone_node_los = str(nid)
-
-                            best_zone_node = best_zone_node_los if best_zone_node_los else best_zone_node_any
-
-                            if best_zone_node:
-                                if str(state.get("current_target_node")) != best_zone_node:
-                                    state["current_target_node"] = best_zone_node
-                                    state["dungeon_global_path"] = []
-
-                                    if state.get("target_fsm") not in ["IDLE", "PARTY_WAIT"]:
-                                        state["target_fsm"] = "IDLE"
-
-                                    new_path = calculate_graph_astar_path(pc_graph, curr_map_pos, best_zone_node, pc_map_gray, set(), is_blind=True)
-                                    if new_path:
-                                        state["dungeon_global_path"] = new_path
-                                        state["dungeon_path_time"] = curr_time
-                                        state["astar_fail_count"] = 0
-
-                                    if curr_time - state.get("zone_return_log_time", 0) > 5.0:
-                                        if is_solo_zone_mode:
-                                            dprint(key, f"🚨 [솔플 0순위 존 복귀] 구역 이탈 확정! 가장 가까운 내 구역(ID:{best_zone_node})으로 즉시 A* 복귀합니다!")
-                                        else:
-                                            dprint(key, f"🚨 [파티 0순위 존 복귀] 구역 이탈 확정! 파트너 합류를 무시하고 가장 가까운 Zone(ID:{best_zone_node})으로 즉시 A* 복귀합니다!")
-                                        state["zone_return_log_time"] = curr_time
-
-                                # 👇👇 [스마트 Zone 텔레포트 추가] 👇👇
-                                global_path_for_tele = state.get("dungeon_global_path", [])
-                                try: zone_tele_limit = int(settings.get("zone_tele_nodes", 120))
-                                except: zone_tele_limit = 120
-                                
-                                if zone_tele_limit > 0 and len(global_path_for_tele) >= zone_tele_limit and mp >= 50.0:
-                                    if curr_time > state.get("zone_tele_cd", 0):
-                                        dprint(key, f"🌀 [구역 복귀 텔레포트] 내 구역까지 너무 멉니다 (경로 {len(global_path_for_tele)}칸 >= 기준 {zone_tele_limit}칸, MP {mp:.1f}%). 3초 쿨 일반텔(F11) 시도!")
-                                        clear_movements_only(pico_queues[key])
-                                        if state.get("sweep_active", False):
-                                            pico_queues[key].put({"action": "SWEEP_STOP"})
-                                            state["sweep_active"] = False
-
-                                        pico_queues[key].put({"action": "TELEPORT"})
-                                        
-                                        # 텔레포트 직후 경로 파기
-                                        state["dungeon_global_path"] = []
-                                        state["current_target_node"] = None
-                                        
-                                        state["zone_tele_cd"] = curr_time + 3.0
-                                        state["cooldown"] = curr_time + 1.0
-                                        continue
-                                # 👆👆 [스마트 Zone 텔레포트 끝] 👆👆
-
-                    else:
-                        if not state.get("is_out_of_zone", False):
-                            state["current_target_node"] = None
-
-                    # === [기존 파티 로직 (이탈 복귀 제외 부분)] ===
                     if is_partner_hunting and is_me_hunting:
                         if p_pos and curr_map_pos:
                             dist_to_partner = math.hypot(curr_map_pos[0] - p_pos[0], curr_map_pos[1] - p_pos[1])
@@ -10575,7 +9935,6 @@ def ai_commander_worker(target_pc):
                                                     if curr_time - state.get("last_assist_repath_time", 0) > 1.0:
 
                                                         should_repath = True
-                                                        # 💡 [관성 주행] 이미 진행 중인 A* 경로가 남아있다면 파트너가 움직여도 경로 파기 금지!
                                                         if state.get("dungeon_global_path"):
                                                             should_repath = False
 
@@ -10602,7 +9961,6 @@ def ai_commander_worker(target_pc):
 
                                                 if best_mid_node and curr_time - state.get("last_midpoint_change", 0) > 2.0:
                                                     if str(state.get("current_target_node")) != best_mid_node:
-                                                        # 💡 [관성 주행] 맹추격 시에도 가던 길이 있으면 파기 금지!
                                                         if not state.get("dungeon_global_path"):
                                                             state["current_target_node"] = best_mid_node
                                                             state["dungeon_global_path"] = []
@@ -10639,7 +9997,6 @@ def ai_commander_worker(target_pc):
                                     if curr_time - state.get("last_partner_node_change", 0) > 0.5:
                                         if p_hidden:
                                             if str(state.get("hidden_track_node")) != str(p_hidden):
-                                                # 💡 [관성 주행] 파트너 노드가 바뀌어도 내 경로가 남아있다면 유지
                                                 if not state.get("dungeon_global_path"):
                                                     state["hidden_track_node"] = p_hidden
                                                     state["dungeon_global_path"] = []
@@ -10658,13 +10015,11 @@ def ai_commander_worker(target_pc):
                                                     ny = ndata.get("y", 0) if isinstance(ndata, dict) else ndata[1]
                                                     d = (nx - p_pos[0])**2 + (ny - p_pos[1])**2
                                                     if d < min_d:
-                                                        # 💡 시야 검사 기준을 '내 위치'가 아닌 '파트너 위치'로 변경해야 코너를 돌 수 있음
                                                         if pc_map_gray_los is not None and p_pos:
                                                             if not check_line_of_sight(pc_map_gray_los, p_pos, (nx, ny), margin_steps=1):
                                                                 continue
                                                         min_d = d; closest_n = nid
                                                         
-                                                # 💡 시야가 다 막혀있을 경우 가장 가까운 노드 강제 할당
                                                 if closest_n is None:
                                                     min_d = float('inf')
                                                     for nid, ndata in pc_graph["nodes"].items():
@@ -10696,6 +10051,119 @@ def ai_commander_worker(target_pc):
             else:
                 state["party_is_vanguard"] = True
                 if state.get("target_fsm") == "SQUAD_WAIT": state["target_fsm"] = "IDLE"
+
+            # === [솔플/파티 공통] Zone 이탈 시 0순위 강제 복귀 로직 (독립 실행) ===
+            my_fsm_zone = str(state.get("target_fsm", ""))
+            is_m_out_of_zone = state.get("is_out_of_zone", False)
+            is_party_zone_chk2 = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
+            dng_zone_chk_early = settings.get("dungeon_name", "")
+            is_solo_zone_mode = ("본던 2-" in dng_zone_chk_early or "본던 4-" in dng_zone_chk_early or "본던 5-" in dng_zone_chk_early or "본던 6-" in dng_zone_chk_early or "본던 7-" in dng_zone_chk_early or "사던 4-" in dng_zone_chk_early) and not is_party_zone_chk2
+
+            if state.get("is_hunt_active", False) and not state.get("is_paused", False) and not my_fsm_zone.startswith("TOWN_MAINT") and not my_fsm_zone.startswith("DEATH") and my_fsm_zone not in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY"] and (is_party_zone_chk2 or is_solo_zone_mode) and is_m_out_of_zone and curr_map_pos and pc_graph and pc_graph.get("nodes"):
+                curr_target_str = str(state.get("current_target_node", ""))
+                is_curr_target_valid_zone = False
+
+                if curr_target_str and curr_target_str in pc_graph["nodes"]:
+                    c_data = pc_graph["nodes"][curr_target_str]
+                    if str(c_data.get("is_buff_spot", False)).lower() == "true":
+                        is_curr_target_valid_zone = True
+                    else:
+                        c_zone = str(c_data.get("zone", "")).strip()
+                        if c_zone:
+                            for z in [z.strip() for z in c_zone.split(",")]:
+                                if check_zone_match(active_dungeon, z):
+                                    is_curr_target_valid_zone = True
+                                    break
+                        else:
+                            c_sp = c_data.get("is_special", False) or c_data.get("special", False)
+                            if str(c_sp).lower() == "true": is_curr_target_valid_zone = True
+                            else: is_curr_target_valid_zone = False
+
+                if not is_curr_target_valid_zone:
+                    best_zone_node_los = None
+                    best_zone_node_any = None
+                    min_d_los = float('inf')
+                    min_d_any = float('inf')
+
+                    for nid, ndata in pc_graph["nodes"].items():
+                        if isinstance(ndata, dict):
+                            nx = ndata.get("x", 0) if isinstance(ndata, dict) else ndata[0]
+                            ny = ndata.get("y", 0) if isinstance(ndata, dict) else ndata[1]
+
+                            node_zone = str(ndata.get("zone", "")).strip()
+                            is_buff = ndata.get("is_buff_spot", False)
+                            if str(is_buff).lower() == "true": is_buff = True
+
+                            is_my_zone = False
+                            if is_buff:
+                                is_my_zone = True
+                            elif node_zone:
+                                for z in [z.strip() for z in node_zone.split(",")]:
+                                    if check_zone_match(active_dungeon, z):
+                                        is_my_zone = True
+                                        break
+                            else:
+                                is_sp = ndata.get("is_special", False) or ndata.get("special", False)
+                                if str(is_sp).lower() == "true": is_sp = True
+                                if is_sp: is_my_zone = True
+                                else: is_my_zone = False
+
+                            if is_my_zone:
+                                d = (nx - curr_map_pos[0])**2 + (ny - curr_map_pos[1])**2
+
+                                if d < min_d_any:
+                                    min_d_any = d
+                                    best_zone_node_any = str(nid)
+
+                                has_los = True
+                                if pc_map_gray_los is not None:
+                                    has_los = check_line_of_sight(pc_map_gray_los, curr_map_pos, (nx, ny), margin_steps=1)
+
+                                if has_los and d < min_d_los:
+                                    min_d_los = d
+                                    best_zone_node_los = str(nid)
+
+                    best_zone_node = best_zone_node_los if best_zone_node_los else best_zone_node_any
+
+                    if best_zone_node:
+                        if str(state.get("current_target_node")) != best_zone_node:
+                            state["current_target_node"] = best_zone_node
+                            state["dungeon_global_path"] = []
+
+                            if state.get("target_fsm") not in ["IDLE", "PARTY_WAIT"]:
+                                state["target_fsm"] = "IDLE"
+
+                            new_path = calculate_graph_astar_path(pc_graph, curr_map_pos, best_zone_node, pc_map_gray, set(), is_blind=True)
+                            if new_path:
+                                state["dungeon_global_path"] = new_path
+                                state["dungeon_path_time"] = curr_time
+                                state["astar_fail_count"] = 0
+
+                            if curr_time - state.get("zone_return_log_time", 0) > 5.0:
+                                if is_solo_zone_mode:
+                                    dprint(key, f"🚨 [솔플 0순위 존 복귀] 구역 이탈 확정! 가장 가까운 내 구역(ID:{best_zone_node})으로 즉시 A* 복귀합니다!")
+                                else:
+                                    dprint(key, f"🚨 [파티 0순위 존 복귀] 구역 이탈 확정! 파트너 합류를 무시하고 가장 가까운 Zone(ID:{best_zone_node})으로 즉시 A* 복귀합니다!")
+                                state["zone_return_log_time"] = curr_time
+
+                        global_path_for_tele = state.get("dungeon_global_path", [])
+                        try: zone_tele_limit = int(settings.get("zone_tele_nodes", 120))
+                        except: zone_tele_limit = 120
+                        
+                        if zone_tele_limit > 0 and len(global_path_for_tele) >= zone_tele_limit and mp >= 50.0:
+                            if curr_time > state.get("zone_tele_cd", 0):
+                                dprint(key, f"🌀 [구역 복귀 텔레포트] 내 구역까지 너무 멉니다 (경로 {len(global_path_for_tele)}칸 >= 기준 {zone_tele_limit}칸, MP {mp:.1f}%). 3초 쿨 일반텔(F11) 시도!")
+                                clear_movements_only(pico_queues[key])
+                                if state.get("sweep_active", False):
+                                    pico_queues[key].put({"action": "SWEEP_STOP"})
+                                    state["sweep_active"] = False
+
+                                pico_queues[key].put({"action": "TELEPORT"})
+                                state["dungeon_global_path"] = []
+                                state["current_target_node"] = None
+                                state["zone_tele_cd"] = curr_time + 3.0
+                                state["cooldown"] = curr_time + 1.0
+                                continue
 
             if mp <= 6.0:
                 if state.get("mp_empty_start", 0) == 0:
@@ -13338,59 +12806,39 @@ def ai_commander_worker(target_pc):
                                         if key in ai_states: ai_states[key]["debug_door_pos"] = None
 
                                         if door_found_and_moving:
-                                            ai_states[key]["target_fsm"] = "IDLE"
-                                            ai_states[key]["town_done_logged"] = False
-                                            ai_states[key]["dungeon_map_pos"] = None
-                                            ai_states[key]["dungeon_last_map_pos"] = None
-                                            ai_states[key]["dungeon_global_path"] = []
-                                            ai_states[key]["is_pulling"] = False
-                                            ai_states[key]["is_attacking"] = False
-                                            ai_states[key]["arrow_is_firing"] = False
-                                            ai_states[key]["reentry_retry_cnt"] = 0
-
+                                            ai_states[key].update({
+                                                "target_fsm": "IDLE", "town_done_logged": False,
+                                                "dungeon_map_pos": None, "dungeon_last_map_pos": None, "dungeon_global_path": [],
+                                                "is_pulling": False, "is_attacking": False, "arrow_is_firing": False, "reentry_retry_cnt": 0
+                                            })
                                             send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
                                             ai_states[key]["cooldown"] = time.time() + 1.0
                                         else:
                                             retry_cnt = ai_states.get(key, {}).get("reentry_retry_cnt", 0) + 1
                                             ai_states[key]["reentry_retry_cnt"] = retry_cnt
-
                                             if retry_cnt > 3:
-                                                dprint(key, f"❌ [재진입 3아웃] 3회 연속 사냥터 진입 실패! 비상 귀환(F8) 후 마을 정비로 넘깁니다.")
+                                                dprint(key, "❌ [재진입 3아웃] 3회 연속 사냥터 진입 실패! 비상 귀환(F8) 후 마을 정비로 넘깁니다.")
                                                 send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
-                                                ai_states[key]["reentry_retry_cnt"] = 0
-
-                                                ai_states[key]["target_fsm"] = "SHUTDOWN_WAIT"
-                                                ai_states[key]["shutdown_timer"] = time.time() + 2.0
+                                                ai_states[key].update({"reentry_retry_cnt": 0, "target_fsm": "SHUTDOWN_WAIT", "shutdown_timer": time.time() + 2.0})
                                             else:
                                                 dprint(key, f"⏳ [진입 타임아웃] 2분간 입구 도달 실패. 창고(F1>F9)로 대피하여 30초 대기 후 재도전합니다. ({retry_cnt}/3)")
-                                                send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
-                                                time.sleep(g_val(0.2, 0.3))
-                                                send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
-                                                time.sleep(g_val(0.6, 0.8))
-
-                                                wh_pos = None
-                                                start_w_t = time.time()
+                                                for k_c, w_a, w_b in [(194, 0.2, 0.3), (202, 0.6, 0.8)]:
+                                                    send_keyboard_key(p_serial, p_lock, k_c, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, k_c, 0, is_manual=True)
+                                                    time.sleep(g_val(w_a, w_b))
+                                                wh_pos, start_w_t = None, time.time()
                                                 while time.time() - start_w_t < 3.0:
                                                     wh_pos = find_img_universal("qq/menu_heine_wh.png", th=0.80, ui_only=True)
                                                     if wh_pos: break
                                                     time.sleep(0.05)
-
                                                 if wh_pos:
                                                     dprint(key, "✅ [창고지기] 메뉴 발견! Y축 보정 후 정밀 클릭합니다.")
                                                     time.sleep(g_val(0.15, 0.25))
-                                                    safe_x = wh_pos[0] + random.randint(-2, 2)
-                                                    safe_y = (wh_pos[1] + 2) + random.randint(-2, 2) # Y좌표 2픽셀 내림
-                                                    m_click_ack(safe_x, safe_y, jx=0, jy=0, double=False, pre_delay=g_val(0.25, 0.4))
-                                                    time.sleep(g_val(3.3, 3.7))
-                                                    ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
-                                                    ai_states[key]["reentry_wait_start"] = time.time()
+                                                    m_click_ack(wh_pos[0] + random.randint(-2, 2), (wh_pos[1] + 2) + random.randint(-2, 2), jx=0, jy=0, double=False, pre_delay=g_val(0.25, 0.4))
                                                 else:
                                                     dprint(key, "⚠️ 창고 두루마리 클릭 실패! 귀환(F8) 사용.")
                                                     send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
-                                                    time.sleep(g_val(3.3, 3.7))
-                                                    ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
-                                                    ai_states[key]["reentry_wait_start"] = time.time()
-
+                                                time.sleep(g_val(3.3, 3.7))
+                                                ai_states[key].update({"target_fsm": "TOWN_MAINT_REENTRY_WAIT", "reentry_wait_start": time.time()})
                                                 send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
 
                                 elif "기란" in dungeon_name or "기던" in dungeon_name:
@@ -13697,63 +13145,41 @@ def ai_commander_worker(target_pc):
                                         if key in ai_states: ai_states[key]["debug_door_pos"] = None
 
                                         if door_found_and_moving:
-                                            ai_states[key]["target_fsm"] = "IDLE"
-                                            ai_states[key]["town_done_logged"] = False
-                                            ai_states[key]["dungeon_map_pos"] = None
-                                            ai_states[key]["dungeon_last_map_pos"] = None
-                                            ai_states[key]["dungeon_global_path"] = []
-                                            ai_states[key]["is_pulling"] = False
-                                            ai_states[key]["is_attacking"] = False
-                                            ai_states[key]["arrow_is_firing"] = False
-                                            ai_states[key]["reentry_retry_cnt"] = 0
-
+                                            ai_states[key].update({
+                                                "target_fsm": "IDLE", "town_done_logged": False,
+                                                "dungeon_map_pos": None, "dungeon_last_map_pos": None, "dungeon_global_path": [],
+                                                "is_pulling": False, "is_attacking": False, "arrow_is_firing": False, "reentry_retry_cnt": 0
+                                            })
                                             send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
                                             ai_states[key]["cooldown"] = time.time() + 1.0
-
                                             if "2층" in dungeon_name:
                                                 dprint(key, "🚧 [추후 구현] 기란던전 1층 -> 2층으로 가는 A* 길찾기 로직이 여기에 추가되어야 합니다.")
-                                                pass
                                         else:
                                             retry_cnt = ai_states.get(key, {}).get("reentry_retry_cnt", 0) + 1
                                             ai_states[key]["reentry_retry_cnt"] = retry_cnt
-
                                             if retry_cnt > 3:
-                                                dprint(key, f"❌ [재진입 3아웃] 3회 연속 사냥터 진입 실패! 비상 귀환(F8) 후 마을 정비로 넘깁니다.")
+                                                dprint(key, "❌ [재진입 3아웃] 3회 연속 사냥터 진입 실패! 비상 귀환(F8) 후 마을 정비로 넘깁니다.")
                                                 send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
-                                                ai_states[key]["reentry_retry_cnt"] = 0
-
-                                                ai_states[key]["target_fsm"] = "SHUTDOWN_WAIT"
-                                                ai_states[key]["shutdown_timer"] = time.time() + 2.0
+                                                ai_states[key].update({"reentry_retry_cnt": 0, "target_fsm": "SHUTDOWN_WAIT", "shutdown_timer": time.time() + 2.0})
                                             else:
                                                 dprint(key, f"⏳ [진입 타임아웃] 2분간 입구 도달 실패. 창고(F1>F9)로 대피하여 30초 대기 후 재도전합니다. ({retry_cnt}/3)")
-                                                send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
-                                                time.sleep(g_val(0.2, 0.3))
-                                                send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
-                                                time.sleep(g_val(0.6, 0.8))
-
-                                                wh_pos = None
-                                                start_w_t = time.time()
+                                                for k_c, w_a, w_b in [(194, 0.2, 0.3), (202, 0.6, 0.8)]:
+                                                    send_keyboard_key(p_serial, p_lock, k_c, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, k_c, 0, is_manual=True)
+                                                    time.sleep(g_val(w_a, w_b))
+                                                wh_pos, start_w_t = None, time.time()
                                                 while time.time() - start_w_t < 3.0:
                                                     wh_pos = find_img_universal("qq/menu_heine_wh.png", th=0.80, ui_only=True)
                                                     if wh_pos: break
                                                     time.sleep(0.05)
-
                                                 if wh_pos:
                                                     dprint(key, "✅ [창고지기] 메뉴 발견! Y축 보정 후 정밀 클릭합니다.")
                                                     time.sleep(g_val(0.15, 0.25))
-                                                    safe_x = wh_pos[0] + random.randint(-2, 2)
-                                                    safe_y = (wh_pos[1] + 2) + random.randint(-2, 2) # Y좌표 2픽셀 내림
-                                                    m_click_ack(safe_x, safe_y, jx=0, jy=0, double=False, pre_delay=g_val(0.25, 0.4))
-                                                    time.sleep(g_val(3.3, 3.7))
-                                                    ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
-                                                    ai_states[key]["reentry_wait_start"] = time.time()
+                                                    m_click_ack(wh_pos[0] + random.randint(-2, 2), (wh_pos[1] + 2) + random.randint(-2, 2), jx=0, jy=0, double=False, pre_delay=g_val(0.25, 0.4))
                                                 else:
                                                     dprint(key, "⚠️ 창고 두루마리 클릭 실패! 귀환(F8) 사용.")
                                                     send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
-                                                    time.sleep(g_val(3.3, 3.7))
-                                                    ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
-                                                    ai_states[key]["reentry_wait_start"] = time.time()
-
+                                                time.sleep(g_val(3.3, 3.7))
+                                                ai_states[key].update({"target_fsm": "TOWN_MAINT_REENTRY_WAIT", "reentry_wait_start": time.time()})
                                                 send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
 
                                     else:
@@ -13817,8 +13243,6 @@ def ai_commander_worker(target_pc):
                                         # 💡 6층 갈 땐 5층에 내려야 하므로 gludio55(5층)만 정확히 클릭!
                                         book_img_list = ["qq/gludio55.png"]
                                         in_img_path = "qq/gludio5_in.png"
-                                        # 💡 [핵심] 5층에 도착하기 전에 미리 5to6 맵을 쓰도록 강제 설정! (미니맵 오인식 방어)
-                                        ai_states[key]["override_dungeon_name"] = "본던 5to6"
                                     elif "7-" in dungeon_name or "7층" in dungeon_name:
                                         book_img_list = ["qq/gludio77.png"]
                                         in_img_path = "qq/gludio7_in.png"
@@ -13904,6 +13328,10 @@ def ai_commander_worker(target_pc):
                                         wait_with_heal(g_val(0.2, 0.3))
 
                                     if found:
+                                        if "6-" in dungeon_name or "6층" in dungeon_name:
+                                            ai_states[key]["override_dungeon_name"] = "본던 5to6"
+                                            ai_states[key]["dungeon_map_pos"] = None
+
                                         wait_with_heal(g_val(1.5, 2.5))
 
                                         dprint(key, "🛡️ [생존 셋팅] 텔레포트 완료. 즉시 F1 탭으로 복귀합니다.")
@@ -13921,6 +13349,8 @@ def ai_commander_worker(target_pc):
                                             if ai_states.get(key, {}).get("dungeon_map_pos") is not None:
                                                 dprint(key, f"🚪 [진입 성공] {dungeon_name} 맵(좌표) 인식 완료! 사냥을 개시합니다!")
                                                 door_found_and_moving = True
+                                                if "6-" in dungeon_name or "6층" in dungeon_name:
+                                                    ai_states[key]["trigger_6f_teleport"] = True
                                                 break
 
                                             if os.path.exists(in_img_path):
@@ -13959,11 +13389,8 @@ def ai_commander_worker(target_pc):
                                                                 if max_val >= 0.85:
                                                                     dprint(key, f"🚪 [진입 성공] 본던 진입 텍스트({in_img_path}) 발견! 사냥을 개시합니다!")
                                                                     door_found_and_moving = True
-                                                                    
-                                                                    # 💡 [핵심 추가] 6층 목표인 경우 5층 도착 즉시 플래그 저장
                                                                     if "6-" in dungeon_name or "6층" in dungeon_name:
                                                                         ai_states[key]["trigger_6f_teleport"] = True
-                                                                        
                                                                     break
                                                         except: pass
 
@@ -13983,7 +13410,7 @@ def ai_commander_worker(target_pc):
                                                 
                                                 # 💡 긴급 검증(EMERGENCY_TELEPORT_VERIFY)을 거치지 않고, 텔포 화면 전환(1.5초) 대기 후 사냥(IDLE) 모드로 즉각 복귀!
                                                 ai_states[key]["target_fsm"] = "IDLE"
-                                                ai_states[key]["cooldown"] = curr_time + 1.5
+                                                ai_states[key]["cooldown"] = time.time() + 1.5
                                                 
                                                 ai_states[key]["town_done_logged"] = False
                                                 ai_states[key]["dungeon_map_pos"] = None
@@ -14004,14 +13431,9 @@ def ai_commander_worker(target_pc):
                                             ai_states[key]["target_fsm"] = "TOWN_MAINT_SUDUN_RUSH_LOCKED"
                                             wait_with_heal(0.2)
 
-                                            escape_angles = [92.0, 359.0, 150.0, 30.0]
-                                            escape_names = ["6시", "3시", "7시", "5시"]
-                                            char_center_x, char_center_y = 400, 245
-
-                                            for idx, angle_deg in enumerate(escape_angles):
+                                            for idx, (angle_deg, dir_lbl) in enumerate([(92.0, "6시"), (359.0, "3시"), (150.0, "7시"), (30.0, "5시")]):
                                                 scr_now = latest_frames.get(key)
                                                 h_s = scr_now.shape[0] if scr_now is not None else 600
-
                                                 cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
                                                 if scr_now is not None:
                                                     real_c = find_cursor_pos(scr_now, last_pos=(cur_x, cur_y), allow_full_scan=True)
@@ -14019,37 +13441,24 @@ def ai_commander_worker(target_pc):
                                                         cur_x, cur_y = real_c[0], real_c[1]
                                                         ai_states[key]["cursor_pos"] = [cur_x, cur_y]
 
-                                                rad = math.radians(angle_deg)
-                                                dist = random.randint(100, 150)
-
-                                                tx = int(char_center_x + math.cos(rad) * dist)
-                                                ty = int(char_center_y + math.sin(rad) * (dist * 0.85))
-
-                                                tx = int(max(10, min(740, tx)))
-                                                ty = int(max(5, min(int(h_s * 0.68), ty)))
-
+                                                rad, dist = math.radians(angle_deg), random.randint(100, 150)
+                                                tx = int(max(10, min(740, 400 + math.cos(rad) * dist)))
+                                                ty = int(max(5, min(int(h_s * 0.68), 245 + math.sin(rad) * (dist * 0.85))))
                                                 if tx < 165 and ty < 150:
-                                                    if (165 - tx) < (150 - ty): tx = 165
-                                                    else: ty = 150
+                                                    tx, ty = (165, ty) if (165 - tx) < (150 - ty) else (tx, 150)
 
                                                 dx, dy = tx - cur_x, ty - cur_y
                                                 dur = apply_human_variance(0.12 + 0.04 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if math.hypot(dx, dy) > 0 else 0.1)
                                                 deltas = generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)
-
                                                 with pico_queues[key].mutex: pico_queues[key].queue.clear()
-
                                                 if deltas:
                                                     pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas})
                                                     wait_with_heal(dur + 0.05)
                                                     if key in ai_states: ai_states[key]["cursor_pos"] = [tx, ty]
 
-                                                dprint(key, f"▶ [{escape_names[idx]} 돌격] {dist}px 투척 완료. 1.5초간 4~5회 스팸 시작!")
-
-                                                before_img = None
+                                                dprint(key, f"▶ [{dir_lbl} 돌격] {dist}px 투척 완료. 1.5초간 4~5회 스팸 시작!")
                                                 scr_before = latest_frames.get(key)
-                                                if scr_before is not None:
-                                                    before_img = cv2.cvtColor(scr_before[200:400, 20:140], cv2.COLOR_BGR2GRAY)
-
+                                                before_img = cv2.cvtColor(scr_before[200:400, 20:140], cv2.COLOR_BGR2GRAY) if scr_before is not None else None
                                                 click_cnt = random.randint(4, 5)
                                                 interval = 1.5 / click_cnt
                                                 moved_successfully = False
@@ -14059,129 +13468,84 @@ def ai_commander_worker(target_pc):
                                                     if fsm_now in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] or fsm_now.startswith("TOWN_MAINT_NORMAL_RETURN"):
                                                         dprint(key, "🚨 [돌격 취소] 비상 상황 감지! 본던 진입 돌격을 즉시 중단합니다.")
                                                         return
-
                                                     try:
                                                         ps, pl = picos.get(key), pico_locks.get(key)
                                                         if ps and pl:
-                                                            send_mouse_click(ps, pl, 1, 1, is_manual=True)
-                                                            wait_with_heal(g_val(0.04, 0.08))
-                                                            send_mouse_click(ps, pl, 1, 0, is_manual=True)
+                                                            send_mouse_click(ps, pl, 1, 1, is_manual=True); wait_with_heal(g_val(0.04, 0.08)); send_mouse_click(ps, pl, 1, 0, is_manual=True)
                                                     except: pass
-
-                                                    sleep_time = interval - 0.06
-                                                    if sleep_time > 0: wait_with_heal(sleep_time)
-
+                                                    if interval - 0.06 > 0: wait_with_heal(interval - 0.06)
                                                     if c_i >= 1 and before_img is not None and not moved_successfully:
                                                         scr_after = latest_frames.get(key)
                                                         if scr_after is not None:
-                                                            after_img = cv2.cvtColor(scr_after[200:400, 20:140], cv2.COLOR_BGR2GRAY)
-                                                            diff = cv2.absdiff(before_img, after_img)
-                                                            _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
-                                                            if cv2.countNonZero(thresh) > 500:
+                                                            diff = cv2.absdiff(before_img, cv2.cvtColor(scr_after[200:400, 20:140], cv2.COLOR_BGR2GRAY))
+                                                            if cv2.countNonZero(cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)[1]) > 500:
                                                                 moved_successfully = True
 
                                                 if moved_successfully:
-                                                    dprint(key, f"✅ [{escape_names[idx]}] 돌파 성공! 입구 길막을 뚫었습니다.")
+                                                    dprint(key, f"✅ [{dir_lbl}] 돌파 성공! 입구 길막을 뚫었습니다.")
                                                     break
-                                                else:
-                                                    if idx < 3:
-                                                        dprint(key, f"🚧 [{escape_names[idx]} 길막힘] 제자리걸음 감지! 다음 우회로({escape_names[idx+1]})로 꺾습니다!")
-                                                    else:
-                                                        dprint(key, "🚨 [모든 탈출로 막힘] 4방향을 모두 찔렀으나 갇혔습니다! 강제로 사냥(IDLE)을 개시하여 AI에 맡깁니다.")
+                                                dprint(key, f"🚧 [{dir_lbl} 길막힘] 다음 우회로로 꺾습니다!" if idx < 3 else "🚨 [모든 탈출로 막힘] 강제로 사냥(IDLE)을 개시하여 AI에 맡깁니다.")
 
-                                            ai_states[key]["town_done_logged"] = False
-                                            ai_states[key]["dungeon_map_pos"] = None
-                                            ai_states[key]["dungeon_last_map_pos"] = None
-                                            ai_states[key]["dungeon_global_path"] = []
-                                            ai_states[key]["is_pulling"] = False
-                                            ai_states[key]["is_attacking"] = False
-                                            ai_states[key]["arrow_is_firing"] = False
-                                            ai_states[key]["reentry_retry_cnt"] = 0
-
+                                            ai_states[key].update({
+                                                "town_done_logged": False, "dungeon_map_pos": None, "dungeon_last_map_pos": None,
+                                                "dungeon_global_path": [], "is_pulling": False, "is_attacking": False, "arrow_is_firing": False, "reentry_retry_cnt": 0
+                                            })
                                             try:
-                                                send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True)
-                                                wait_with_heal(g_val(0.04, 0.08))
-                                                send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+                                                send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); wait_with_heal(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
                                             except: pass
-
-                                            ai_states[key]["cooldown"] = time.time() + 1.0
-                                            ai_states[key]["target_fsm"] = "IDLE"
+                                            ai_states[key].update({"cooldown": time.time() + 1.0, "target_fsm": "IDLE"})
                                         else:
                                             retry_cnt = ai_states.get(key, {}).get("reentry_retry_cnt", 0) + 1
                                             ai_states[key]["reentry_retry_cnt"] = retry_cnt
-
                                             if retry_cnt > 3:
-                                                dprint(key, f"❌ [재진입 3아웃] 3회 연속 사냥터 진입 실패! 비상 귀환(F8) 후 마을 정비로 넘깁니다.")
+                                                dprint(key, "❌ [재진입 3아웃] 3회 연속 사냥터 진입 실패! 비상 귀환(F8) 후 마을 정비로 넘깁니다.")
                                                 send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
-                                                ai_states[key]["reentry_retry_cnt"] = 0
-
-                                                ai_states[key]["target_fsm"] = "SHUTDOWN_WAIT"
-                                                ai_states[key]["shutdown_timer"] = time.time() + 2.0
+                                                ai_states[key].update({"reentry_retry_cnt": 0, "target_fsm": "SHUTDOWN_WAIT", "shutdown_timer": time.time() + 2.0})
                                             else:
                                                 dprint(key, f"⏳ [진입 타임아웃] 진입 확인 실패. 창고(F1>F9)로 대피하여 30초 대기 후 재도전합니다. ({retry_cnt}/3)")
-                                                send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
-                                                time.sleep(g_val(0.2, 0.3))
-                                                send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
-                                                time.sleep(g_val(0.6, 0.8))
-
-                                                wh_pos = None
-                                                start_w_t = time.time()
+                                                for k_c, w_a, w_b in [(194, 0.2, 0.3), (202, 0.6, 0.8)]:
+                                                    send_keyboard_key(p_serial, p_lock, k_c, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, k_c, 0, is_manual=True)
+                                                    time.sleep(g_val(w_a, w_b))
+                                                wh_pos, start_w_t = None, time.time()
                                                 while time.time() - start_w_t < 3.0:
                                                     wh_pos = find_img_universal("qq/menu_heine_wh.png", th=0.80, ui_only=True)
                                                     if wh_pos: break
                                                     time.sleep(0.05)
-
                                                 if wh_pos:
                                                     dprint(key, "✅ [창고지기] 메뉴 발견! Y축 보정 후 정밀 클릭합니다.")
                                                     time.sleep(g_val(0.15, 0.25))
-                                                    safe_x = wh_pos[0] + random.randint(-2, 2)
-                                                    safe_y = (wh_pos[1] + 2) + random.randint(-2, 2) # Y좌표 2픽셀 내림
-                                                    m_click_ack(safe_x, safe_y, jx=0, jy=0, double=False, pre_delay=g_val(0.25, 0.4))
-                                                    time.sleep(g_val(3.3, 3.7))
-                                                    ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
-                                                    ai_states[key]["reentry_wait_start"] = time.time()
+                                                    m_click_ack(wh_pos[0] + random.randint(-2, 2), (wh_pos[1] + 2) + random.randint(-2, 2), jx=0, jy=0, double=False, pre_delay=g_val(0.25, 0.4))
                                                 else:
                                                     dprint(key, "⚠️ 창고 두루마리 클릭 실패! 귀환(F8) 사용.")
                                                     send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
-                                                    time.sleep(g_val(3.3, 3.7))
-                                                    ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
-                                                    ai_states[key]["reentry_wait_start"] = time.time()
-
+                                                time.sleep(g_val(3.3, 3.7))
+                                                ai_states[key].update({"target_fsm": "TOWN_MAINT_REENTRY_WAIT", "reentry_wait_start": time.time()})
                                                 send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
 
                                     else:
                                         dprint(key, f"❌ 던전책에서 '{dungeon_name}'({book_img_list})을 찾지 못했습니다.")
                                         send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
                                         send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
-                                        import time as builtin_time
-                                        # 💡 [진짜 원인 픽스 4] 못 찾았다고 사냥(IDLE) 켜지 말고 3회 재시도 대기 상태로 넘김
                                         retry_cnt = ai_states.get(key, {}).get("reentry_retry_cnt", 0) + 1
                                         ai_states[key]["reentry_retry_cnt"] = retry_cnt
                                         if retry_cnt > 3:
-                                            ai_states[key]["reentry_retry_cnt"] = 0
-                                            ai_states[key]["target_fsm"] = "SHUTDOWN_WAIT"
-                                            ai_states[key]["shutdown_timer"] = builtin_time.time() + 2.0
+                                            ai_states[key].update({"reentry_retry_cnt": 0, "target_fsm": "SHUTDOWN_WAIT", "shutdown_timer": builtin_time.time() + 2.0})
                                         else:
-                                            ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
-                                            ai_states[key]["reentry_wait_start"] = builtin_time.time()
+                                            ai_states[key].update({"target_fsm": "TOWN_MAINT_REENTRY_WAIT", "reentry_wait_start": builtin_time.time()})
 
                                 elif "수던" in dungeon_name or "heine" in dungeon_name.lower():
                                     ensure_minimap_open(check_time=1.5, pre_teleport=True)
-
                                     dprint(key, f"▶ [사냥터 복귀] F3 -> F8 (던전책) 눌러 '{dungeon_name}' 기억 장소를 엽니다.")
-                                    send_keyboard_key(p_serial, p_lock, 196, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 196, 0, is_manual=True)
-                                    wait_with_heal(g_val(0.2, 0.3))
-                                    send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
-                                    wait_with_heal(g_val(0.8, 1.2))
+                                    for k_c, w_a, w_b in [(196, 0.2, 0.3), (201, 0.8, 1.2)]:
+                                        send_keyboard_key(p_serial, p_lock, k_c, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, k_c, 0, is_manual=True)
+                                        wait_with_heal(g_val(w_a, w_b))
 
                                     cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
-                                    park_x, park_y = 150, 250
-                                    dx, dy = park_x - cur_x, park_y - cur_y
+                                    dx, dy = 150 - cur_x, 250 - cur_y
                                     dur = apply_human_variance(0.15 + 0.05 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if math.hypot(dx, dy) > 0 else 0.1)
-
                                     pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)})
                                     state["pico_arrived"] = False
-                                    state["cursor_pos"] = [park_x, park_y]
+                                    state["cursor_pos"] = [150, 250]
                                     wait_with_heal(dur + g_val(0.3, 0.5))
 
                                     dprint(key, "🔽 [강제 스크롤] 수던 항목을 찾기 위해 무조건 12회 휠을 먼저 내립니다.")
@@ -14190,30 +13554,15 @@ def ai_commander_worker(target_pc):
                                         wait_with_heal(g_val(0.08, 0.12))
                                     wait_with_heal(g_val(0.3, 0.5))
 
-                                    stuck_scrolls = 0
-                                    last_scroll_img = None
-                                    found = False
-
-                                    for scroll_idx in range(18):
-                                        pos = None
-                                        for img_name in ["qq/sudun3.png", "qq/sudun33.png"]:
-
-                                            pos = find_img_universal(img_name, th=0.92, ui_only=True)
-                                            if pos: break
-
+                                    stuck_scrolls, last_scroll_img, found = 0, None, False
+                                    for _ in range(18):
+                                        pos = find_img_universal("qq/sudun3.png", th=0.92, ui_only=True) or find_img_universal("qq/sudun33.png", th=0.92, ui_only=True)
                                         if pos:
-                                            dprint(key, f"✅ 던전책(수던3층) 텍스트 발견! 원클릭하여 텔레포트합니다.")
-
-                                            safe_x = pos[0] + random.randint(-2, 2)
-                                            safe_y = pos[1] + random.randint(-2, 2)
-                                            m_click_ack(safe_x, safe_y, jx=0, jy=0, double=False, pre_delay=g_val(0.37, 0.72))
+                                            dprint(key, "✅ 던전책(수던3층) 텍스트 발견! 원클릭하여 텔레포트합니다.")
+                                            m_click_ack(pos[0] + random.randint(-2, 2), pos[1] + random.randint(-2, 2), jx=0, jy=0, double=False, pre_delay=g_val(0.37, 0.72))
                                             found = True
                                             break
-
-                                        screen = None
-                                        with mss.mss() as sct:
-                                            if CAPTURE_ROIS.get(key): screen = cv2.cvtColor(np.array(sct.grab(CAPTURE_ROIS[key])), cv2.COLOR_BGRA2BGR)
-
+                                        screen = latest_frames.get(key)
                                         if screen is not None:
                                             h_scr, w_scr = screen.shape[:2]
                                             ui_roi = screen[0:min(400, h_scr), 0:min(290, w_scr)]
@@ -14222,52 +13571,34 @@ def ai_commander_worker(target_pc):
                                                 curr_scroll_img = cv2.cvtColor(ui_roi[150:uh-50, uw//2:uw], cv2.COLOR_BGR2GRAY)
                                                 if last_scroll_img is not None and last_scroll_img.shape == curr_scroll_img.shape:
                                                     diff = cv2.absdiff(last_scroll_img, curr_scroll_img)
-                                                    _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
-                                                    if cv2.countNonZero(thresh) < 100: stuck_scrolls += 1
-                                                    else: stuck_scrolls = 0
+                                                    stuck_scrolls = (stuck_scrolls + 1) if cv2.countNonZero(cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)[1]) < 100 else 0
                                                 last_scroll_img = curr_scroll_img
-
                                             if stuck_scrolls >= random.randint(6, 7):
-                                                dprint(key, f"🛑 [스크롤 끝] 바닥에 도달. 수던3층 기억을 찾지 못했습니다.")
+                                                dprint(key, "🛑 [스크롤 끝] 바닥에 도달. 수던3층 기억을 찾지 못했습니다.")
                                                 break
-
                                         send_mouse_scroll(p_serial, p_lock, -1 * int(round(g_val(3, 6))))
                                         wait_with_heal(g_val(0.20, 0.30) if random.random() < 0.15 else g_val(0.12, 0.18))
 
                                     if found:
                                         wait_with_heal(g_val(1.5, 2.5))
-
                                         dprint(key, "🛡️ [생존 셋팅] 텔레포트 완료. 즉시 F1 탭으로 복귀합니다.")
                                         send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
                                         wait_with_heal(g_val(0.2, 0.4))
 
-                                        door_found_and_moving = False
-                                        global_start_t = time.time()
-
+                                        door_found_and_moving, global_start_t = False, time.time()
                                         dprint(key, "▶ [수던 진입 대기] sudun_in.png 텍스트 또는 맵 좌표 매칭을 대기합니다. (최대 2분)")
-
                                         while time.time() - global_start_t < 120.0:
                                             wait_with_heal(0.1)
-
                                             if ai_states.get(key, {}).get("dungeon_map_pos") is not None:
                                                 dprint(key, "🚪 [진입 성공] 수던3층 맵(좌표) 인식 완료! 사냥을 개시합니다!")
                                                 door_found_and_moving = True
                                                 break
-
                                             img_path = "qq/sudun_in.png"
                                             if os.path.exists(img_path):
                                                 scr = latest_frames.get(key)
                                                 if scr is not None:
-                                                    try: ANT_IN_X1_v = globals().get("ANT_IN_X1", 1)
-                                                    except: ANT_IN_X1_v = 1
-                                                    try: ANT_IN_X2_v = globals().get("ANT_IN_X2", 130)
-                                                    except: ANT_IN_X2_v = 130
-
-                                                    c_y1 = max(0, min(h, 430))
-                                                    c_y2 = max(0, min(h, 480))
-                                                    c_x1 = max(0, min(w, ANT_IN_X1_v))
-                                                    c_x2 = max(0, min(w, ANT_IN_X2_v))
-
+                                                    c_y1, c_y2 = max(0, min(h, 430)), max(0, min(h, 480))
+                                                    c_x1, c_x2 = max(0, min(w, globals().get("ANT_IN_X1", 1))), max(0, min(w, globals().get("ANT_IN_X2", 130)))
                                                     if c_x2 > c_x1 and c_y2 > c_y1:
                                                         ui_check_roi = scr[c_y1:c_y2, c_x1:c_x2]
                                                         try:
@@ -14277,41 +13608,25 @@ def ai_commander_worker(target_pc):
                                                                     loaded_models["sudun_in_img"] = {"color": cv2.cvtColor(bgra[:, :, :3], cv2.COLOR_BGR2GRAY), "mask": bgra[:, :, 3]}
                                                                 else:
                                                                     loaded_models["sudun_in_img"] = {"color": cv2.imread(img_path, cv2.IMREAD_GRAYSCALE), "mask": None}
-
                                                             sudun_in_tmpl = loaded_models.get("sudun_in_img")
                                                             if sudun_in_tmpl and sudun_in_tmpl["color"] is not None:
                                                                 roi_gray = cv2.cvtColor(ui_check_roi, cv2.COLOR_BGR2GRAY)
-                                                                if sudun_in_tmpl["mask"] is not None:
-                                                                    res = cv2.matchTemplate(roi_gray, sudun_in_tmpl["color"], cv2.TM_CCORR_NORMED, mask=sudun_in_tmpl["mask"])
-                                                                else:
-                                                                    res = cv2.matchTemplate(roi_gray, sudun_in_tmpl["color"], cv2.TM_CCOEFF_NORMED)
-                                                                _, max_val, _, _ = cv2.minMaxLoc(res)
-
-                                                                if max_val >= 0.85:
+                                                                res = cv2.matchTemplate(roi_gray, sudun_in_tmpl["color"], cv2.TM_CCORR_NORMED, mask=sudun_in_tmpl["mask"]) if sudun_in_tmpl["mask"] is not None else cv2.matchTemplate(roi_gray, sudun_in_tmpl["color"], cv2.TM_CCOEFF_NORMED)
+                                                                if cv2.minMaxLoc(res)[1] >= 0.85:
                                                                     dprint(key, "🚪 [진입 성공] 수던 진입 텍스트(sudun_in.png) 발견! 사냥을 개시합니다!")
                                                                     door_found_and_moving = True
                                                                     break
                                                         except: pass
 
                                         if key in ai_states: ai_states[key]["debug_door_pos"] = None
-
                                         if door_found_and_moving:
-
                                             dprint(key, "🏃‍♂️ [수던 진입] 0.2초 대기 후 캐릭터 발밑(6시) 돌격! 막히면 3시->7시->5시 순으로 뚫어냅니다!")
-
                                             ai_states[key]["target_fsm"] = "TOWN_MAINT_SUDUN_RUSH_LOCKED"
-
                                             wait_with_heal(0.2)
 
-                                            escape_angles = [92.0, 359.0, 150.0, 30.0]
-                                            escape_names = ["6시", "3시", "7시", "5시"]
-
-                                            char_center_x, char_center_y = 400, 245
-
-                                            for idx, angle_deg in enumerate(escape_angles):
+                                            for idx, (angle_deg, dir_lbl) in enumerate([(92.0, "6시"), (359.0, "3시"), (150.0, "7시"), (30.0, "5시")]):
                                                 scr_now = latest_frames.get(key)
                                                 h_s = scr_now.shape[0] if scr_now is not None else 600
-
                                                 cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
                                                 if scr_now is not None:
                                                     real_c = find_cursor_pos(scr_now, last_pos=(cur_x, cur_y), allow_full_scan=True)
@@ -14319,33 +13634,21 @@ def ai_commander_worker(target_pc):
                                                         cur_x, cur_y = real_c[0], real_c[1]
                                                         ai_states[key]["cursor_pos"] = [cur_x, cur_y]
 
-                                                rad = math.radians(angle_deg)
-                                                dist = random.randint(100, 150)
-
-                                                tx = int(char_center_x + math.cos(rad) * dist)
-                                                ty = int(char_center_y + math.sin(rad) * (dist * 0.85))
-
-                                                tx = int(max(10, min(740, tx)))
-                                                ty = int(max(5, min(int(h_s * 0.68), ty)))
-
+                                                rad, dist = math.radians(angle_deg), random.randint(100, 150)
+                                                tx = int(max(10, min(740, 400 + math.cos(rad) * dist)))
+                                                ty = int(max(5, min(int(h_s * 0.68), 245 + math.sin(rad) * (dist * 0.85))))
                                                 dx, dy = tx - cur_x, ty - cur_y
                                                 dur = apply_human_variance(0.12 + 0.04 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if math.hypot(dx, dy) > 0 else 0.1)
                                                 deltas = generate_human_deltas(dx, dy, duration=dur, behavior="NORMAL", key=key)
-
                                                 with pico_queues[key].mutex: pico_queues[key].queue.clear()
-
                                                 if deltas:
                                                     pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas})
                                                     wait_with_heal(dur + 0.05)
                                                     if key in ai_states: ai_states[key]["cursor_pos"] = [tx, ty]
 
-                                                dprint(key, f"▶ [{escape_names[idx]} 돌격] {dist}px 투척 완료. 1.5초간 4~5회 스팸 시작!")
-
-                                                before_img = None
+                                                dprint(key, f"▶ [{dir_lbl} 돌격] {dist}px 투척 완료. 1.5초간 4~5회 스팸 시작!")
                                                 scr_before = latest_frames.get(key)
-                                                if scr_before is not None:
-                                                    before_img = cv2.cvtColor(scr_before[200:400, 20:140], cv2.COLOR_BGR2GRAY)
-
+                                                before_img = cv2.cvtColor(scr_before[200:400, 20:140], cv2.COLOR_BGR2GRAY) if scr_before is not None else None
                                                 click_cnt = random.randint(4, 5)
                                                 interval = 1.5 / click_cnt
                                                 moved_successfully = False
@@ -14355,115 +13658,69 @@ def ai_commander_worker(target_pc):
                                                     if fsm_now in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] or fsm_now.startswith("TOWN_MAINT_NORMAL_RETURN"):
                                                         dprint(key, "🚨 [돌격 취소] 비상 상황 감지! 수던 진입 돌격을 즉시 중단합니다.")
                                                         return
-
                                                     try:
                                                         ps, pl = picos.get(key), pico_locks.get(key)
                                                         if ps and pl:
-                                                            send_mouse_click(ps, pl, 1, 1, is_manual=True)
-                                                            wait_with_heal(g_val(0.04, 0.08))
-                                                            send_mouse_click(ps, pl, 1, 0, is_manual=True)
+                                                            send_mouse_click(ps, pl, 1, 1, is_manual=True); wait_with_heal(g_val(0.04, 0.08)); send_mouse_click(ps, pl, 1, 0, is_manual=True)
                                                     except: pass
-
-                                                    sleep_time = interval - 0.06
-                                                    if sleep_time > 0: wait_with_heal(sleep_time)
-
+                                                    if interval - 0.06 > 0: wait_with_heal(interval - 0.06)
                                                     if c_i >= 1 and before_img is not None and not moved_successfully:
                                                         scr_after = latest_frames.get(key)
                                                         if scr_after is not None:
-                                                            after_img = cv2.cvtColor(scr_after[200:400, 20:140], cv2.COLOR_BGR2GRAY)
-                                                            diff = cv2.absdiff(before_img, after_img)
-                                                            _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
-
-                                                            if cv2.countNonZero(thresh) > 500:
+                                                            diff = cv2.absdiff(before_img, cv2.cvtColor(scr_after[200:400, 20:140], cv2.COLOR_BGR2GRAY))
+                                                            if cv2.countNonZero(cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)[1]) > 500:
                                                                 moved_successfully = True
 
                                                 if moved_successfully:
-                                                    dprint(key, f"✅ [{escape_names[idx]}] 돌파 성공! 입구 길막을 뚫었습니다.")
+                                                    dprint(key, f"✅ [{dir_lbl}] 돌파 성공! 입구 길막을 뚫었습니다.")
                                                     break
-                                                else:
-                                                    if idx < 3:
-                                                        dprint(key, f"🚧 [{escape_names[idx]} 길막힘] 제자리걸음 감지! 다음 우회로({escape_names[idx+1]})로 꺾습니다!")
-                                                    else:
-                                                        dprint(key, "🚨 [모든 탈출로 막힘] 4방향을 모두 찔렀으나 갇혔습니다! 강제로 사냥(IDLE)을 개시하여 AI에 맡깁니다.")
+                                                dprint(key, f"🚧 [{dir_lbl} 길막힘] 다음 우회로로 꺾습니다!" if idx < 3 else "🚨 [모든 탈출로 막힘] 강제로 사냥(IDLE)을 개시하여 AI에 맡깁니다.")
 
-                                            ai_states[key]["town_done_logged"] = False
-                                            ai_states[key]["dungeon_map_pos"] = None
-                                            ai_states[key]["dungeon_last_map_pos"] = None
-                                            ai_states[key]["dungeon_global_path"] = []
-                                            ai_states[key]["is_pulling"] = False
-                                            ai_states[key]["is_attacking"] = False
-                                            ai_states[key]["arrow_is_firing"] = False
-                                            ai_states[key]["reentry_retry_cnt"] = 0
-
+                                            ai_states[key].update({
+                                                "town_done_logged": False, "dungeon_map_pos": None, "dungeon_last_map_pos": None,
+                                                "dungeon_global_path": [], "is_pulling": False, "is_attacking": False, "arrow_is_firing": False, "reentry_retry_cnt": 0
+                                            })
                                             try:
-                                                send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True)
-                                                wait_with_heal(g_val(0.04, 0.08))
-                                                send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
+                                                send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); wait_with_heal(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
                                             except: pass
-
-                                            ai_states[key]["cooldown"] = time.time() + 1.0
-
-                                            ai_states[key]["target_fsm"] = "IDLE"
-
+                                            ai_states[key].update({"cooldown": time.time() + 1.0, "target_fsm": "IDLE"})
                                         else:
                                             retry_cnt = ai_states.get(key, {}).get("reentry_retry_cnt", 0) + 1
                                             ai_states[key]["reentry_retry_cnt"] = retry_cnt
-
                                             if retry_cnt > 3:
-                                                dprint(key, f"❌ [재진입 3아웃] 3회 연속 사냥터 진입 실패! 비상 귀환(F8) 후 마을 정비로 넘깁니다.")
+                                                dprint(key, "❌ [재진입 3아웃] 3회 연속 사냥터 진입 실패! 비상 귀환(F8) 후 마을 정비로 넘깁니다.")
                                                 send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
-                                                ai_states[key]["reentry_retry_cnt"] = 0
-
-                                                ai_states[key]["target_fsm"] = "SHUTDOWN_WAIT"
-                                                ai_states[key]["shutdown_timer"] = time.time() + 2.0
+                                                ai_states[key].update({"reentry_retry_cnt": 0, "target_fsm": "SHUTDOWN_WAIT", "shutdown_timer": time.time() + 2.0})
                                             else:
                                                 dprint(key, f"⏳ [진입 타임아웃] 진입 확인 실패. 창고(F1>F9)로 대피하여 30초 대기 후 재도전합니다. ({retry_cnt}/3)")
-                                                send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
-                                                time.sleep(g_val(0.2, 0.3))
-                                                send_keyboard_key(p_serial, p_lock, 202, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 202, 0, is_manual=True)
-                                                time.sleep(g_val(0.6, 0.8))
-
-                                                wh_pos = None
-                                                start_w_t = time.time()
+                                                for k_c, w_a, w_b in [(194, 0.2, 0.3), (202, 0.6, 0.8)]:
+                                                    send_keyboard_key(p_serial, p_lock, k_c, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, k_c, 0, is_manual=True)
+                                                    time.sleep(g_val(w_a, w_b))
+                                                wh_pos, start_w_t = None, time.time()
                                                 while time.time() - start_w_t < 3.0:
                                                     wh_pos = find_img_universal("qq/menu_heine_wh.png", th=0.80, ui_only=True)
                                                     if wh_pos: break
                                                     time.sleep(0.05)
-
                                                 if wh_pos:
                                                     dprint(key, "✅ [창고지기] 메뉴 발견! Y축 보정 후 정밀 클릭합니다.")
                                                     time.sleep(g_val(0.15, 0.25))
-                                                    safe_x = wh_pos[0] + random.randint(-2, 2)
-                                                    safe_y = (wh_pos[1] + 2) + random.randint(-2, 2) # Y좌표 2픽셀 내림
-                                                    m_click_ack(safe_x, safe_y, jx=0, jy=0, double=False, pre_delay=g_val(0.25, 0.4))
-                                                    time.sleep(g_val(3.3, 3.7))
-                                                    ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
-                                                    ai_states[key]["reentry_wait_start"] = time.time()
+                                                    m_click_ack(wh_pos[0] + random.randint(-2, 2), (wh_pos[1] + 2) + random.randint(-2, 2), jx=0, jy=0, double=False, pre_delay=g_val(0.25, 0.4))
                                                 else:
                                                     dprint(key, "⚠️ 창고 두루마리 클릭 실패! 귀환(F8) 사용.")
                                                     send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
-                                                    time.sleep(g_val(3.3, 3.7))
-                                                    ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
-                                                    ai_states[key]["reentry_wait_start"] = time.time()
-
+                                                time.sleep(g_val(3.3, 3.7))
+                                                ai_states[key].update({"target_fsm": "TOWN_MAINT_REENTRY_WAIT", "reentry_wait_start": time.time()})
                                                 send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
-
                                     else:
-                                        dprint(key, f"❌ 북마크/던전책 목적지를 찾지 못했습니다. 복구를 위해 재시도 큐로 넘깁니다.")
+                                        dprint(key, "❌ 북마크/던전책 목적지를 찾지 못했습니다. 복구를 위해 재시도 큐로 넘깁니다.")
                                         send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
                                         send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
-                                        
-                                        import time as builtin_time
-                                        # 💡 [진짜 원인 픽스 3] 못 찾았다고 사냥(IDLE) 켜지 말고 3회 재시도 대기 상태로 넘김
                                         retry_cnt = ai_states.get(key, {}).get("reentry_retry_cnt", 0) + 1
                                         ai_states[key]["reentry_retry_cnt"] = retry_cnt
                                         if retry_cnt > 3:
-                                            ai_states[key]["reentry_retry_cnt"] = 0
-                                            ai_states[key]["target_fsm"] = "SHUTDOWN_WAIT"
-                                            ai_states[key]["shutdown_timer"] = builtin_time.time() + 2.0
+                                            ai_states[key].update({"reentry_retry_cnt": 0, "target_fsm": "SHUTDOWN_WAIT", "shutdown_timer": builtin_time.time() + 2.0})
                                         else:
-                                            ai_states[key]["target_fsm"] = "TOWN_MAINT_REENTRY_WAIT"
-                                            ai_states[key]["reentry_wait_start"] = builtin_time.time()
+                                            ai_states[key].update({"target_fsm": "TOWN_MAINT_REENTRY_WAIT", "reentry_wait_start": builtin_time.time()})
 
                                 elif "오땅" in dungeon_name:
                                     ensure_minimap_open(check_time=1.5, pre_teleport=True)
@@ -15390,8 +14647,7 @@ def ai_commander_worker(target_pc):
                                         if curr_time > state.get("buff_blessed_time", 0): buffs_to_cast.append({"key": KEY_F8, "page": 2, "double": False, "name": "blessed", "dur": BUFF_DUR_BLESSED})
 
                                     if "3셋트" in b_set or "4셋트" in b_set:
-                                        is_party_mode_m = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
-                                        is_leader_lock_m = is_party_mode_m and settings.get("is_party_inviter", False)
+                                        is_leader_lock_m = bool(settings.get("is_party_inviter", False))
                                         if not is_leader_lock_m:
                                             if curr_time > state.get("buff_element_time", 0): buffs_to_cast.append({"key": KEY_F6, "page": 2, "double": False, "name": "element", "dur": 1200.0})
 
@@ -18674,7 +17930,8 @@ def ai_commander_worker(target_pc):
                                     dist_to_base = math.hypot(state["dungeon_map_pos"][0] - bx, state["dungeon_map_pos"][1] - by)
 
                             fsm_for_yolo = str(state.get("target_fsm", ""))
-                            is_buff_retreat = fsm_for_yolo == "PARTY_RETREAT_NAV" and "팟바람" in state.get("retreat_reason", "")
+                            is_pb_moving_yolo = (fsm_for_yolo == "PARTY_RETREAT_NAV" and "팟바람" in str(state.get("retreat_reason", ""))) or (state.get("party_buff_status") == "MOVING" and ("팟바람" in str(state.get("retreat_reason", "")) or "팟바람" in str(state.get("standby_reason", ""))))
+                            is_pb_arrived_yolo = (fsm_for_yolo == "PARTY_ACTIVE_STANDBY" and "팟바람" in str(state.get("standby_reason", ""))) or (state.get("party_buff_status") == "ARRIVED" and state.get("is_active_standby", False) and "팟바람" in str(state.get("standby_reason", "")))
 
                             # 💡 [핵심 추가] 본던/사던 솔플 존 사냥 모드에서도 구역 이탈 시 시야를 파티모드처럼 제한합니다.
                             dng_chk_yolo = settings.get("dungeon_name", "")
@@ -18682,13 +17939,15 @@ def ai_commander_worker(target_pc):
                             if not is_any_party and ("본던 2-" in dng_chk_yolo or "본던 4-" in dng_chk_yolo or "본던 5-" in dng_chk_yolo or "본던 6-" in dng_chk_yolo or "본던 7-" in dng_chk_yolo or "사던 4-" in dng_chk_yolo):
                                 is_bondon_zone_solo = True
 
-                            if is_party_hunt_active:
-                                if state.get("help_requester", False) or state.get("helping_who") is not None or is_buff_retreat:
+                            if is_pb_moving_yolo or is_pb_arrived_yolo:
+                                is_yolo_free = False
+                            elif is_party_hunt_active:
+                                if state.get("help_requester", False) or state.get("helping_who") is not None:
                                     is_yolo_free = True
                                 else:
                                     is_yolo_free = (dist_to_base <= 15.0) if is_party_wait else True
                             elif is_fixed_party:
-                                is_yolo_free = is_fixed_arrived or (is_fixed_dealer and dist_to_base <= 15.0) or is_buff_retreat or state.get("helping_who") is not None or state.get("help_requester", False)
+                                is_yolo_free = is_fixed_arrived or (is_fixed_dealer and dist_to_base <= 15.0) or state.get("helping_who") is not None or state.get("help_requester", False)
                             elif is_bondon_zone_solo:
                                 is_yolo_free = not state.get("is_out_of_zone", False)
                             else:
@@ -18701,15 +17960,19 @@ def ai_commander_worker(target_pc):
                             if state.get("is_chasing_leader", False):
                                 is_yolo_free = False
 
-                            if state.get("is_mptam_mode", False) or state.get("mptam_extend_95", False) or state.get("mptam_standby_guard", False) or fsm_for_yolo == "PARTY_ACTIVE_STANDBY":
+                            if is_pb_moving_yolo:
+                                yolo_radius = 0
+                            elif is_pb_arrived_yolo:
+                                yolo_radius = 120
+                            elif state.get("is_mptam_mode", False) or state.get("mptam_extend_95", False) or state.get("mptam_standby_guard", False) or fsm_for_yolo == "PARTY_ACTIVE_STANDBY":
                                 if is_fixed_party:
                                     yolo_radius = 0 if state.get("mptam_blind_active", False) else 150
                                 elif is_party_hunt_active:
                                     partner_mp_yolo = 100.0
+                                    my_team_yolo = settings.get("party_group", "선택안함")
                                     with party_lock:
                                         for p_k, p_d in local_party_states.items():
-
-                                            if p_d.get("party_group") == my_team_group and p_d.get("dungeon_name") == active_dungeon and p_k != key:
+                                            if p_d.get("party_group") == my_team_yolo and p_d.get("dungeon_name") == active_dungeon and p_k != key:
                                                 if curr_time - p_d.get("recv_time", 0) < 3.0:
                                                     partner_mp_yolo = p_d.get("mp", 100.0)
                                                 break
@@ -18721,7 +17984,7 @@ def ai_commander_worker(target_pc):
                                 else:
                                     yolo_radius = 200
 
-                            elif is_buff_retreat or state.get("help_requester", False) or state.get("helping_who") is not None or state.get("moving_to_mptam_partner", False):
+                            elif state.get("help_requester", False) or state.get("helping_who") is not None or state.get("moving_to_mptam_partner", False):
                                 yolo_radius = 9999
                             elif state.get("is_chasing_leader", False):
                                 yolo_radius = 120
@@ -20171,9 +19434,7 @@ def ai_commander_worker(target_pc):
                     if curr_time > state.get("buff_blessed_time", 0): expired_buffs.append({"name": "blessed", "page": 2, "key": KEY_F8, "double": False, "dur": BUFF_DUR_BLESSED})
 
                 if "3셋트" in b_set or "4셋트" in b_set:
-
-                    is_party_mode_f = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
-                    is_leader_lock_f = is_party_mode_f and settings.get("is_party_inviter", False)
+                    is_leader_lock_f = bool(settings.get("is_party_inviter", False))
                     if not is_leader_lock_f:
                         if curr_time > state.get("buff_element_time", 0): expired_buffs.append({"name": "element", "page": 2, "key": KEY_F6, "double": False, "dur": 1200.0})
 
@@ -20221,8 +19482,7 @@ def ai_commander_worker(target_pc):
                             pre_cands.append({"name": "blessed", "page": 2, "key": KEY_F8, "double": False, "dur": DUR_BLESSED, "rem": rem})
 
                     if "3셋트" in b_set or "4셋트" in b_set:
-                        is_party_mode_f = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
-                        is_leader_lock_f = is_party_mode_f and settings.get("is_party_inviter", False)
+                        is_leader_lock_f = bool(settings.get("is_party_inviter", False))
                         if not is_leader_lock_f:
                             rem = max(0, state.get("buff_element_time", 0) - curr_time)
                             if 0 < rem < 1200.0 * 0.33:
@@ -20599,6 +19859,12 @@ def ai_commander_worker(target_pc):
                                 b['ignore_reason'] = "HUNT_FIRST(>1cell)"
                                 ignored_boxes.append(b)
                                 continue
+
+                        is_pb_arrived_loot = (state.get("party_buff_status") == "ARRIVED") or (state.get("is_active_standby", False) and "팟바람" in str(state.get("standby_reason", "")))
+                        if is_pb_arrived_loot and dist_to_b >= 57.0:
+                            b['ignore_reason'] = "PB_1CELL_ONLY(>57px)"
+                            ignored_boxes.append(b)
+                            continue
 
                         is_party_wait_loot = settings.get("use_party_hunt", False) and (state.get("target_fsm") in ["PARTY_WAIT", "PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY"] or state.get("is_mptam_mode", False))
                         is_parked_loot_mode = is_fixed_dealer_loot or is_party_wait_loot
@@ -22111,26 +21377,52 @@ def ai_commander_worker(target_pc):
                     if curr_time >= state.get("cooldown", 0):
                         standby_reason = state.get("standby_reason", "")
                         is_reason_resolved = False
+                        my_inv_grp_sb = str(settings.get("invite_group", "선택안함"))
+                        my_c_num_sb = str(get_my_central_num())
+                        my_uid_sb = f"{int(my_c_num_sb) if my_c_num_sb.isdigit() else 1}-{key}"
+                        my_team_group_sb = settings.get("party_group", "선택안함")
 
-                        if standby_reason == "리더 팟바람 선진입" or standby_reason == "팟바람 시전 집합":
+                        if standby_reason in ["리더 팟바람 선진입", "팟바람 시전 집합"]:
                             if not state.get("req_party_buff", False):
                                 is_reason_resolved = True
                             else:
                                 expected_count, ready_count = 0, 0
+                                any_member_excluded = False
+                                my_pos_sb = state.get("dungeon_map_pos")
+
                                 with party_lock:
-                                    for p_key, p_data in local_party_states.items():
-                                        if p_data.get("party_group") == my_team_group and p_key != key:
+                                    for p_uid, p_data in global_invite_states.items():
+                                        if str(p_data.get("invite_group", "선택안함")) == my_inv_grp_sb and p_uid != my_uid_sb:
                                             if curr_time - p_data.get("recv_time", 0) < 5.0:
+                                                p_in_game = p_data.get("in_game", False)
+                                                p_in_party = p_data.get("in_party", False)
+                                                p_in_hg = p_data.get("in_hunting_ground", True)
+                                                p_state = str(p_data.get("party_state", "IDLE"))
                                                 p_status = p_data.get("party_buff_status", "IDLE")
-                                                if p_status != "EXCLUDED":
+                                                p_out_z = p_data.get("is_out_of_zone", False)
+
+                                                # 불참(EXCLUDED), 미파티, 마을/인증, 혹은 출발 전 Zone 이탈자는 불참 인원으로 분류
+                                                if (not p_in_game) or (not p_in_party) or (not p_in_hg) or (p_state in ["TOWN", "MAINT", "SURVIVAL"]) or (p_status == "EXCLUDED") or (p_out_z and p_status not in ["MOVING", "ARRIVED"]):
+                                                    any_member_excluded = True
+                                                else:
                                                     expected_count += 1
-                                                    if p_status == "ARRIVED": ready_count += 1
+                                                    if p_status == "ARRIVED":
+                                                        p_los_ok = True
+                                                        p_mpos = p_data.get("map_pos")
+                                                        if pc_map_gray_los is not None and my_pos_sb and p_mpos:
+                                                            p_los_ok = check_line_of_sight(pc_map_gray_los, my_pos_sb, p_mpos, margin_steps=1)
+                                                        if p_los_ok:
+                                                            ready_count += 1
 
-                                is_timeout = curr_time - state.get("pb_wait_start", curr_time) > 60.0
+                                is_timeout = (curr_time - state.get("pb_wait_start", curr_time) > 30.0)
                                 if ready_count >= expected_count or is_timeout:
-                                    if is_timeout: dprint(key, "⏰ [팟바람 타임아웃] 1분 경과! 미도착 인원을 배제하고 버프를 쏩니다!")
-                                    else: dprint(key, "👥 [팟바람 인원체크 완료] 대기 인원 전원 도착! 정식 버프(MP검증) 시스템 가동!")
+                                    if is_timeout and ready_count < expected_count:
+                                        any_member_excluded = True
+                                        dprint(key, f"⏰ [팟바람 30초 타임아웃] 30초 경과! 미도착 인원을 불참 처리하고 현재 모인 인원({ready_count + 1}명)으로 시전합니다!")
+                                    else:
+                                        dprint(key, f"👥 [팟바람 집결 완료] 참여 가능 인원 전원({ready_count + 1}명) 7px+시야 안착! 팟바람을 시전합니다!")
 
+                                    state["pb_cast_had_missing_members"] = bool(any_member_excluded)
                                     state["buff_start_mp"] = mp
                                     state["current_buff"] = {"name": "element", "page": 2, "key": 199, "double": False, "dur": 1200.0}
                                     state["buff_retry_cnt"] = 0
@@ -22148,39 +21440,60 @@ def ai_commander_worker(target_pc):
                             if state.get("helping_who") is None and not state.get("help_requester", False):
                                 is_reason_resolved = True
                         else:
-
                             is_reason_resolved = True
 
                         is_buff_resolved = True
-                        is_waiting_for_buff = state.get("party_buff_status") == "ARRIVED" or standby_reason == "팟바람 수령 집합"
+                        is_waiting_for_buff = (not settings.get("is_party_inviter", False)) and (state.get("party_buff_status") == "ARRIVED" or standby_reason == "팟바람 수령 집합")
 
                         if is_waiting_for_buff:
                             is_buff_resolved = False
                             leader_alive, leader_done = False, False
                             with party_lock:
-                                for p_key, p_data in local_party_states.items():
-                                    if p_data.get("is_party_inviter", False) and p_data.get("party_group") == my_team_group:
-                                        if p_data.get("party_buff_done", False): leader_done = True
-                                        if p_data.get("req_party_buff", False) and str(p_data.get("party_state", "")) not in ["TOWN", "MAINT", "SURVIVAL"]:
-                                            leader_alive = True
-                                        break
+                                for p_uid, p_data in global_invite_states.items():
+                                    if str(p_data.get("invite_group", "선택안함")) == my_inv_grp_sb and p_uid != my_uid_sb and curr_time - p_data.get("recv_time", 0) < 5.0:
+                                        if p_data.get("is_party_inviter", False):
+                                            if p_data.get("party_buff_done", False):
+                                                leader_done = True
+                                            if p_data.get("req_party_buff", False) and p_data.get("in_game", False) and str(p_data.get("party_state", "")) not in ["TOWN", "MAINT", "SURVIVAL"]:
+                                                leader_alive = True
+                                            break
 
-                            if not leader_alive or curr_time - state.get("party_buff_req_time", curr_time) > 90.0:
-                                dprint(key, "🚨 [1순위 해제] 리더 호출 증발(사망/마을/텔) 또는 90초 대기 초과! 버프 대기를 강제 종료합니다.")
+                            # 💡 [버그 수정] leader_done을 최우선으로 체크하여 완료 순간 증발 오판 원천 차단!
+                            if leader_done:
+                                dprint(key, "🎉 [팟바람 수령 확인] 시전자 버프 완료 신호 수신! 각자 사냥터로 즉시 복귀합니다!")
                                 state["party_buff_status"] = "IDLE"
-                                is_buff_resolved = True
-                            elif leader_done:
-                                dprint(key, "🎉 [1순위 해제] 리더 버프 완료 신호 수신! 버프 수령 팩트 확인!")
-                                state["party_buff_status"] = "IDLE"
-                                is_buff_resolved = True
-
                                 state["buff_element_time"] = curr_time + 1200.0 + g_val(-10, 10)
                                 save_buff_times(ai_states)
+                                is_buff_resolved = True
+                            elif not leader_alive or (curr_time - state.get("party_buff_req_time", curr_time) > 45.0):
+                                dprint(key, "🚨 [팟바람 대기 해제] 시전자 호출 취소(마을/인증/길막) 또는 대기시간 초과! 사냥으로 복귀합니다.")
+                                state["party_buff_status"] = "IDLE"
+                                is_buff_resolved = True
+
+                        # 팟바람 전용 집결이었을 경우 버프가 끝나면 엠탐 강제 잔류 없이 즉시 사냥터로 해산!
+                        if "팟바람" in standby_reason:
+                            if is_reason_resolved and is_buff_resolved:
+                                dprint(key, "🏃‍♂️ [팟바람 해산] 집결 상황이 종료되어 원래 사냥 구역으로 복귀합니다!")
+                                state["party_buff_status"] = "IDLE"
+                                state["is_active_standby"] = False
+                                state["designated_base_node"] = None
+                                state["portal_blind_mode"] = False
+                                state["yolo_blind_active"] = False
+                                if state.get("body_held", False):
+                                    if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0)
+                                    state["body_held"] = False
+                                state["target_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
+                                state["current_target_node"] = None
+                                state["dungeon_global_path"] = []
+                                clear_movements_only(pico_queues[key])
+                                state["cooldown"] = curr_time + 0.1
+                            else:
+                                state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.05)
+                            action_taken = True
+                            continue
 
                         dng_name_stop = settings.get("dungeon_name", "")
-
                         target_stop_pct = 95.0 if ("event" in dng_name_stop or "오땅" in dng_name_stop) else settings.get("mptam_stop_pct", 65.0)
-
                         is_my_mp_full = mp >= target_stop_pct
 
                         partner_state = "IDLE"
@@ -22188,10 +21501,10 @@ def ai_commander_worker(target_pc):
                         partner_ready = True
 
                         if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
-                            if my_team_group != "선택안함":
+                            if my_team_group_sb != "선택안함":
                                 with party_lock:
                                     for p_key, p_data in local_party_states.items():
-                                        if p_data.get("party_group") == my_team_group and p_key != key:
+                                        if p_data.get("party_group") == my_team_group_sb and p_key != key:
                                             if curr_time - p_data.get("recv_time", 0) < 3.0:
                                                 partner_mp = p_data.get("mp", 100.0)
                                                 partner_state = str(p_data.get("party_state", "IDLE"))
@@ -22231,7 +21544,6 @@ def ai_commander_worker(target_pc):
 
                             state["cooldown"] = curr_time + 0.1
                         else:
-
                             if mp >= 95.0 and not partner_ready:
                                 if state.get("is_mptam_mode", False):
                                     dprint(key, f"🛡️ [호위 모드 전환] 내 MP가 95% 이상({mp:.1f}%) 찼습니다! 일어나서 파트너({partner_mp:.1f}%)를 호위하며 기다립니다.")
@@ -22276,15 +21588,29 @@ def ai_commander_worker(target_pc):
 
                 elif not action_taken and state.get("target_fsm") == "PARTY_BUFF_L_DONE":
                     if curr_time >= state.get("cooldown", 0):
-                        dprint(key, "👑 [팟바람 시전 완벽 종료] 파티원들에게 해산(완료) 신호를 쏩니다!")
+                        had_missing = state.pop("pb_cast_had_missing_members", False)
+                        state["pb_need_full_recap"] = bool(had_missing)
+                        if had_missing:
+                            dprint(key, "👑 [팟바람 시전 완료 (부분 인원)] 불참 인원이 있었으므로, 추후 파티원 전원 사냥터 복귀 시 재호출하도록 예약합니다!")
+                        else:
+                            dprint(key, "👑 [팟바람 시전 완벽 종료] 전원 수령 완료! 파티원들에게 해산 신호를 송출하고 사냥에 복귀합니다!")
+
                         state["req_party_buff"] = False
+                        state["party_buff_status"] = "IDLE"
                         state["party_buff_done"] = True
                         state["party_buff_done_timer"] = curr_time + 5.0
+                        state["pb_last_cast_time"] = curr_time
+                        state["pb_wait_start"] = 0.0
                         state["missed_party_buff"] = False
+                        state["is_active_standby"] = False
+                        state["designated_base_node"] = None
                         state["buff_element_time"] = curr_time + 1200.0 + g_val(-10, 10)
                         save_buff_times(ai_states)
 
-                        state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
+                        state["current_target_node"] = None
+                        state["dungeon_global_path"] = []
+                        clear_movements_only(pico_queues[key])
+                        state["target_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
                         state["cooldown"] = curr_time + 0.1
                     action_taken = True
 
@@ -22650,6 +21976,7 @@ def ai_commander_worker(target_pc):
                                 cur_y_after_drag = int(cur_y + ny * drag_len)
                                 state["cursor_pos"] = [cur_x_after_drag, cur_y_after_drag]
                             else:
+                                cur_x_after_drag, cur_y_after_drag = cur_x, cur_y
                                 dprint(key, "🚧 [맹인 탈출 중] 회피 경로에 몹(칼) 겹침! 때리지 않고 즉시 다음 각도로 우회합니다.")
 
                             if state["evade_parking_attempts"] >= 3:
@@ -23866,24 +23193,20 @@ def ai_commander_worker(target_pc):
 
                                             is_back_n = bool(ndata.get("is_back_node", False) or (str(nid) in {str(x) for x in pc_graph.get("back_nodes", [])}))
 
-                                            # 👇👇 [이렇게 깔끔하게 바뀝니다] 👇👇
-                                            if node_zone and not is_back_n:
-                                                zone_list = [z.strip() for z in node_zone.split(",")]
-                                                is_normal_zone = False
-                                                is_buff_zone = False
-
-                                                for z in zone_list:
-                                                    # 💡 [핵심] 복잡한 텍스트 쪼개기를 없애고, 1번에 추가한 만능 검증 함수 하나로 다 해결!
-                                                    if check_zone_match(active_dungeon, z):
-                                                        if is_buff: is_buff_zone = True
-                                                        else: is_normal_zone = True
-                                                        break
-
-                                                if is_buff and is_buff_zone:
+                                            # 👇👇 [B 버프노드 무조건 내 Zone/버프존 인정 방어막 적용] 👇👇
+                                            if is_buff and not is_back_n:
+                                                if not node_zone:
                                                     buff_spot_nodes.append(str(nid))
-                                                elif not is_buff and is_normal_zone:
+                                                else:
+                                                    zone_list = [z.strip() for z in node_zone.split(",")]
+                                                    if any(check_zone_match(active_dungeon, z) for z in zone_list):
+                                                        buff_spot_nodes.insert(0, str(nid))
+                                                    else:
+                                                        buff_spot_nodes.append(str(nid))
+                                            elif node_zone and not is_back_n:
+                                                zone_list = [z.strip() for z in node_zone.split(",")]
+                                                if any(check_zone_match(active_dungeon, z) for z in zone_list):
                                                     zone_matched_nodes.append(str(nid))
-
                                             elif is_sp and not is_back_n:
                                                 general_special_nodes.append(str(nid))
 
@@ -24114,7 +23437,8 @@ def ai_commander_worker(target_pc):
                                                         state["log_run_help"] = curr_time
 
                                 is_retreating = state.get("target_fsm") in ["PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV"]
-                                is_party_wait = settings.get("use_party_hunt", False) and (state.get("target_fsm") in ["PARTY_WAIT", "PARTY_BUFF_L_WAIT", "PARTY_BUFF_M_WAIT", "PARTY_ACTIVE_STANDBY"] or state.get("is_mptam_mode", False))
+                                is_pb_standby_now = (state.get("target_fsm") == "PARTY_ACTIVE_STANDBY" and "팟바람" in str(state.get("standby_reason", ""))) or (state.get("party_buff_status") == "ARRIVED" and state.get("is_active_standby", False))
+                                is_party_wait = is_pb_standby_now or (settings.get("use_party_hunt", False) and (state.get("target_fsm") in ["PARTY_WAIT", "PARTY_BUFF_L_WAIT", "PARTY_BUFF_M_WAIT", "PARTY_ACTIVE_STANDBY"] or state.get("is_mptam_mode", False)))
 
                                 dynamic_target_base = state.get("designated_base_node")
                                 if not dynamic_target_base and pc_graph and pc_graph.get("buff_spot_nodes"):
@@ -24141,6 +23465,39 @@ def ai_commander_worker(target_pc):
                                         dist_to_buff = math.hypot(char_map_pos[0] - bx, char_map_pos[1] - by)
 
                                         if is_retreating:
+                                            retreat_r = state.get("retreat_reason", "")
+
+                                            # 🚧 [팟바람 이동 중 10초 전진 실패(길막) 감시 워치독]
+                                            if "팟바람" in retreat_r:
+                                                best_d_pb = state.get("pb_move_best_dist", 9999.0)
+                                                if dist_to_buff < best_d_pb - 1.5:
+                                                    state["pb_move_best_dist"] = dist_to_buff
+                                                    state["pb_move_progress_time"] = curr_time
+                                                elif curr_time - state.get("pb_move_progress_time", curr_time) >= 10.0:
+                                                    clear_movements_only(pico_queues[key])
+                                                    state["dungeon_global_path"] = []
+                                                    state["current_target_node"] = None
+                                                    state["designated_base_node"] = None
+                                                    state["is_active_standby"] = False
+                                                    state["portal_blind_mode"] = False
+                                                    state["yolo_blind_active"] = False
+                                                    state["yolo_blind_expire"] = 0
+                                                    state["target_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
+                                                    state["cooldown"] = curr_time + 0.1
+
+                                                    if settings.get("is_party_inviter", False):
+                                                        state["req_party_buff"] = False
+                                                        state["party_buff_status"] = "IDLE"
+                                                        state["missed_party_buff"] = True
+                                                        state["pb_caster_retry_cd"] = curr_time + 5.0
+                                                        dprint(key, "🚧 [시전자 10초 길막 감지] 10초간 버프존과 가까워지지 않았습니다! 집결을 일시 해제하고 시야를 개방하여 주변 몹부터 처치합니다!")
+                                                    else:
+                                                        state["party_buff_status"] = "EXCLUDED"
+                                                        state["pb_excluded_call_id"] = state.get("pb_joined_call_id", 0)
+                                                        dprint(key, "🚧 [파티원 10초 길막 감지] 10초간 버프존과 가까워지지 않아 팟바람 불참(EXCLUDED)으로 분류하고 시야를 개방해 몹을 잡습니다!")
+                                                    action_taken = True
+                                                    continue
+
                                             if state.get("is_rendezvous_mode", False) and state.get("rendezvous_target_node"):
                                                 goal_node = str(state.get("rendezvous_target_node"))
                                                 if curr_time - state.get("log_run_buff", 0) > 3.0:
@@ -24149,18 +23506,18 @@ def ai_commander_worker(target_pc):
                                             else:
                                                 goal_node = buff_node
                                                 if curr_time - state.get("log_run_buff", 0) > 3.0:
-                                                    dprint(key, f"🏃‍♂️ [긴급 복귀] 시야를 100px로 좁히고 버프존(ID:{goal_node})을 향해 A* 질주 중!")
+                                                    sight_txt = "시야 0px(완전차단)" if "팟바람" in retreat_r else "시야 100px"
+                                                    dprint(key, f"🏃‍♂️ [집결 이동] {sight_txt} 상태로 버프존(ID:{goal_node}, 남은거리:{dist_to_buff:.1f}px)을 향해 A* 이동 중!")
                                                     state["log_run_buff"] = curr_time
 
-                                            retreat_r = state.get("retreat_reason", "")
-                                            arr_limit = 8.5 if "팟바람" in retreat_r else 6.0
+                                            arr_limit = 7.0 if "팟바람" in retreat_r else 6.0
 
                                             has_los = True
                                             if pc_map_gray_los is not None and char_map_pos:
                                                 has_los = check_line_of_sight(pc_map_gray_los, char_map_pos, (bx, by), margin_steps=1)
 
                                             if dist_to_buff <= arr_limit and has_los:
-                                                dprint(key, f"🏰 [버프존 안착] 베이스캠프 도착! 강제 엠탐+사냥+루팅 통합(ACTIVE_STANDBY) 모드로 편입합니다!")
+                                                dprint(key, f"🏰 [버프존 7px 안착] 버프노드({dist_to_buff:.1f}px, 시야확보) 도착! 시야 120px 개방 및 1셀 루팅 모드로 대기합니다!")
                                                 state["dungeon_global_path"] = []
                                                 goal_node = None
                                                 state["astar_fail_count"] = 0
@@ -24171,18 +23528,23 @@ def ai_commander_worker(target_pc):
                                                 state["is_active_standby"] = True
                                                 state["standby_reason"] = retreat_r
                                                 state["portal_blind_mode"] = False
-                                                state["is_mptam_mode"] = True
-                                                state["pending_mptam"] = False
+                                                state["yolo_blind_active"] = False
+                                                state["yolo_blind_expire"] = 0
 
-                                                if retreat_r == "리더 팟바람 선진입" or retreat_r == "팟바람 시전 집합":
-                                                    if state.get("pb_wait_start", 0) == 0: state["pb_wait_start"] = curr_time
+                                                if "팟바람" not in retreat_r:
+                                                    state["is_mptam_mode"] = True
+                                                    state["pending_mptam"] = False
+
+                                                if retreat_r in ["리더 팟바람 선진입", "팟바람 시전 집합"]:
+                                                    state["pb_wait_start"] = curr_time
+                                                    state["party_buff_status"] = "ARRIVED"
                                                     state["req_party_buff"] = True
                                                     state["party_buff_req_time"] = curr_time
                                                     state["missed_party_buff"] = False
-                                                    dprint(key, "👑 [팟바람 호출 발령] 버프존 선착 완료! 파티원 집결을 타전합니다.")
+                                                    dprint(key, "👑 [팟바람 시전자 안착] 버프존 도착 완료! 파티원 집결(최대 30초)을 대기합니다.")
                                                 elif retreat_r == "팟바람 수령 집합":
                                                     state["party_buff_status"] = "ARRIVED"
-                                                    dprint(key, "🛡️ [팟바람 대기] 도착 팩트 타전 완료! 리더 버프를 대기합니다.")
+                                                    dprint(key, "🛡️ [팟바람 파티원 안착] 도착 신호(ARRIVED) 송출 완료! 시전자의 버프를 대기합니다.")
 
                                                 action_taken = True
 
@@ -24193,10 +23555,11 @@ def ai_commander_worker(target_pc):
                                                 has_los_wait = check_line_of_sight(pc_map_gray_los, char_map_pos, (bx, by), margin_steps=1)
 
                                             is_unlimited_leash = state.get("help_requester", False) or (state.get("helping_who") is not None)
+                                            leash_limit_wait = 9.5 if is_pb_standby_now else 15.0
 
-                                            if not is_unlimited_leash and (dist_to_buff > 15.0 or not has_los_wait):
+                                            if not is_unlimited_leash and (dist_to_buff > leash_limit_wait or not has_los_wait):
                                                 if curr_time - state.get("log_buff_out", 0) > 5.0:
-                                                    dprint(key, f"🚨 [버프존 이탈] 목줄 밖이거나 벽 너머로 밀려남! 제자리로 복귀합니다.")
+                                                    dprint(key, f"🚨 [버프존 이탈] 반경({leash_limit_wait}px) 밖이거나 벽에 가려짐! 버프노드(7px 이내)로 재진입합니다.")
                                                     state["log_buff_out"] = curr_time
 
                                                 if state.get("target_fsm") == "PARTY_ACTIVE_STANDBY":
@@ -24204,11 +23567,12 @@ def ai_commander_worker(target_pc):
                                                 else:
                                                     state["retreat_reason"] = "대기 중 8.5px 이탈"
 
+                                                state["pb_move_best_dist"] = dist_to_buff
+                                                state["pb_move_progress_time"] = curr_time
                                                 state["target_fsm"] = "PARTY_RETREAT_NAV"
                                                 goal_node = buff_node
                                                 action_taken = True
                                             else:
-
                                                 state["dungeon_global_path"] = []
 
                                                 fsm_action_chk = str(state.get("target_fsm", ""))
@@ -24443,70 +23807,155 @@ def ai_commander_worker(target_pc):
                                                         state["puller_step"] = 1
                                                         state["puller_state"] = "PATROL"
 
-                                        if goal_node:
-                                            state["current_target_node"] = goal_node
+                                    if goal_node:
+                                        state["current_target_node"] = goal_node
+                                        new_path = calculate_graph_astar_path(pc_graph, char_map_pos, goal_node, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
+                                        if new_path:
+                                            state["dungeon_global_path"] = new_path
+                                            state["dungeon_path_time"] = curr_time
+                                            global_path = new_path
+                                            state["astar_fail_count"] = 0
+                                        else:
+                                            state["dungeon_global_path"] = []
+                                            state["dungeon_path_time"] = curr_time - 295.0
+                                            state["current_target_node"] = None
+                                            state["astar_fail_count"] = state.get("astar_fail_count", 0) + 1
+                                            dprint(key, f"⚠️ [목표 A*] 도달 불가! 재탐색 시도. (누적 실패: {state['astar_fail_count']}/5)")
 
-                                            new_path = calculate_graph_astar_path(pc_graph, char_map_pos, goal_node, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
-                                            if new_path:
-                                                state["dungeon_global_path"] = new_path
-                                                state["dungeon_path_time"] = curr_time
-                                                global_path = new_path
+                                            if state["astar_fail_count"] >= 5:
                                                 state["astar_fail_count"] = 0
-                                            else:
-                                                state["dungeon_global_path"] = []
-                                                state["dungeon_path_time"] = curr_time - 295.0
-                                                state["current_target_node"] = None
+                                                with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                                                if state.get("sweep_active", False):
+                                                    pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
 
-                                                state["astar_fail_count"] = state.get("astar_fail_count", 0) + 1
-                                                dprint(key, f"⚠️ [목표 A*] 도달 불가! 재탐색 시도. (누적 실패: {state['astar_fail_count']}/5)")
-
-                                                if state["astar_fail_count"] >= 5:
-                                                    state["astar_fail_count"] = 0
-                                                    with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                                                    if state.get("sweep_active", False):
-                                                        pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
-
-                                                    if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
-                                                        dprint(key, "🚨 [경로 5아웃] 사방이 막혔습니다! 파티 모드이므로 텔포 대신 무작위 회피 기동!")
-                                                        best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1.5, 1.5)
-                                                        move_dist = g_val(150.0, 200.0)
-                                                        tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
-                                                        ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
-                                                        pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
-                                                        state["pico_arrived"] = False
-                                                        state["cursor_pos"] = [tx, ty]
-                                                        state["dungeon_angle"] = best_angle % (2*math.pi)
-                                                        state["target_fsm"] = "IDLE"
-                                                        state["cooldown"] = curr_time + 0.5
-                                                    elif is_puller:
-                                                        dprint(key, "🚨 [솔플 풀러 5아웃] 사방이 막혔습니다. 풀러 강제 텔레포트 발동!")
-                                                        pico_queues[key].put({"action": "TELEPORT"})
-                                                        state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
-                                                        state["teleport_start_mp"] = mp
-                                                        if h >= 200 and w >= 200: state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY)
-                                                        else: state["tele_snapshot"] = None
-                                                        state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
-                                                        state["tele_retry_cnt"] = 0
-                                                        state["is_pulling"] = False
-                                                        state["cooldown"] = curr_time + 1.0
-                                                    else:
-                                                        dprint(key, "🛡️ [솔플 딜러 5아웃] 복귀 경로 막힘! 즉시 전투(IDLE)로 전환하여 주변을 치웁니다.")
-                                                        state["target_fsm"] = "IDLE"
-                                                        state["cooldown"] = curr_time + 0.1
-                                                elif state["astar_fail_count"] >= 3:
-                                                    dprint(key, "🚧 [길찾기 지연] 길이 막혔습니다. 무작위 방향으로 비집기를 시도합니다.")
-                                                    best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1, 1)
+                                                if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
+                                                    dprint(key, "🚨 [경로 개척 5아웃] 사방이 막혔지만 파티 모드이므로 텔레포트를 억제하고 무작위 회피 기동을 시도합니다!")
+                                                    best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1.5, 1.5)
                                                     move_dist = g_val(150.0, 200.0)
                                                     tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
                                                     ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
-
                                                     pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
                                                     state["pico_arrived"] = False
-                                                    state["cursor_pos"], state["cooldown"] = [tx, ty], get_dynamic_cooldown(0.25, 0.45, key)
+                                                    state["cursor_pos"] = [tx, ty]
                                                     state["dungeon_angle"] = best_angle % (2*math.pi)
-                                                    action_taken = True
+                                                    state["target_fsm"] = "IDLE"
+                                                    state["is_pulling"] = False
+                                                    state["cooldown"] = curr_time + 0.5
+                                                elif not is_puller:
+                                                    dprint(key, "🛡️ [솔플 딜러 5아웃] 복귀 경로 막힘! 즉시 전투(IDLE)로 전환하여 주변을 치웁니다.")
+                                                    state["target_fsm"] = "IDLE"
+                                                    state["cooldown"] = curr_time + 0.1
+                                                else:
+                                                    dprint(key, "🚨 [경로 개척 5아웃] 사방이 꽉 막혔습니다. 강제 텔레포트 발동!")
+                                                    pico_queues[key].put({"action": "TELEPORT"})
+                                                    state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
+                                                    state["teleport_start_mp"] = mp
+                                                    state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY) if (h >= 200 and w >= 200) else None
+                                                    state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
+                                                    state["tele_retry_cnt"] = 0
+                                                    state["is_pulling"] = False
+                                                    state["cooldown"] = curr_time + 1.0
+                                            elif state["astar_fail_count"] >= 3:
+                                                dprint(key, "🚧 [길찾기 지연] 길이 막혔습니다. 무작위 방향으로 비집기를 시도합니다.")
+                                                best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1, 1)
+                                                move_dist = g_val(150.0, 200.0)
+                                                tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
+                                                ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
+                                                pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
+                                                state["pico_arrived"] = False
+                                                state["cursor_pos"], state["cooldown"] = [tx, ty], get_dynamic_cooldown(0.25, 0.45, key)
+                                                state["dungeon_angle"] = best_angle % (2*math.pi)
+                                                action_taken = True
 
-                                elif not action_taken and not goal_node and is_special_map:
+                                def _handle_astar_nav_fail(fail_tag, g_node):
+                                    nonlocal action_taken
+                                    state["dungeon_global_path"] = []
+                                    state["dungeon_path_time"] = curr_time - 295.0
+                                    if fail_tag != "픽셀 A*":
+                                        state["current_target_node"] = None
+                                    state["astar_fail_count"] = state.get("astar_fail_count", 0) + 1
+                                    dprint(key, f"⚠️ [{fail_tag}] 도달 불가! 재탐색 시도. (누적 실패: {state['astar_fail_count']}/5)")
+
+                                    if state["astar_fail_count"] >= 5:
+                                        state["astar_fail_count"] = 0
+                                        with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                                        if state.get("sweep_active", False):
+                                            pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
+
+                                        is_base_returning = state.get("target_fsm") in ["PARTY_RETREAT_NAV", "PARTY_WAIT", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY"] and not state.get("is_rendezvous_mode", False)
+                                        if is_base_returning and g_node:
+                                            gn_data = pc_graph["nodes"].get(str(g_node)) if pc_graph and pc_graph.get("nodes") else None
+                                            if gn_data and char_map_pos:
+                                                gx = gn_data.get("x", 0) if isinstance(gn_data, dict) else gn_data[0]
+                                                gy = gn_data.get("y", 0) if isinstance(gn_data, dict) else gn_data[1]
+                                                dist_to_goal = math.hypot(char_map_pos[0] - gx, char_map_pos[1] - gy)
+                                                has_los_stuck = check_line_of_sight(pc_map_gray_los, char_map_pos, (gx, gy), margin_steps=1) if (pc_map_gray_los is not None and char_map_pos) else True
+
+                                                if dist_to_goal <= 13.0 and has_los_stuck:
+                                                    dprint(key, f"🚧 [범퍼카 방어] 목적지 13.0px 이내({dist_to_goal:.1f}px) 길막 5아웃! 합석으로 인정하여 후속 조치를 진행합니다.")
+                                                    retreat_r_stuck = state.get("retreat_reason", "")
+                                                    state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
+                                                    state["is_active_standby"] = True
+                                                    state["standby_reason"] = retreat_r_stuck
+                                                    state["portal_blind_mode"] = False
+                                                    state["pending_mptam"] = False
+                                                    state["yolo_blind_active"] = False
+                                                    if "MP" in retreat_r_stuck or "고갈" in retreat_r_stuck:
+                                                        state["is_mptam_mode"] = True
+                                                    if retreat_r_stuck in ["리더 팟바람 선진입", "팟바람 시전 집합"]:
+                                                        if state.get("pb_wait_start", 0) == 0: state["pb_wait_start"] = curr_time
+                                                        state["req_party_buff"] = True
+                                                        state["party_buff_req_time"] = curr_time
+                                                        state["missed_party_buff"] = False
+                                                        dprint(key, "👑 [팟바람 호출] 13.0px 길막 주차 인정! 파티원 집결을 호출합니다.")
+                                                    elif retreat_r_stuck == "팟바람 수령 집합":
+                                                        state["party_buff_status"] = "ARRIVED"
+                                                    state["is_pulling"] = False
+                                                    state["cooldown"] = curr_time + 0.5
+                                                    return True
+
+                                        dng_stuck_name = settings.get("dungeon_name", "")
+                                        if "event" in dng_stuck_name or "오땅" in dng_stuck_name:
+                                            dprint(key, "🚨 [경로 개척 5아웃] 특수 던전이므로 F9 일반 귀환 후 재진입합니다!")
+                                            state["target_fsm"] = "TOWN_MAINT_NORMAL_RETURN"
+                                            state["event_skip_maint"] = True
+                                        elif settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
+                                            dprint(key, "🚨 [경로 개척 5아웃] 사방이 막혔지만 파티 모드이므로 텔레포트를 억제하고 IDLE로 전환하여 길뚫기를 속행합니다!")
+                                            best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1.5, 1.5)
+                                            move_dist = g_val(150.0, 200.0)
+                                            tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
+                                            ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
+                                            pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
+                                            state["pico_arrived"] = False
+                                            state["cursor_pos"] = [tx, ty]
+                                            state["dungeon_angle"] = best_angle % (2*math.pi)
+                                            state["target_fsm"] = "IDLE"
+                                        else:
+                                            dprint(key, "🚨 [경로 개척 5아웃] 사방이 꽉 막혔습니다. 강제 텔레포트 발동!")
+                                            pico_queues[key].put({"action": "TELEPORT"})
+                                            state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
+                                            state["teleport_start_mp"] = mp
+                                            state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY) if (h >= 200 and w >= 200) else None
+                                            state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
+                                            state["tele_retry_cnt"] = 0
+                                        state["is_pulling"] = False
+                                        state["cooldown"] = curr_time + 1.0
+                                        return True
+
+                                    elif state["astar_fail_count"] >= 3:
+                                        dprint(key, "🚧 [길찾기 지연] 길이 막혔습니다. 무작위 방향으로 비집기를 시도합니다.")
+                                        best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1, 1)
+                                        move_dist = g_val(150.0, 200.0)
+                                        tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
+                                        ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
+                                        pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
+                                        state["pico_arrived"] = False
+                                        state["cursor_pos"], state["cooldown"] = [tx, ty], get_dynamic_cooldown(0.25, 0.45, key)
+                                        state["dungeon_angle"] = best_angle % (2*math.pi)
+                                        action_taken = True
+                                    return False
+
+                                if not action_taken and not goal_node and is_special_map:
 
                                     if not global_path or curr_time - state.get("dungeon_path_time", 0) > 300.0:
                                         tour_nodes = special_nodes_list
@@ -24599,7 +24048,6 @@ def ai_commander_worker(target_pc):
                                             state["astar_fail_count"] = 0
                                             action_taken = True
                                         else:
-
                                             new_path = calculate_graph_astar_path(pc_graph, char_map_pos, goal_node, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
                                             if new_path:
                                                 state["dungeon_global_path"] = new_path
@@ -24608,99 +24056,8 @@ def ai_commander_worker(target_pc):
                                                 state["astar_fail_count"] = 0
                                                 dprint(key, f"✅ [그래프 A*] 타겟(노드:{goal_node})을 향해 {len(new_path)}정거장 경로 개척 성공!")
                                             else:
-                                                state["dungeon_global_path"] = []
-                                                state["dungeon_path_time"] = curr_time - 295.0
-                                                state["current_target_node"] = None
-
-                                                state["astar_fail_count"] = state.get("astar_fail_count", 0) + 1
-                                                dprint(key, f"⚠️ [그래프 A*] 도달 불가! 타겟 전환. (누적 실패: {state['astar_fail_count']}/5)")
-
-                                                if state["astar_fail_count"] >= 5:
-                                                    state["astar_fail_count"] = 0
-                                                    with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                                                    if state.get("sweep_active", False):
-                                                        pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
-
-                                                    is_base_returning = state.get("target_fsm") in ["PARTY_RETREAT_NAV", "PARTY_WAIT", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY"] and not state.get("is_rendezvous_mode", False)
-                                                    if is_base_returning and goal_node:
-                                                        gn_data = pc_graph["nodes"].get(str(goal_node)) if pc_graph and pc_graph.get("nodes") else None
-                                                        if gn_data and char_map_pos:
-                                                            gx = gn_data.get("x", 0) if isinstance(gn_data, dict) else gn_data[0]
-                                                            gy = gn_data.get("y", 0) if isinstance(gn_data, dict) else gn_data[1]
-                                                            dist_to_goal = math.hypot(char_map_pos[0] - gx, char_map_pos[1] - gy)
-
-                                                            has_los_stuck = True
-                                                            if pc_map_gray_los is not None and char_map_pos:
-                                                                has_los_stuck = check_line_of_sight(pc_map_gray_los, char_map_pos, (gx, gy), margin_steps=1)
-
-                                                            if dist_to_goal <= 13.0 and has_los_stuck:
-                                                                dprint(key, f"🚧 [범퍼카 방어] 목적지 13.0px 이내({dist_to_goal:.1f}px) 길막 5아웃! 합석으로 인정하여 후속 조치를 진행합니다.")
-                                                                retreat_r_stuck = state.get("retreat_reason", "")
-
-                                                                state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
-                                                                state["is_active_standby"] = True
-                                                                state["standby_reason"] = retreat_r_stuck
-                                                                state["portal_blind_mode"] = False
-                                                                state["pending_mptam"] = False
-                                                                state["yolo_blind_active"] = False
-
-                                                                if "MP" in retreat_r_stuck or "고갈" in retreat_r_stuck:
-                                                                    state["is_mptam_mode"] = True
-
-                                                                if retreat_r_stuck == "리더 팟바람 선진입" or retreat_r_stuck == "팟바람 시전 집합":
-                                                                    if state.get("pb_wait_start", 0) == 0: state["pb_wait_start"] = curr_time
-                                                                    state["req_party_buff"] = True
-                                                                    state["party_buff_req_time"] = curr_time
-                                                                    state["missed_party_buff"] = False
-                                                                    dprint(key, "👑 [팟바람 호출] 13.0px 길막 주차 인정! 파티원 집결을 호출합니다.")
-                                                                elif retreat_r_stuck == "팟바람 수령 집합":
-                                                                    state["party_buff_status"] = "ARRIVED"
-
-                                                                state["is_pulling"] = False
-                                                                state["cooldown"] = curr_time + 0.5
-                                                                continue
-
-                                                    dng_stuck_name2 = settings.get("dungeon_name", "")
-                                                    if "event" in dng_stuck_name2 or "오땅" in dng_stuck_name2:
-                                                        dprint(key, "🚨 [경로 개척 5아웃] 특수 던전이므로 F9 일반 귀환 후 재진입합니다!")
-                                                        state["target_fsm"] = "TOWN_MAINT_NORMAL_RETURN"
-                                                        state["event_skip_maint"] = True
-                                                    elif settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
-                                                        dprint(key, "🚨 [경로 개척 5아웃] 사방이 막혔지만 파티 모드이므로 텔레포트를 억제하고 무작위 방향으로 크게 우회(비집기)하여 탈출합니다!")
-                                                        best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1.5, 1.5)
-                                                        move_dist = g_val(150.0, 200.0)
-                                                        tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
-                                                        ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
-                                                        pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
-                                                        state["pico_arrived"] = False
-                                                        state["cursor_pos"] = [tx, ty]
-                                                        state["dungeon_angle"] = best_angle % (2*math.pi)
-                                                        state["target_fsm"] = "IDLE"
-                                                    else:
-                                                        dprint(key, "🚨 [경로 개척 5아웃] 사방이 꽉 막혔습니다. 강제 텔레포트 발동!")
-                                                        pico_queues[key].put({"action": "TELEPORT"})
-                                                        state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
-                                                        state["teleport_start_mp"] = mp
-                                                        if h >= 200 and w >= 200: state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY)
-                                                        else: state["tele_snapshot"] = None
-                                                        state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
-                                                        state["tele_retry_cnt"] = 0
-                                                    state["is_pulling"] = False
-                                                    state["cooldown"] = curr_time + 1.0
+                                                if _handle_astar_nav_fail("그래프 A*", goal_node):
                                                     continue
-
-                                                elif state["astar_fail_count"] >= 3:
-                                                    dprint(key, "🚧 [길찾기 지연] 길이 막혔습니다. 무작위 방향으로 비집기를 시도합니다.")
-                                                    best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1, 1)
-                                                    move_dist = g_val(150.0, 200.0)
-                                                    tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
-                                                    ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
-
-                                                    pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
-                                                    state["pico_arrived"] = False
-                                                    state["cursor_pos"], state["cooldown"] = [tx, ty], get_dynamic_cooldown(0.25, 0.45, key)
-                                                    state["dungeon_angle"] = best_angle % (2*math.pi)
-                                                    action_taken = True
 
                                 if not action_taken and not goal_node:
 
@@ -24739,99 +24096,9 @@ def ai_commander_worker(target_pc):
                                                 global_path = new_path
                                                 state["astar_fail_count"] = 0
                                             else:
-                                                state["dungeon_global_path"] = []
-                                                state["dungeon_path_time"] = curr_time - 295.0
                                                 state["dungeon_corner_idx"] = (state.get("dungeon_corner_idx", 0) + 1) % len(pc_graph["corners"])
-
-                                                state["astar_fail_count"] = state.get("astar_fail_count", 0) + 1
-                                                dprint(key, f"⚠️ [그래프 A*] 도달 불가! 다른 목표로 전환합니다. (누적 실패: {state['astar_fail_count']}/5)")
-
-                                                if state["astar_fail_count"] >= 5:
-                                                    state["astar_fail_count"] = 0
-                                                    with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                                                    if state.get("sweep_active", False):
-                                                        pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
-
-                                                    is_base_returning = state.get("target_fsm") in ["PARTY_RETREAT_NAV", "PARTY_WAIT", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY"] and not state.get("is_rendezvous_mode", False)
-                                                    if is_base_returning and goal_node:
-                                                        gn_data = pc_graph["nodes"].get(str(goal_node)) if pc_graph and pc_graph.get("nodes") else None
-                                                        if gn_data and char_map_pos:
-                                                            gx = gn_data.get("x", 0) if isinstance(gn_data, dict) else gn_data[0]
-                                                            gy = gn_data.get("y", 0) if isinstance(gn_data, dict) else gn_data[1]
-                                                            dist_to_goal = math.hypot(char_map_pos[0] - gx, char_map_pos[1] - gy)
-
-                                                            has_los_stuck = True
-                                                            if pc_map_gray_los is not None and char_map_pos:
-                                                                has_los_stuck = check_line_of_sight(pc_map_gray_los, char_map_pos, (gx, gy), margin_steps=1)
-
-                                                            if dist_to_goal <= 13.0 and has_los_stuck:
-                                                                dprint(key, f"🚧 [범퍼카 방어] 목적지 13.0px 이내({dist_to_goal:.1f}px) 길막 5아웃! 합석으로 인정하여 후속 조치를 진행합니다.")
-                                                                retreat_r_stuck = state.get("retreat_reason", "")
-
-                                                                state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
-                                                                state["is_active_standby"] = True
-                                                                state["standby_reason"] = retreat_r_stuck
-                                                                state["portal_blind_mode"] = False
-                                                                state["pending_mptam"] = False
-                                                                state["yolo_blind_active"] = False
-
-                                                                if "MP" in retreat_r_stuck or "고갈" in retreat_r_stuck:
-                                                                    state["is_mptam_mode"] = True
-
-                                                                if retreat_r_stuck == "리더 팟바람 선진입" or retreat_r_stuck == "팟바람 시전 집합":
-                                                                    if state.get("pb_wait_start", 0) == 0: state["pb_wait_start"] = curr_time
-                                                                    state["req_party_buff"] = True
-                                                                    state["party_buff_req_time"] = curr_time
-                                                                    state["missed_party_buff"] = False
-                                                                    dprint(key, "👑 [팟바람 호출] 13.0px 길막 주차 인정! 파티원 집결을 호출합니다.")
-                                                                elif retreat_r_stuck == "팟바람 수령 집합":
-                                                                    state["party_buff_status"] = "ARRIVED"
-
-                                                                state["is_pulling"] = False
-                                                                state["cooldown"] = curr_time + 0.5
-                                                                continue
-
-                                                    dng_stuck_name4 = settings.get("dungeon_name", "")
-                                                    if "event" in dng_stuck_name4 or "오땅" in dng_stuck_name4:
-                                                        dprint(key, "🚨 [경로 개척 5아웃] 특수 던전이므로 F9 일반 귀환 후 재진입합니다!")
-                                                        state["target_fsm"] = "TOWN_MAINT_NORMAL_RETURN"
-                                                        state["event_skip_maint"] = True
-                                                    elif settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
-                                                        dprint(key, "🚨 [경로 개척 5아웃] 사방이 막혔지만 파티 모드이므로 텔레포트를 억제하고 IDLE로 전환하여 길뚫기를 속행합니다!")
-                                                        best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1.5, 1.5)
-                                                        move_dist = g_val(150.0, 200.0)
-                                                        tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
-                                                        ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
-                                                        pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
-                                                        state["pico_arrived"] = False
-                                                        state["cursor_pos"] = [tx, ty]
-                                                        state["dungeon_angle"] = best_angle % (2*math.pi)
-                                                        state["target_fsm"] = "IDLE"
-                                                    else:
-                                                        dprint(key, "🚨 [경로 개척 5아웃] 사방이 꽉 막혔습니다. 강제 텔레포트 발동!")
-                                                        pico_queues[key].put({"action": "TELEPORT"})
-                                                        state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
-                                                        state["teleport_start_mp"] = mp
-                                                        if h >= 200 and w >= 200: state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY)
-                                                        else: state["tele_snapshot"] = None
-                                                        state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
-                                                        state["tele_retry_cnt"] = 0
-                                                    state["is_pulling"] = False
-                                                    state["cooldown"] = curr_time + 1.0
+                                                if _handle_astar_nav_fail("그래프 A*", goal_node):
                                                     continue
-
-                                                elif state["astar_fail_count"] >= 3:
-                                                    dprint(key, "🚧 [길찾기 지연] 길이 막혔습니다. 무작위 방향으로 비집기를 시도합니다.")
-                                                    best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1, 1)
-                                                    move_dist = g_val(150.0, 200.0)
-                                                    tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
-                                                    ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
-
-                                                    pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
-                                                    state["pico_arrived"] = False
-                                                    state["cursor_pos"], state["cooldown"] = [tx, ty], get_dynamic_cooldown(0.25, 0.45, key)
-                                                    state["dungeon_angle"] = best_angle % (2*math.pi)
-                                                    action_taken = True
                                         else:
                                             target_pos = find_farthest_empty_target(pc_map_gray, char_map_pos, min_dist=100)
                                             if target_pos:
@@ -24852,96 +24119,8 @@ def ai_commander_worker(target_pc):
                                                     global_path = new_path
                                                     state["astar_fail_count"] = 0
                                                 else:
-                                                    state["dungeon_global_path"] = []
-                                                    state["dungeon_path_time"] = curr_time - 295.0
-
-                                                    state["astar_fail_count"] = state.get("astar_fail_count", 0) + 1
-                                                    dprint(key, f"⚠️ [픽셀 A*] 도달 불가! 대기 후 재탐색. (누적 실패: {state['astar_fail_count']}/5)")
-
-                                                    if state["astar_fail_count"] >= 5:
-                                                        state["astar_fail_count"] = 0
-                                                        with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                                                        if state.get("sweep_active", False):
-                                                            pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
-
-                                                        is_base_returning = state.get("target_fsm") in ["PARTY_RETREAT_NAV", "PARTY_WAIT", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY"] and not state.get("is_rendezvous_mode", False)
-                                                        if is_base_returning and goal_node:
-                                                            gn_data = pc_graph["nodes"].get(str(goal_node)) if pc_graph and pc_graph.get("nodes") else None
-                                                            if gn_data and char_map_pos:
-                                                                gx = gn_data.get("x", 0) if isinstance(gn_data, dict) else gn_data[0]
-                                                                gy = gn_data.get("y", 0) if isinstance(gn_data, dict) else gn_data[1]
-                                                                dist_to_goal = math.hypot(char_map_pos[0] - gx, char_map_pos[1] - gy)
-
-                                                                has_los_stuck = True
-                                                                if pc_map_gray_los is not None and char_map_pos:
-                                                                    has_los_stuck = check_line_of_sight(pc_map_gray_los, char_map_pos, (gx, gy), margin_steps=1)
-
-                                                                if dist_to_goal <= 13.0 and has_los_stuck:
-                                                                    dprint(key, f"🚧 [범퍼카 방어] 목적지 13.0px 이내({dist_to_goal:.1f}px) 길막 5아웃! 합석으로 인정하여 후속 조치를 진행합니다.")
-                                                                    retreat_r_stuck = state.get("retreat_reason", "")
-
-                                                                    state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
-                                                                    state["is_active_standby"] = True
-                                                                    state["standby_reason"] = retreat_r_stuck
-                                                                    state["portal_blind_mode"] = False
-                                                                    state["pending_mptam"] = False
-                                                                    state["yolo_blind_active"] = False
-
-                                                                    if "MP" in retreat_r_stuck or "고갈" in retreat_r_stuck:
-                                                                        state["is_mptam_mode"] = True
-
-                                                                    if retreat_r_stuck == "리더 팟바람 선진입" or retreat_r_stuck == "팟바람 시전 집합":
-                                                                        if state.get("pb_wait_start", 0) == 0: state["pb_wait_start"] = curr_time
-                                                                        state["req_party_buff"] = True
-                                                                        state["party_buff_req_time"] = curr_time
-                                                                        state["missed_party_buff"] = False
-                                                                        dprint(key, "👑 [팟바람 호출] 13.0px 길막 주차 인정! 파티원 집결을 호출합니다.")
-                                                                    elif retreat_r_stuck == "팟바람 수령 집합":
-                                                                        state["party_buff_status"] = "ARRIVED"
-
-                                                                    state["is_pulling"] = False
-                                                                    state["cooldown"] = curr_time + 0.5
-                                                                    continue
-
-                                                        dng_stuck_name4 = settings.get("dungeon_name", "")
-                                                        if "event" in dng_stuck_name4 or "오땅" in dng_stuck_name4:
-                                                            dprint(key, "🚨 [경로 개척 5아웃] 5연속 픽셀 길찾기 실패! 특수 던전이므로 F9 일반 귀환 후 재진입합니다!")
-                                                            state["target_fsm"] = "TOWN_MAINT_NORMAL_RETURN"
-                                                            state["event_skip_maint"] = True
-                                                        elif settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
-                                                            dprint(key, "🚨 [경로 개척 5아웃] 사방이 막혔지만 파티 모드이므로 텔레포트를 억제하고 IDLE로 전환하여 길뚫기를 속행합니다!")
-                                                            best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1.5, 1.5)
-                                                            move_dist = g_val(150.0, 200.0)
-                                                            tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
-                                                            ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
-                                                            pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
-                                                            state["pico_arrived"] = False
-                                                            state["cursor_pos"] = [tx, ty]
-                                                            state["dungeon_angle"] = best_angle % (2*math.pi)
-                                                            state["target_fsm"] = "IDLE"
-                                                        else:
-                                                            dprint(key, "🚨 [경로 개척 5아웃] 사방이 꽉 막혔습니다. 강제 텔레포트 발동!")
-                                                            pico_queues[key].put({"action": "TELEPORT"})
-                                                            state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
-                                                            state["teleport_start_mp"] = mp
-                                                            state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
-                                                            state["tele_retry_cnt"] = 0
-                                                        state["is_pulling"] = False
-                                                        state["cooldown"] = curr_time + 1.0
+                                                    if _handle_astar_nav_fail("픽셀 A*", goal_node):
                                                         continue
-
-                                                    elif state["astar_fail_count"] >= 3:
-                                                        dprint(key, "🚧 [길찾기 지연] 길이 막혔습니다. 무작위 방향으로 비집기를 시도합니다.")
-                                                        best_angle = state.get("dungeon_angle", random.uniform(0, 2*math.pi)) + random.uniform(-1, 1)
-                                                        move_dist = g_val(150.0, 200.0)
-                                                        tx = int(max(10, min(740, char_screen_cx + math.cos(best_angle) * move_dist)))
-                                                        ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(best_angle) * move_dist)))
-
-                                                        pico_queues[key].put({"action": "ATTACK", "dx": tx - cur_x, "dy": ty - cur_y, "is_combat": False})
-                                                        state["pico_arrived"] = False
-                                                        state["cursor_pos"], state["cooldown"] = [tx, ty], get_dynamic_cooldown(0.25, 0.45, key)
-                                                        state["dungeon_angle"] = best_angle % (2*math.pi)
-                                                        action_taken = True
 
                                 if global_path:
                                     cx, cy = char_map_pos
@@ -25750,115 +24929,116 @@ def ai_commander_worker(target_pc):
 
             if state.get("is_hunt_active", False) and not state.get("is_paused", False) and not survival_action_taken:
 
-                is_party_hunt_active = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
-                my_team_group = settings.get("party_group", "선택안함")
-
-                if is_party_hunt_active and my_team_group != "선택안함":
+                # =========================================================================
+                # 🌪️ [신형 팟바람 엔진] 인게임 초대조(invite_group) + 실제 파티(in_party) 연동
+                # =========================================================================
+                my_inv_grp_pb = str(settings.get("invite_group", "선택안함"))
+                if my_inv_grp_pb != "선택안함":
                     fsm_retreat = str(state.get("target_fsm", ""))
-                    is_leader = settings.get("is_party_inviter", False)
+                    is_leader = bool(settings.get("is_party_inviter", False))
+                    my_c_num_pb = str(get_my_central_num())
+                    my_uid_pb = f"{int(my_c_num_pb) if my_c_num_pb.isdigit() else 1}-{key}"
 
-                    leader_calling = False
-                    leader_done = False
-
+                    # 1) 시전자(팟바람 체크 캐릭터) 로직
                     if is_leader:
                         b_set = settings.get("buff_set", "선택안함")
                         if "3셋트" in b_set or "4셋트" in b_set:
+                            crisis_fsms = ["TOWN_MAINT", "EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "DEATH_RESTART", "CERTI_"]
+                            is_in_crisis = any(fsm_retreat.startswith(s) for s in crisis_fsms) or state.get("town_thread_running", False)
 
-                            is_timer_expired = curr_time > state.get("buff_element_time", 0)
-                            has_missed_badge = state.get("missed_party_buff", False)
+                            if is_in_crisis:
+                                if state.get("req_party_buff", False) or fsm_retreat.startswith("BUFFING") or fsm_retreat in ["PARTY_BUFF_L_WAIT", "PARTY_BUFF_L_DONE"] or (fsm_retreat in ["PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY"] and ("팟바람" in str(state.get("retreat_reason", "")) or "팟바람" in str(state.get("standby_reason", "")))):
+                                    if not state.get("missed_party_buff", False):
+                                        dprint(key, "🚨 [시전자 비상 상황] 팟바람 진행 중 위기(텔포/마을/사망/인증) 발생! 호출을 취소하고 미시전 상태로 전환합니다.")
+                                    state["req_party_buff"] = False
+                                    state["party_buff_status"] = "IDLE"
+                                    state["is_active_standby"] = False
+                                    state["designated_base_node"] = None
+                                    state["missed_party_buff"] = True
+                            else:
+                                is_already_processing = (
+                                    (fsm_retreat == "PARTY_RETREAT_NAV" and "팟바람" in str(state.get("retreat_reason", ""))) or
+                                    (fsm_retreat == "PARTY_ACTIVE_STANDBY" and "팟바람" in str(state.get("standby_reason", ""))) or
+                                    fsm_retreat in ["PARTY_BUFF_L_WAIT", "PARTY_BUFF_L_DONE"] or
+                                    (fsm_retreat.startswith("BUFFING") and state.get("buff_return_fsm") == "PARTY_BUFF_L_DONE") or
+                                    (state.get("req_party_buff", False) and state.get("is_active_standby", False))
+                                )
 
-                            if (is_timer_expired or has_missed_badge) and not state.get("party_buff_done", False):
+                                # 만약 시전자가 버프존으로 이동 중(MOVING) 장애물 회피(MOTION_EVADING) 후 IDLE로 풀렸다면 즉시 이동 재개
+                                if state.get("req_party_buff", False) and state.get("party_buff_status") == "MOVING" and fsm_retreat == "IDLE":
+                                    state["target_fsm"] = "PARTY_RETREAT_NAV"
+                                    state["retreat_reason"] = "리더 팟바람 선진입"
+                                    is_already_processing = True
 
-                                crisis_fsms = ["TOWN_MAINT", "EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "DEATH_RESTART"]
-                                is_in_crisis = any(fsm_retreat.startswith(s) for s in crisis_fsms)
+                                if not is_already_processing and not state.get("party_buff_done", False) and curr_time >= state.get("pb_caster_retry_cd", 0.0):
+                                    is_ui_busy_pb = fsm_retreat.startswith("INV_CLEAN") or fsm_retreat.startswith("HK_HEAL") or fsm_retreat.startswith("WEAPON_REPAIR") or fsm_retreat.startswith("BUFFING") or fsm_retreat.startswith("F1_INIT") or fsm_retreat.startswith("CHAT_RECOVER")
+                                    char_pos_chk = state.get("dungeon_map_pos")
+                                    in_my_zone_pb = (not state.get("is_out_of_zone", False)) and (char_pos_chk is not None)
+                                    in_party_pb = bool(state.get("in_ingame_party", True))
+                                    buff_mp_req = float(settings.get("buff_mp_pct", 50.0))
+                                    mp_ok_pb = (mp >= buff_mp_req)
+                                    has_b_node_pb = bool(pc_graph and pc_graph.get("buff_spot_nodes"))
 
-                                if is_in_crisis:
+                                    if (not is_ui_busy_pb) and in_my_zone_pb and in_party_pb and mp_ok_pb and has_b_node_pb:
+                                        same_grp_members = []
+                                        with party_lock:
+                                            for p_uid, p_data in global_invite_states.items():
+                                                if str(p_data.get("invite_group", "선택안함")) == my_inv_grp_pb and p_uid != my_uid_pb and (curr_time - p_data.get("recv_time", 0.0) <= 3.5):
+                                                    same_grp_members.append(p_data)
 
-                                    if state.get("req_party_buff", False) or fsm_retreat.startswith("BUFFING") or fsm_retreat in ["PARTY_BUFF_L_WAIT", "PARTY_BUFF_L_DONE"] or (fsm_retreat == "PARTY_RETREAT_NAV" and state.get("retreat_reason") == "리더 팟바람 선진입"):
-                                        if not state.get("missed_party_buff", False):
-                                            dprint(key, "🚨 [리더 위기] 팟바람 이동/호출/시전 중 비상 상황(텔포/마을/사망) 발생! 호출을 취소하고 [미시전 딱지]를 부착합니다.")
-                                        state["req_party_buff"] = False
-                                        state["missed_party_buff"] = True
-                                else:
+                                        partied_cnt = 1 + sum(1 for m in same_grp_members if m.get("in_game", False) and m.get("in_party", False))
+                                        all_members_ready_now = bool(
+                                            len(same_grp_members) >= 1 and
+                                            all(
+                                                m.get("in_game", False) and m.get("in_party", False) and m.get("in_hunting_ground", False) and
+                                                (not m.get("is_out_of_zone", False)) and (str(m.get("party_state", "")) not in ["TOWN", "MAINT", "SURVIVAL"])
+                                                for m in same_grp_members
+                                            )
+                                        )
 
-                                    is_already_processing = fsm_retreat in ["PARTY_RETREAT_NAV", "PARTY_BUFF_L_WAIT", "PARTY_BUFF_L_DONE"] or (fsm_retreat.startswith("BUFFING") and state.get("buff_return_fsm") == "PARTY_BUFF_L_DONE")
+                                        elem_t = state.get("buff_element_time", 0.0)
+                                        is_post_certi_zero = (elem_t == 0.0)
+                                        is_normal_expired = (elem_t > 0.0 and curr_time > elem_t) or state.get("missed_party_buff", False)
+                                        is_recap_ready = bool(state.get("pb_need_full_recap", False) and all_members_ready_now and (curr_time - state.get("pb_last_cast_time", 0.0) >= 15.0))
 
-                                    if not is_already_processing:
+                                        should_call_pb = False
+                                        call_type_desc = ""
+                                        if is_post_certi_zero:
+                                            # 인증 복귀 후(0.0초): 시전자 포함 인게임 파티원 3명 이상일 때만 발동
+                                            if partied_cnt >= 3:
+                                                should_call_pb = True
+                                                call_type_desc = f"인증 복귀 후 파티 {partied_cnt}인 충족"
+                                        elif is_normal_expired:
+                                            should_call_pb = True
+                                            call_type_desc = "정기 쿨타임 만료"
+                                        elif is_recap_ready:
+                                            should_call_pb = True
+                                            call_type_desc = "불참 파티원 전원 사냥터 복귀 완료"
 
-                                        is_in_buff_zone = False
-                                        char_pos_chk = state.get("dungeon_map_pos")
-                                        if char_pos_chk and pc_graph and pc_graph.get("buff_spot_nodes"):
-                                            bn_data = pc_graph["nodes"].get(str(pc_graph["buff_spot_nodes"][0]))
-                                            if bn_data:
-                                                bx = bn_data.get("x", 0) if isinstance(bn_data, dict) else bn_data[0]
-                                                by = bn_data.get("y", 0) if isinstance(bn_data, dict) else bn_data[1]
-                                                if math.hypot(char_pos_chk[0] - bx, char_pos_chk[1] - by) <= 8.5:
-                                                    is_in_buff_zone = True
+                                        if should_call_pb:
+                                            b_node_id = str(pc_graph["buff_spot_nodes"][0])
+                                            if len(pc_graph["buff_spot_nodes"]) > 1:
+                                                b_node_id = str(min(
+                                                    pc_graph["buff_spot_nodes"],
+                                                    key=lambda bn: (pc_graph["nodes"][str(bn)].get("x", 0) - char_pos_chk[0])**2 + (pc_graph["nodes"][str(bn)].get("y", 0) - char_pos_chk[1])**2
+                                                    if str(bn) in pc_graph["nodes"] else float('inf')
+                                                ))
 
-                                        is_out_of_zone_leader = state.get("is_out_of_zone", False)
+                                            bn_data = pc_graph["nodes"].get(b_node_id)
+                                            bx = bn_data.get("x", 0) if isinstance(bn_data, dict) else bn_data[0]
+                                            by = bn_data.get("y", 0) if isinstance(bn_data, dict) else bn_data[1]
+                                            dist_b = math.hypot(char_pos_chk[0] - bx, char_pos_chk[1] - by)
+                                            has_los_b = check_line_of_sight(pc_map_gray_los, char_pos_chk, (bx, by), margin_steps=1) if pc_map_gray_los is not None else True
 
-                                        if is_in_buff_zone or not is_out_of_zone_leader:
-
+                                            new_call_id = int(curr_time * 10) % 10000000
+                                            if new_call_id == 0: new_call_id = 1
+                                            state["pb_call_id"] = new_call_id
                                             state["req_party_buff"] = True
                                             state["party_buff_req_time"] = curr_time
-
-                                            if is_in_buff_zone:
-
-                                                state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
-                                                state["is_active_standby"] = True
-                                                state["standby_reason"] = "팟바람 시전 집합"
-                                                state["portal_blind_mode"] = False
-                                                state["is_mptam_mode"] = True
-                                                state["pending_mptam"] = False
-
-                                                if state.get("pb_wait_start", 0) == 0: state["pb_wait_start"] = curr_time
-
-                                                if has_missed_badge:
-                                                    dprint(key, "👑 [팟바람 즉시 호출] [미시전 딱지] 확인! 리더 버프존 안착 상태이므로 즉각 파티원을 호출합니다.")
-                                                    state["missed_party_buff"] = False
-                                                else:
-                                                    dprint(key, "👑 [팟바람 즉시 호출] 리더가 이미 버프존에 있습니다! 즉각 파티원을 호출합니다.")
-
-                                                state["abort_macro"] = True
-                                                with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                                                clear_movements_only(pico_queues[key])
-                                                if state.get("sweep_active", False):
-                                                    pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
-
-                                                state["is_attacking"] = False; state["arrow_is_firing"] = False; state["has_fired_arrow"] = False; state["is_pulling"] = False; state["loot_state"] = "IDLE"
-                                                state["portal_blind_mode"] = False
-                                                state["cooldown"] = curr_time + 0.1
-                                            else:
-
-                                                dprint(key, "🏃‍♂️ [팟바람 조기 소집 발령] 리더가 버프존으로 이동을 시작함과 동시에 파티원들을 선제 호출합니다! (동반 사냥 기동)")
-                                                state["abort_macro"] = True
-                                                with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                                                clear_movements_only(pico_queues[key])
-                                                if state.get("sweep_active", False):
-                                                    pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
-
-                                                state["is_attacking"] = False; state["arrow_is_firing"] = False; state["has_fired_arrow"] = False; state["is_pulling"] = False; state["loot_state"] = "IDLE"
-
-                                                state["portal_blind_mode"] = False
-                                                state["yolo_blind_active"] = False
-                                                state["yolo_blind_expire"] = 0
-                                                state["target_fsm"] = "PARTY_RETREAT_NAV"
-                                                state["retreat_reason"] = "리더 팟바람 선진입"
-
-                                                if pc_graph and pc_graph.get("buff_spot_nodes"):
-                                                    state["designated_base_node"] = str(pc_graph["buff_spot_nodes"][0])
-
-                                                state["cooldown"] = curr_time + 0.1
-
-                                        else:
-
-                                            if has_missed_badge:
-                                                dprint(key, "🏃‍♂️ [팟바람 선진입] [미시전 딱지] 확인! 사냥 구역 밖이므로, 리더가 먼저 버프존으로 진격합니다.")
-                                            else:
-                                                dprint(key, "🏃‍♂️ [팟바람 선진입] 계열마법(20분) 만료! 사냥 구역 밖이므로, 리더가 먼저 버프존으로 진격합니다.")
-
-                                            state["req_party_buff"] = True
-                                            state["party_buff_req_time"] = curr_time
+                                            state["pb_wait_start"] = curr_time
+                                            state["designated_base_node"] = b_node_id
+                                            state["missed_party_buff"] = False
+                                            state["pb_need_full_recap"] = False
 
                                             state["abort_macro"] = True
                                             with pico_queues[key].mutex: pico_queues[key].queue.clear()
@@ -25867,175 +25047,178 @@ def ai_commander_worker(target_pc):
                                                 pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
 
                                             state["is_attacking"] = False; state["arrow_is_firing"] = False; state["has_fired_arrow"] = False; state["is_pulling"] = False; state["loot_state"] = "IDLE"
-
+                                            state["dungeon_global_path"] = []
+                                            state["current_target_node"] = b_node_id
                                             state["portal_blind_mode"] = False
                                             state["yolo_blind_active"] = False
                                             state["yolo_blind_expire"] = 0
 
-                                            state["target_fsm"] = "PARTY_RETREAT_NAV"
-                                            state["retreat_reason"] = "리더 팟바람 선진입"
-
-                                            if pc_graph and pc_graph.get("buff_spot_nodes"):
-                                                state["designated_base_node"] = str(pc_graph["buff_spot_nodes"][0])
+                                            if dist_b <= 7.0 and has_los_b:
+                                                state["party_buff_status"] = "ARRIVED"
+                                                state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
+                                                state["is_active_standby"] = True
+                                                state["standby_reason"] = "팟바람 시전 집합"
+                                                dprint(key, f"👑 [팟바람 즉시 호출] ({call_type_desc}) 시전자가 이미 버프존(7px 내)에 있어 즉시 파티원을 호출합니다!")
+                                            else:
+                                                state["party_buff_status"] = "MOVING"
+                                                state["target_fsm"] = "PARTY_RETREAT_NAV"
+                                                state["retreat_reason"] = "리더 팟바람 선진입"
+                                                state["pb_move_best_dist"] = dist_b
+                                                state["pb_move_progress_time"] = curr_time
+                                                dprint(key, f"🏃‍♂️ [팟바람 소집 발령] ({call_type_desc}) 전투를 중단하고 시야 0px로 버프존(ID:{b_node_id}) 이동 및 파티원 호출을 시작합니다!")
 
                                             state["cooldown"] = curr_time + 0.1
-                            else:
-
-                                if fsm_retreat not in ["PARTY_BUFF_L_WAIT", "PARTY_BUFF_L_DONE"] and not fsm_retreat.startswith("BUFFING"):
-                                    state["req_party_buff"] = False
+                                            action_taken = True
 
                         if state.get("party_buff_done", False) and curr_time > state.get("party_buff_done_timer", 0):
                             state["party_buff_done"] = False
 
-                    leader_calling = False
-                    leader_done = False
-                    with party_lock:
-                        for p_key, p_data in local_party_states.items():
-                            if p_data.get("party_group") == my_team_group and p_key != key and curr_time - p_data.get("recv_time", 0) < 3.0:
-                                if p_data.get("is_party_inviter", False):
+                    # 2) 일반 파티원(팟바람 미체크 캐릭터) 수신 및 참여/불참 로직
+                    else:
+                        leader_data = None
+                        with party_lock:
+                            for p_uid, p_data in global_invite_states.items():
+                                if str(p_data.get("invite_group", "선택안함")) == my_inv_grp_pb and p_uid != my_uid_pb and (curr_time - p_data.get("recv_time", 0.0) <= 3.5):
+                                    if p_data.get("is_party_inviter", False):
+                                        leader_data = p_data
+                                        break
 
-                                    if p_data.get("req_party_buff", False) and str(p_data.get("party_state", "")) not in ["TOWN", "MAINT", "SURVIVAL"]:
-                                        leader_calling = True
-                                    if p_data.get("party_buff_done", False): leader_done = True
-                                    break
+                        # 초대조 내에 팟바람 체크된 시전자가 있을 때만 동작 (없으면 기존 사냥 100% 유지)
+                        if leader_data is not None:
+                            leader_calling = bool(leader_data.get("req_party_buff", False) and leader_data.get("in_game", False) and str(leader_data.get("party_state", "")) not in ["TOWN", "MAINT", "SURVIVAL"])
+                            leader_done = bool(leader_data.get("party_buff_done", False))
+                            active_call_id = int(leader_data.get("pb_call_id", 0))
+                            leader_base_node = leader_data.get("designated_base_node")
 
-                    if not is_leader:
-
-                        if not leader_calling and state.get("party_buff_status") in ["MOVING", "ARRIVED"]:
-                            current_fsm_cancel = state.get("target_fsm", "")
-                            if current_fsm_cancel in ["PARTY_BUFF_M_WAIT", "PARTY_ACTIVE_STANDBY"] or (current_fsm_cancel == "PARTY_RETREAT_NAV" and state.get("retreat_reason") == "팟바람 수령 집합"):
-                                dprint(key, "🚨 [호출 취소 수신] 리더 위기(사망/마을/텔포)로 인해 팟바람이 취소되었습니다! 경로를 파기하고 사냥으로 복귀합니다.")
+                            # 1순위: 시전 완료 신호 수신 시 즉시 복귀
+                            if leader_done and state.get("party_buff_status") in ["MOVING", "ARRIVED"]:
+                                dprint(key, "🎉 [팟바람 수령 완료] 시전자의 캐스팅 완료 신호 확인! 버프 타이머 갱신 후 사냥터로 즉시 복귀합니다.")
                                 state["party_buff_status"] = "IDLE"
                                 state["portal_blind_mode"] = False
-
-                                state["dungeon_global_path"] = []
-                                state["designated_base_node"] = None
+                                state["yolo_blind_active"] = False
                                 state["is_active_standby"] = False
+                                state["designated_base_node"] = None
+                                state["dungeon_global_path"] = []
+                                state["current_target_node"] = None
+                                state["buff_element_time"] = curr_time + 1200.0 + g_val(-10, 10)
+                                save_buff_times(ai_states)
+                                state["target_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
+                                state["cooldown"] = curr_time + 0.5
+                                action_taken = True
 
-                                if settings.get("use_party_fixed", False): state["target_fsm"] = "PARTY_WAIT"
-                                else: state["target_fsm"] = "IDLE"
+                            # 2순위: 시전자 호출 취소/증발 시 즉시 사냥 복귀
+                            elif not leader_calling and state.get("party_buff_status") in ["MOVING", "ARRIVED"]:
+                                dprint(key, "🚨 [팟바람 호출 해제] 시전자의 호출이 취소/종료되었습니다! 경로를 파기하고 사냥으로 복귀합니다.")
+                                state["party_buff_status"] = "IDLE"
+                                state["portal_blind_mode"] = False
+                                state["yolo_blind_active"] = False
+                                state["is_active_standby"] = False
+                                state["designated_base_node"] = None
+                                state["dungeon_global_path"] = []
+                                state["current_target_node"] = None
+                                state["target_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
                                 state["cooldown"] = curr_time + 0.1
 
-                        elif leader_calling:
+                            # 3순위: 시전자가 호출 중일 때 참여 가능 여부 판별 및 이동
+                            elif leader_calling:
+                                is_in_crisis_m = fsm_retreat.startswith("TOWN_MAINT") or fsm_retreat.startswith("DEATH") or fsm_retreat.startswith("CERTI_") or fsm_retreat in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] or state.get("town_thread_running", False)
+                                is_not_in_party_m = not state.get("in_ingame_party", True)
+                                is_out_zone_m = state.get("is_out_of_zone", False)
+                                char_pos_m = state.get("dungeon_map_pos")
+                                has_b_node_m = bool(pc_graph and (pc_graph.get("buff_spot_nodes") or (leader_base_node and str(leader_base_node) in pc_graph.get("nodes", {}))))
 
-                            if fsm_retreat.startswith("TOWN_MAINT") or fsm_retreat.startswith("DEATH") or fsm_retreat in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"]:
-                                state["party_buff_status"] = "EXCLUDED"
-                            else:
-                                if state.get("party_buff_status", "IDLE") not in ["MOVING", "ARRIVED"]:
+                                # 이미 이번 호출(active_call_id)에서 불참(EXCLUDED)으로 분류된 경우 불참 유지
+                                if active_call_id != 0 and state.get("pb_excluded_call_id") == active_call_id:
+                                    state["party_buff_status"] = "EXCLUDED"
+                                elif state.get("pb_joined_call_id") != active_call_id or state.get("party_buff_status") not in ["MOVING", "ARRIVED"]:
+                                    if is_in_crisis_m or is_not_in_party_m or is_out_zone_m or (char_pos_m is None) or (not has_b_node_m):
+                                        state["party_buff_status"] = "EXCLUDED"
+                                        if active_call_id != 0:
+                                            state["pb_excluded_call_id"] = active_call_id
+                                        dprint(key, "🚫 [팟바람 불참(EXCLUDED)] 현재 참여 불가 상태(마을/인증/Zone이탈/미파티)이므로 불참 플래그를 띄웁니다.")
+                                    else:
+                                        state["pb_joined_call_id"] = active_call_id
+                                        if pc_graph.get("buff_spot_nodes"):
+                                            target_b_node = str(pc_graph["buff_spot_nodes"][0])
+                                            if len(pc_graph["buff_spot_nodes"]) > 1:
+                                                target_b_node = str(min(
+                                                    pc_graph["buff_spot_nodes"],
+                                                    key=lambda bn: (pc_graph["nodes"][str(bn)].get("x", 0) - char_pos_m[0])**2 + (pc_graph["nodes"][str(bn)].get("y", 0) - char_pos_m[1])**2
+                                                    if str(bn) in pc_graph["nodes"] else float('inf')
+                                                ))
+                                        else:
+                                            target_b_node = str(leader_base_node)
 
-                                    is_doing_help = state.get("help_requester", False) or state.get("helping_who") is not None
-                                    if is_doing_help:
-                                        dprint(key, "🚨 [최우선 소집령] 팟바람 호출 수신! 진행 중이던 헬프/도주 모드를 강제 취소하고 리더에게 집결합니다!")
+                                        bn_d = pc_graph["nodes"].get(target_b_node)
+                                        bx_m = bn_d.get("x", 0) if isinstance(bn_d, dict) else bn_d[0]
+                                        by_m = bn_d.get("y", 0) if isinstance(bn_d, dict) else bn_d[1]
+                                        dist_b_m = math.hypot(char_pos_m[0] - bx_m, char_pos_m[1] - by_m)
+                                        has_los_m = check_line_of_sight(pc_map_gray_los, char_pos_m, (bx_m, by_m), margin_steps=1) if pc_map_gray_los is not None else True
+
                                         state["help_requester"] = False
                                         state["helping_who"] = None
+                                        state["designated_base_node"] = target_b_node
+                                        state["party_buff_req_time"] = curr_time
 
-                                    if pc_graph and pc_graph.get("buff_spot_nodes"):
-                                        state["designated_base_node"] = str(pc_graph["buff_spot_nodes"][0])
+                                        state["abort_macro"] = True
+                                        with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                                        clear_movements_only(pico_queues[key])
+                                        if state.get("sweep_active", False):
+                                            pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
 
-                                    state["target_fsm"] = "PARTY_RETREAT_NAV"
-                                    state["retreat_reason"] = "팟바람 수령 집합"
-
-                                    if state.get("is_out_of_zone", False):
-                                        state["portal_blind_mode"] = True
-                                    else:
+                                        state["is_attacking"] = False; state["arrow_is_firing"] = False; state["has_fired_arrow"] = False; state["is_pulling"] = False; state["loot_state"] = "IDLE"
+                                        state["dungeon_global_path"] = []
+                                        state["current_target_node"] = target_b_node
                                         state["portal_blind_mode"] = False
                                         state["yolo_blind_active"] = False
                                         state["yolo_blind_expire"] = 0
 
-                                    if state.get("is_mptam_mode", False):
-                                        dprint(key, "👑 [엠탐 중 소집령] 버프존에서 엠탐 중이므로 즉각 대기열에 합류합니다.")
-                                        state["party_buff_status"] = "ARRIVED"
-                                        state["party_buff_req_time"] = curr_time
-                                    else:
-                                        state["party_buff_status"] = "MOVING"
-                                        state["party_buff_call"] = True
-                                        state["party_buff_req_time"] = curr_time
+                                        if dist_b_m <= 7.0 and has_los_m:
+                                            state["party_buff_status"] = "ARRIVED"
+                                            state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
+                                            state["is_active_standby"] = True
+                                            state["standby_reason"] = "팟바람 수령 집합"
+                                            dprint(key, "🛡️ [팟바람 즉시 대기] 이미 버프존(7px 내)에 있어 즉시 도착(ARRIVED) 상태로 대기합니다!")
+                                        else:
+                                            state["party_buff_status"] = "MOVING"
+                                            state["target_fsm"] = "PARTY_RETREAT_NAV"
+                                            state["retreat_reason"] = "팟바람 수령 집합"
+                                            state["pb_move_best_dist"] = dist_b_m
+                                            state["pb_move_progress_time"] = curr_time
+                                            dprint(key, f"🏃‍♂️ [팟바람 집결 이동] 호출 수신! 전투를 멈추고 시야 0px로 버프존(ID:{target_b_node})으로 이동합니다!")
 
-                                elif state.get("party_buff_status") == "ARRIVED" and fsm_retreat in ["IDLE", "PATROL"]:
-                                    state["party_buff_call"] = True
+                                        state["cooldown"] = curr_time + 0.1
+                                        action_taken = True
+                                else:
+                                    # 이동/대기 중 비상상황(마을/사망/비상텔/파탈) 발생 시 즉시 불참(EXCLUDED) 전환
+                                    if is_in_crisis_m or is_not_in_party_m:
+                                        state["party_buff_status"] = "EXCLUDED"
+                                        if active_call_id != 0:
+                                            state["pb_excluded_call_id"] = active_call_id
+                                        state["is_active_standby"] = False
+                                        state["designated_base_node"] = None
+                                    elif state.get("party_buff_status") == "MOVING" and fsm_retreat == "IDLE":
+                                        state["target_fsm"] = "PARTY_RETREAT_NAV"
+                                        state["retreat_reason"] = "팟바람 수령 집합"
+                            else:
+                                if state.get("party_buff_status") != "IDLE":
+                                    state["party_buff_status"] = "IDLE"
 
-                                elif state.get("party_buff_status") == "MOVING" and fsm_retreat not in ["PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY"]:
-                                    state["party_buff_call"] = True
-                        else:
-                            state["party_buff_status"] = "IDLE"
-                            if state.get("target_fsm") == "PARTY_BUFF_M_WAIT":
-                                state["portal_blind_mode"] = False
-                                if settings.get("use_party_fixed", False): state["target_fsm"] = "PARTY_WAIT"
-                                else: state["target_fsm"] = "IDLE"
-                                state["cooldown"] = curr_time + 0.1
+                # =========================================================================
+                # 🚑 [기존 A~D조 전술 파티 헬프콜/구출 로직 (100% 보존)]
+                # =========================================================================
+                is_party_hunt_active = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
+                my_team_group = settings.get("party_group", "선택안함")
 
-                        if leader_done and (state.get("party_buff_status") == "ARRIVED" or state.get("is_mptam_mode", False)):
-                            if not state.get("is_mptam_mode", False):
-                                dprint(key, "🎉 [팟바람 수령 대기] 리더의 캐스팅 팩트 확인! 버프가 닿을 때까지 2초 대기 후 흩어집니다.")
-                            state["party_buff_status"] = "IDLE"
-                            state["portal_blind_mode"] = False
-                            state["buff_element_time"] = curr_time + 1200.0 + g_val(-10, 10)
-                            save_buff_times(ai_states)
-
-                            if state.get("target_fsm") in ["PARTY_BUFF_M_WAIT", "PARTY_WAIT", "IDLE"]:
-                                if settings.get("use_party_fixed", False): state["target_fsm"] = "PARTY_WAIT"
-                                else: state["target_fsm"] = "IDLE"
-
-                            state["cooldown"] = curr_time + 2.0
-                            action_taken = True
-
+                if is_party_hunt_active and my_team_group != "선택안함":
+                    fsm_retreat = str(state.get("target_fsm", ""))
                     safe_fsms = ["PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV", "TOWN_MAINT", "EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "DEATH_RESTART", "PARTY_BUFF_"]
                     is_mptam_blocking = state.get("is_mptam_mode", False)
-                    is_buff_calling = state.get("party_buff_call", False) or state.get("req_party_buff", False)
                     is_active_standby_now = state.get("is_active_standby", False)
 
-                    allow_retreat_trigger = True
-                    if is_active_standby_now and not is_buff_calling:
-                        allow_retreat_trigger = False
-
-                    if not any(fsm_retreat.startswith(s) for s in safe_fsms) and (not is_mptam_blocking or is_buff_calling) and allow_retreat_trigger:
-
+                    if not any(fsm_retreat.startswith(s) for s in safe_fsms) and not is_mptam_blocking and not is_active_standby_now:
                         retreat_reason = ""
-                        mptam_start_mp_chk = settings.get("mptam_start_pct", 20.0)
-                        if "event" in settings.get("dungeon_name", "") or "오땅" in settings.get("dungeon_name", ""): mptam_start_mp_chk = 20.0
-
                         char_map_pos_chk = state.get("dungeon_map_pos")
-                        dynamic_base_node = None
-
-                        if char_map_pos_chk and pc_graph and pc_graph.get("nodes"):
-                            active_base_zone = active_dungeon.rsplit("-", 1)[0] if "-" in active_dungeon else active_dungeon
-                            min_d_sq = float('inf')
-                            for nid, ndata in pc_graph["nodes"].items():
-                                if isinstance(ndata, dict):
-
-                                    is_sp = ndata.get("is_special", False) or ndata.get("special", False)
-                                    if str(is_sp).lower() == "true": is_sp = True
-                                    if not is_sp: continue
-
-                                    node_zone = str(ndata.get("zone", "")).strip()
-                                    if node_zone:
-                                        zone_list = [z.strip() for z in node_zone.split(",")]
-                                        for z in zone_list:
-                                            z_base = z.rsplit("-", 1)[0] if "-" in z else z
-                                            if active_base_zone == z_base:
-                                                nx = ndata.get("x", 0) if isinstance(ndata, dict) else ndata[0]
-                                                ny = ndata.get("y", 0) if isinstance(ndata, dict) else ndata[1]
-                                                d_sq = (char_map_pos_chk[0] - nx)**2 + (char_map_pos_chk[1] - ny)**2
-                                                if d_sq < min_d_sq:
-                                                    min_d_sq = d_sq
-                                                    dynamic_base_node = str(nid)
-                                                break
-
-                        if retreat_reason and dynamic_base_node and state.get("designated_base_node") is None:
-                            state["designated_base_node"] = dynamic_base_node
-
-                        if not retreat_reason:
-                            if is_leader and state.get("req_party_buff", False):
-                                retreat_reason = "팟바람 시전 집합"
-                                if pc_graph and pc_graph.get("buff_spot_nodes"):
-                                    state["designated_base_node"] = str(pc_graph["buff_spot_nodes"][0])
-                                    dprint(key, f"🚩 [안전 버프존 고정] 리더가 전용 버프 노드(ID:{state['designated_base_node']})를 집결지로 선포했습니다!")
-                                elif dynamic_base_node:
-                                    state["designated_base_node"] = dynamic_base_node
-                            elif not is_leader and state.get("party_buff_call", False):
-                                retreat_reason = "팟바람 수령 집합"
-                                state["party_buff_call"] = False
-
                         if not retreat_reason:
 
                             my_party_members = []
@@ -27231,230 +26414,137 @@ keyboard.Listener(on_press=on_press, on_release=on_release, win32_event_filter=w
 mouse.Listener(on_scroll=on_scroll, on_click=on_click).start()
 
 def sync_gui_vars():
-
     import re
-    def safe_float(var_obj, default_value):
+    def sf(v_dict, k_name, default_value):
         try:
-            raw_val = str(var_obj.get()).strip()
-
-            clean_val = re.sub(r'[^0-9.]', '', raw_val)
-            if clean_val and clean_val != '.':
-                return float(clean_val)
-            return float(default_value)
+            var_obj = v_dict.get(k_name)
+            if var_obj is None:
+                return float(default_value)
+            clean_val = re.sub(r'[^0-9.]', '', str(var_obj.get()).strip())
+            return float(clean_val) if (clean_val and clean_val != '.') else float(default_value)
         except Exception:
             return float(default_value)
+
+    def si(v_dict, k_name, default_value):
+        return int(sf(v_dict, k_name, default_value))
 
     for pc in MINI_PCS:
         k = pc["key"]
         if k in gui_vars:
+            v = gui_vars[k]
+            st = ai_states.get(k, {})
 
-            hp_val = safe_float(gui_vars[k]["heal_pct"], 70.0)
-            heal_mp_val = safe_float(gui_vars[k]["heal_mp_pct"], 30.0)
-            pot_val = safe_float(gui_vars[k]["pot_pct"], 60.0)
-            tele_sec_val = safe_float(gui_vars[k]["tele_hunt_time"], 10.0)
-            blue_mp_val = safe_float(gui_vars[k]["blue_mp_pct"], 15.0)
-            blue_cd_val = safe_float(gui_vars[k]["blue_cd_min"], 20.0)
-            mptam_start_val = safe_float(gui_vars[k]["mptam_start_pct"], 20.0)
-            mptam_stop_val = safe_float(gui_vars[k]["mptam_stop_pct"], 80.0)
-            poison_delay_val = safe_float(gui_vars[k]["poison_delay"], 5.5)
-            pk_drop_val = safe_float(gui_vars[k]["pk_drop_pct"], 15.0)
-            max_combat_val = safe_float(gui_vars[k]["max_combat_time"], 15.0)
-
-            body_start_val = safe_float(gui_vars[k]["body_pct"], 50.0)
-            body_stop_val = safe_float(gui_vars[k]["body_stop_pct"], 90.0)
-            hp_danger_val = safe_float(gui_vars[k]["hp_danger_pct"], 20.0)
-            abs_return_pct_val = safe_float(gui_vars[k]["abs_return_pct"], 15.0)
-
-            move_sens_val = int(safe_float(gui_vars[k]["move_sens"], 2000.0))
-
-            haste_match_val = 92.0 # 💡 92% 하드코딩
-            zone_tele_nodes_val = int(safe_float(gui_vars[k].get("zone_tele_nodes", tk.StringVar(value="120")), 120.0))
-
-            oak_thresh_val = int(safe_float(gui_vars[k]["oak_thresh"], 127.0))
-
-            motion_sens_val = int(safe_float(gui_vars[k]["motion_sensitivity"], 35.0))
-            gb_norm_val = int(safe_float(gui_vars[k]["gb_count_normal"], 3.0))
-            gb_dng_val = int(safe_float(gui_vars[k]["gb_count_dng"], 4.0))
-
-            buy_qty_val = int(safe_float(gui_vars[k]["buy_qty"], 5000.0))
-            buy_count_val = int(safe_float(gui_vars[k]["buy_count"], 3.0))
-            sell_qty_val = int(safe_float(gui_vars[k]["sell_qty"], 50.0))
-
-            pick_arrow_val = int(safe_float(gui_vars[k]["pick_arrow"], 5000.0))
-            pick_tele_val = int(safe_float(gui_vars[k]["pick_teleport"], 20.0))
-            pick_ent_val = int(safe_float(gui_vars[k]["pick_ent"], 10.0))
-            pick_bluepot_val = int(safe_float(gui_vars[k]["pick_bluepot"], 0.0)) # 💡 파랭이 추가
-            buff_mp_pct_val = safe_float(gui_vars[k]["buff_mp_pct"], 50.0)
-
-            p_hp_val = safe_float(gui_vars[k]["party_heal_pct"], 77.0)
-            p_heal_mp_val = safe_float(gui_vars[k]["party_heal_mp_pct"], 12.0)
-            p_pot_val = safe_float(gui_vars[k]["party_pot_pct"], 47.0)
-            p_poison_delay_val = safe_float(gui_vars[k]["party_poison_delay"], 4.0)
-            p_hp_danger_val = safe_float(gui_vars[k]["party_hp_danger_pct"], 30.0)
-            p_abs_return_pct_val = safe_float(gui_vars[k]["party_abs_return_pct"], 15.0)
-            p_pk_drop_val = safe_float(gui_vars[k]["party_pk_drop_pct"], 40.0)
-            p_max_combat_val = safe_float(gui_vars[k]["party_max_combat_time"], 30.0)
-            p_mptam_start_val = safe_float(gui_vars[k]["party_mptam_start_pct"], 30.0)
-            p_mptam_stop_val = safe_float(gui_vars[k]["party_mptam_stop_pct"], 65.0)
-
-            p_mptam_tele_use_val = gui_vars[k]["party_mptam_tele_use"].get() if "party_mptam_tele_use" in gui_vars[k] else False
-            p_mptam_tele_pct_val = safe_float(gui_vars[k]["party_mptam_tele_pct"], 12.0) if "party_mptam_tele_pct" in gui_vars[k] else 12.0
-
-            p_help_call_use_val = gui_vars[k]["party_help_call_use"].get() if "party_help_call_use" in gui_vars[k] else True
-            p_help_call_pct_val = safe_float(gui_vars[k]["party_help_call_pct"], 20.0) if "party_help_call_pct" in gui_vars[k] else 20.0
-            m_elf_conf_val = safe_float(gui_vars[k]["m_elf_conf"], 70.0) if "m_elf_conf" in gui_vars[k] else 70.0
-            m_wiz_conf_val = safe_float(gui_vars[k]["m_wiz_conf"], 70.0) if "m_wiz_conf" in gui_vars[k] else 70.0
-            f_knight_conf_val = safe_float(gui_vars[k]["f_knight_conf"], 70.0) if "f_knight_conf" in gui_vars[k] else 70.0
-            m_knight_conf_val = safe_float(gui_vars[k]["m_knight_conf"], 70.0) if "m_knight_conf" in gui_vars[k] else 70.0
-            m_prince_conf_val = safe_float(gui_vars[k]["m_prince_conf"], 70.0) if "m_prince_conf" in gui_vars[k] else 70.0
-
-            # --- [버그 수정] 체크박스의 실제 상태를 읽어서 내부 변수에 반영하도록 역전 ---
-            _use_hunt = gui_vars[k]["use_party_hunt"].get()
-            _use_fixed = gui_vars[k]["use_party_fixed"].get()
-            _is_inviter = gui_vars[k]["is_party_inviter"].get()
-            _is_puller = gui_vars[k]["is_puller"].get()
+            _use_hunt = v["use_party_hunt"].get()
+            _use_fixed = v["use_party_fixed"].get()
+            _is_inviter = v["is_party_inviter"].get()
+            _is_puller = v["is_puller"].get()
 
             if _use_hunt and _is_inviter: p_mode_val = "이동식 파티 (리더)"
             elif _use_hunt and not _is_inviter: p_mode_val = "이동식 파티 (멤버)"
             elif _use_fixed and _is_puller: p_mode_val = "고정식 파티 (풀러)"
             elif _use_fixed and not _is_puller: p_mode_val = "고정식 파티 (딜러)"
             else: p_mode_val = "솔플 (사용안함)"
-            
-            if "party_mode" in gui_vars[k]:
-                gui_vars[k]["party_mode"].set(p_mode_val)
-            # -------------------------------------------------------------------------
 
-            # 💡 파티 모드에서도 메인 탭의 힐/생존/엠탐 설정을 공통으로 사용
-            final_heal_use = gui_vars[k]["heal_use"].get()
-            final_heal_pct = hp_val
-            final_heal_mp_pct = heal_mp_val
-            final_pot_use = gui_vars[k]["pot_use"].get()
-            final_pot_pct = pot_val
-            final_poison_type = gui_vars[k]["poison_type"].get()
-            final_poison_delay = poison_delay_val
-            final_abs_return_use = gui_vars[k]["abs_return_use"].get()
-            final_abs_return_pct = abs_return_pct_val
-            final_hp_danger_pct = hp_danger_val
-            final_hp_20_action = gui_vars[k]["hp_20_action"].get()
-            final_pk_drop_pct = pk_drop_val
-            final_max_combat_time = max_combat_val
-            final_return_cond = gui_vars[k]["return_cond"].get()
-            final_use_mptam = gui_vars[k]["use_mptam"].get()
-            final_mptam_start_pct = mptam_start_val
-            final_mptam_stop_pct = mptam_stop_val
-            final_is_wiz_mptam = gui_vars[k].get("is_wiz_mptam", tk.BooleanVar(value=False)).get()
+            if "party_mode" in v:
+                v["party_mode"].set(p_mode_val)
 
-            st = ai_states.get(k, {})
+            poison_type_val = v["poison_type"].get()
+            mptam_stop_val = sf(v, "mptam_stop_pct", 80.0)
 
             current_settings[k] = {
-                "com_port": gui_vars[k]["com_port"].get().strip(),
+                "com_port": v["com_port"].get().strip(),
                 "pico_hwid": st.get("pico_hwid", saved_settings.get(k, {}).get("pico_hwid", "")),
-                "role": gui_vars[k]["role"].get(),
-
+                "role": v["role"].get(),
                 "party_mode": p_mode_val,
-                "use_party_hunt": gui_vars[k]["use_party_hunt"].get(),
-                "use_party_fixed": gui_vars[k]["use_party_fixed"].get(),
-                "is_puller": gui_vars[k]["is_puller"].get(),
-                "is_party_inviter": gui_vars[k]["is_party_inviter"].get(),
-                "party_group": gui_vars[k]["party_group"].get(),
-                "invite_group": gui_vars[k]["invite_group"].get() if "invite_group" in gui_vars[k] else "선택안함",
-                "char_name": gui_vars[k]["char_name"].get().strip() if "char_name" in gui_vars[k] else "",
-                "party_dungeon_name": gui_vars[k]["party_dungeon_name"].get(),
-                "dungeon_name": gui_vars[k]["dungeon_name"].get(),
-                "party_poison_type": final_poison_type,
-                "party_mptam_stop_pct": final_mptam_stop_pct,
-
-                "heal_use": final_heal_use,
-                "heal_percent": final_heal_pct,
-                "heal_mp_percent": final_heal_mp_pct,
-                "potion_use": final_pot_use,
-                "potion_percent": final_pot_pct,
-                "poison_type": final_poison_type,
-                "poison_delay": final_poison_delay,
-                "abs_return_use": final_abs_return_use,
-                "abs_return_pct": final_abs_return_pct,
-                "hp_20_action": final_hp_20_action,
-                "hp_danger_pct": final_hp_danger_pct,
-                "pk_drop_pct": final_pk_drop_pct,
-                "max_combat_time": final_max_combat_time,
-                "return_cond": final_return_cond,
-                "use_mptam": final_use_mptam,
-                "mptam_start_pct": final_mptam_start_pct,
-                "mptam_stop_pct": final_mptam_stop_pct,
-                "is_wiz_mptam": final_is_wiz_mptam, # 💡 위즈 상태 저장
-
-                "party_mptam_tele_use": p_mptam_tele_use_val,
-                "party_mptam_tele_pct": p_mptam_tele_pct_val,
-
-                "party_help_call_use": p_help_call_use_val,
-                "party_help_call_pct": p_help_call_pct_val,
-                "use_m_elf_pk": gui_vars[k]["use_m_elf_pk"].get() if "use_m_elf_pk" in gui_vars[k] else False,
-                "use_m_wiz_pk": gui_vars[k]["use_m_wiz_pk"].get() if "use_m_wiz_pk" in gui_vars[k] else False,
-                "use_f_knight_pk": gui_vars[k]["use_f_knight_pk"].get() if "use_f_knight_pk" in gui_vars[k] else False,
-                "use_m_knight_pk": gui_vars[k]["use_m_knight_pk"].get() if "use_m_knight_pk" in gui_vars[k] else False,
-                "use_m_prince_pk": gui_vars[k]["use_m_prince_pk"].get() if "use_m_prince_pk" in gui_vars[k] else False,
-                "m_elf_conf": m_elf_conf_val,
-                "m_wiz_conf": m_wiz_conf_val,
-                "f_knight_conf": f_knight_conf_val,
-                "m_knight_conf": m_knight_conf_val,
-                "m_prince_conf": m_prince_conf_val,
-
-                "buff_set": gui_vars[k]["buff_set"].get(),
-                "combat_buff": gui_vars[k]["combat_buff"].get(),
-                "use_dec_weight": gui_vars[k]["use_dec_weight"].get(),
-                "use_windwalk": gui_vars[k]["use_windwalk"].get(),
-                "use_body": gui_vars[k]["use_body"].get(),
-                "body_percent": body_start_val,
-                "body_stop_percent": body_stop_val,
-                "use_extra_f10": gui_vars[k]["use_extra_f10"].get(),
-                "extra_f10_dur": gui_vars[k]["extra_f10_dur"].get(),
-                "use_blue_pot": gui_vars[k]["use_blue_pot"].get(),
-                "use_blue_pot_combat": gui_vars[k].get("use_blue_pot_combat", tk.BooleanVar(value=False)).get(),
-                "blue_mp_pct": blue_mp_val,
-                "blue_cd_min": blue_cd_val,
-                "tele_hunt_use": gui_vars[k]["tele_hunt_use"].get(),
-                "tele_hunt_time": tele_sec_val,
-
-                "move_sens": move_sens_val,
-                "hunt_first": gui_vars[k]["hunt_first"].get(),
-
-                "chain_kill": False, # 💡 체인킬 Off 하드코딩
-                "haste_match_rate": haste_match_val,
-                "zone_tele_nodes": zone_tele_nodes_val,
-
-                "oak_thresh": oak_thresh_val,
-
-                "motion_sensitivity": motion_sens_val,
-
-                "gangbang_count_normal": gb_norm_val,
-                "gangbang_count_dungeon": gb_dng_val,
-                "use_gb_detect": gui_vars[k]["use_gb_detect"].get(),
-                "gb_exc_user": gui_vars[k]["gb_exc_user"].get(),
-
-                "buy_item": gui_vars[k]["buy_item"].get(),
-                "buy_qty": buy_qty_val,
-                "buy_count": buy_count_val,
-                "sell_item": gui_vars[k]["sell_item"].get(),
-                "sell_qty": sell_qty_val,
-
-                "pick_arrow": pick_arrow_val,
-                "pick_teleport": pick_tele_val,
-                "pick_ent": pick_ent_val,
-                "pick_bluepot": pick_bluepot_val, # 💡 파랭이 설정 저장
-                "use_cc_buff": gui_vars[k]["use_cc_buff"].get(),
-                "buff_mp_pct": buff_mp_pct_val,
-
-                # 👇 웹 인증 내 계정 및 특정 시간대 딜레이 실시간 연동 👇
-                "auth_main_id": gui_vars[k]["auth_main_id"].get().strip(),
-                "auth_main_pw": gui_vars[k]["auth_main_pw"].get().strip(),
-                "auth_main_email": gui_vars[k]["auth_main_email"].get().strip(),
-                "auth_main_phone": gui_vars[k]["auth_main_phone"].get().strip(),
-
-                "auth_delay_use": gui_vars[k]["auth_delay_use"].get(),
-                "auth_auto_captcha": gui_vars[k]["auth_auto_captcha"].get() if "auth_auto_captcha" in gui_vars[k] else False,
-                "auth_delay_start_min": int(safe_float(gui_vars[k]["auth_delay_start_min"], 55.0)),
-                "auth_delay_end_min": int(safe_float(gui_vars[k]["auth_delay_end_min"], 58.0)),
-                "auth_delay_sec": safe_float(gui_vars[k]["auth_delay_sec"], 180.0)
+                "use_party_hunt": _use_hunt,
+                "use_party_fixed": _use_fixed,
+                "is_puller": _is_puller,
+                "is_party_inviter": _is_inviter,
+                "party_group": v["party_group"].get(),
+                "invite_group": v["invite_group"].get() if "invite_group" in v else "선택안함",
+                "char_name": v["char_name"].get().strip() if "char_name" in v else "",
+                "party_dungeon_name": v["party_dungeon_name"].get(),
+                "dungeon_name": v["dungeon_name"].get(),
+                "party_poison_type": poison_type_val,
+                "party_mptam_stop_pct": mptam_stop_val,
+                "heal_use": v["heal_use"].get(),
+                "heal_percent": sf(v, "heal_pct", 70.0),
+                "heal_mp_percent": sf(v, "heal_mp_pct", 30.0),
+                "potion_use": v["pot_use"].get(),
+                "potion_percent": sf(v, "pot_pct", 60.0),
+                "poison_type": poison_type_val,
+                "poison_delay": sf(v, "poison_delay", 5.5),
+                "abs_return_use": v["abs_return_use"].get(),
+                "abs_return_pct": sf(v, "abs_return_pct", 15.0),
+                "hp_20_action": v["hp_20_action"].get(),
+                "hp_danger_pct": sf(v, "hp_danger_pct", 20.0),
+                "pk_drop_pct": sf(v, "pk_drop_pct", 15.0),
+                "max_combat_time": sf(v, "max_combat_time", 15.0),
+                "return_cond": v["return_cond"].get(),
+                "use_mptam": v["use_mptam"].get(),
+                "mptam_start_pct": sf(v, "mptam_start_pct", 20.0),
+                "mptam_stop_pct": mptam_stop_val,
+                "is_wiz_mptam": v["is_wiz_mptam"].get() if "is_wiz_mptam" in v else False,
+                "party_mptam_tele_use": v["party_mptam_tele_use"].get() if "party_mptam_tele_use" in v else False,
+                "party_mptam_tele_pct": sf(v, "party_mptam_tele_pct", 12.0),
+                "party_help_call_use": v["party_help_call_use"].get() if "party_help_call_use" in v else True,
+                "party_help_call_pct": sf(v, "party_help_call_pct", 20.0),
+                "use_m_elf_pk": v["use_m_elf_pk"].get() if "use_m_elf_pk" in v else False,
+                "use_m_wiz_pk": v["use_m_wiz_pk"].get() if "use_m_wiz_pk" in v else False,
+                "use_f_knight_pk": v["use_f_knight_pk"].get() if "use_f_knight_pk" in v else False,
+                "use_m_knight_pk": v["use_m_knight_pk"].get() if "use_m_knight_pk" in v else False,
+                "use_m_prince_pk": v["use_m_prince_pk"].get() if "use_m_prince_pk" in v else False,
+                "m_elf_conf": sf(v, "m_elf_conf", 70.0),
+                "m_wiz_conf": sf(v, "m_wiz_conf", 70.0),
+                "f_knight_conf": sf(v, "f_knight_conf", 70.0),
+                "m_knight_conf": sf(v, "m_knight_conf", 70.0),
+                "m_prince_conf": sf(v, "m_prince_conf", 70.0),
+                "buff_set": v["buff_set"].get(),
+                "combat_buff": v["combat_buff"].get(),
+                "use_dec_weight": v["use_dec_weight"].get(),
+                "use_windwalk": v["use_windwalk"].get(),
+                "use_body": v["use_body"].get(),
+                "body_percent": sf(v, "body_pct", 50.0),
+                "body_stop_percent": sf(v, "body_stop_pct", 90.0),
+                "use_extra_f10": v["use_extra_f10"].get(),
+                "extra_f10_dur": v["extra_f10_dur"].get(),
+                "use_blue_pot": v["use_blue_pot"].get(),
+                "use_blue_pot_combat": v["use_blue_pot_combat"].get() if "use_blue_pot_combat" in v else False,
+                "blue_mp_pct": sf(v, "blue_mp_pct", 15.0),
+                "blue_cd_min": sf(v, "blue_cd_min", 20.0),
+                "tele_hunt_use": v["tele_hunt_use"].get(),
+                "tele_hunt_time": sf(v, "tele_hunt_time", 10.0),
+                "move_sens": si(v, "move_sens", 2000.0),
+                "hunt_first": v["hunt_first"].get(),
+                "chain_kill": False,
+                "haste_match_rate": 92.0,
+                "zone_tele_nodes": si(v, "zone_tele_nodes", 120.0),
+                "oak_thresh": si(v, "oak_thresh", 127.0),
+                "motion_sensitivity": si(v, "motion_sensitivity", 35.0),
+                "gangbang_count_normal": si(v, "gb_count_normal", 3.0),
+                "gangbang_count_dungeon": si(v, "gb_count_dng", 4.0),
+                "use_gb_detect": v["use_gb_detect"].get(),
+                "gb_exc_user": v["gb_exc_user"].get(),
+                "buy_item": v["buy_item"].get(),
+                "buy_qty": si(v, "buy_qty", 5000.0),
+                "buy_count": si(v, "buy_count", 3.0),
+                "sell_item": v["sell_item"].get(),
+                "sell_qty": si(v, "sell_qty", 50.0),
+                "pick_arrow": si(v, "pick_arrow", 5000.0),
+                "pick_teleport": si(v, "pick_teleport", 20.0),
+                "pick_ent": si(v, "pick_ent", 10.0),
+                "pick_bluepot": si(v, "pick_bluepot", 0.0),
+                "use_cc_buff": v["use_cc_buff"].get(),
+                "buff_mp_pct": sf(v, "buff_mp_pct", 50.0),
+                "auth_main_id": v["auth_main_id"].get().strip(),
+                "auth_main_pw": v["auth_main_pw"].get().strip(),
+                "auth_main_email": v["auth_main_email"].get().strip(),
+                "auth_main_phone": v["auth_main_phone"].get().strip(),
+                "auth_delay_use": v["auth_delay_use"].get(),
+                "auth_auto_captcha": v["auth_auto_captcha"].get() if "auth_auto_captcha" in v else False,
+                "auth_delay_start_min": si(v, "auth_delay_start_min", 55.0),
+                "auth_delay_end_min": si(v, "auth_delay_end_min", 58.0),
+                "auth_delay_sec": sf(v, "auth_delay_sec", 180.0)
             }
 
             if k in ai_states and k in btn_dict:
@@ -27469,10 +26559,10 @@ def sync_gui_vars():
     except Exception:
         pass
 
-    gui_snapshot = {}
-    for k, v_dict in gui_vars.items():
-        gui_snapshot[k] = {v_name: str(v_obj.get()) for v_name, v_obj in v_dict.items() if hasattr(v_obj, 'get')}
-
+    gui_snapshot = {
+        k: {v_name: str(v_obj.get()) for v_name, v_obj in v_dict.items() if hasattr(v_obj, 'get')}
+        for k, v_dict in gui_vars.items()
+    }
     current_gui_str = str(gui_snapshot)
 
     if not hasattr(sync_gui_vars, "last_gui_str"):
@@ -28101,7 +27191,7 @@ for i, pc in enumerate(MINI_PCS):
     tk.Checkbutton(party_top_frame, text="파티 이동식", variable=vars_dict["use_party_hunt"], bg=BG_PANEL, fg="#B2FF59", selectcolor="#3E3E42", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0, 5))
     tk.Checkbutton(party_top_frame, text="파티 고정식", variable=vars_dict["use_party_fixed"], bg=BG_PANEL, fg="#B2FF59", selectcolor="#3E3E42", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0, 5))
     tk.Checkbutton(party_top_frame, text="풀러", variable=vars_dict["is_puller"], bg=BG_PANEL, fg="#FF9800", selectcolor="#3E3E42", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(0, 10))
-    tk.Checkbutton(party_top_frame, text="파티리더", variable=vars_dict["is_party_inviter"], bg=BG_PANEL, fg="#FFB300", selectcolor="#3E3E42", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=0)
+    tk.Checkbutton(party_top_frame, text="팟바람", variable=vars_dict["is_party_inviter"], bg=BG_PANEL, fg="#FFB300", selectcolor="#3E3E42", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=0)
 
     party_mid_frame = tk.Frame(tab_party, bg=BG_PANEL)
     party_mid_frame.pack(side="top", fill="x", pady=(0, 4), padx=2)
@@ -28432,6 +27522,144 @@ for i, pc in enumerate(MINI_PCS):
     tk.Entry(sell_frame, textvariable=vars_dict["sell_qty"], width=6, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
     tk.Label(sell_frame, text="개", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=1)
 
+    def _build_supply_macro_env(t_key, default_ui_only=True):
+        import cv2, numpy as np, os, mss, math, random
+        import time as builtin_time
+
+        p_serial, p_lock = picos[t_key], pico_locks[t_key]
+        roi = CAPTURE_ROIS.get(t_key)
+
+        class ManualAbort(BaseException): pass
+
+        def check_abort():
+            if active_manual_target == t_key or ai_states.get(t_key, {}).get("is_hunt_active", False):
+                raise ManualAbort()
+            if str(ai_states.get(t_key, {}).get("target_fsm", "")).startswith("DEATH_RESTART") or ai_states.get(t_key, {}).get("death_detect_start", 0) > 0:
+                raise ManualAbort()
+
+        class SafeTime:
+            @staticmethod
+            def sleep(duration):
+                end_t = builtin_time.time() + duration
+                while builtin_time.time() < end_t:
+                    check_abort()
+                    builtin_time.sleep(0.02)
+            @staticmethod
+            def time():
+                check_abort()
+                return builtin_time.time()
+
+        time_obj = SafeTime()
+        _tmpl_cache = {}
+
+        def get_screen():
+            frame = latest_frames.get(t_key)
+            if frame is not None:
+                return frame
+            with mss.mss() as sct:
+                return cv2.cvtColor(np.array(sct.grab(roi)), cv2.COLOR_BGRA2BGR)
+
+        def find_image_with_mask(screen_bgr, template_path, threshold=0.82, is_npc=False, ui_only=default_ui_only):
+            if screen_bgr is None:
+                return None
+            if template_path not in _tmpl_cache:
+                if not os.path.exists(template_path):
+                    return None
+                try:
+                    with open(template_path, "rb") as f:
+                        np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
+                    tmpl_bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
+                    if tmpl_bgra is None:
+                        return None
+                    if len(tmpl_bgra.shape) == 3 and tmpl_bgra.shape[2] == 4:
+                        _tmpl_cache[template_path] = {"bgr": tmpl_bgra[:, :, :3], "mask": cv2.merge([tmpl_bgra[:, :, 3]] * 3)}
+                    else:
+                        _tmpl_cache[template_path] = {"bgr": tmpl_bgra[:, :, :3] if len(tmpl_bgra.shape) == 3 else tmpl_bgra, "mask": None}
+                except Exception:
+                    return None
+
+            cached = _tmpl_cache[template_path]
+            tmpl_bgr, mask_3c = cached["bgr"], cached["mask"]
+            h_scr, w_scr = screen_bgr.shape[:2]
+            if is_npc:
+                search_area = screen_bgr[0:min(480, h_scr), 0:w_scr]
+            elif ui_only:
+                search_area = screen_bgr[0:min(400, h_scr), 0:min(290, w_scr)]
+            else:
+                search_area = screen_bgr
+
+            if search_area.shape[0] < tmpl_bgr.shape[0] or search_area.shape[1] < tmpl_bgr.shape[1]:
+                return None
+            res = cv2.matchTemplate(search_area, tmpl_bgr, cv2.TM_CCORR_NORMED, mask=mask_3c) if mask_3c is not None else cv2.matchTemplate(search_area, tmpl_bgr, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(res)
+            if max_val >= threshold:
+                th, tw = tmpl_bgr.shape[:2]
+                return (max_loc[0] + tw // 2, max_loc[1] + th // 2)
+            return None
+
+        def click_pos(tx, ty, jitter_x=0, jitter_y=0, delay_min=0.21, delay_max=0.35, double=False):
+            cur_x, cur_y = ai_states.get(t_key, {}).get("cursor_pos", [400, 300])
+            jx = int(round(random.gauss(0, jitter_x / 2.0))) if jitter_x > 0 else 0
+            jy = int(round(random.gauss(0, jitter_y / 2.0))) if jitter_y > 0 else 0
+            final_tx, final_ty = max(5, min(795, tx + jx)), max(5, min(595, ty + jy))
+            dist = math.hypot(final_tx - cur_x, final_ty - cur_y)
+            dur = apply_human_variance(0.08 + 0.04 * math.log2((dist / 20.0) + 1.0)) * 0.91
+
+            deltas = generate_human_deltas(final_tx - cur_x, final_ty - cur_y, duration=dur, behavior="PATROL", key=t_key)
+            if deltas: send_macro_buffer(p_serial, p_lock, deltas, t_key)
+            time_obj.sleep(dur + g_val(0.10, 0.21))
+
+            send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
+            time_obj.sleep(g_val(0.05, 0.08))
+            send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
+            if double:
+                time_obj.sleep(g_val(0.04, 0.08))
+                send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
+                time_obj.sleep(g_val(0.05, 0.08))
+                send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
+
+            time_obj.sleep(g_val(delay_min, delay_max))
+            if t_key in ai_states: ai_states[t_key]["cursor_pos"] = [final_tx, final_ty]
+            return final_tx, final_ty
+
+        def input_number(num_str):
+            for char in str(num_str):
+                kcode = ord(char)
+                send_keyboard_key(p_serial, p_lock, kcode, 1, is_manual=True); time_obj.sleep(g_val(0.04, 0.07))
+                send_keyboard_key(p_serial, p_lock, kcode, 0, is_manual=True); time_obj.sleep(g_val(0.05, 0.10))
+
+        def spam_digits(digits_pool, min_hits, max_hits, fixed_digit=False):
+            hit_count = random.randint(min_hits, max_hits)
+            chosen_fixed = str(random.choice(digits_pool))
+            if fixed_digit:
+                print(f"▶ [스마트 전량 보관] 숫자 '{chosen_fixed}'을(를) {hit_count}회 광클하여 몽땅 넘깁니다!")
+            else:
+                print(f"▶ [최대 수량 입력] 1~5 숫자 무작위로 {hit_count}회 광클합니다!")
+            for i in range(hit_count):
+                kcode = ord(chosen_fixed if fixed_digit else str(random.choice(digits_pool)))
+                send_keyboard_key(p_serial, p_lock, kcode, 1, is_manual=True)
+                time_obj.sleep(g_val(0.02, 0.04) if (i == 0 or i == hit_count - 1) else g_val(0.01, 0.02))
+                send_keyboard_key(p_serial, p_lock, kcode, 0, is_manual=True)
+                time_obj.sleep(g_val(0.05, 0.08) if i == 0 else (g_val(0.10, 0.17) if i == hit_count - 1 else g_val(0.02, 0.05)))
+
+        def wait_and_click_image(img_name, desc, threshold=0.80, timeout=3.0, offset_y=0, jitter_x=0, jitter_y=0, d_min=0.21, d_max=0.35, is_npc=False, ui_only=None, double=False):
+            use_ui_only = (not is_npc) if (ui_only is None and default_ui_only) else bool(ui_only)
+            start_t = time_obj.time()
+            while time_obj.time() - start_t < timeout:
+                pos = find_image_with_mask(get_screen(), img_name, threshold, is_npc=is_npc, ui_only=use_ui_only)
+                if pos:
+                    reaction_t = g_val(0.17, 0.28)
+                    print(f"✅ {desc} 발견! ({reaction_t:.2f}초 인지 후 이동)")
+                    time_obj.sleep(reaction_t)
+                    return click_pos(pos[0], pos[1] + offset_y, jitter_x=jitter_x, jitter_y=jitter_y, delay_min=d_min, delay_max=d_max, double=double)
+                time_obj.sleep(0.03)
+            print(f"❌ {desc} 인식 실패! ('{img_name}' 누끼 확인 요망)")
+            return None
+
+        return p_serial, p_lock, roi, ManualAbort, time_obj, get_screen, find_image_with_mask, click_pos, input_number, spam_digits, wait_and_click_image
+
+    globals()[f"_supply_env_builder_{key}"] = _build_supply_macro_env
+
     def run_auto_buy(target_key=key):
         if not picos.get(target_key):
             print(f"❌ [{target_key}] 피코 연결 안됨!")
@@ -28468,165 +27696,11 @@ for i, pc in enumerate(MINI_PCS):
 
         def test_storage_run():
             import cv2, numpy as np, os, mss, math, random
-            import time as builtin_time
-
-            p_serial = picos[target_key]
-            p_lock = pico_locks[target_key]
-            roi = CAPTURE_ROIS.get(target_key)
+            p_serial, p_lock, roi, ManualAbort, time, get_screen, find_image_with_mask, click_pos, input_number, _spam_digits, wait_and_click_image = _build_supply_macro_env(target_key, default_ui_only=True)
             if not roi:
                 print("❌ ROI 정보가 없습니다. 창 정렬을 먼저 해주세요.")
                 return
-
-            class ManualAbort(BaseException): pass
-
-            def check_abort():
-                if active_manual_target == target_key or ai_states.get(target_key, {}).get("is_hunt_active", False):
-                    raise ManualAbort()
-
-                if str(ai_states.get(target_key, {}).get("target_fsm", "")).startswith("DEATH_RESTART") or ai_states.get(target_key, {}).get("death_detect_start", 0) > 0:
-                    raise ManualAbort()
-
-            class SafeTime:
-                @staticmethod
-                def sleep(duration):
-                    end_t = builtin_time.time() + duration
-                    while builtin_time.time() < end_t:
-                        check_abort()
-                        builtin_time.sleep(0.02)
-                @staticmethod
-                def time():
-                    check_abort()
-                    return builtin_time.time()
-
-            time = SafeTime()
-
-            # ⚡ [초고속 캡처] 매번 mss를 새로 열지 않고 백그라운드 비전 스레드의 최신 프레임을 0ms로 즉시 가져옴
-            def get_screen():
-                frame = latest_frames.get(target_key)
-                if frame is not None:
-                    return frame
-                with mss.mss() as sct:
-                    img = np.array(sct.grab(roi))
-                    return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-
-            # ⚡ [메모리 캐싱 + 좌측 UI 전용 스캔] 디스크 반복 읽기 제거 및 스캔 영역 1/4 축소로 모든 PC에서 동일한 초고속 스크롤 보장
-            _tmpl_cache = {}
-            def find_image_with_mask(screen_bgr, template_path, threshold=0.82, is_npc=False, ui_only=True):
-                if screen_bgr is None:
-                    return None
-                if template_path not in _tmpl_cache:
-                    if not os.path.exists(template_path):
-                        return None
-                    try:
-                        with open(template_path, "rb") as f:
-                            np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
-                        tmpl_bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
-                        if tmpl_bgra is None:
-                            return None
-                        if len(tmpl_bgra.shape) == 3 and tmpl_bgra.shape[2] == 4:
-                            _tmpl_cache[template_path] = {
-                                "bgr": tmpl_bgra[:, :, :3],
-                                "mask": cv2.merge([tmpl_bgra[:, :, 3]] * 3)
-                            }
-                        else:
-                            _tmpl_cache[template_path] = {
-                                "bgr": tmpl_bgra[:, :, :3] if len(tmpl_bgra.shape) == 3 else tmpl_bgra,
-                                "mask": None
-                            }
-                    except Exception:
-                        return None
-
-                cached = _tmpl_cache[template_path]
-                tmpl_bgr = cached["bgr"]
-                mask_3c = cached["mask"]
-
-                h_scr, w_scr = screen_bgr.shape[:2]
-                if is_npc:
-                    search_area = screen_bgr[0:min(480, h_scr), 0:w_scr]
-                elif ui_only:
-                    search_area = screen_bgr[0:min(400, h_scr), 0:min(290, w_scr)]
-                else:
-                    search_area = screen_bgr
-
-                if search_area.shape[0] < tmpl_bgr.shape[0] or search_area.shape[1] < tmpl_bgr.shape[1]:
-                    return None
-
-                if mask_3c is not None:
-                    res = cv2.matchTemplate(search_area, tmpl_bgr, cv2.TM_CCORR_NORMED, mask=mask_3c)
-                else:
-                    res = cv2.matchTemplate(search_area, tmpl_bgr, cv2.TM_CCOEFF_NORMED)
-
-                _, max_val, _, max_loc = cv2.minMaxLoc(res)
-                if max_val >= threshold:
-                    th, tw = tmpl_bgr.shape[:2]
-                    return (max_loc[0] + tw // 2, max_loc[1] + th // 2)
-                return None
-
-            def click_pos(tx, ty, jitter_x=0, jitter_y=0, delay_min=0.21, delay_max=0.35):
-                cur_x, cur_y = ai_states.get(target_key, {}).get("cursor_pos", [400, 300])
-
-                jx = int(round(random.gauss(0, jitter_x / 2.0))) if jitter_x > 0 else 0
-                jy = int(round(random.gauss(0, jitter_y / 2.0))) if jitter_y > 0 else 0
-
-                final_tx = max(5, min(795, tx + jx))
-                final_ty = max(5, min(595, ty + jy))
-
-                dist = math.hypot(final_tx - cur_x, final_ty - cur_y)
-                dur = apply_human_variance(0.08 + 0.04 * math.log2((dist / 20.0) + 1.0)) * 0.91
-
-                deltas = generate_human_deltas(final_tx - cur_x, final_ty - cur_y, duration=dur, behavior="PATROL", key=target_key)
-                if deltas: send_macro_buffer(p_serial, p_lock, deltas, target_key)
-
-                time.sleep(dur + g_val(0.10, 0.21))
-
-                send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
-                time.sleep(g_val(0.05, 0.08))
-                send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
-
-                time.sleep(g_val(delay_min, delay_max))
-                if target_key in ai_states: ai_states[target_key]["cursor_pos"] = [final_tx, final_ty]
-                return final_tx, final_ty
-
-            def input_number(num_str):
-                for char in str(num_str):
-                    kcode = ord(char)
-                    send_keyboard_key(p_serial, p_lock, kcode, 1, is_manual=True)
-                    time.sleep(g_val(0.04, 0.07))
-                    send_keyboard_key(p_serial, p_lock, kcode, 0, is_manual=True)
-                    time.sleep(g_val(0.05, 0.10))
-
-            def spam_random_high_number():
-                target_digit = str(random.choice([5, 6, 7, 8, 9]))
-                hit_count = random.randint(5, 6)
-                print(f"▶ [스마트 전량 보관] 숫자 '{target_digit}'을(를) {hit_count}회 광클하여 몽땅 넘깁니다!")
-                for i in range(hit_count):
-                    kcode = ord(target_digit)
-                    send_keyboard_key(p_serial, p_lock, kcode, 1, is_manual=True)
-
-                    if i == 0 or i == hit_count - 1: hold_time = g_val(0.02, 0.04)
-                    else: hold_time = g_val(0.01, 0.02)
-
-                    time.sleep(hold_time)
-                    send_keyboard_key(p_serial, p_lock, kcode, 0, is_manual=True)
-
-                    if i == 0: sleep_time = g_val(0.05, 0.08)
-                    elif i == hit_count - 1: sleep_time = g_val(0.10, 0.17)
-                    else: sleep_time = g_val(0.02, 0.05)
-
-                    time.sleep(sleep_time)
-
-            def wait_and_click_image(img_name, desc, threshold=0.80, timeout=3.0, offset_y=0, jitter_x=0, jitter_y=0, d_min=0.21, d_max=0.35, is_npc=False):
-                start_t = time.time()
-                while time.time() - start_t < timeout:
-                    pos = find_image_with_mask(get_screen(), img_name, threshold, is_npc=is_npc, ui_only=(not is_npc))
-                    if pos:
-                        reaction_t = g_val(0.17, 0.28)
-                        print(f"✅ {desc} 발견! ({reaction_t:.2f}초 인지 후 이동)")
-                        time.sleep(reaction_t)
-                        return click_pos(pos[0], pos[1] + offset_y, jitter_x=jitter_x, jitter_y=jitter_y, delay_min=d_min, delay_max=d_max)
-                    time.sleep(0.03)
-                print(f"❌ {desc} 인식 실패! ('{img_name}' 누끼 확인 요망)")
-                return None
+            spam_random_high_number = lambda: _spam_digits([5, 6, 7, 8, 9], 5, 6, fixed_digit=True)
 
             try:
                 screen = get_screen()
@@ -28944,146 +28018,12 @@ for i, pc in enumerate(MINI_PCS):
 
         def sell_macro_thread():
             import cv2, numpy as np, os, mss, math, random
-            import time as builtin_time
-
-            p_serial = picos[target_key]
-            p_lock = pico_locks[target_key]
-            roi = CAPTURE_ROIS.get(target_key)
+            builder = globals().get(f"_supply_env_builder_{target_key}")
+            p_serial, p_lock, roi, ManualAbort, time, get_screen, find_image_with_mask, click_pos, input_number, _spam_digits, wait_and_click_image = builder(target_key, default_ui_only=False)
             if not roi:
                 print("❌ ROI 정보가 없습니다. 창 정렬을 먼저 해주세요.")
                 return
-
-            class ManualAbort(BaseException): pass
-
-            def check_abort():
-
-                if active_manual_target == target_key or ai_states.get(target_key, {}).get("is_hunt_active", False):
-                    raise ManualAbort()
-
-            class SafeTime:
-                @staticmethod
-                def sleep(duration):
-                    end_t = builtin_time.time() + duration
-                    while builtin_time.time() < end_t:
-                        check_abort()
-                        builtin_time.sleep(0.02)
-                @staticmethod
-                def time():
-                    check_abort()
-                    return builtin_time.time()
-
-            time = SafeTime()
-
-            def get_screen():
-                with mss.mss() as sct:
-                    img = np.array(sct.grab(roi))
-                    return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-
-            def find_image_with_mask(screen_bgr, template_path, threshold=0.82, is_npc=False, ui_only=False):
-                if not os.path.exists(template_path): return None
-
-                h_scr, w_scr = screen_bgr.shape[:2]
-                if ui_only:
-
-                    search_area = screen_bgr[0:min(400, h_scr), 0:min(290, w_scr)]
-                elif is_npc:
-                    search_area = screen_bgr[0:min(480, h_scr), 0:w_scr]
-                else:
-                    search_area = screen_bgr
-
-                with open(template_path, "rb") as f:
-                    bytes_data = bytearray(f.read())
-                np_arr = np.asarray(bytes_data, dtype=np.uint8)
-                tmpl_bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
-                if tmpl_bgra is None: return None
-
-                if len(tmpl_bgra.shape) == 3 and tmpl_bgra.shape[2] == 4:
-                    tmpl_bgr = tmpl_bgra[:, :, :3]
-                    tmpl_alpha = tmpl_bgra[:, :, 3]
-                    mask_3c = cv2.merge([tmpl_alpha, tmpl_alpha, tmpl_alpha])
-                    res = cv2.matchTemplate(search_area, tmpl_bgr, cv2.TM_CCORR_NORMED, mask=mask_3c)
-                else:
-                    tmpl_bgr = tmpl_bgra[:, :, :3] if len(tmpl_bgra.shape) == 3 else tmpl_bgra
-                    res = cv2.matchTemplate(search_area, tmpl_bgr, cv2.TM_CCOEFF_NORMED)
-
-                min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
-                if max_val >= threshold:
-                    h, w = tmpl_bgr.shape[:2]
-                    return (max_loc[0] + w // 2, max_loc[1] + h // 2)
-                return None
-
-            def click_pos(tx, ty, jitter_x=0, jitter_y=0, delay_min=0.21, delay_max=0.35, double=False):
-                cur_x, cur_y = ai_states.get(target_key, {}).get("cursor_pos", [400, 300])
-
-                jx = int(round(random.gauss(0, jitter_x / 2.0))) if jitter_x > 0 else 0
-                jy = int(round(random.gauss(0, jitter_y / 2.0))) if jitter_y > 0 else 0
-
-                final_tx = max(5, min(795, tx + jx))
-                final_ty = max(5, min(595, ty + jy))
-
-                dist = math.hypot(final_tx - cur_x, final_ty - cur_y)
-                dur = apply_human_variance(0.08 + 0.04 * math.log2((dist / 20.0) + 1.0)) * 0.91
-
-                deltas = generate_human_deltas(final_tx - cur_x, final_ty - cur_y, duration=dur, behavior="PATROL", key=target_key)
-                if deltas: send_macro_buffer(p_serial, p_lock, deltas, target_key)
-
-                time.sleep(dur + g_val(0.10, 0.21))
-
-                send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
-                time.sleep(g_val(0.05, 0.08))
-                send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
-
-                if double:
-                    time.sleep(g_val(0.04, 0.08))
-                    send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
-                    time.sleep(g_val(0.05, 0.08))
-                    send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
-
-                time.sleep(g_val(delay_min, delay_max))
-                if target_key in ai_states: ai_states[target_key]["cursor_pos"] = [final_tx, final_ty]
-                return final_tx, final_ty
-
-            def input_number(num_str):
-                for char in str(num_str):
-                    kcode = ord(char)
-                    send_keyboard_key(p_serial, p_lock, kcode, 1, is_manual=True)
-                    time.sleep(g_val(0.04, 0.07))
-                    send_keyboard_key(p_serial, p_lock, kcode, 0, is_manual=True)
-                    time.sleep(g_val(0.05, 0.10))
-
-            def spam_random_low_number():
-
-                hit_count = random.randint(4, 5)
-                print(f"▶ [최대 수량 입력] 1~5 숫자 무작위로 {hit_count}회 광클합니다!")
-                for i in range(hit_count):
-                    target_digit = str(random.choice([1, 2, 3, 4, 5]))
-                    kcode = ord(target_digit)
-                    send_keyboard_key(p_serial, p_lock, kcode, 1, is_manual=True)
-
-                    if i == 0 or i == hit_count - 1: hold_time = g_val(0.02, 0.04)
-                    else: hold_time = g_val(0.01, 0.02)
-
-                    time.sleep(hold_time)
-                    send_keyboard_key(p_serial, p_lock, kcode, 0, is_manual=True)
-
-                    if i == 0: sleep_time = g_val(0.05, 0.08)
-                    elif i == hit_count - 1: sleep_time = g_val(0.10, 0.17)
-                    else: sleep_time = g_val(0.02, 0.05)
-
-                    time.sleep(sleep_time)
-
-            def wait_and_click_image(img_name, desc, threshold=0.80, timeout=3.0, offset_y=0, jitter_x=0, jitter_y=0, d_min=0.21, d_max=0.35, is_npc=False, ui_only=False, double=False):
-                start_t = time.time()
-                while time.time() - start_t < timeout:
-                    pos = find_image_with_mask(get_screen(), img_name, threshold, is_npc=is_npc, ui_only=ui_only)
-                    if pos:
-                        reaction_t = g_val(0.17, 0.28)
-                        print(f"✅ {desc} 발견! ({reaction_t:.2f}초 인지 후 이동)")
-                        time.sleep(reaction_t)
-                        return click_pos(pos[0], pos[1] + offset_y, jitter_x=jitter_x, jitter_y=jitter_y, delay_min=d_min, delay_max=d_max, double=double)
-                    time.sleep(0.03)
-                print(f"❌ {desc} 인식 실패! ('{img_name}' 누끼 확인 요망)")
-                return None
+            spam_random_low_number = lambda: _spam_digits([1, 2, 3, 4, 5], 4, 5, fixed_digit=False)
 
             try:
                 screen = get_screen()
