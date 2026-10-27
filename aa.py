@@ -21,20 +21,17 @@ def os_keep_awake_thread():
         win32process.SetPriorityClass(handle, win32process.HIGH_PRIORITY_CLASS)
     except: pass
 
-    try:
-        ES_CONTINUOUS = 0x80000000
-        ES_SYSTEM_REQUIRED = 0x00000001
-        ES_DISPLAY_REQUIRED = 0x00000002
-        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)
-    except: pass
+    ES_CONTINUOUS = 0x80000000
+    ES_SYSTEM_REQUIRED = 0x00000001
+    ES_DISPLAY_REQUIRED = 0x00000002
 
     while True:
         try:
-
-            ctypes.windll.user32.mouse_event(0x0001, 0, 0, 0, 0)
+            # 마우스 입력 스트림(RawInput)에 간섭을 주지 않고 OS 절전 및 화면 꺼짐만 완벽 차단
+            ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)
         except: pass
 
-        time.sleep(1.0)
+        time.sleep(30.0)
 
 import threading
 threading.Thread(target=os_keep_awake_thread, daemon=True).start()
@@ -4257,10 +4254,9 @@ def pico_worker_thread(key):
         target_time = time.perf_counter() + g_time(a, b, key)
         while True:
             rem = target_time - time.perf_counter()
-            if rem <= 0 or ai_states[key].get("abort_macro", False): break
+            if rem <= 0 or active_manual_target == key or ai_states[key].get("abort_macro", False): break
             if rem > 0.002: time.sleep(0.001)
-            elif rem > 0.0005: time.sleep(0)
-            else: pass
+            else: time.sleep(0)
 
     def get_key_bounds(keycode):
             """형님 최적화: 파지 위치별 과하지 않은 편차의 기본 체공 시간"""
@@ -26001,9 +25997,9 @@ def safe_ai_commander_worker(pc):
 for pc in MINI_PCS:
     threading.Thread(target=safe_ai_commander_worker, args=(pc,), daemon=True).start()
 
-sensor_raw_dx, sensor_raw_dy = 0, 0
+sensor_raw_dx, sensor_raw_dy = 0.0, 0.0
 mouse_data_lock = threading.Lock()
-SENSITIVITY = 0.75
+SENSITIVITY = 0.70  # 💡 지연(0.55 감쇠) 제거 및 소수점 복원 후 기존 0.75 체감 속도와 동일하게 맞춘 보정값
 pressed_keys = {}
 overlay_win = None
 ignore_clicks = False
@@ -26043,12 +26039,20 @@ def manual_event_worker():
 
 threading.Thread(target=manual_event_worker, daemon=True).start()
 
-def _force_raise_overlay_win():
-    """OBS 프로젝터가 클릭 포커스를 뺏어가지 못하도록 overlay_win을 Win32 최상단으로 강제 고정하고 파섹 커서를 즉시 숨깁니다."""
+def _force_raise_overlay_win(force=False):
+    """OBS 프로젝터가 클릭 포커스를 뺏어가지 못하도록 overlay_win을 Win32 최상단으로 고정하되, 이미 포커스 상태면 중복 호출을 생략해 마우스 끊김을 방지합니다."""
     global overlay_win
     if not overlay_win or active_manual_target is None:
         return
     try:
+        ov_hwnd = win32gui.GetParent(overlay_win.winfo_id()) or overlay_win.winfo_id()
+        fg_hwnd = win32gui.GetForegroundWindow()
+
+        # 이미 오버레이 창이 최상단 포커스를 잡고 있다면 무거운 스레드 연결/SetCursorPos를 생략하여 초기 마우스 스터터링 원천 차단!
+        if not force and fg_hwnd == ov_hwnd:
+            ctypes.windll.user32.SetCursor(0)
+            return
+
         overlay_win.update_idletasks()
         ov_hwnd = win32gui.GetParent(overlay_win.winfo_id()) or overlay_win.winfo_id()
 
@@ -26056,7 +26060,6 @@ def _force_raise_overlay_win():
         ctypes.windll.user32.ReleaseCapture()
 
         # 2) 현재 포그라운드 스레드(OBS)와 파이썬 스레드를 연결하여 Foreground Lock 우회 후 포커스 탈취
-        fg_hwnd = win32gui.GetForegroundWindow()
         fg_tid = ctypes.windll.user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else 0
         cur_tid = ctypes.windll.kernel32.GetCurrentThreadId()
 
@@ -26080,9 +26083,9 @@ def _force_raise_overlay_win():
         overlay_win.lift()
         overlay_win.focus_force()
 
-        # 3) 제자리 마우스 이벤트(WM_SETCURSOR)를 강제 발생시켜 파섹(Parsec)이 즉시 커서 숨김(cursor="none")을 인식하게 함
-        pt = win32api.GetCursorPos()
-        ctypes.windll.user32.SetCursorPos(pt[0], pt[1])
+        if force:
+            pt = win32api.GetCursorPos()
+            ctypes.windll.user32.SetCursorPos(pt[0], pt[1])
         ctypes.windll.user32.SetCursor(0)
     except Exception:
         pass
@@ -26112,17 +26115,15 @@ def sync_overlay_ui(key):
             overlay_win.config(bg="black", cursor="none")
             overlay_win.bind("<Button>", lambda e: "break")
 
-        # 1) 마우스를 매크로 GUI로 옮기지 않아도 즉시 노란색 배경으로 강제 렌더링!
         update_gui_status()
         try:
             root.update_idletasks()
         except Exception:
             pass
 
-        # 2) 생성 직후 + 0.08초 뒤 + 0.2초 뒤 3연속 최상단 고정으로 OBS 포커스 역전 원천 차단
-        _force_raise_overlay_win()
-        root.after(80, _force_raise_overlay_win)
-        root.after(200, _force_raise_overlay_win)
+        # 최초 1회만 강제 포커스 및 커서 숨김 트리거, 이후에는 포커스를 뺏겼을 때만 작동
+        _force_raise_overlay_win(force=True)
+        root.after(80, lambda: _force_raise_overlay_win(force=False))
 
 def toggle_manual(key):
     global active_manual_target, sensor_raw_dx, sensor_raw_dy, ignore_clicks
@@ -26185,15 +26186,25 @@ def toggle_manual(key):
                 manual_event_queue.put(('KEY', picos[old_key], pico_locks[old_key], k, 0))
 
             if old_key in ai_states:
+                ai_states[old_key]["abort_macro"] = True
                 ai_states[old_key]["skid_dx"] = 0
                 ai_states[old_key]["skid_dy"] = 0
                 ai_states[old_key]["body_held"] = False
                 ai_states[old_key]["sweep_active"] = False
 
     active_manual_target = key
-    sensor_raw_dx, sensor_raw_dy = 0, 0
+    with mouse_data_lock:
+        sensor_raw_dx, sensor_raw_dy = 0.0, 0.0
     pressed_keys.clear()
     ignore_clicks = True
+
+    if key in ai_states:
+        # 💡 진행 중이던 매크로 이동/드래그/대기를 0ms 만에 즉시 중단시켜 수동 마우스 간섭 차단
+        ai_states[key]["abort_macro"] = True
+        ai_states[key]["skid_dx"] = 0
+        ai_states[key]["skid_dy"] = 0
+        ai_states[key]["body_held"] = False
+        ai_states[key]["sweep_active"] = False
 
     with mouse_debounce_lock:
         for t in mouse_release_timers.values(): t.cancel()
@@ -26212,15 +26223,8 @@ def toggle_manual(key):
         manual_event_queue.put(('KEY', picos[key], pico_locks[key], 197, 0))
         manual_event_queue.put(('KEY', picos[key], pico_locks[key], 200, 0))
 
-    if key in ai_states:
-        ai_states[key]["skid_dx"] = 0
-        ai_states[key]["skid_dy"] = 0
-        ai_states[key]["body_held"] = False
-        ai_states[key]["sweep_active"] = False
-
     _GUI_TASK_QUEUE.put((sync_overlay_ui, (key,)))
     try:
-        # 잠자고 있는 Tkinter 메시지 루프를 0ms 만에 즉시 깨움
         ctypes.windll.user32.PostMessageW(root.winfo_id(), 0x0000, 0, 0)
     except Exception:
         pass
@@ -26248,20 +26252,14 @@ def manual_transmitter_thread():
 
         with mouse_data_lock:
             dx, dy = sensor_raw_dx, sensor_raw_dy
-            sensor_raw_dx, sensor_raw_dy = 0, 0
+            sensor_raw_dx, sensor_raw_dy = 0.0, 0.0
 
-        accum_x += (dx * SENSITIVITY)
-        accum_y += (dy * SENSITIVITY)
+        # 💡 0.55 지연 필터 제거: 들어온 마우스 이동량을 즉시 1:1 반영하고 소수점 잔량만 보존
+        accum_x = max(-254.0, min(254.0, accum_x + (dx * SENSITIVITY)))
+        accum_y = max(-254.0, min(254.0, accum_y + (dy * SENSITIVITY)))
 
-        if abs(accum_x) < 2.0 and abs(accum_y) < 2.0:
-            send_x = accum_x
-            send_y = accum_y
-        else:
-            send_x = accum_x * 0.55
-            send_y = accum_y * 0.55
-
-        send_dx = int(max(-127, min(127, round(send_x))))
-        send_dy = int(max(-127, min(127, round(send_y))))
+        send_dx = int(max(-127, min(127, round(accum_x))))
+        send_dy = int(max(-127, min(127, round(accum_y))))
 
         accum_x -= send_dx
         accum_y -= send_dy
@@ -26274,11 +26272,15 @@ def manual_transmitter_thread():
         if next_tick < now - 0.016:
             next_tick = now
 
-        if next_tick - time.perf_counter() > 0.002:
-            time.sleep(0.001)
-
-        while time.perf_counter() < next_tick:
-            pass
+        # 💡 파이썬 GIL 독점(while pass)을 제거하고 time.sleep(0)으로 양보하여 마우스 수신 스레드 병목 완벽 제거
+        while True:
+            rem = next_tick - time.perf_counter()
+            if rem <= 0:
+                break
+            if rem > 0.0018:
+                time.sleep(0.001)
+            else:
+                time.sleep(0)
 
         next_tick += POLLING_RATE
 
@@ -26291,14 +26293,18 @@ def rawinput_sensor_thread():
     class RAWINPUTHEADER(ctypes.Structure): _fields_ = [("dwType", wintypes.DWORD), ("dwSize", wintypes.DWORD), ("hDevice", wintypes.HANDLE), ("wParam", wintypes.WPARAM)]
     class RAWINPUT(ctypes.Structure): _fields_ = [("header", RAWINPUTHEADER), ("mouse", RAWMOUSE)]
 
+    screen_w = float(win32api.GetSystemMetrics(0))
+    screen_h = float(win32api.GetSystemMetrics(1))
+
     def wndproc(hwnd, msg, wparam, lparam):
         global sensor_raw_dx, sensor_raw_dy
 
         current_target = active_manual_target
 
         if not current_target:
-            if hasattr(wndproc, "last_target"):
+            if getattr(wndproc, "last_target", None) is not None:
                 wndproc.last_target = None
+                wndproc.has_abs_base = False
             return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
 
         if msg == 0x00FF:
@@ -26311,18 +26317,17 @@ def rawinput_sensor_thread():
 
                 if getattr(wndproc, "last_target", None) != current_target:
                     wndproc.last_target = current_target
-                    if flags & 0x01:
-                        wndproc.last_abs_x, wndproc.last_abs_y = dx, dy
-                    return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
+                    wndproc.has_abs_base = False
 
                 if flags & 0x01:
-                    if not hasattr(wndproc, "last_abs_x"):
+                    if not getattr(wndproc, "has_abs_base", False):
                         wndproc.last_abs_x, wndproc.last_abs_y = dx, dy
+                        wndproc.has_abs_base = True
                         return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
 
-                    screen_w, screen_h = win32api.GetSystemMetrics(0), win32api.GetSystemMetrics(1)
-                    real_dx = int((dx - wndproc.last_abs_x) / 65535.0 * screen_w)
-                    real_dy = int((dy - wndproc.last_abs_y) / 65535.0 * screen_h)
+                    # 💡 파섹 절대좌표 변환 시 int() 버림을 제거하여 저속 이동 시 픽셀 증발(먹통) 현상 해결
+                    real_dx = ((dx - wndproc.last_abs_x) / 65535.0) * screen_w
+                    real_dy = ((dy - wndproc.last_abs_y) / 65535.0) * screen_h
                     wndproc.last_abs_x, wndproc.last_abs_y = dx, dy
                     dx, dy = real_dx, real_dy
 
@@ -26357,8 +26362,8 @@ def on_click(x, y, button, pressed):
         if ignore_clicks:
             if not pressed:
                 ignore_clicks = False
-                # 💡 OBS 화면을 클릭했던 마우스 버튼을 떼는 순간, OBS가 가져갔던 포커스를 overlay_win으로 한 번 더 회수!
-                _GUI_TASK_QUEUE.put((_force_raise_overlay_win, ()))
+                # 💡 포커스를 잃었을 때만 가볍게 회수 (이미 포커스 상태면 마우스 흐름 방해 금지)
+                _GUI_TASK_QUEUE.put((_force_raise_overlay_win, (False,)))
                 try:
                     ctypes.windll.user32.PostMessageW(root.winfo_id(), 0x0000, 0, 0)
                 except Exception:
