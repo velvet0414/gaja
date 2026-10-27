@@ -1478,6 +1478,7 @@ def local_ipc_broadcaster_thread(my_key):
                     "pb_call_id": st.get("pb_call_id", 0),
                     "party_buff_status": st.get("party_buff_status", "IDLE"),
                     "party_buff_done": st.get("party_buff_done", False),
+                    "post_certi_need_pb": bool(st.get("post_certi_need_pb", False)),
                     "dungeon_name": current_settings.get(my_key, {}).get("dungeon_name", ""),
                     "is_out_of_zone": st.get("is_out_of_zone", False)
                 }
@@ -5886,7 +5887,7 @@ def ai_commander_worker(target_pc):
 
     # 👇👇 [여기서부터 복사해서 추가] 👇👇
     def check_zone_match(gui_name, json_name):
-        """GUI 사냥터 이름과 JSON 노드 속성을 스마트하게 매칭하는 만능 함수"""
+        """GUI 사냥터 이름과 베이커 JSON 노드 속성(수던X-1 등)을 스마트하게 매칭하는 만능 함수"""
         if not json_name: return True
         gui_name = str(gui_name).strip()
         json_name = str(json_name).strip()
@@ -5897,10 +5898,20 @@ def ai_commander_worker(target_pc):
         j_nums = [int(x) for x in re.findall(r'\d+', json_name)]
         
         if g_nums and j_nums:
-            if g_nums == j_nums: return True
             is_bd = "본던" in gui_name or "gludio" in gui_name.lower() or "사던" in gui_name or "silver" in gui_name.lower()
-            if is_bd and len(g_nums) >= 2 and len(j_nums) == 1 and g_nums[1] == j_nums[0]:
-                return True
+            if is_bd and len(g_nums) >= 2:
+                # 💡 본던/사던(예: '사던 4-1')은 두 번째 숫자(g_nums[1] = 1)가 구역 번호!
+                target_zone_num = g_nums[1]
+                # 베이커(map_baker)에서 숫자키를 누르면 '수던1-1' 형태로 저장되므로 첫 번째 숫자(j_nums[0] = 1)와 구역 번호를 비교!
+                if "수던" in json_name or "heine" in json_name.lower():
+                    return target_zone_num == j_nums[0]
+                if len(j_nums) == 1:
+                    return target_zone_num == j_nums[0]
+                if "본던" in json_name or "gludio" in json_name.lower() or "사던" in json_name or "silver" in json_name.lower():
+                    return (g_nums[0] == j_nums[0]) and (target_zone_num == j_nums[1])
+                return target_zone_num == j_nums[0]
+
+            if g_nums == j_nums: return True
             if g_nums[0] == j_nums[0]:
                 if len(g_nums) == 1 or len(j_nums) == 1: return True
                 if len(g_nums) >= 2 and len(j_nums) >= 2 and g_nums[1] == j_nums[1]: return True
@@ -7909,6 +7920,7 @@ def ai_commander_worker(target_pc):
                         # ▶️ [버프 타이머 일시정지 해제 & 계열마법/라이트 0초 확정 저장 + 10초 텀 예약]
                         state["buff_element_time"] = 0.0
                         state["buff_light_time"] = 0.0
+                        state["post_certi_need_pb"] = True
                         state["post_certi_fast_buffs"] = {"element", "light"}
                         state.pop("certi_frozen_buffs", None)
                         state.pop("certi_haste_elapsed", None)
@@ -10062,22 +10074,31 @@ def ai_commander_worker(target_pc):
             if state.get("is_hunt_active", False) and not state.get("is_paused", False) and not my_fsm_zone.startswith("TOWN_MAINT") and not my_fsm_zone.startswith("DEATH") and my_fsm_zone not in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY"] and (is_party_zone_chk2 or is_solo_zone_mode) and is_m_out_of_zone and curr_map_pos and pc_graph and pc_graph.get("nodes"):
                 curr_target_str = str(state.get("current_target_node", ""))
                 is_curr_target_valid_zone = False
+                raw_sp_set_early = {str(s) for s in pc_graph.get("special_nodes", [])}
 
-                if curr_target_str and curr_target_str in pc_graph["nodes"]:
-                    c_data = pc_graph["nodes"][curr_target_str]
+                # 맵 내에 active_dungeon과 직접 매칭되는 zone 노드가 존재하는지 사전 확인 (길찾기 폴백과 100% 동기화)
+                has_exact_zone_nodes = False
+                for _nid, _ndata in pc_graph["nodes"].items():
+                    if isinstance(_ndata, dict):
+                        _nz = str(_ndata.get("zone", "")).strip()
+                        if _nz and any(check_zone_match(active_dungeon, z.strip()) for z in _nz.split(",")):
+                            has_exact_zone_nodes = True
+                            break
+
+                c_data = pc_graph["nodes"].get(curr_target_str) or (pc_graph["nodes"].get(int(curr_target_str)) if curr_target_str.isdigit() else None)
+                if isinstance(c_data, dict):
                     if str(c_data.get("is_buff_spot", False)).lower() == "true":
                         is_curr_target_valid_zone = True
                     else:
                         c_zone = str(c_data.get("zone", "")).strip()
-                        if c_zone:
+                        if c_zone and has_exact_zone_nodes:
                             for z in [z.strip() for z in c_zone.split(",")]:
                                 if check_zone_match(active_dungeon, z):
                                     is_curr_target_valid_zone = True
                                     break
                         else:
-                            c_sp = c_data.get("is_special", False) or c_data.get("special", False)
+                            c_sp = c_data.get("is_special", False) or c_data.get("special", False) or (curr_target_str in raw_sp_set_early)
                             if str(c_sp).lower() == "true": is_curr_target_valid_zone = True
-                            else: is_curr_target_valid_zone = False
 
                 if not is_curr_target_valid_zone:
                     best_zone_node_los = None
@@ -10091,22 +10112,20 @@ def ai_commander_worker(target_pc):
                             ny = ndata.get("y", 0) if isinstance(ndata, dict) else ndata[1]
 
                             node_zone = str(ndata.get("zone", "")).strip()
-                            is_buff = ndata.get("is_buff_spot", False)
-                            if str(is_buff).lower() == "true": is_buff = True
+                            is_buff = str(ndata.get("is_buff_spot", False)).lower() == "true"
 
                             is_my_zone = False
                             if is_buff:
                                 is_my_zone = True
-                            elif node_zone:
+                            elif node_zone and has_exact_zone_nodes:
                                 for z in [z.strip() for z in node_zone.split(",")]:
                                     if check_zone_match(active_dungeon, z):
                                         is_my_zone = True
                                         break
                             else:
-                                is_sp = ndata.get("is_special", False) or ndata.get("special", False)
-                                if str(is_sp).lower() == "true": is_sp = True
-                                if is_sp: is_my_zone = True
-                                else: is_my_zone = False
+                                is_sp = ndata.get("is_special", False) or ndata.get("special", False) or (str(nid) in raw_sp_set_early)
+                                if str(is_sp).lower() == "true":
+                                    is_my_zone = True
 
                             if is_my_zone:
                                 d = (nx - curr_map_pos[0])**2 + (ny - curr_map_pos[1])**2
@@ -17645,32 +17664,43 @@ def ai_commander_worker(target_pc):
                 if curr_time - state.get("zone_check_time", 0) > 1.0:
                     char_map_pos_for_zone = state.get("dungeon_map_pos")
                     my_zone_nodes = []
+                    buff_zone_nodes = []
                     sp_zone_nodes = []
+                    all_sp_fallback_nodes = []
                     raw_sp_set = {str(s) for s in pc_graph.get("special_nodes", [])}
 
                     for nid, ndata in pc_graph["nodes"].items():
                         if isinstance(ndata, dict):
-                            is_buff = ndata.get("is_buff_spot", False)
-                            if str(is_buff).lower() == "true": is_buff = True
+                            s_nid = str(nid)
+                            is_buff = str(ndata.get("is_buff_spot", False)).lower() == "true"
                             if is_buff:
-                                my_zone_nodes.append(str(nid))
-                                continue
+                                buff_zone_nodes.append(s_nid)
+
+                            is_sp = ndata.get("is_special", False) or ndata.get("special", False) or (s_nid in raw_sp_set)
+                            if str(is_sp).lower() == "true":
+                                all_sp_fallback_nodes.append(s_nid)
 
                             node_zone = str(ndata.get("zone", "")).strip()
                             # 💡 1순위: zone 텍스트 속성이 일치하는 노드 수집
                             if node_zone:
                                 for z in [z.strip() for z in node_zone.split(",")]:
                                     if check_zone_match(active_dungeon, z):
-                                        my_zone_nodes.append(str(nid))
+                                        my_zone_nodes.append(s_nid)
                                         break
-                            else:
-                                # 💡 2순위: 개별 JSON(silver4-1.json 등)에서 zone 텍스트 없이 스페셜 노드로만 구역을 찍은 경우 호환
-                                is_sp = ndata.get("is_special", False) or ndata.get("special", False) or (str(nid) in raw_sp_set)
-                                if str(is_sp).lower() == "true":
-                                    sp_zone_nodes.append(str(nid))
+                            elif str(is_sp).lower() == "true":
+                                # 💡 2순위: zone 텍스트 없이 스페셜 노드로만 찍은 노드 수집
+                                sp_zone_nodes.append(s_nid)
 
-                    if not my_zone_nodes and sp_zone_nodes:
-                        my_zone_nodes = sp_zone_nodes
+                    # 💡 매칭된 숫자 노드가 없을 때 버프 노드(B) 1개 때문에 전체 스페셜/숫자 노드가 무시되지 않도록 폴백 후 합산!
+                    if not my_zone_nodes:
+                        if sp_zone_nodes:
+                            my_zone_nodes = list(sp_zone_nodes)
+                        elif all_sp_fallback_nodes:
+                            my_zone_nodes = list(all_sp_fallback_nodes)
+
+                    for b_nid in buff_zone_nodes:
+                        if b_nid not in my_zone_nodes:
+                            my_zone_nodes.append(b_nid)
 
                     was_out = state.get("is_out_of_zone", False)
                     is_out_of_zone = False
@@ -17680,7 +17710,7 @@ def ai_commander_worker(target_pc):
                         closest_zn = None
 
                         for zn in my_zone_nodes:
-                            z_node = pc_graph["nodes"].get(zn)
+                            z_node = pc_graph["nodes"].get(zn) or (pc_graph["nodes"].get(int(zn)) if str(zn).isdigit() else None)
                             if z_node:
                                 zx = z_node.get("x", 0) if isinstance(z_node, dict) else z_node[0]
                                 zy = z_node.get("y", 0) if isinstance(z_node, dict) else z_node[1]
@@ -21393,7 +21423,8 @@ def ai_commander_worker(target_pc):
                                 with party_lock:
                                     for p_uid, p_data in global_invite_states.items():
                                         if str(p_data.get("invite_group", "선택안함")) == my_inv_grp_sb and p_uid != my_uid_sb:
-                                            if curr_time - p_data.get("recv_time", 0) < 5.0:
+                                            recv_gap = curr_time - p_data.get("recv_time", 0)
+                                            if recv_gap < 60.0:
                                                 p_in_game = p_data.get("in_game", False)
                                                 p_in_party = p_data.get("in_party", False)
                                                 p_in_hg = p_data.get("in_hunting_ground", True)
@@ -21401,8 +21432,8 @@ def ai_commander_worker(target_pc):
                                                 p_status = p_data.get("party_buff_status", "IDLE")
                                                 p_out_z = p_data.get("is_out_of_zone", False)
 
-                                                # 불참(EXCLUDED), 미파티, 마을/인증, 혹은 출발 전 Zone 이탈자는 불참 인원으로 분류
-                                                if (not p_in_game) or (not p_in_party) or (not p_in_hg) or (p_state in ["TOWN", "MAINT", "SURVIVAL"]) or (p_status == "EXCLUDED") or (p_out_z and p_status not in ["MOVING", "ARRIVED"]):
+                                                # 패킷 지연(>5초), 불참(EXCLUDED), 미파티, 마을/인증, 혹은 출발 전 Zone 이탈자는 불참 인원으로 분류
+                                                if (recv_gap >= 5.0) or (not p_in_game) or (not p_in_party) or (not p_in_hg) or (p_state in ["TOWN", "MAINT", "SURVIVAL"]) or (p_status == "EXCLUDED") or (p_out_z and p_status not in ["MOVING", "ARRIVED"]):
                                                     any_member_excluded = True
                                                 else:
                                                     expected_count += 1
@@ -21414,15 +21445,16 @@ def ai_commander_worker(target_pc):
                                                         if p_los_ok:
                                                             ready_count += 1
 
+                                is_call_settled = (curr_time - state.get("party_buff_req_time", curr_time) >= 1.5)
                                 is_timeout = (curr_time - state.get("pb_wait_start", curr_time) > 30.0)
-                                if ready_count >= expected_count or is_timeout:
+                                if (is_call_settled and ready_count >= expected_count) or is_timeout:
                                     if is_timeout and ready_count < expected_count:
                                         any_member_excluded = True
                                         dprint(key, f"⏰ [팟바람 30초 타임아웃] 30초 경과! 미도착 인원을 불참 처리하고 현재 모인 인원({ready_count + 1}명)으로 시전합니다!")
                                     else:
                                         dprint(key, f"👥 [팟바람 집결 완료] 참여 가능 인원 전원({ready_count + 1}명) 7px+시야 안착! 팟바람을 시전합니다!")
 
-                                    state["pb_cast_had_missing_members"] = bool(any_member_excluded)
+                                    state["pb_cast_had_missing_members"] = bool(state.get("pb_cast_had_missing_members", False) or any_member_excluded)
                                     state["buff_start_mp"] = mp
                                     state["current_buff"] = {"name": "element", "page": 2, "key": 199, "double": False, "dur": 1200.0}
                                     state["buff_retry_cnt"] = 0
@@ -21443,7 +21475,7 @@ def ai_commander_worker(target_pc):
                             is_reason_resolved = True
 
                         is_buff_resolved = True
-                        is_waiting_for_buff = (not settings.get("is_party_inviter", False)) and (state.get("party_buff_status") == "ARRIVED" or standby_reason == "팟바람 수령 집합")
+                        is_waiting_for_buff = (not state.get("req_party_buff", False)) and (state.get("party_buff_status") == "ARRIVED" or standby_reason == "팟바람 수령 집합")
 
                         if is_waiting_for_buff:
                             is_buff_resolved = False
@@ -21456,12 +21488,12 @@ def ai_commander_worker(target_pc):
                                                 leader_done = True
                                             if p_data.get("req_party_buff", False) and p_data.get("in_game", False) and str(p_data.get("party_state", "")) not in ["TOWN", "MAINT", "SURVIVAL"]:
                                                 leader_alive = True
-                                            break
 
                             # 💡 [버그 수정] leader_done을 최우선으로 체크하여 완료 순간 증발 오판 원천 차단!
                             if leader_done:
                                 dprint(key, "🎉 [팟바람 수령 확인] 시전자 버프 완료 신호 수신! 각자 사냥터로 즉시 복귀합니다!")
                                 state["party_buff_status"] = "IDLE"
+                                state["post_certi_need_pb"] = False
                                 state["buff_element_time"] = curr_time + 1200.0 + g_val(-10, 10)
                                 save_buff_times(ai_states)
                                 is_buff_resolved = True
@@ -21602,6 +21634,7 @@ def ai_commander_worker(target_pc):
                         state["pb_last_cast_time"] = curr_time
                         state["pb_wait_start"] = 0.0
                         state["missed_party_buff"] = False
+                        state["post_certi_need_pb"] = False
                         state["is_active_standby"] = False
                         state["designated_base_node"] = None
                         state["buff_element_time"] = curr_time + 1200.0 + g_val(-10, 10)
@@ -24935,11 +24968,44 @@ def ai_commander_worker(target_pc):
                 my_inv_grp_pb = str(settings.get("invite_group", "선택안함"))
                 if my_inv_grp_pb != "선택안함":
                     fsm_retreat = str(state.get("target_fsm", ""))
-                    is_leader = bool(settings.get("is_party_inviter", False))
+                    raw_is_inviter = bool(settings.get("is_party_inviter", False))
                     my_c_num_pb = str(get_my_central_num())
-                    my_uid_pb = f"{int(my_c_num_pb) if my_c_num_pb.isdigit() else 1}-{key}"
+                    my_c_int_pb = int(my_c_num_pb) if my_c_num_pb.isdigit() else 1
+                    try: my_m_int_pb = int(key.replace("미니", ""))
+                    except: my_m_int_pb = 1
+                    my_uid_pb = f"{my_c_int_pb}-{key}"
+                    my_rank_pb = (my_c_int_pb, my_m_int_pb)
 
-                    # 1) 시전자(팟바람 체크 캐릭터) 로직
+                    # 💡 다중 '팟바람' 체크 방어: 다른 시전자가 이미 호출 중이거나 나보다 앞선 순번의 시전자가 사냥터에 있으면 자동으로 파티원(수령자) 모드로 동작!
+                    is_leader = raw_is_inviter
+                    if raw_is_inviter:
+                        other_calling_Now = False
+                        higher_rank_ready = False
+                        with party_lock:
+                            for p_uid, p_data in global_invite_states.items():
+                                if str(p_data.get("invite_group", "선택안함")) == my_inv_grp_pb and p_uid != my_uid_pb and (curr_time - p_data.get("recv_time", 0.0) <= 3.5):
+                                    if p_data.get("is_party_inviter", False):
+                                        p_rank = (int(p_data.get("central_num", 99)), int(p_data.get("mini_num", 99)))
+                                        p_calling = bool(p_data.get("req_party_buff", False) and p_data.get("in_game", False) and str(p_data.get("party_state", "")) not in ["TOWN", "MAINT", "SURVIVAL"])
+                                        p_done = bool(p_data.get("party_buff_done", False))
+                                        p_ready = bool(
+                                            p_data.get("in_game", False) and p_data.get("in_party", False) and
+                                            p_data.get("in_hunting_ground", False) and (not p_data.get("is_out_of_zone", False)) and
+                                            str(p_data.get("party_state", "")) not in ["TOWN", "MAINT", "SURVIVAL"]
+                                        )
+                                        if p_calling or p_done:
+                                            if (not state.get("req_party_buff", False)) or (p_rank < my_rank_pb):
+                                                other_calling_Now = True
+                                                break
+                                        elif p_ready and (p_rank < my_rank_pb):
+                                            higher_rank_ready = True
+
+                        if other_calling_Now or (higher_rank_ready and not state.get("req_party_buff", False) and not state.get("party_buff_done", False)):
+                            if state.get("req_party_buff", False):
+                                state["req_party_buff"] = False
+                            is_leader = False
+
+                    # 1) 대표 시전자(활성 팟바람 캐릭터 1명) 로직
                     if is_leader:
                         b_set = settings.get("buff_set", "선택안함")
                         if "3셋트" in b_set or "4셋트" in b_set:
@@ -24983,37 +25049,51 @@ def ai_commander_worker(target_pc):
                                         same_grp_members = []
                                         with party_lock:
                                             for p_uid, p_data in global_invite_states.items():
-                                                if str(p_data.get("invite_group", "선택안함")) == my_inv_grp_pb and p_uid != my_uid_pb and (curr_time - p_data.get("recv_time", 0.0) <= 3.5):
+                                                if str(p_data.get("invite_group", "선택안함")) == my_inv_grp_pb and p_uid != my_uid_pb and (curr_time - p_data.get("recv_time", 0.0) <= 60.0):
                                                     same_grp_members.append(p_data)
 
-                                        partied_cnt = 1 + sum(1 for m in same_grp_members if m.get("in_game", False) and m.get("in_party", False))
+                                        ready_partied_cnt = 1 + sum(
+                                            1 for m in same_grp_members
+                                            if (curr_time - m.get("recv_time", 0.0) <= 5.0) and
+                                            m.get("in_game", False) and m.get("in_party", False) and m.get("in_hunting_ground", False) and
+                                            (not m.get("is_out_of_zone", False)) and (str(m.get("party_state", "")) not in ["TOWN", "MAINT", "SURVIVAL"])
+                                        )
                                         all_members_ready_now = bool(
                                             len(same_grp_members) >= 1 and
                                             all(
+                                                (curr_time - m.get("recv_time", 0.0) <= 5.0) and
                                                 m.get("in_game", False) and m.get("in_party", False) and m.get("in_hunting_ground", False) and
                                                 (not m.get("is_out_of_zone", False)) and (str(m.get("party_state", "")) not in ["TOWN", "MAINT", "SURVIVAL"])
                                                 for m in same_grp_members
                                             )
                                         )
+                                        has_certi_returned_member = any(
+                                            (curr_time - m.get("recv_time", 0.0) <= 5.0) and m.get("post_certi_need_pb", False)
+                                            for m in same_grp_members
+                                        )
 
                                         elem_t = state.get("buff_element_time", 0.0)
                                         is_post_certi_zero = (elem_t == 0.0)
                                         is_normal_expired = (elem_t > 0.0 and curr_time > elem_t) or state.get("missed_party_buff", False)
-                                        is_recap_ready = bool(state.get("pb_need_full_recap", False) and all_members_ready_now and (curr_time - state.get("pb_last_cast_time", 0.0) >= 15.0))
+                                        is_recap_ready = bool(
+                                            (state.get("pb_need_full_recap", False) or has_certi_returned_member) and
+                                            all_members_ready_now and
+                                            (curr_time - state.get("pb_last_cast_time", 0.0) >= 15.0)
+                                        )
 
                                         should_call_pb = False
                                         call_type_desc = ""
                                         if is_post_certi_zero:
-                                            # 인증 복귀 후(0.0초): 시전자 포함 인게임 파티원 3명 이상일 때만 발동
-                                            if partied_cnt >= 3:
+                                            # 인증 복귀 후(0.0초): 시전자 포함 사냥터 파티원 2명 이상일 때 즉시 발동
+                                            if ready_partied_cnt >= 2:
                                                 should_call_pb = True
-                                                call_type_desc = f"인증 복귀 후 파티 {partied_cnt}인 충족"
+                                                call_type_desc = f"인증 복귀 후 파티 {ready_partied_cnt}인 충족"
                                         elif is_normal_expired:
                                             should_call_pb = True
                                             call_type_desc = "정기 쿨타임 만료"
                                         elif is_recap_ready:
                                             should_call_pb = True
-                                            call_type_desc = "불참 파티원 전원 사냥터 복귀 완료"
+                                            call_type_desc = "인증/불참 파티원 전원 사냥터 합류 완료"
 
                                         if should_call_pb:
                                             b_node_id = str(pc_graph["buff_spot_nodes"][0])
@@ -25039,6 +25119,7 @@ def ai_commander_worker(target_pc):
                                             state["designated_base_node"] = b_node_id
                                             state["missed_party_buff"] = False
                                             state["pb_need_full_recap"] = False
+                                            state["pb_cast_had_missing_members"] = bool(not all_members_ready_now)
 
                                             state["abort_macro"] = True
                                             with pico_queues[key].mutex: pico_queues[key].queue.clear()
@@ -25073,15 +25154,23 @@ def ai_commander_worker(target_pc):
                         if state.get("party_buff_done", False) and curr_time > state.get("party_buff_done_timer", 0):
                             state["party_buff_done"] = False
 
-                    # 2) 일반 파티원(팟바람 미체크 캐릭터) 수신 및 참여/불참 로직
+                    # 2) 일반 파티원(및 대기 순번 팟바람 캐릭터) 수신 및 참여/불참 로직
                     else:
                         leader_data = None
                         with party_lock:
+                            inviter_cands = []
                             for p_uid, p_data in global_invite_states.items():
                                 if str(p_data.get("invite_group", "선택안함")) == my_inv_grp_pb and p_uid != my_uid_pb and (curr_time - p_data.get("recv_time", 0.0) <= 3.5):
                                     if p_data.get("is_party_inviter", False):
-                                        leader_data = p_data
-                                        break
+                                        inviter_cands.append(p_data)
+                            if inviter_cands:
+                                # 현재 완료 신호(party_buff_done)나 호출 신호(req_party_buff)를 켠 시전자를 최우선으로 선택!
+                                inviter_cands.sort(key=lambda d: (
+                                    0 if d.get("party_buff_done", False) else (1 if d.get("req_party_buff", False) else 2),
+                                    int(d.get("central_num", 99)),
+                                    int(d.get("mini_num", 99))
+                                ))
+                                leader_data = inviter_cands[0]
 
                         # 초대조 내에 팟바람 체크된 시전자가 있을 때만 동작 (없으면 기존 사냥 100% 유지)
                         if leader_data is not None:
@@ -25094,6 +25183,7 @@ def ai_commander_worker(target_pc):
                             if leader_done and state.get("party_buff_status") in ["MOVING", "ARRIVED"]:
                                 dprint(key, "🎉 [팟바람 수령 완료] 시전자의 캐스팅 완료 신호 확인! 버프 타이머 갱신 후 사냥터로 즉시 복귀합니다.")
                                 state["party_buff_status"] = "IDLE"
+                                state["post_certi_need_pb"] = False
                                 state["portal_blind_mode"] = False
                                 state["yolo_blind_active"] = False
                                 state["is_active_standby"] = False
