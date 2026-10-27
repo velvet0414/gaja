@@ -6010,7 +6010,7 @@ def ai_commander_worker(target_pc):
             current_fsm = str(state.get("target_fsm", ""))
             is_certi_mode = current_fsm.startswith("CERTI_")
 
-            if state.get("is_hunt_active", False) and not state.get("is_paused", False) and not is_certi_mode:
+            if state.get("backup_hunt_active", state.get("is_hunt_active", False)) and not is_certi_mode:
                 
                 # 💡 [Deep Think 방어막] 우측에 Restart창이 떠서 사망 의심이 켜지면 쿨타임 무시하고 인증창/이용시간만료창부터 최우선 팩트 체크!
                 is_death_suspected = (state.get("death_detect_start", 0) > 0) or current_fsm.startswith("DEATH_RESTART")
@@ -6021,7 +6021,7 @@ def ai_commander_worker(target_pc):
                     detected_popup_type = None
                     detected_val = 0.0
 
-                    # 1) certi.png 검사
+                    # 1) certi.png 검사 (커서 간섭 및 암전 대비 0.84로 완화)
                     c_color = globals().get("certi_color")
                     c_mask = globals().get("certi_mask")
                     if c_color is not None:
@@ -6031,12 +6031,12 @@ def ai_commander_worker(target_pc):
                             else:
                                 res_c = cv2.matchTemplate(img_bgr, c_color, cv2.TM_CCOEFF_NORMED)
                             _, max_val_c, _, _ = cv2.minMaxLoc(res_c)
-                            if max_val_c >= 0.90:
+                            if max_val_c >= 0.87:
                                 detected_popup_type = "CERTI"
                                 detected_val = max_val_c
                         except: pass
 
-                    # 2) ticket2.png (인게임 이용시간 만료 팝업) 검사 (90% 일치 시 발동)
+                    # 2) ticket2.png (인게임 이용시간 만료 팝업) 검사 (85% 일치 시 발동)
                     if detected_popup_type is None:
                         t2_color = globals().get("ticket2_color")
                         t2_mask = globals().get("ticket2_mask")
@@ -6047,13 +6047,18 @@ def ai_commander_worker(target_pc):
                                 else:
                                     res_t2 = cv2.matchTemplate(img_bgr, t2_color, cv2.TM_CCOEFF_NORMED)
                                 _, max_val_t2, _, _ = cv2.minMaxLoc(res_t2)
-                                if max_val_t2 >= 0.90:
+                                if max_val_t2 >= 0.87:
                                     detected_popup_type = "TICKET2"
                                     detected_val = max_val_t2
                             except: pass
 
                     if detected_popup_type is not None:
-                        # 💀 1. 사망 감지 타이머 및 변수 완전 폭파 (사망 로직 무효화 전에 스레드 실행 여부 먼저 백업!)
+                        # 💀 1. 일시정지(is_paused) 및 사망 감지 타이머 완전 해제 (정비 실패로 PAUSED 된 직후 인증창이 떴을 때도 즉시 깨어남!)
+                        if state.get("is_paused", False):
+                            dprint(key, "🔓 [일시정지 강제 해제] 화면에서 인증/만료 팝업이 감지되어 PAUSED 상태를 해제하고 인증에 돌입합니다!")
+                        state["is_paused"] = False
+                        state["is_hunt_active"] = True
+                        state["backup_hunt_active"] = True
                         was_thread_running = state.get("town_thread_running", False)
                         state["death_detect_start"] = 0 
                         state["last_death_val"] = 0.0
@@ -11612,15 +11617,13 @@ def ai_commander_worker(target_pc):
                                             ai_states[key]["town_thread_running"] = False
                                             return
                                         elif "teleport" in missing_items:
-                                            dprint(key, "💀 [치명적 에러] 축순(teleport)이 창고에 없습니다! 사냥터 복귀가 불가능하므로 매크로를 강제 일시 정지합니다!")
+                                            dprint(key, "⚠️ [창고 축순 미발견] NPC 가림(트리오나 등) 또는 팝업 간섭 의심! 일시정지 대신 스페어 창고/재시도 루트로 전환합니다.")
                                             pc_num_str = current_pc_num if current_pc_num else "1"
                                             import threading
-                                            threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 창고 축순 없음",), daemon=True).start()
+                                            threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 창고 축순 재시도",), daemon=True).start()
                                             ai_states[key]["pick_retry_cnt"] = 0
                                             ai_states[key].pop("found_items_history", None)
-                                            ai_states[key]["target_fsm"] = "IDLE"
-                                            ai_states[key]["is_paused"] = True
-                                            ai_states[key]["cooldown"] = time.time() + 0.1
+                                            handle_wh_fail()
                                             ai_states[key]["town_thread_running"] = False
                                             return
                                         else:
