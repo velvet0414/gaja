@@ -1048,7 +1048,7 @@ CONFIG_SYNC_GROUPS = {
         "use_dec_weight", "use_cc_buff", "buff_mp_pct",
         "use_extra_f10", "extra_f10_dur", "use_windwalk",
         "use_body", "body_pct", "body_stop_pct",
-        "use_mptam", "mptam_start_pct", "mptam_stop_pct", "is_wiz_mptam",
+        "use_mptam", "mptam_start_pct", "mptam_stop_pct", "is_wiz_mptam", "use_mptam_hit", "mptam_hit_pct",
         "use_blue_pot", "use_blue_pot_combat", "blue_mp_pct", "blue_cd_min"
     ],
     "SUB": [
@@ -3251,7 +3251,7 @@ _GUI_DEFAULT_SCHEMA = {
     "buff_set": "3셋트 (실드, 웨폰, 아머, 계열)", "combat_buff": False,
     "use_dec_weight": True, "use_windwalk": False,
     "use_body": True, "body_pct": "80", "body_stop_pct": "85",
-    "use_mptam": True, "mptam_start_pct": "30", "mptam_stop_pct": "60", "is_wiz_mptam": False,
+    "use_mptam": True, "mptam_start_pct": "30", "mptam_stop_pct": "60", "is_wiz_mptam": False, "use_mptam_hit": True, "mptam_hit_pct": "4",
     "use_extra_f10": False, "extra_f10_dur": "10분",
     "use_blue_pot": False, "use_blue_pot_combat": False, "blue_mp_pct": "15", "blue_cd_min": "20",
     "tele_hunt_use": True, "tele_hunt_time": "8",
@@ -7472,8 +7472,8 @@ def ai_commander_worker(target_pc):
                                 wait_sec = g_val(1.2, 2.0)
                                 dprint(key, f"🚀 [게임 즉시 실행 대기] 바탕화면 '13.png' 감지 완료! {wait_sec:.1f}초 뒤 정밀 조준하여 더블클릭합니다.")
                             else:
-                                wait_sec = g_val(10.0, 20.0)
-                                dprint(key, f"⏳ [게임 재실행 대기] 바탕화면 '13.png' 감지 완료! 바로 실행하지 않고 {wait_sec:.1f}초(10~20초) 대기합니다.")
+                                wait_sec = g_val(7.0, 8.0)
+                                dprint(key, f"⏳ [게임 재실행 대기] 바탕화면 '13.png' 감지 완료! 바로 실행하지 않고 {wait_sec:.1f}초(7~8초) 대기합니다.")
 
                             state["certi_13_saved_pos"] = pos_13
                             state["certi_13_exec_time"] = curr_time + wait_sec
@@ -15624,6 +15624,16 @@ def ai_commander_worker(target_pc):
             else:
                 hp_diff = 0
 
+            if state.get("is_mptam_mode", False):
+                drop_hist = [item for item in state.get("mptam_hp_drop_hist", []) if curr_time - item[0] <= 0.50]
+                if hp_diff > 0:
+                    drop_hist.append((curr_time, hp_diff))
+                state["mptam_hp_drop_hist"] = drop_hist
+                mptam_recent_drop = sum(val for _, val in drop_hist)
+            else:
+                state["mptam_hp_drop_hist"] = []
+                mptam_recent_drop = 0.0
+
             use_body_setting = settings.get("use_body", False)
             body_start_mp = settings.get("body_percent", 50.0)
             body_stop_mp = settings.get("body_stop_percent", 90.0)
@@ -18959,6 +18969,38 @@ def ai_commander_worker(target_pc):
                             state["cooldown"] = curr_time + 0.1
                 # 👆👆 ------------------------------------------------------------- 👆👆
 
+                # 👇👇 [엠탐 중 설정 수치 이상 피격 시: 8각 모션 감지 ➔ 실패 시 8방향 이동 수색 연동] 👇👇
+                use_mptam_hit = settings.get("use_mptam_hit", True)
+                try: mptam_hit_limit = float(settings.get("mptam_hit_pct", 4.0))
+                except: mptam_hit_limit = 4.0
+
+                if state.get("is_mptam_mode", False) and use_mptam_hit and mptam_hit_limit > 0.0 and mptam_recent_drop >= mptam_hit_limit and not mobs and not is_fighting:
+                    fsm_mh_chk = str(state.get("target_fsm", ""))
+                    if fsm_mh_chk not in ["POISON_WALL_SEARCH", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD", "EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] and not fsm_mh_chk.startswith("TOWN_MAINT") and not fsm_mh_chk.startswith("DEATH"):
+                        if curr_time > state.get("mptam_hit_search_cd", 0):
+                            dprint(key, f"🚨 [엠탐 중 몹 피격 감지] 0.5초 내 HP {mptam_recent_drop:.1f}% 감소(기준:{mptam_hit_limit:.1f}%) & 화면 내 몹 없음! 바디를 멈추고 8각 모션 감지로 범인을 색출합니다!")
+                            state["mptam_hp_drop_hist"] = []
+                            state["mptam_wall_hit_search"] = True
+                            state["is_mptam_mode"] = False
+                            state["pending_mptam"] = True
+                            state["abort_macro"] = True
+
+                            clear_movements_only(pico_queues[key])
+                            if state.get("sweep_active", False):
+                                pico_queues[key].put({"action": "SWEEP_STOP"})
+                                state["sweep_active"] = False
+                            state["loot_state"] = "IDLE"
+
+                            if state.get("body_held", False):
+                                if picos.get(key) and pico_locks.get(key):
+                                    send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                                state["body_held"] = False
+
+                            state["target_fsm"] = "MOTION_SNAP_BRAKE_WAIT"
+                            state["brake_end_time"] = curr_time + 0.35
+                            state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
+                # 👆👆 --------------------------------------------------------------------------------- 👆👆
+
                 is_unexplained_hit = (
                     hp_diff >= 0.5
                     and not is_poisoned
@@ -19033,6 +19075,7 @@ def ai_commander_worker(target_pc):
                 elif state.get("target_fsm") == "MOTION_SNAP_SCANNING":
 
                     if mobs:
+                        state.pop("mptam_wall_hit_search", None)
                         dprint(key, "👁️ [YOLO 감지] 연속 스캔 중 욜로가 몹을 찾았습니다! 정상 타격 전환!")
                         state["target_fsm"], state["cooldown"] = "IDLE", curr_time + 0.1
                         continue
@@ -19041,15 +19084,24 @@ def ai_commander_worker(target_pc):
                     img1 = state.get("motion_img1")
 
                     if curr_time > state.get("motion_scan_end", 0):
-                        dprint(key, "🤷 [모션 스냅 종료] 스캔 실패. 장애물로 간주하여 사냥(IDLE)으로 복귀합니다.")
-                        state["target_fsm"] = "IDLE"
-                        state["cooldown"] = curr_time + 0.1
+                        if state.pop("mptam_wall_hit_search", False):
+                            dprint(key, "🕵️ [엠탐 피격 ➔ 8각 모션 미감지] 픽셀 변화가 없어 8방향 이동 수색(POISON_WALL_SEARCH)으로 토스하여 숨은 몹을 끌어냅니다!")
+                            state["target_fsm"] = "POISON_WALL_SEARCH"
+                            state["poison_search_step"] = 0
+                            angles = [0, 45, 90, 135, 180, 225, 270, 315]
+                            random.shuffle(angles)
+                            state["poison_search_angles"] = angles
+                            state["cooldown"] = curr_time + 0.1
+                        else:
+                            dprint(key, "🤷 [모션 스냅 종료] 스캔 실패. 장애물로 간주하여 사냥(IDLE)으로 복귀합니다.")
+                            state["target_fsm"] = "IDLE"
+                            state["cooldown"] = curr_time + 0.1
 
-                        state["idle_stop_start_time"] = 0
-                        state["idle_stuck_map_pos"] = None
-                        if state.get("dungeon_map_pos"):
-                            state["dungeon_last_map_pos"] = state.get("dungeon_map_pos")
-                        state["dungeon_stuck_timer"] = curr_time
+                            state["idle_stop_start_time"] = 0
+                            state["idle_stuck_map_pos"] = None
+                            if state.get("dungeon_map_pos"):
+                                state["dungeon_last_map_pos"] = state.get("dungeon_map_pos")
+                            state["dungeon_stuck_timer"] = curr_time
                     else:
                         if img1 is not None and x2 > x1 and y2 > y1:
                             img2 = cv2.cvtColor(img_bgr[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
@@ -19174,6 +19226,7 @@ def ai_commander_worker(target_pc):
 
                         if is_sword:
                             state["sword_verify_active"] = False
+                            state.pop("mptam_wall_hit_search", None)
                             dprint(key, "🗡️ [모션 스냅 성공] 0.12초 내 칼 아이콘 확인 완료! 타격 개시!")
                             dist = math.hypot(char_screen_cx - hx, char_screen_cy - hy)
                             nx, ny = ((char_screen_cx - hx) / dist, (char_screen_cy - hy) / dist) if dist > 0 else (0, 1)
@@ -19213,6 +19266,14 @@ def ai_commander_worker(target_pc):
 
                                     state["target_fsm"] = "MOTION_SNAP_SCANNING"
                                     state["cooldown"] = curr_time
+                                elif state.pop("mptam_wall_hit_search", False):
+                                    dprint(key, "🕵️ [엠탐 피격 ➔ 칼 미감지] 모션 지점에 칼 표시가 안 떠 8방향 이동 수색(POISON_WALL_SEARCH)으로 토스합니다!")
+                                    state["target_fsm"] = "POISON_WALL_SEARCH"
+                                    state["poison_search_step"] = 0
+                                    angles = [0, 45, 90, 135, 180, 225, 270, 315]
+                                    random.shuffle(angles)
+                                    state["poison_search_angles"] = angles
+                                    state["cooldown"] = curr_time + 0.1
                                 else:
                                     dprint(key, "🤷 [모션 스냅 종료] 칼 없음 및 시간 초과. 장애물로 간주하여 회피 기동을 준비합니다.")
                                     state["target_fsm"] = "MOTION_EVADING_CALC"
@@ -22135,10 +22196,13 @@ def ai_commander_worker(target_pc):
                         angles = state.get("poison_search_angles", [0, 45, 90, 135, 180, 225, 270, 315])
                         
                         if step >= len(angles):
-                            dprint(key, "🛑 [독 수색 실패] 8방향을 모두 뒤졌으나 몹이 없습니다. 수색을 포기하고 제자리에서 엠탐을 재개합니다.")
+                            dprint(key, "🛑 [8방향 수색 종료] 8방향을 모두 뒤졌으나 몹이 없습니다. 수색을 마치고 제자리에서 엠탐을 재개합니다.")
                             
-                            # 실패 시 텔포하지 않고 사냥/엠탐으로 복귀. 무한 반복을 막기 위해 30초간 해당 기능 차단
+                            # 실패 시 텔포하지 않고 사냥/엠탐으로 복귀. 무한 반복을 막기 위해 쿨타임 부여
                             state["poison_search_cd"] = curr_time + 30.0
+                            state["mptam_hit_search_cd"] = curr_time + 10.0
+                            state["is_mptam_mode"] = True
+                            state["pending_mptam"] = False
                             
                             if settings.get("use_party_fixed", False):
                                 state["target_fsm"] = "PARTY_WAIT"
@@ -25806,7 +25870,7 @@ def ai_commander_worker(target_pc):
                             state["cooldown"] = curr_time + 0.1
                             if not is_combat_sos_in_base: action_taken = True
 
-                if state.get("pending_mptam", False) and state.get("target_fsm") in ["IDLE", "PATROL", "SQUAD_WAIT", "PARTY_ACTIVE_STANDBY"] and state.get("loot_state") == "IDLE" and not state.get("sweep_active", False) and not state.get("is_attacking", False):
+                if state.get("pending_mptam", False) and not mobs and state.get("target_fsm") in ["IDLE", "PATROL", "SQUAD_WAIT", "PARTY_ACTIVE_STANDBY"] and state.get("loot_state") == "IDLE" and not state.get("sweep_active", False) and not state.get("is_attacking", False):
 
                     dprint(key, "💤 [예약 엠탐 돌입] 교전/루팅이 끝났습니다! 제자리 엠탐을 가동합니다.")
                     state["pending_mptam"] = False
@@ -26110,8 +26174,8 @@ def ai_commander_worker(target_pc):
                     is_critical_hp = state.get("is_panic", False)
 
                     fsm_body_chk = str(state.get("target_fsm", ""))
-                    # 💡 [핵심 방어막] 인벤 정리나 단축키 복구 등 UI 창 조작 중인지 팩트 체크
-                    is_ui_blocking = fsm_body_chk.startswith("INV_CLEAN") or fsm_body_chk.startswith("HK_HEAL_")
+                    # 💡 [핵심 방어막] 인벤 정리, 단축키 복구, 모션 스냅, 8각 이동 수색 및 교전 중에는 바디(F7) 홀드 차단
+                    is_ui_blocking = fsm_body_chk.startswith("INV_CLEAN") or fsm_body_chk.startswith("HK_HEAL_") or fsm_body_chk.startswith("MOTION_SNAP") or fsm_body_chk == "POISON_WALL_SEARCH" or is_fighting
 
                     if state.get("is_mptam_mode", False) and not mobs and use_body_setting:
                         # 💡 엠탐 중이더라도 UI 조작 중이면 무조건 바빠짐(busy)으로 간주해 바디(F7) 차단!
@@ -26793,6 +26857,8 @@ def sync_gui_vars():
                 "mptam_start_pct": sf(v, "mptam_start_pct", 20.0),
                 "mptam_stop_pct": mptam_stop_val,
                 "is_wiz_mptam": v["is_wiz_mptam"].get() if "is_wiz_mptam" in v else False,
+                "use_mptam_hit": v["use_mptam_hit"].get() if "use_mptam_hit" in v else True,
+                "mptam_hit_pct": sf(v, "mptam_hit_pct", 4.0),
                 "party_mptam_tele_use": v["party_mptam_tele_use"].get() if "party_mptam_tele_use" in v else False,
                 "party_mptam_tele_pct": sf(v, "party_mptam_tele_pct", 12.0),
                 "party_help_call_use": v["party_help_call_use"].get() if "party_help_call_use" in v else True,
@@ -27751,13 +27817,17 @@ for i, pc in enumerate(MINI_PCS):
     mptam_frame.pack(side="top", fill="x", padx=2, pady=2)
     tk.Checkbutton(mptam_frame, text="엠탐", variable=vars_dict["use_mptam"], bg=BG_PANEL, fg="#B39DDB", selectcolor="#3E3E42", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=1)
     tk.Entry(mptam_frame, textvariable=vars_dict["mptam_start_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
-    tk.Label(mptam_frame, text="% 발동, ", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left")
+    tk.Label(mptam_frame, text="%발동,", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left")
     tk.Entry(mptam_frame, textvariable=vars_dict["mptam_stop_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
-    tk.Label(mptam_frame, text="% 종료", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left")
+    tk.Label(mptam_frame, text="%종료", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left")
     
-    # 💡 위즈 엠탐 체크박스 우측 빈칸에 배치!
-    tk.Label(mptam_frame, text=" |", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(2, 0))
-    tk.Checkbutton(mptam_frame, text="위즈", variable=vars_dict["is_wiz_mptam"], bg=BG_PANEL, fg="#B39DDB", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=1)
+    # 💡 위즈 엠탐 체크박스 및 엠탐 중 피격 감지(ON/OFF 체크박스 + %) 입력칸 배치!
+    tk.Label(mptam_frame, text="|", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(1, 0))
+    tk.Checkbutton(mptam_frame, text="위즈", variable=vars_dict["is_wiz_mptam"], bg=BG_PANEL, fg="#B39DDB", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
+    tk.Label(mptam_frame, text="|", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(1, 0))
+    tk.Checkbutton(mptam_frame, text="피격:", variable=vars_dict["use_mptam_hit"], bg=BG_PANEL, fg="#FF8A80", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=0)
+    tk.Entry(mptam_frame, textvariable=vars_dict["mptam_hit_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
+    tk.Label(mptam_frame, text="%", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=0)
 
     blue_frame = tk.Frame(tab1, bg=BG_PANEL)
     blue_frame.pack(side="top", fill="x", padx=2, pady=(2, 2))
