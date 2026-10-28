@@ -7940,7 +7940,7 @@ def ai_commander_worker(target_pc):
                         # ▶️ [버프 타이머 일시정지 해제 & 계열마법/라이트 0초 확정 저장 + 10초 텀 예약]
                         state["buff_element_time"] = 0.0
                         state["buff_light_time"] = 0.0
-                        state["post_certi_need_pb"] = True
+                        state["post_certi_need_pb"] = False
                         state["post_certi_fast_buffs"] = {"element", "light"}
                         state.pop("certi_frozen_buffs", None)
                         state.pop("certi_haste_elapsed", None)
@@ -10505,6 +10505,36 @@ def ai_commander_worker(target_pc):
                 if abs_return_use and hp > 0.0 and hp <= abs_return_pct and not is_safe_in_town and fsm_for_abs != "SHUTDOWN_WAIT":
                     if curr_time > state.get("abs_return_cd", 0):
                         dprint(key, f"🚨 [절대 귀환 발동] HP {hp:.1f}%! 절대귀환 기준치({abs_return_pct}%) 이하 감지. 무조건 F8 비상 탈출!")
+
+                        if fsm_for_abs.startswith("BUFFING"):
+                            b_info_abs = state.get("current_buff")
+                            is_mp_used_abs = bool(
+                                state.get("buff_mp_consumed", False) or
+                                (state.get("buff_cast_sent", False) and fsm_for_abs in ["BUFFING_MP_CHECK", "BUFFING_RETURN_F1", "BUFFING_WAIT_F1"] and mp <= state.get("buff_start_mp", 100.0) - 0.001)
+                            )
+                            if b_info_abs and b_info_abs["name"] != "cure_fallback":
+                                if is_mp_used_abs:
+                                    state["buff_mp_consumed"] = True
+                                    state[f"buff_{b_info_abs['name']}_time"] = curr_time + b_info_abs["dur"] + g_val(-10, 10)
+                                    save_buff_times(ai_states)
+                                    if b_info_abs["name"] == "element" and (state.get("req_party_buff", False) or state.get("buff_return_fsm") == "PARTY_BUFF_L_DONE"):
+                                        state.pop("pb_cast_had_missing_members", None)
+                                        state["pb_need_full_recap"] = False
+                                        state["req_party_buff"] = False
+                                        state["party_buff_status"] = "IDLE"
+                                        state["party_buff_done"] = True
+                                        state["party_buff_done_timer"] = curr_time + 5.0
+                                        state["pb_last_cast_time"] = curr_time
+                                        state["pb_wait_start"] = 0.0
+                                        state["missed_party_buff"] = False
+                                        state["post_certi_need_pb"] = False
+                                        state["is_active_standby"] = False
+                                        state["designated_base_node"] = None
+                                        state["buff_return_fsm"] = "IDLE"
+                                        dprint(key, "👑 [팟바람 시전 인정] 절대귀환이 발동되었으나 이미 마법 시전 및 MP 소모가 감지되어 시전 완료로 처리합니다!")
+                                else:
+                                    state[f"buff_{b_info_abs['name']}_time"] = curr_time + 15.0
+                                    save_buff_times(ai_states)
 
                         with pico_queues[key].mutex: pico_queues[key].queue.clear()
                         clear_movements_only(pico_queues[key])
@@ -15391,9 +15421,34 @@ def ai_commander_worker(target_pc):
                             pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
 
                             b_info_pk = state.get("current_buff")
+                            fsm_pk_chk = str(state.get("target_fsm", ""))
+                            is_mp_used_pk = bool(
+                                state.get("buff_mp_consumed", False) or
+                                (state.get("buff_cast_sent", False) and fsm_pk_chk in ["BUFFING_MP_CHECK", "BUFFING_RETURN_F1", "BUFFING_WAIT_F1"] and mp <= state.get("buff_start_mp", 100.0) - 0.001)
+                            )
                             if b_info_pk and b_info_pk["name"] != "cure_fallback":
-                                state[f"buff_{b_info_pk['name']}_time"] = curr_time + 15.0
-                                save_buff_times(ai_states)
+                                if is_mp_used_pk:
+                                    state["buff_mp_consumed"] = True
+                                    state[f"buff_{b_info_pk['name']}_time"] = curr_time + b_info_pk["dur"] + g_val(-10, 10)
+                                    save_buff_times(ai_states)
+                                    if b_info_pk["name"] == "element" and (state.get("req_party_buff", False) or state.get("buff_return_fsm") == "PARTY_BUFF_L_DONE"):
+                                        state.pop("pb_cast_had_missing_members", None)
+                                        state["pb_need_full_recap"] = False
+                                        state["req_party_buff"] = False
+                                        state["party_buff_status"] = "IDLE"
+                                        state["party_buff_done"] = True
+                                        state["party_buff_done_timer"] = curr_time + 5.0
+                                        state["pb_last_cast_time"] = curr_time
+                                        state["pb_wait_start"] = 0.0
+                                        state["missed_party_buff"] = False
+                                        state["post_certi_need_pb"] = False
+                                        state["is_active_standby"] = False
+                                        state["designated_base_node"] = None
+                                        state["buff_return_fsm"] = "IDLE"
+                                        dprint(key, "👑 [팟바람 시전 인정] PK 회피가 발동되었으나 이미 마법 시전 및 MP 소모가 감지되어 시전 완료로 처리합니다!")
+                                else:
+                                    state[f"buff_{b_info_pk['name']}_time"] = curr_time + 15.0
+                                    save_buff_times(ai_states)
 
                             state["buff_aborted"] = True
                             state["is_combat_emergency_buff"] = False 
@@ -15451,11 +15506,36 @@ def ai_commander_worker(target_pc):
                         if str(state.get("target_fsm", "")).startswith("BUFFING"):
                             pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
                             b_info_pk = state.get("current_buff")
+                            fsm_pk_chk = str(state.get("target_fsm", ""))
+                            is_mp_used_pk = bool(
+                                state.get("buff_mp_consumed", False) or
+                                (state.get("buff_cast_sent", False) and fsm_pk_chk in ["BUFFING_MP_CHECK", "BUFFING_RETURN_F1", "BUFFING_WAIT_F1"] and mp <= state.get("buff_start_mp", 100.0) - 0.001)
+                            )
                             if b_info_pk and b_info_pk["name"] != "cure_fallback":
-                                state[f"buff_{b_info_pk['name']}_time"] = curr_time + 15.0
-                                save_buff_times(ai_states)
+                                if is_mp_used_pk:
+                                    state["buff_mp_consumed"] = True
+                                    state[f"buff_{b_info_pk['name']}_time"] = curr_time + b_info_pk["dur"] + g_val(-10, 10)
+                                    save_buff_times(ai_states)
+                                    if b_info_pk["name"] == "element" and (state.get("req_party_buff", False) or state.get("buff_return_fsm") == "PARTY_BUFF_L_DONE"):
+                                        state.pop("pb_cast_had_missing_members", None)
+                                        state["pb_need_full_recap"] = False
+                                        state["req_party_buff"] = False
+                                        state["party_buff_status"] = "IDLE"
+                                        state["party_buff_done"] = True
+                                        state["party_buff_done_timer"] = curr_time + 5.0
+                                        state["pb_last_cast_time"] = curr_time
+                                        state["pb_wait_start"] = 0.0
+                                        state["missed_party_buff"] = False
+                                        state["post_certi_need_pb"] = False
+                                        state["is_active_standby"] = False
+                                        state["designated_base_node"] = None
+                                        state["buff_return_fsm"] = "IDLE"
+                                        dprint(key, "👑 [팟바람 시전 인정] 순간 피격이 발생했으나 이미 마법 시전 및 MP 소모가 감지되어 시전 완료로 처리합니다!")
+                                else:
+                                    state[f"buff_{b_info_pk['name']}_time"] = curr_time + 15.0
+                                    save_buff_times(ai_states)
                             state["buff_aborted"] = True
-                            state["is_combat_emergency_buff"] = False 
+                            state["is_combat_emergency_buff"] = False
 
                         state["is_mptam_mode"] = False
                         state["is_attacking"] = False
@@ -16029,12 +16109,37 @@ def ai_commander_worker(target_pc):
                         pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
 
                         b_info_pk = state.get("current_buff")
+                        fsm_dng_chk = str(state.get("target_fsm", ""))
+                        is_mp_used_dng = bool(
+                            state.get("buff_mp_consumed", False) or
+                            (state.get("buff_cast_sent", False) and fsm_dng_chk in ["BUFFING_MP_CHECK", "BUFFING_RETURN_F1", "BUFFING_WAIT_F1"] and mp <= state.get("buff_start_mp", 100.0) - 0.001)
+                        )
                         if b_info_pk and b_info_pk["name"] != "cure_fallback":
-                            state[f"buff_{b_info_pk['name']}_time"] = curr_time + 15.0
-                            save_buff_times(ai_states)
+                            if is_mp_used_dng:
+                                state["buff_mp_consumed"] = True
+                                state[f"buff_{b_info_pk['name']}_time"] = curr_time + b_info_pk["dur"] + g_val(-10, 10)
+                                save_buff_times(ai_states)
+                                if b_info_pk["name"] == "element" and (state.get("req_party_buff", False) or state.get("buff_return_fsm") == "PARTY_BUFF_L_DONE"):
+                                    state.pop("pb_cast_had_missing_members", None)
+                                    state["pb_need_full_recap"] = False
+                                    state["req_party_buff"] = False
+                                    state["party_buff_status"] = "IDLE"
+                                    state["party_buff_done"] = True
+                                    state["party_buff_done_timer"] = curr_time + 5.0
+                                    state["pb_last_cast_time"] = curr_time
+                                    state["pb_wait_start"] = 0.0
+                                    state["missed_party_buff"] = False
+                                    state["post_certi_need_pb"] = False
+                                    state["is_active_standby"] = False
+                                    state["designated_base_node"] = None
+                                    state["buff_return_fsm"] = "IDLE"
+                                    dprint(key, "👑 [팟바람 시전 인정] 위기 생존 로직이 발동되었으나 이미 마법 시전 및 MP 소모가 감지되어 시전 완료로 처리합니다!")
+                            else:
+                                state[f"buff_{b_info_pk['name']}_time"] = curr_time + 15.0
+                                save_buff_times(ai_states)
 
                         state["buff_aborted"] = True
-                        state["is_combat_emergency_buff"] = False # <--- [여기에 1줄 추가!]
+                        state["is_combat_emergency_buff"] = False
 
                     if state.get("target_fsm", "").startswith("INV_CLEAN"):
                         state["target_fsm"] = "IDLE"
@@ -17154,15 +17259,38 @@ def ai_commander_worker(target_pc):
                 is_buff_fsm = fsm_current.startswith("BUFFING") or fsm_current.startswith("F1_INIT")
 
                 if fsm_current.startswith("BUFFING") and is_poisoned:
-                    dprint(key, "🚨 [생존 최우선] 버프 시전 중 독(Poison) 감지! 즉시 버프를 내팽개치고 F1으로 강제 복귀합니다!")
+                    dprint(key, "🚨 [생존 최우선] 버프 시전 중 독(Poison) 감지! 즉시 F1으로 강제 복귀하여 해독을 준비합니다!")
                     with pico_queues[key].mutex: pico_queues[key].queue.clear()
                     pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
 
                     b_info_poison = state.get("current_buff")
+                    is_mp_used_psn = bool(
+                        state.get("buff_mp_consumed", False) or
+                        (state.get("buff_cast_sent", False) and fsm_current in ["BUFFING_MP_CHECK", "BUFFING_RETURN_F1", "BUFFING_WAIT_F1"] and mp <= state.get("buff_start_mp", 100.0) - 0.001)
+                    )
                     if b_info_poison and b_info_poison["name"] != "cure_fallback":
-                        # [수정] 해독하느라 취소되었으므로 15초 뒤에 재시도
-                        state[f"buff_{b_info_poison['name']}_time"] = curr_time + 15.0
-                        save_buff_times(ai_states)
+                        if is_mp_used_psn:
+                            state["buff_mp_consumed"] = True
+                            state[f"buff_{b_info_poison['name']}_time"] = curr_time + b_info_poison["dur"] + g_val(-10, 10)
+                            save_buff_times(ai_states)
+                            if b_info_poison["name"] == "element" and (state.get("req_party_buff", False) or state.get("buff_return_fsm") == "PARTY_BUFF_L_DONE"):
+                                state.pop("pb_cast_had_missing_members", None)
+                                state["pb_need_full_recap"] = False
+                                state["req_party_buff"] = False
+                                state["party_buff_status"] = "IDLE"
+                                state["party_buff_done"] = True
+                                state["party_buff_done_timer"] = curr_time + 5.0
+                                state["pb_last_cast_time"] = curr_time
+                                state["pb_wait_start"] = 0.0
+                                state["missed_party_buff"] = False
+                                state["post_certi_need_pb"] = False
+                                state["is_active_standby"] = False
+                                state["designated_base_node"] = None
+                                state["buff_return_fsm"] = "IDLE"
+                                dprint(key, "👑 [팟바람 시전 인정] 독이 감지되었으나 이미 마법 시전 및 MP 소모가 확인되어 시전 완료로 처리하고 해산합니다!")
+                        else:
+                            state[f"buff_{b_info_poison['name']}_time"] = curr_time + 15.0
+                            save_buff_times(ai_states)
 
                     state["target_fsm"] = "IDLE"
                     state["buff_aborted"] = True
@@ -17868,6 +17996,7 @@ def ai_commander_worker(target_pc):
                         M_WIZ_CLASS_ID = 8
                         M_KNIGHT_CLASS_ID = 9
                         M_PRINCE_CLASS_ID = 10
+                        HALLOWEEN_CLASS_ID = 11
 
                         dng_yolo_check = settings.get("dungeon_name", "")
                         is_bondon_yolo = "본던" in dng_yolo_check or "gludio" in dng_yolo_check.lower() or "사던" in dng_yolo_check or "silver" in dng_yolo_check.lower()
@@ -17924,7 +18053,7 @@ def ai_commander_worker(target_pc):
                                 m_obj.is_m_prince = (cls_id == M_PRINCE_CLASS_ID) # 💡 디버그 구분용 남군주 속성
                                 temp_mobs.append(m_obj)
 
-                            elif cls_id in [1, 3, 4] or (cls_id in [M_ELF_CLASS_ID, M_WIZ_CLASS_ID, M_KNIGHT_CLASS_ID, M_PRINCE_CLASS_ID] and not is_pk_target_cls):
+                            elif cls_id in [1, 3, 4, HALLOWEEN_CLASS_ID] or (cls_id in [M_ELF_CLASS_ID, M_WIZ_CLASS_ID, M_KNIGHT_CLASS_ID, M_PRINCE_CLASS_ID] and not is_pk_target_cls):
                                 temp_users.append(MobTarget((x1_box + x2_box) // 2, (y1_box + y2_box) // 2, x1_box, y1_box, x2_box, y2_box))
 
                             elif cls_id == AVOID_CLASS_ID and not is_bondon_yolo:
@@ -19207,6 +19336,9 @@ def ai_commander_worker(target_pc):
                     elif fsm == "BUFFING_START_PAGE":
                         b_info = state.get("current_buff")
                         is_test = state.get("is_buff_testing", False)
+                        if state.get("buff_retry_cnt", 0) == 0:
+                            state["buff_mp_consumed"] = False
+                            state["buff_cast_sent"] = False
 
                         if not b_info:
                             state["target_fsm"] = "BUFFING_RETURN_F1"
@@ -19264,6 +19396,7 @@ def ai_commander_worker(target_pc):
                                 with pico_queues[key].mutex: pico_queues[key].queue.clear()
 
                             pico_queues[key].put({"action": "HOLD_KEY", "keycode": b_info["key"], "duration": g_val(0.08, 0.15)})
+                            state["buff_cast_sent"] = True
 
                             is_double_tap = b_info.get("double", False)
                             hardware_busy_time = 0.15
@@ -19279,6 +19412,7 @@ def ai_commander_worker(target_pc):
                             is_0mp = state.get("buff_is_0mp", False)
 
                             if is_0mp:
+                                state["buff_mp_consumed"] = True
                                 if b_info["name"] != "cure_fallback" and not is_test:
                                     state[f"buff_{b_info['name']}_time"] = curr_time + b_info['dur'] + g_val(-10, 10)
                                     save_buff_times(ai_states)
@@ -19319,25 +19453,28 @@ def ai_commander_worker(target_pc):
 
                         b_info = state.get("current_buff")
                         is_aborted = state.get("buff_aborted", False)
+                        is_mp_dropped = (mp <= start_mp - 0.001)
+                        if is_mp_dropped:
+                            state["buff_mp_consumed"] = True
 
                         if is_test and curr_time > state.get("next_test_log", 0):
                             dprint(key, f"[{t_ms}] ⏱️ [진단-실시간] MP 감시 중... (현재MP:{mp:.1f}% / 기준MP:{start_mp:.1f}%) 타임아웃 잔여: {timeout_val-curr_time:.2f}초")
                             state["next_test_log"] = curr_time + 0.1
 
-                        if is_aborted or mp <= start_mp - 0.001 or curr_time >= timeout_val:
-                            if is_aborted or mp <= start_mp - 0.001:
-                                if is_aborted:
-                                    if not is_test: dprint(key, f"⚠️ [버프 캔슬] 시전 중 딴짓 발동!")
-                                    if b_info and b_info["name"] != "cure_fallback" and not is_test:
-                                        state[f"buff_{b_info['name']}_time"] = curr_time + 15.0
-                                        save_buff_times(ai_states)
-                                else:
+                        if is_aborted or is_mp_dropped or curr_time >= timeout_val:
+                            if is_aborted or is_mp_dropped:
+                                if is_mp_dropped:
                                     if is_test:
                                         elapsed = curr_time - (timeout_val - (1.8 if b_info.get("double", False) else 1.2))
                                         dprint(key, f"[{t_ms}] ✅ [4. 성공] MP 차감 포착! ({start_mp:.1f}% -> {mp:.1f}%). 소요시간: {elapsed:.2f}초! F1 복귀합니다.")
-                                    # [수정] 캔슬(is_aborted)된 게 아니라 진짜 성공했을 때만 20분 타이머를 연장!
+                                    # 💡 MP 소모가 감지되었다면 캔슬(is_aborted) 여부와 무관하게 시전 완료로 인정!
                                     if b_info and b_info["name"] != "cure_fallback" and not is_test:
                                         state[f"buff_{b_info['name']}_time"] = curr_time + b_info['dur'] + g_val(-10, 10)
+                                        save_buff_times(ai_states)
+                                else:
+                                    if not is_test: dprint(key, f"⚠️ [버프 캔슬] 시전 중 딴짓 발동!")
+                                    if b_info and b_info["name"] != "cure_fallback" and not is_test:
+                                        state[f"buff_{b_info['name']}_time"] = curr_time + 15.0
                                         save_buff_times(ai_states)
 
                                 state["target_fsm"] = "BUFFING_RETURN_F1"
@@ -21654,12 +21791,9 @@ def ai_commander_worker(target_pc):
 
                 elif not action_taken and state.get("target_fsm") == "PARTY_BUFF_L_DONE":
                     if curr_time >= state.get("cooldown", 0):
-                        had_missing = state.pop("pb_cast_had_missing_members", False)
-                        state["pb_need_full_recap"] = bool(had_missing)
-                        if had_missing:
-                            dprint(key, "👑 [팟바람 시전 완료 (부분 인원)] 불참 인원이 있었으므로, 추후 파티원 전원 사냥터 복귀 시 재호출하도록 예약합니다!")
-                        else:
-                            dprint(key, "👑 [팟바람 시전 완벽 종료] 전원 수령 완료! 파티원들에게 해산 신호를 송출하고 사냥에 복귀합니다!")
+                        state.pop("pb_cast_had_missing_members", None)
+                        state["pb_need_full_recap"] = False
+                        dprint(key, "👑 [팟바람 시전 완료] 20분 쿨타임 시작! 파티원들에게 해산 신호를 송출하고 사냥에 복귀합니다! (미수령 인원은 이번 타임 패스)")
 
                         state["req_party_buff"] = False
                         state["party_buff_status"] = "IDLE"
@@ -25095,6 +25229,10 @@ def ai_commander_worker(target_pc):
                                                 if str(p_data.get("invite_group", "선택안함")) == my_inv_grp_pb and p_uid != my_uid_pb and (curr_time - p_data.get("recv_time", 0.0) <= 60.0):
                                                     same_grp_members.append(p_data)
 
+                                        total_group_cnt = 1 + len(same_grp_members)
+                                        # 과반수 계산: 2인팟->2명, 3인팟->2명, 4인팟->3명, 5인팟->3명, 6인팟->4명 (최소 2명 보장)
+                                        majority_cnt = max(2, (total_group_cnt // 2) + 1)
+
                                         ready_partied_cnt = 1 + sum(
                                             1 for m in same_grp_members
                                             if (curr_time - m.get("recv_time", 0.0) <= 5.0) and
@@ -25103,40 +25241,25 @@ def ai_commander_worker(target_pc):
                                         )
                                         all_members_ready_now = bool(
                                             len(same_grp_members) >= 1 and
-                                            all(
-                                                (curr_time - m.get("recv_time", 0.0) <= 5.0) and
-                                                m.get("in_game", False) and m.get("in_party", False) and m.get("in_hunting_ground", False) and
-                                                (not m.get("is_out_of_zone", False)) and (str(m.get("party_state", "")) not in ["TOWN", "MAINT", "SURVIVAL"])
-                                                for m in same_grp_members
-                                            )
-                                        )
-                                        has_certi_returned_member = any(
-                                            (curr_time - m.get("recv_time", 0.0) <= 5.0) and m.get("post_certi_need_pb", False)
-                                            for m in same_grp_members
+                                            ready_partied_cnt >= total_group_cnt
                                         )
 
                                         elem_t = state.get("buff_element_time", 0.0)
                                         is_post_certi_zero = (elem_t == 0.0)
-                                        is_normal_expired = (elem_t > 0.0 and curr_time > elem_t) or state.get("missed_party_buff", False)
-                                        is_recap_ready = bool(
-                                            (state.get("pb_need_full_recap", False) or has_certi_returned_member) and
-                                            all_members_ready_now and
-                                            (curr_time - state.get("pb_last_cast_time", 0.0) >= 15.0)
-                                        )
+                                        is_normal_expired = (elem_t > 0.0) and ((curr_time > elem_t) or state.get("missed_party_buff", False))
 
                                         should_call_pb = False
                                         call_type_desc = ""
                                         if is_post_certi_zero:
-                                            # 인증 복귀 후(0.0초): 시전자 포함 사냥터 파티원 2명 이상일 때 즉시 발동
-                                            if ready_partied_cnt >= 2:
+                                            # 시전자 인증/재접속 복귀 후(0.0초): 모든 파티원이 사냥터에 복귀했을 때만 소집하여 전원 수령
+                                            if all_members_ready_now:
                                                 should_call_pb = True
-                                                call_type_desc = f"인증 복귀 후 파티 {ready_partied_cnt}인 충족"
+                                                call_type_desc = f"시전자 인증 복귀 후 파티원 전원({ready_partied_cnt}/{total_group_cnt}인) 사냥터 합류"
                                         elif is_normal_expired:
-                                            should_call_pb = True
-                                            call_type_desc = "정기 쿨타임 만료"
-                                        elif is_recap_ready:
-                                            should_call_pb = True
-                                            call_type_desc = "인증/불참 파티원 전원 사냥터 합류 완료"
+                                            # 정기 타이머 만료 시: 파티원 과반수가 사냥터에 있을 때 소집하여 시전
+                                            if ready_partied_cnt >= majority_cnt:
+                                                should_call_pb = True
+                                                call_type_desc = f"정기 쿨타임 만료 및 과반수({ready_partied_cnt}/{total_group_cnt}인, 기준:{majority_cnt}인) 사냥터 존재"
 
                                         if should_call_pb:
                                             b_node_id = str(pc_graph["buff_spot_nodes"][0])
@@ -26091,7 +26214,7 @@ def manual_event_worker():
 threading.Thread(target=manual_event_worker, daemon=True).start()
 
 def _force_raise_overlay_win(force=False):
-    """OBS 프로젝터가 클릭 포커스를 뺏어가지 못하도록 overlay_win을 Win32 최상단으로 고정하되, 이미 포커스 상태면 중복 호출을 생략해 마우스 끊김을 방지합니다."""
+    """AttachThreadInput 없이 안전하게 오버레이 창을 최상단 활성화하고, OS 커서를 즉시 숨깁니다."""
     global overlay_win
     if not overlay_win or active_manual_target is None:
         return
@@ -26099,42 +26222,26 @@ def _force_raise_overlay_win(force=False):
         ov_hwnd = win32gui.GetParent(overlay_win.winfo_id()) or overlay_win.winfo_id()
         fg_hwnd = win32gui.GetForegroundWindow()
 
-        # 이미 오버레이 창이 최상단 포커스를 잡고 있다면 무거운 스레드 연결/SetCursorPos를 생략하여 초기 마우스 스터터링 원천 차단!
         if not force and fg_hwnd == ov_hwnd:
             ctypes.windll.user32.SetCursor(0)
             return
 
-        overlay_win.update_idletasks()
-        ov_hwnd = win32gui.GetParent(overlay_win.winfo_id()) or overlay_win.winfo_id()
+        sw, sh = win32api.GetSystemMetrics(0), win32api.GetSystemMetrics(1)
+        win32gui.SetWindowPos(
+            ov_hwnd, win32con.HWND_TOPMOST, 0, 0, sw, sh,
+            win32con.SWP_SHOWWINDOW
+        )
 
-        # 1) OBS 창이 쥐고 있는 마우스 클릭 캡처 강제 해제
-        ctypes.windll.user32.ReleaseCapture()
-
-        # 2) 현재 포그라운드 스레드(OBS)와 파이썬 스레드를 연결하여 Foreground Lock 우회 후 포커스 탈취
-        fg_tid = ctypes.windll.user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else 0
-        cur_tid = ctypes.windll.kernel32.GetCurrentThreadId()
-
-        attached = False
-        if fg_tid and fg_tid != cur_tid:
-            attached = bool(ctypes.windll.user32.AttachThreadInput(fg_tid, cur_tid, True))
-
-        try:
-            sw, sh = win32api.GetSystemMetrics(0), win32api.GetSystemMetrics(1)
-            win32gui.SetWindowPos(
-                ov_hwnd, win32con.HWND_TOPMOST, 0, 0, sw, sh,
-                win32con.SWP_SHOWWINDOW
-            )
-            win32gui.BringWindowToTop(ov_hwnd)
+        # 💡 OBS 스레드와 엉키는 AttachThreadInput을 제거하고, 가벼운 Alt-Up 더미 신호로 포그라운드 락만 해제
+        if fg_hwnd != ov_hwnd:
+            ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)
             ctypes.windll.user32.SetForegroundWindow(ov_hwnd)
-            ctypes.windll.user32.SetActiveWindow(ov_hwnd)
-        finally:
-            if attached:
-                ctypes.windll.user32.AttachThreadInput(fg_tid, cur_tid, False)
 
         overlay_win.lift()
         overlay_win.focus_force()
 
         if force:
+            # 💡 마우스 클릭 해제(WM_LBUTTONUP) 직후 현재 위치에 WM_SETCURSOR를 강제 발생시켜 2중 커서를 즉시 소거
             pt = win32api.GetCursorPos()
             ctypes.windll.user32.SetCursorPos(pt[0], pt[1])
         ctypes.windll.user32.SetCursor(0)
@@ -26152,7 +26259,7 @@ def sync_overlay_ui(key):
             overlay_win = None
         update_gui_status()
         try:
-            root.update_idletasks()
+            root.update()
         except Exception:
             pass
     else:
@@ -26166,15 +26273,15 @@ def sync_overlay_ui(key):
             overlay_win.config(bg="black", cursor="none")
             overlay_win.bind("<Button>", lambda e: "break")
 
+        # 💡 노란불(상태바)이 지연 없이 즉시 화면에 그려지도록 보장
         update_gui_status()
         try:
             root.update_idletasks()
         except Exception:
             pass
 
-        # 최초 1회만 강제 포커스 및 커서 숨김 트리거, 이후에는 포커스를 뺏겼을 때만 작동
         _force_raise_overlay_win(force=True)
-        root.after(80, lambda: _force_raise_overlay_win(force=False))
+        root.after(60, lambda: _force_raise_overlay_win(force=True))
 
 def toggle_manual(key):
     global active_manual_target, sensor_raw_dx, sensor_raw_dy, ignore_clicks
@@ -26274,11 +26381,8 @@ def toggle_manual(key):
         manual_event_queue.put(('KEY', picos[key], pico_locks[key], 197, 0))
         manual_event_queue.put(('KEY', picos[key], pico_locks[key], 200, 0))
 
+    # 💡 백그라운드 스레드에서 Tcl 락을 유발하는 root.winfo_id() 호출을 제거하여 데드락 원천 차단
     _GUI_TASK_QUEUE.put((sync_overlay_ui, (key,)))
-    try:
-        ctypes.windll.user32.PostMessageW(root.winfo_id(), 0x0000, 0, 0)
-    except Exception:
-        pass
 
 def manual_transmitter_thread():
     global sensor_raw_dx, sensor_raw_dy, ignore_clicks
@@ -26413,12 +26517,8 @@ def on_click(x, y, button, pressed):
         if ignore_clicks:
             if not pressed:
                 ignore_clicks = False
-                # 💡 포커스를 잃었을 때만 가볍게 회수 (이미 포커스 상태면 마우스 흐름 방해 금지)
-                _GUI_TASK_QUEUE.put((_force_raise_overlay_win, (False,)))
-                try:
-                    ctypes.windll.user32.PostMessageW(root.winfo_id(), 0x0000, 0, 0)
-                except Exception:
-                    pass
+                # 💡 클릭을 떼는 순간(OBS 마우스 캡처가 풀린 직후) force=True로 커서 숨김을 확정하고 root.winfo_id() 호출 제거
+                _GUI_TASK_QUEUE.put((_force_raise_overlay_win, (True,)))
             return
 
         p_serial = picos.get(active_manual_target)
