@@ -11360,23 +11360,60 @@ def ai_commander_worker(target_pc):
                                     return
                                 time.sleep(0.4)
 
-                                dprint(key, "▶ [맡기기 스크롤 모드] 파란색(선택됨) 배경 감지 기반 다중 선택 시작...")
+                                def m_click_wh_fast(tx, ty, jx=0, jy=0, d_min=0.05, d_max=0.08, double=False):
+                                    if key in ai_states: ai_states[key]["abort_macro"] = False
+                                    screen = latest_frames.get(key)
+                                    cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
+                                    if screen is not None:
+                                        real_c = find_cursor_pos(screen, last_pos=(cur_x, cur_y), allow_full_scan=True)
+                                        if real_c:
+                                            cur_x, cur_y = real_c[0], real_c[1]
+                                            if key in ai_states: ai_states[key]["cursor_pos"] = [cur_x, cur_y]
+
+                                    fx = int(tx + (random.gauss(0, jx / 2.0) if jx > 0 else 0))
+                                    fy = int(ty + (random.gauss(0, jy / 2.0) if jy > 0 else 0))
+                                    h_s, w_s = screen.shape[:2] if screen is not None else (600, 800)
+                                    fx = max(5, min(w_s - 5, fx))
+                                    fy = max(5, min(h_s - 5, fy))
+
+                                    dur = apply_human_variance(0.06 + 0.03 * math.log2((math.hypot(fx - cur_x, fy - cur_y) / 20.0) + 1.0)) * 0.85
+                                    deltas = generate_human_deltas(fx - cur_x, fy - cur_y, duration=dur, behavior="NORMAL", key=key)
+                                    if deltas: send_macro_buffer(p_serial, p_lock, deltas, key)
+                                    time.sleep(dur + g_val(0.02, 0.05))
+                                    send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
+                                    time.sleep(g_val(0.04, 0.06))
+                                    send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
+
+                                    if double:
+                                        time.sleep(g_val(0.04, 0.06))
+                                        send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
+                                        time.sleep(g_val(0.04, 0.06))
+                                        send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
+
+                                    time.sleep(g_val(d_min, d_max))
+                                    if key in ai_states: ai_states[key]["cursor_pos"] = [fx, fy]
+                                    return fx, fy
+
+                                dprint(key, "▶ [맡기기 고속 스크롤 모드] 상점 판매 방식과 동일하게 다중 고속 선택 시작...")
 
                                 if LEAVE_TEMPLATES:
                                     stuck_scrolls = 0
                                     last_scroll_img = None
                                     has_handled_any = False
+                                    just_scrolled = False
+
+                                    is_party_for_leave = current_settings.get(key, {}).get("use_party_hunt", False) or current_settings.get(key, {}).get("use_party_fixed", False)
+                                    dng_name = current_settings.get(key, {}).get("party_dungeon_name", "") if is_party_for_leave else current_settings.get(key, {}).get("dungeon_name", "")
+                                    if ai_states.get(key, {}).get("override_dungeon_name"):
+                                        dng_name = ai_states[key]["override_dungeon_name"]
+                                    skip_ent_dungeons = ["개미굴"]
 
                                     for scroll_idx in range(50):
                                         found_any = False
-                                        screen_chk = latest_frames.get(key)
 
-                                        is_party_for_leave = current_settings.get(key, {}).get("use_party_hunt", False) or current_settings.get(key, {}).get("use_party_fixed", False)
-                                        dng_name = current_settings.get(key, {}).get("party_dungeon_name", "") if is_party_for_leave else current_settings.get(key, {}).get("dungeon_name", "")
-                                        if ai_states.get(key, {}).get("override_dungeon_name"):
-                                            dng_name = ai_states[key]["override_dungeon_name"]
-
-                                        skip_ent_dungeons = ["개미굴"]
+                                        if just_scrolled:
+                                            time.sleep(g_val(0.10, 0.14))
+                                            just_scrolled = False
 
                                         for tmpl_dict in LEAVE_TEMPLATES:
                                             tmpl_name = tmpl_dict['name']
@@ -11385,75 +11422,45 @@ def ai_commander_worker(target_pc):
                                                 continue
 
                                             pos_list = find_all_imgs_universal(tmpl_dict, th=0.82, ui_only=True)
+                                            if not pos_list:
+                                                continue
 
-                                            valid_target_pos = None
-
-                                            if pos_list and screen_chk is not None:
-                                                h_s, w_s = screen_chk.shape[:2]
-
-                                                for pos in pos_list:
-                                                    is_already_selected = False
-                                                    chk_x1 = int(pos[0])
-                                                    chk_y1 = int(pos[1])
-                                                    chk_x2 = min(w_s, chk_x1 + 60)
-                                                    chk_y2 = min(h_s, chk_y1 + 20)
-
-                                                    if chk_x2 > chk_x1 and chk_y2 > chk_y1:
-                                                        chk_roi = screen_chk[chk_y1:chk_y2, chk_x1:chk_x2]
-                                                        hsv_roi = cv2.cvtColor(chk_roi, cv2.COLOR_BGR2HSV)
-                                                        mask_blue = cv2.inRange(hsv_roi, np.array([100, 50, 30]), np.array([140, 255, 150]))
-                                                        if cv2.countNonZero(mask_blue) >= 20:
-                                                            is_already_selected = True
-
-                                                    if is_already_selected: continue
-
-                                                    valid_target_pos = pos
-                                                    break
-
-                                            if valid_target_pos:
-                                                dprint(key, f"📦 맡길 템({tmpl_name}) 진짜 포착! 스크롤 안정화 대기 (0.2초)...")
-                                                time.sleep(0.2)
-
-                                                screen_chk2 = latest_frames.get(key)
-                                                pos_real_list = find_all_imgs_universal(tmpl_dict, th=0.82, ui_only=True)
-
-                                                final_pos = None
-                                                if pos_real_list and screen_chk2 is not None:
-                                                    h_s2, w_s2 = screen_chk2.shape[:2]
-                                                    for r_pos in pos_real_list:
-
-                                                        if abs(r_pos[0] - valid_target_pos[0]) < 15 and abs(r_pos[1] - valid_target_pos[1]) < 15:
-                                                            is_selected = False
-                                                            rx1, ry1 = int(r_pos[0]), int(r_pos[1])
-                                                            rx2, ry2 = min(w_s2, rx1 + 60), min(h_s2, ry1 + 20)
-                                                            if rx2 > rx1 and ry2 > ry1:
-                                                                r_roi = screen_chk2[ry1:ry2, rx1:rx2]
-                                                                r_hsv = cv2.cvtColor(r_roi, cv2.COLOR_BGR2HSV)
-                                                                r_mask = cv2.inRange(r_hsv, np.array([100, 50, 30]), np.array([140, 255, 150]))
-                                                                if cv2.countNonZero(r_mask) >= 20:
-                                                                    is_selected = True
-
-                                                            if not is_selected:
-                                                                final_pos = r_pos
-                                                                break
-
-                                                if not final_pos:
-                                                    dprint(key, "⚠️ 스크롤 관성으로 타겟 이탈 또는 이미 눌림. 다음 턴에 다시 찾습니다.")
+                                            for pos in pos_list:
+                                                screen_chk = latest_frames.get(key)
+                                                if screen_chk is None:
                                                     continue
 
-                                                dprint(key, f"✅ 정확한 팩트 좌표({final_pos[0]}, {final_pos[1]}) 획득! 수량(11111) 입력합니다.")
-                                                time.sleep(g_val(0.15, 0.25))
-                                                m_click(final_pos[0], final_pos[1], jx=13, jy=3, d_min=0.08, d_max=0.15)
-                                                time.sleep(g_val(0.05, 0.1))
+                                                h_s, w_s = screen_chk.shape[:2]
+                                                is_already_selected = False
+                                                chk_x1 = int(pos[0])
+                                                chk_y1 = int(pos[1])
+                                                chk_x2 = min(w_s, chk_x1 + 60)
+                                                chk_y2 = min(h_s, chk_y1 + 20)
+
+                                                if chk_x2 > chk_x1 and chk_y2 > chk_y1:
+                                                    chk_roi = screen_chk[chk_y1:chk_y2, chk_x1:chk_x2]
+                                                    hsv_roi = cv2.cvtColor(chk_roi, cv2.COLOR_BGR2HSV)
+                                                    mask_blue = cv2.inRange(hsv_roi, np.array([100, 50, 30]), np.array([140, 255, 150]))
+                                                    if cv2.countNonZero(mask_blue) >= 20:
+                                                        is_already_selected = True
+
+                                                if is_already_selected:
+                                                    continue
+
+                                                dprint(key, f"📦 [창고 맡기기] 맡길 템({tmpl_name}) 고속 선택({pos[0]}, {pos[1]}) ➔ 수량(11111) 입력!")
+                                                m_click_wh_fast(pos[0], pos[1], jx=13, jy=3, d_min=0.05, d_max=0.08)
                                                 m_spam_one()
-                                                time.sleep(g_val(0.2, 0.3))
+                                                time.sleep(g_val(0.08, 0.12))
                                                 has_handled_any = True
                                                 found_any = True
-                                                break
 
                                         if found_any:
                                             stuck_scrolls = 0
                                             continue
+
+                                        cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [150, 220])
+                                        if cur_x > 280 or cur_y > 380:
+                                            m_click_wh_fast(150, 220, jx=10, jy=10, d_min=0.05, d_max=0.1, double=False)
 
                                         screen = latest_frames.get(key)
                                         if screen is not None:
@@ -11481,6 +11488,7 @@ def ai_commander_worker(target_pc):
                                         time.sleep(g_val(0.04, 0.06))
                                         send_mouse_scroll(p_serial, p_lock, -3)
                                         time.sleep(g_val(0.05, 0.08))
+                                        just_scrolled = True
 
                                     if has_handled_any:
                                         dprint(key, f"▶ [통합 결제] O.K. 버튼을 딱 1번 눌러 일괄 위탁합니다.")
@@ -11497,6 +11505,40 @@ def ai_commander_worker(target_pc):
                                 ai_states[key]["cooldown"] = time.time() + 0.1
 
                             elif step_name == "DO_PICK":
+                                def m_click_wh_fast(tx, ty, jx=0, jy=0, d_min=0.05, d_max=0.08, double=False):
+                                    if key in ai_states: ai_states[key]["abort_macro"] = False
+                                    screen = latest_frames.get(key)
+                                    cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
+                                    if screen is not None:
+                                        real_c = find_cursor_pos(screen, last_pos=(cur_x, cur_y), allow_full_scan=True)
+                                        if real_c:
+                                            cur_x, cur_y = real_c[0], real_c[1]
+                                            if key in ai_states: ai_states[key]["cursor_pos"] = [cur_x, cur_y]
+
+                                    fx = int(tx + (random.gauss(0, jx / 2.0) if jx > 0 else 0))
+                                    fy = int(ty + (random.gauss(0, jy / 2.0) if jy > 0 else 0))
+                                    h_s, w_s = screen.shape[:2] if screen is not None else (600, 800)
+                                    fx = max(5, min(w_s - 5, fx))
+                                    fy = max(5, min(h_s - 5, fy))
+
+                                    dur = apply_human_variance(0.06 + 0.03 * math.log2((math.hypot(fx - cur_x, fy - cur_y) / 20.0) + 1.0)) * 0.85
+                                    deltas = generate_human_deltas(fx - cur_x, fy - cur_y, duration=dur, behavior="NORMAL", key=key)
+                                    if deltas: send_macro_buffer(p_serial, p_lock, deltas, key)
+                                    time.sleep(dur + g_val(0.02, 0.05))
+                                    send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
+                                    time.sleep(g_val(0.04, 0.06))
+                                    send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
+
+                                    if double:
+                                        time.sleep(g_val(0.04, 0.06))
+                                        send_mouse_click(p_serial, p_lock, 1, 1, is_manual=True)
+                                        time.sleep(g_val(0.04, 0.06))
+                                        send_mouse_click(p_serial, p_lock, 1, 0, is_manual=True)
+
+                                    time.sleep(g_val(d_min, d_max))
+                                    if key in ai_states: ai_states[key]["cursor_pos"] = [fx, fy]
+                                    return fx, fy
+
                                 wh_target = ai_states.get(key, {}).get("wh_target", 1)
                                 npc_img = "qq/npc_hakim.png" if wh_target == 1 else "qq/npc_hakim2.png"
                                 npc_desc = "하킴 NPC(다시)" if wh_target == 1 else "말섬 창고 NPC(다시)"
@@ -11555,18 +11597,23 @@ def ai_commander_worker(target_pc):
                                 total_target_count = len(pick_targets)
 
                                 if PICK_TEMPLATES:
-                                    dprint(key, f"▶ [찾기 스크롤 모드] {pick_retry_cnt + 1}회차 창고 스캔 시작...")
+                                    dprint(key, f"▶ [찾기 고속 스크롤 모드] {pick_retry_cnt + 1}회차 창고 스캔 시작...")
                                     stuck_scrolls = 0
                                     last_scroll_img = None
                                     found_any_this_turn = False
+                                    just_scrolled = False
 
                                     if total_target_count == 0:
                                         dprint(key, "✅ 찾을 물건이 설정되지 않았습니다. 즉시 스킵합니다.")
                                     else:
-                                        for scroll_idx in range(100):
+                                        for scroll_idx in range(50):
                                             if len(found_items) >= total_target_count:
                                                 dprint(key, "✅ [찾기 조기 달성] 지정된 모든 물건을 찾았습니다. 헛발질(스크롤) 조기 종료!")
                                                 break
+
+                                            if just_scrolled:
+                                                time.sleep(g_val(0.10, 0.14))
+                                                just_scrolled = False
 
                                             found_any = False
                                             for item_key_name, qty in list(pick_targets.items()):
@@ -11581,53 +11628,54 @@ def ai_commander_worker(target_pc):
                                                 pos = find_img_universal(tmpl_dict, th=0.82, ui_only=True)
 
                                                 if pos:
-                                                    dprint(key, f"📦 '{tmpl_dict['name']}' 포착! 스크롤 안정화 대기...")
-                                                    time.sleep(0.5)
-                                                    pos_real = find_img_universal(tmpl_dict, th=0.82, ui_only=True)
-                                                    if pos_real: pos = pos_real
-                                                    else:
-                                                        dprint(key, "⚠️ 스크롤 관성으로 타겟 이탈. 다음 턴에 다시 찾습니다.")
-                                                        continue
-
-                                                    dprint(key, f"✅ 정확한 좌표({pos[0]}, {pos[1]}) 획득! {qty}개 또박또박 입력합니다.")
-                                                    time.sleep(g_val(0.15, 0.25))
-                                                    m_click_ack(pos[0], pos[1], jx=13, jy=3)
-                                                    time.sleep(g_val(0.05, 0.1))
+                                                    dprint(key, f"📦 [창고 찾기] '{tmpl_dict['name']}' 고속 선택({pos[0]}, {pos[1]}) ➔ {qty}개 입력!")
+                                                    m_click_wh_fast(pos[0], pos[1], jx=13, jy=3, d_min=0.05, d_max=0.08)
                                                     m_type_num(qty)
-                                                    time.sleep(g_val(0.1, 0.2))
+                                                    time.sleep(g_val(0.08, 0.12))
 
                                                     found_items.add(item_key_name)
                                                     found_any = True
                                                     found_any_this_turn = True
-                                                    break
 
                                             if found_any:
                                                 stuck_scrolls = 0
                                                 continue
 
+                                            cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [150, 220])
+                                            if cur_x > 280 or cur_y > 380:
+                                                m_click_wh_fast(150, 220, jx=10, jy=10, d_min=0.05, d_max=0.1, double=False)
+
                                             screen = latest_frames.get(key)
                                             if screen is not None:
                                                 h_scr, w_scr = screen.shape[:2]
-                                                ui_roi = screen[0:min(400, h_scr), 0:min(290, w_scr)]
-                                                uh, uw = ui_roi.shape[:2]
-                                                if uh > 200 and uw > 50:
-                                                    curr_scroll_img = cv2.cvtColor(ui_roi[150:uh-50, uw//2:uw], cv2.COLOR_BGR2GRAY)
+                                                c_x, c_y = ai_states.get(key, {}).get("cursor_pos", [120, 200])
+
+                                                chk_x1, chk_y1 = max(0, int(c_x) - 50), max(0, int(c_y) - 15)
+                                                chk_x2, chk_y2 = min(w_scr, int(c_x) + 50), min(h_scr, int(c_y) + 15)
+
+                                                if chk_x2 > chk_x1 and chk_y2 > chk_y1:
+                                                    curr_scroll_img = cv2.cvtColor(screen[chk_y1:chk_y2, chk_x1:chk_x2], cv2.COLOR_BGR2GRAY)
+
                                                     if last_scroll_img is not None and last_scroll_img.shape == curr_scroll_img.shape:
                                                         diff = cv2.absdiff(last_scroll_img, curr_scroll_img)
-                                                        _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
-                                                        if cv2.countNonZero(thresh) < 100: stuck_scrolls += 1
+                                                        _, thresh = cv2.threshold(diff, 10, 255, cv2.THRESH_BINARY)
+                                                        if cv2.countNonZero(thresh) < 5: stuck_scrolls += 1
                                                         else: stuck_scrolls = 0
                                                     last_scroll_img = curr_scroll_img
-                                                if stuck_scrolls >= 20:
-                                                    dprint(key, "🛑 [스크롤 끝] 바닥 도달 팩트 체크 완료(20회).")
+
+                                                if stuck_scrolls >= random.randint(5, 6):
+                                                    dprint(key, "🛑 [찾기 스크롤 끝] 커서 반경 변화 없음. 바닥 도달 확정.")
                                                     break
 
-                                            send_mouse_scroll(p_serial, p_lock, -1 * int(round(g_val(3, 6))))
-                                            time.sleep(g_val(0.20, 0.30) if random.random() < 0.15 else g_val(0.12, 0.18))
+                                            send_mouse_scroll(p_serial, p_lock, -3)
+                                            time.sleep(g_val(0.04, 0.06))
+                                            send_mouse_scroll(p_serial, p_lock, -3)
+                                            time.sleep(g_val(0.05, 0.08))
+                                            just_scrolled = True
 
                                     if found_any_this_turn:
                                         dprint(key, f"▶ [결제 완료] O.K. 버튼을 눌러 일괄 인출합니다.")
-                                        time.sleep(g_val(0.2, 0.3))
+                                        time.sleep(g_val(0.15, 0.25))
                                         click_img("qq/ok.png", "O.K. 버튼", th=0.75, jx=3, jy=2, d_min=0.3, d_max=0.45, ui_only=True)
                                     else:
                                         dprint(key, "⚠️ 이번 턴에서 찾은 물건이 없습니다. O.K. 클릭으로 창을 닫습니다.")
@@ -11636,17 +11684,17 @@ def ai_commander_worker(target_pc):
                                 time.sleep(g_val(0.6, 0.9))
 
                                 if len(found_items) < total_target_count:
-                                    if pick_retry_cnt < 2:
+                                    if pick_retry_cnt < 1:
                                         ai_states[key]["pick_retry_cnt"] = pick_retry_cnt + 1
                                         missing_items = [k for k in pick_targets.keys() if k not in found_items]
-                                        dprint(key, f"🔄 [누락 템 재탐색] {len(missing_items)}개 템을 못 찾았습니다! 다시 NPC에게 말을 걸어 재탐색합니다! ({pick_retry_cnt+2}/3)")
+                                        dprint(key, f"🔄 [누락 템 1회 추가 탐색] {len(missing_items)}개 템을 못 찾았습니다! 딱 1번만 더 NPC에게 말을 걸어 재탐색합니다! ({pick_retry_cnt+2}/2)")
 
                                         ai_states[key]["cooldown"] = time.time() + 0.1
                                         ai_states[key]["town_thread_running"] = False
                                         return
                                     else:
                                         missing_items = [k for k in pick_targets.keys() if k not in found_items]
-                                        dprint(key, f"🚨 [탐색 3아웃] 3번이나 창고 바닥을 긁었지만 모든 템을 찾지 못했습니다! (누락: {missing_items})")
+                                        dprint(key, f"🚨 [탐색 2회 완료] 2번 창고 바닥을 긁었지만 일부 템을 찾지 못했습니다! (누락: {missing_items})")
 
                                         if "arrow" in missing_items:
                                             dprint(key, "🏹 [비상 화살 조달] 은화살이 창고에 없습니다! 무기 상인으로 달려가 999개를 비상 구매합니다.")
