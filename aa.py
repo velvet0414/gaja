@@ -1037,7 +1037,7 @@ CONFIG_SYNC_GROUPS = {
         "m_elf_conf", "m_wiz_conf", "f_knight_conf", "m_knight_conf", "m_prince_conf"
     ],
     "MAIN": [
-        # 사냥터(dungeon_name)를 제외한 메인 탭 전체 항목
+        # 사냥터(dungeon_name) 및 윈웍(use_windwalk)을 제외한 메인 탭 전체 항목
         "role", "tele_hunt_use", "tele_hunt_time",
         "heal_pct", "heal_mp_pct", "heal_use", "abs_return_use", "abs_return_pct",
         "pot_pct", "pot_use", "poison_type", "poison_delay",
@@ -1046,7 +1046,7 @@ CONFIG_SYNC_GROUPS = {
         "use_gb_detect", "gb_count_normal", "gb_count_dng", "motion_sensitivity", "gb_exc_user",
         "buff_set", "combat_buff",
         "use_dec_weight", "use_cc_buff", "buff_mp_pct",
-        "use_extra_f10", "extra_f10_dur", "use_windwalk",
+        "use_extra_f10", "extra_f10_dur",
         "use_body", "body_pct", "body_stop_pct",
         "use_mptam", "mptam_start_pct", "mptam_stop_pct", "is_wiz_mptam", "use_mptam_hit", "mptam_hit_pct",
         "use_blue_pot", "use_blue_pot_combat", "blue_mp_pct", "blue_cd_min"
