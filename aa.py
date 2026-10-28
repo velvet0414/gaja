@@ -6831,6 +6831,7 @@ def ai_commander_worker(target_pc):
                             CURRENT_PROXY_TARGET_NUM[key] = saved_c
 
                         pico_queues[key].put({"action": "HOME_MACRO"})
+                        state["certi_1_next_desktop_time"] = curr_time + g_val(2.5, 3.5)
                         state["certi_ip_lock_log_time"] = 0.0
                         state["target_fsm"] = "CERTI_WAIT_IP_LOCK"
                         state["cooldown"] = curr_time + 1.5
@@ -6958,7 +6959,14 @@ def ai_commander_worker(target_pc):
                                 dprint(key, f"🔎 [인증 1단계] 바탕화면 '1.png' 발견({pos[0]}, {pos[1]})! 본인({my_num}번 중앙컴) 회선으로 더블클릭합니다.")
                             start_certi_move_and_action(pos[0], pos[1], next_fsm="CERTI_STEP_2_FIND", double=True, use_jitter=False, desc=f"{target_icon_name} 웹창 열기")
                         else:
-                            state["cooldown"] = curr_time + 0.2
+                            if curr_time >= state.get("certi_1_next_desktop_time", 0):
+                                next_interval = g_val(2.5, 3.5)
+                                dprint(key, f"🖥️ [1단계 바탕화면 재호출] '{target_icon_name}' 미감지 ➔ 바탕화면 가기(Win+D) 실행! (다음 재시도: {next_interval:.1f}초 후)")
+                                pico_queues[key].put({"action": "HOME_MACRO"})
+                                state["certi_1_next_desktop_time"] = curr_time + next_interval
+                                state["cooldown"] = curr_time + 0.8
+                            else:
+                                state["cooldown"] = curr_time + 0.2
 
                     # 2단계: 페이지가 열리길 기다리며 2.png 찾아 이동 후 원클릭
                     elif current_fsm == "CERTI_STEP_2_FIND":
