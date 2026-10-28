@@ -5895,25 +5895,17 @@ def ai_commander_worker(target_pc):
         gui_name = str(gui_name).strip()
         json_name = str(json_name).strip()
         if gui_name == json_name: return True
+
+        # 💡 본던/사던은 각 존(예: gludio4-1.json, silver4-1.json)마다 전용 그래프 파일을 쓰므로,
+        # 파일 내에 찍힌 모든 숫자 노드(json_name이 존재하는 노드)를 100% 내 존으로 인정합니다!
+        if "본던" in gui_name or "gludio" in gui_name.lower() or "사던" in gui_name or "silver" in gui_name.lower():
+            return True
         
         import re
         g_nums = [int(x) for x in re.findall(r'\d+', gui_name)]
         j_nums = [int(x) for x in re.findall(r'\d+', json_name)]
         
         if g_nums and j_nums:
-            is_bd = "본던" in gui_name or "gludio" in gui_name.lower() or "사던" in gui_name or "silver" in gui_name.lower()
-            if is_bd and len(g_nums) >= 2:
-                # 💡 본던/사던(예: '사던 4-1')은 두 번째 숫자(g_nums[1] = 1)가 구역 번호!
-                target_zone_num = g_nums[1]
-                # 베이커(map_baker)에서 숫자키를 누르면 '수던1-1' 형태로 저장되므로 첫 번째 숫자(j_nums[0] = 1)와 구역 번호를 비교!
-                if "수던" in json_name or "heine" in json_name.lower():
-                    return target_zone_num == j_nums[0]
-                if len(j_nums) == 1:
-                    return target_zone_num == j_nums[0]
-                if "본던" in json_name or "gludio" in json_name.lower() or "사던" in json_name or "silver" in json_name.lower():
-                    return (g_nums[0] == j_nums[0]) and (target_zone_num == j_nums[1])
-                return target_zone_num == j_nums[0]
-
             if g_nums == j_nums: return True
             if g_nums[0] == j_nums[0]:
                 if len(g_nums) == 1 or len(j_nums) == 1: return True
@@ -17930,8 +17922,10 @@ def ai_commander_worker(target_pc):
                     is_out_of_zone = False
                     
                     if my_zone_nodes:
-                        min_d_sq = float('inf')
-                        closest_zn = None
+                        min_d_sq_any = float('inf')
+                        closest_zn_any = None
+                        min_d_sq_los = float('inf')
+                        closest_zn_los = None
 
                         for zn in my_zone_nodes:
                             z_node = pc_graph["nodes"].get(zn) or (pc_graph["nodes"].get(int(zn)) if str(zn).isdigit() else None)
@@ -17939,22 +17933,31 @@ def ai_commander_worker(target_pc):
                                 zx = z_node.get("x", 0) if isinstance(z_node, dict) else z_node[0]
                                 zy = z_node.get("y", 0) if isinstance(z_node, dict) else z_node[1]
                                 d_sq = (char_map_pos_for_zone[0] - zx)**2 + (char_map_pos_for_zone[1] - zy)**2
-                                if d_sq < min_d_sq:
-                                    min_d_sq = d_sq
-                                    closest_zn = zn
+                                if d_sq < min_d_sq_any:
+                                    min_d_sq_any = d_sq
+                                    closest_zn_any = zn
+                                # 💡 벽 너머 방의 노드를 잘못 고르지 않도록 시야(LOS)가 뚫린 같은 방 존 노드를 최우선 탐색
+                                if d_sq <= 6400 and pc_map_gray_los is not None:
+                                    if check_line_of_sight(pc_map_gray_los, char_map_pos_for_zone, (zx, zy), margin_steps=1):
+                                        if d_sq < min_d_sq_los:
+                                            min_d_sq_los = d_sq
+                                            closest_zn_los = zn
+
+                        closest_zn = closest_zn_los if closest_zn_los is not None else closest_zn_any
+                        min_d_sq = min_d_sq_los if closest_zn_los is not None else min_d_sq_any
 
                         if closest_zn:
                             if was_out:
-                                # 💡 [관성 유지 핑퐁 차단] 이미 존을 이탈한 상태라면, 완벽히 구역 내(3칸 이내)로 들어올 때까지 시야 제한 유지!
-                                if min_d_sq > 256: 
+                                # 💡 이미 존을 이탈한 상태라면, 내 존 노드와 직선거리 20px(20^2=400) 이내 & A* 5노드 이내로 들어올 때까지 시야 제한 유지!
+                                if min_d_sq > 400: # 20px 밖이면 이탈 유지
                                     is_out_of_zone = True
                                 else:
                                     z_path = calculate_graph_astar_path(pc_graph, char_map_pos_for_zone, closest_zn, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
-                                    if not z_path or len(z_path) > 3:
+                                    if not z_path or len(z_path) > 5: # 5노드 초과면 이탈 유지
                                         is_out_of_zone = True
                             else:
-                                # 💡 정상 상태에서는 크게 벗어날 때만 이탈 판정 (기존과 동일)
-                                if min_d_sq > 6400: # 80픽셀 밖으로 밀려나면 이탈
+                                # 💡 정상 상태에서는 기존과 동일하게 직선 80px(6400) 초과 또는 A* 16노드 초과 시 이탈 판정
+                                if min_d_sq > 6400:
                                     is_out_of_zone = True
                                 else:
                                     z_path = calculate_graph_astar_path(pc_graph, char_map_pos_for_zone, closest_zn, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
