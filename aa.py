@@ -1416,7 +1416,7 @@ def local_ipc_broadcaster_thread(my_key):
                     st.get("town_thread_running", False)
                 )
                 is_in_hunting_ground = bool(is_in_game and not is_in_town_maint)
-                in_party_now = bool(is_in_game and st.get("in_ingame_party", True))
+                in_party_now = bool(is_in_game and st.get("in_ingame_party", False))
                 is_inv_leader = bool(is_in_game and st.get("is_invite_leader", False) and not st.get("not_party_leader_locked", False))
 
                 # 💡 사냥터에 있는 동안에는 전투/이동 중에도 초대 요청 신호를 상시 유지 (단, 1분 대기 쿨타임 및 3x3 9회 실패 포기 시 제외)
@@ -1474,7 +1474,7 @@ def local_ipc_broadcaster_thread(my_key):
                     "req_party_buff": st.get("req_party_buff", False),
                     "pb_call_id": st.get("pb_call_id", 0),
                     "party_buff_status": st.get("party_buff_status", "IDLE"),
-                    "party_buff_done": st.get("party_buff_done", False),
+                    "party_buff_done": bool(st.get("party_buff_done", False) and now_req_t <= st.get("party_buff_done_timer", 0.0)),
                     "post_certi_need_pb": bool(st.get("post_certi_need_pb", False)),
                     "dungeon_name": current_settings.get(my_key, {}).get("dungeon_name", ""),
                     "is_out_of_zone": st.get("is_out_of_zone", False)
@@ -1651,9 +1651,12 @@ def _get_pc_assets_internal(dungeon_name):
                     next_floor_node = None # 💡 [추가]
                     back_nodes_set = {str(x) for x in data.get("back_nodes", [])}
                     back_nodes_list = []
+                    init_buff_spot_nodes = []
                     for n in data.get("nodes", []):
-                        is_back = bool(n.get("is_back_node", False) or (str(n["id"]) in back_nodes_set))
-                        nodes[int(n["id"])] = {
+                        s_nid = str(n["id"])
+                        is_back = bool(n.get("is_back_node", False) or (s_nid in back_nodes_set))
+                        is_buff_n = bool(str(n.get("is_buff_spot", False)).lower() == "true")
+                        nodes[s_nid] = {
                             "x": n["x"],
                             "y": n["y"],
                             "u": n.get("u", 0),
@@ -1661,15 +1664,17 @@ def _get_pc_assets_internal(dungeon_name):
                             "manual": n.get("manual", False),
                             "is_portal": n.get("is_portal", False),
                             "is_special": n.get("is_special", False),
-                            "is_buff_spot": n.get("is_buff_spot", False),
+                            "is_buff_spot": is_buff_n,
                             "is_next_floor": n.get("is_next_floor", False), # 💡 [추가]
                             "is_back_node": is_back, # 💡 [추가] 5px 접근 시 빽무빙 복귀 노드
                             "zone": str(n.get("zone", ""))
                         }
                         if n.get("is_next_floor", False):
-                            next_floor_node = str(n["id"])
+                            next_floor_node = s_nid
                         if is_back:
-                            back_nodes_list.append(str(n["id"]))
+                            back_nodes_list.append(s_nid)
+                        if is_buff_n and not is_back:
+                            init_buff_spot_nodes.append(s_nid)
 
                     anchor_x, anchor_y = -1000, -1000
                     if nodes:
@@ -1757,6 +1762,7 @@ def _get_pc_assets_internal(dungeon_name):
                         "anchor_x": anchor_x,
                         "anchor_y": anchor_y,
                         "special_nodes": data.get("special_nodes", []),
+                        "buff_spot_nodes": init_buff_spot_nodes,
                         "next_floor_node": next_floor_node, # 💡 [기존] 뇌에 저장
                         "retry_node": data.get("retry_node", None), # 💡 [추가] 진입 실패 시 우회할 재시도 노드
                         "back_nodes": back_nodes_list, # 💡 [추가] 5px 근접 시 내 존 복귀 노드 목록
@@ -3365,7 +3371,8 @@ for pc in MINI_PCS:
         "dungeon_corner_idx": 0, "dungeon_going_center": False,
         "last_pause_time": 0.0, "last_mob_pos": None, "last_mob_time": 0.0, "miss_count": 0,
         "pre_target_data": None, "exp_drop_wait_timer": 0.0,
-        "is_real_buff_received": True, "real_buff_time": now_t
+        "is_real_buff_received": True, "real_buff_time": now_t,
+        "in_ingame_party": False
     }
 
 def init_hardware_picos():
@@ -5974,13 +5981,11 @@ def ai_commander_worker(target_pc):
             is_solo = "솔플" in role_var
 
             is_party_on = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
-            active_dungeon = settings.get("party_dungeon_name", "heine3-1") if is_party_on else settings.get("dungeon_name", "기란 1층")
+            gui_target_dungeon = settings.get("party_dungeon_name", "heine3-1") if is_party_on else settings.get("dungeon_name", "기란 1층")
+            if is_party_on:
+                settings["dungeon_name"] = gui_target_dungeon
 
-            if ai_states[key].get("override_dungeon_name"):
-                active_dungeon = ai_states[key]["override_dungeon_name"]
-
-            if is_party_on and not ai_states[key].get("override_dungeon_name"):
-                settings["dungeon_name"] = active_dungeon
+            active_dungeon = ai_states[key].get("override_dungeon_name") or gui_target_dungeon
 
             pc_assets = get_pc_assets(active_dungeon)
             pc_model = pc_assets["model"]
@@ -8181,7 +8186,9 @@ def ai_commander_worker(target_pc):
                 fsm_inv_chk.startswith("DEATH") or
                 fsm_inv_chk.startswith("BUFFING") or
                 fsm_inv_chk.startswith("F1_INIT") or
-                fsm_inv_chk in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] or
+                fsm_inv_chk in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY", "PARTY_BUFF_L_DONE"] or
+                state.get("req_party_buff", False) or
+                state.get("party_buff_status") in ["MOVING", "ARRIVED"] or
                 state.get("town_thread_running", False)
             )
 
@@ -8211,7 +8218,7 @@ def ai_commander_worker(target_pc):
                 state["solo_red_arrow_streak"] = 0
                 state["no_red_arrow_streak"] = state.get("no_red_arrow_streak", 0) + 1
                 if state["no_red_arrow_streak"] >= 3:
-                    if state.get("waiting_party_minimap_verify", False) or not state.get("in_ingame_party", True):
+                    if state.get("waiting_party_minimap_verify", False) or not state.get("in_ingame_party", False):
                         dprint(key, f"✅ [미니맵 파티 확인] 중앙 주황/노랑 픽셀({party_marker_px}개) 감지! 파티 합류 성공으로 확정합니다.")
                     state["in_ingame_party"] = True
                     state["need_party_invite_req"] = False
@@ -8228,7 +8235,7 @@ def ai_commander_worker(target_pc):
                 # 0) 3회 실패 후 1분(60초) 대기 쿨타임이 끝났다면 다시 초대 요청 재개!
                 if state.get("party_retry_wait_until", 0.0) > 0.0 and curr_time >= state.get("party_retry_wait_until", 0.0):
                     state["party_retry_wait_until"] = 0.0
-                    if not state.get("in_ingame_party", True) and not state.get("is_invite_leader", False) and not state.get("party_invite_giveup", False):
+                    if not state.get("in_ingame_party", False) and not state.get("is_invite_leader", False) and not state.get("party_invite_giveup", False):
                         state["need_party_invite_req"] = True
                         dprint(key, f"🔄 [1분 대기 완료 ➔ 파티 재요청 개시] {state.get('party_accept_cycle_cnt', 1) + 1}/3세트(3회) 파티 초대 요청을 다시 시작합니다!")
 
@@ -8280,6 +8287,9 @@ def ai_commander_worker(target_pc):
             # 초대조 변경 또는 해제 감지 시 상태 초기화 및 진입 시각 기록
             if state.get("last_invite_group", "선택안함") != my_inv_grp:
                 state["last_invite_group"] = my_inv_grp
+                state["in_ingame_party"] = False
+                state["no_red_arrow_streak"] = 0
+                state["solo_red_arrow_streak"] = 0
                 state["is_invite_leader"] = False
                 state["not_party_leader_locked"] = False
                 state["had_party_as_leader"] = False
@@ -8342,7 +8352,7 @@ def ai_commander_worker(target_pc):
                     is_in_hunting_ground and
                     curr_time >= state.get("party_retry_wait_until", 0.0) and
                     state.get("need_party_invite_req", False) and
-                    not state.get("in_ingame_party", True) and
+                    not state.get("in_ingame_party", False) and
                     not state.get("is_invite_leader", False) and
                     not state.get("party_invite_giveup", False) and
                     not state.get("waiting_party_minimap_verify", False) and
@@ -8359,7 +8369,7 @@ def ai_commander_worker(target_pc):
                         "in_game": True,
                         "in_hunting_ground": is_in_hunting_ground,
                         "is_demoted": bool(curr_time < state.get("leader_demoted_until", 0.0)),
-                        "in_party": state.get("in_ingame_party", True),
+                        "in_party": state.get("in_ingame_party", False),
                         "need_invite": my_need_invite_now,
                         "is_invite_leader": bool(state.get("is_invite_leader", False) and not state.get("not_party_leader_locked", False)),
                         "not_leader_locked": bool(state.get("not_party_leader_locked", False)),
@@ -12590,8 +12600,6 @@ def ai_commander_worker(target_pc):
 
                                 is_party_for_ret = current_settings.get(key, {}).get("use_party_hunt", False) or current_settings.get(key, {}).get("use_party_fixed", False)
                                 dungeon_name = current_settings.get(key, {}).get("party_dungeon_name", "") if is_party_for_ret else current_settings.get(key, {}).get("dungeon_name", "")
-                                if ai_states.get(key, {}).get("override_dungeon_name"):
-                                    dungeon_name = ai_states[key]["override_dungeon_name"]
 
                                 def wait_with_heal(duration):
                                     start_w = time.time()
@@ -14292,19 +14300,20 @@ def ai_commander_worker(target_pc):
                                         door_found_and_entered = False
                                         global_start_t = time.time()
                                         evade_flip = 1
-                                        s3_assets_chk = get_pc_assets("사던 3to4")
+                                        s_check_dng = "사던 2층" if "2층" in dungeon_name else ("사던 3to4" if ("4-" in dungeon_name or "4층" in dungeon_name or is_veranda_test) else "사던 3층")
+                                        s3_assets_chk = get_pc_assets(s_check_dng)
                                         s3_gray_chk = s3_assets_chk.get("gray") if s3_assets_chk else None
 
                                         while time.time() - global_start_t < 90.0:
                                             wait_with_heal(0.1)
 
-                                            # 1) 이미 3층 내부 미니맵 좌표가 잡혔거나, 파란점 소멸 + 3층 미니맵(silver3to4map.png) 매칭 시 진입 확정!
+                                            # 1) 이미 3층 내부 미니맵 좌표가 잡혔거나, 화면에 베란다 포탈이 없고 3층 미니맵(silver3to4map.png)이 매칭되면 진입 확정!
                                             if ai_states.get(key, {}).get("dungeon_map_pos") is not None:
                                                 dprint(key, "🚪 [사던 3층 진입 완료] 3층 미니맵 좌표 인식 성공!")
                                                 door_found_and_entered = True
                                                 break
 
-                                            if s3_gray_chk is not None and get_minimap_marker_angle() is None:
+                                            if s3_gray_chk is not None and find_silver3f_portal_on_screen() is None:
                                                 scr_mm = latest_frames.get(key)
                                                 if scr_mm is not None and scr_mm.shape[0] >= 125 and scr_mm.shape[1] >= 140:
                                                     try:
@@ -14315,7 +14324,7 @@ def ai_commander_worker(target_pc):
                                                         _, ref_bin = cv2.threshold(s3_gray_chk, th_v, 255, cv2.THRESH_BINARY)
                                                         res_mm = cv2.matchTemplate(ref_bin, mm_bin, cv2.TM_CCOEFF_NORMED)
                                                         if cv2.minMaxLoc(res_mm)[1] >= 0.45:
-                                                            dprint(key, "🚪 [사던 3층 진입 완료] 베란다 파란점 소멸 및 3층 미니맵 매칭 성공!")
+                                                            dprint(key, "🚪 [사던 3층 진입 완료] 3층 미니맵 매칭 성공!")
                                                             door_found_and_entered = True
                                                             break
                                                     except: pass
@@ -14786,17 +14795,9 @@ def ai_commander_worker(target_pc):
                                     if settings.get("use_windwalk") and curr_time > state.get("buff_windwalk_time", 0):
                                         buffs_to_cast.append({"key": KEY_F9, "page": 2, "double": False, "name": "windwalk", "dur": BUFF_DUR_WINDWALK})
                                         
-                                    # 💡 [파랭이 1프레임 기억 시스템] (마을 엠탐)
-                                    if settings.get("use_blue_pot") and curr_time > state.get("buff_blue_pot_time", 0):
-                                        if (curr_time - MACRO_GLOBAL_START_TIME >= 180.0) and (check_weight_status(img_bgr) == 0):
-                                            try: blue_pct_limit = float(settings.get("blue_mp_pct", 15.0))
-                                            except: blue_pct_limit = 15.0
-                                            
-                                            if mp <= blue_pct_limit:
-                                                state["pending_blue_pot"] = True
-                                                
-                                            if state.get("pending_blue_pot", False):
-                                                buffs_to_cast.append({"key": KEY_F6, "page": 3, "double": False, "name": "blue_pot", "dur": settings.get("blue_cd_min", 20.0) * 60.0})
+                                    # 💡 마을 어머니 나무 엠탐 중에는 파랭이 낭비 방지 및 잔여 깃발 초기화
+                                    state["pending_blue_pot"] = False
+                                    state["blue_pot_low_ticks"] = 0
 
                                     if buffs_to_cast and mp >= 40.0:
                                         dprint(key, f"🪄 [어머니 엠탐 버프] 엠탐 중 만료된 버프 발견! 메인 버프 로직으로 토스합니다.")
@@ -15601,8 +15602,8 @@ def ai_commander_worker(target_pc):
                         state["has_fired_arrow"] = False
                         state["is_pulling"] = False
                         
-                        # 마을 귀환, 사망 대기 등 치명적인 상태만 아니면 무조건 IDLE(사냥)로 꽂아버림
-                        if not str(state.get("target_fsm", "")).startswith("TOWN_MAINT") and state.get("target_fsm", "") not in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY"] and not str(state.get("target_fsm", "")).startswith("DEATH"):
+                        # 마을 귀환, 사망 대기 및 팟바람 집결/대기/완료 상태가 아닐 때만 IDLE(사냥)로 리셋
+                        if not str(state.get("target_fsm", "")).startswith("TOWN_MAINT") and state.get("target_fsm", "") not in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY", "PARTY_BUFF_L_DONE", "PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY"] and not str(state.get("target_fsm", "")).startswith("DEATH"):
                             state["target_fsm"] = "IDLE"
                             
                         # 체력을 갱신하고 0.1초 뒤 즉시 행동 개시
@@ -18270,11 +18271,18 @@ def ai_commander_worker(target_pc):
                                     dist_to_portal_yolo = math.hypot(char_map_pos[0] - gx_y, char_map_pos[1] - gy_y)
                                     
                                 portal_stop_dist_yolo = 8.0 if ("사던" in active_dungeon or "silver" in active_dungeon.lower()) else 7.2
+                                is_in_portal_fsm_yolo = fsm_for_yolo in [
+                                    "PORTAL_DIVE_BRAKE_WAIT", "PORTAL_DIVE_SEARCH", "PORTAL_DIVE_HOVER_WAIT",
+                                    "PORTAL_ENTER_STEP1", "PORTAL_ENTER_STEP2", "PORTAL_DIVE_6F_RUSH",
+                                    "SADEON_PORTAL_STEP_CHECK", "SADEON_PORTAL_STEP_HOVER_WAIT",
+                                    "SADEON_PORTAL_STEP_WALK_WAIT", "SADEON_PORTAL_DIRECT_SEARCH",
+                                    "SADEON_PORTAL_DIRECT_HOVER_WAIT"
+                                ]
                                 # 💡 재시도 모드(후퇴) 중일 때는 주변 몹 사냥을 위해 120px 오픈
                                 if state.get("portal_retry_mode", False):
                                     yolo_radius = min(yolo_radius, 120)
-                                # 💡 포탈 도착 반경(사던 8.0px / 본던 7.2px) 이내 진입 시도 중일 때는 다른 곳 못 보게 0px!
-                                elif dist_to_portal_yolo <= portal_stop_dist_yolo:
+                                # 💡 포탈 도착 반경 이내이거나 포탈 정밀 진입/돌격 FSM 진행 중일 때는 몹에 막히지 않게 0px!
+                                elif dist_to_portal_yolo <= portal_stop_dist_yolo or is_in_portal_fsm_yolo:
                                     yolo_radius = 0
                                 # 50픽셀(약 10칸) 초과로 멀 때는 눈 감고 달리기 (0px)
                                 elif dist_to_portal_yolo > 50.0:
@@ -19626,7 +19634,17 @@ def ai_commander_worker(target_pc):
                                         if is_test:
                                             dprint(key, f"[{t_ms}] 💀 [5. 3아웃 탈락] 3연속 실패. 테스트를 종료하고 F1으로 복귀합니다.")
 
-                                        if b_info and b_info["name"] != "cure_fallback" and not is_test:
+                                        is_pb_elem = bool(b_info and b_info["name"] == "element" and (state.get("req_party_buff", False) or state.get("buff_return_fsm") == "PARTY_BUFF_L_DONE"))
+                                        if is_pb_elem:
+                                            dprint(key, "🚨 [팟바람 시전 실패] 2회 연속 MP 미소모(마나부족/스턴/렉) 감지! 가짜 완료 신호를 차단하고 10초 뒤 재소집을 예약합니다.")
+                                            state["req_party_buff"] = False
+                                            state["party_buff_status"] = "IDLE"
+                                            state["missed_party_buff"] = True
+                                            state["pb_caster_retry_cd"] = curr_time + 10.0
+                                            state["is_active_standby"] = False
+                                            state["designated_base_node"] = None
+                                            state["buff_return_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
+                                        elif b_info and b_info["name"] != "cure_fallback" and not is_test:
                                             state[f"buff_{b_info['name']}_time"] = curr_time + b_info['dur'] + g_val(-10, 10)
                                             save_buff_times(ai_states)
 
@@ -19654,8 +19672,19 @@ def ai_commander_worker(target_pc):
                         if not has_heal_img or is_f1_active:
 
                             return_fsm = state.pop("buff_return_fsm", "IDLE")
-                            if state.get("req_party_buff", False) and (state.get("current_buff") or {}).get("name") == "element":
-                                return_fsm = "PARTY_BUFF_L_DONE"
+                            is_pb_elem_f1 = bool((state.get("current_buff") or {}).get("name") == "element" and (state.get("req_party_buff", False) or return_fsm == "PARTY_BUFF_L_DONE"))
+                            if is_pb_elem_f1:
+                                if state.get("buff_mp_consumed", False):
+                                    return_fsm = "PARTY_BUFF_L_DONE"
+                                else:
+                                    dprint(key, "⚠️ [팟바람 미발동 복귀] 시전 중 MP 소모가 확인되지 않아 완료 신호를 취소하고 재소집을 예약합니다.")
+                                    state["req_party_buff"] = False
+                                    state["party_buff_status"] = "IDLE"
+                                    state["missed_party_buff"] = True
+                                    state["pb_caster_retry_cd"] = curr_time + 5.0
+                                    state["is_active_standby"] = False
+                                    state["designated_base_node"] = None
+                                    return_fsm = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
 
                             is_test_mode = state.pop("is_buff_testing", False)
                             if is_test_mode:
@@ -19677,8 +19706,18 @@ def ai_commander_worker(target_pc):
                                 state["f1_retry_cnt"] = cnt
                                 if cnt >= 3:
                                     return_fsm = state.pop("buff_return_fsm", "IDLE")
-                                    if state.get("req_party_buff", False) and (state.get("current_buff") or {}).get("name") == "element":
-                                        return_fsm = "PARTY_BUFF_L_DONE"
+                                    is_pb_elem_f1 = bool((state.get("current_buff") or {}).get("name") == "element" and (state.get("req_party_buff", False) or return_fsm == "PARTY_BUFF_L_DONE"))
+                                    if is_pb_elem_f1:
+                                        if state.get("buff_mp_consumed", False):
+                                            return_fsm = "PARTY_BUFF_L_DONE"
+                                        else:
+                                            state["req_party_buff"] = False
+                                            state["party_buff_status"] = "IDLE"
+                                            state["missed_party_buff"] = True
+                                            state["pb_caster_retry_cd"] = curr_time + 5.0
+                                            state["is_active_standby"] = False
+                                            state["designated_base_node"] = None
+                                            return_fsm = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
 
                                     is_test_mode = state.pop("is_buff_testing", False)
                                     if is_test_mode:
@@ -19709,16 +19748,26 @@ def ai_commander_worker(target_pc):
             # 👇👇 [전투 중 버프 진입 조건 설정] 👇👇
             fsm_for_buff_eval = str(state.get("target_fsm", ""))
             
-            # 1. 비전투 시 버프 조건
-            is_idle_buff_ready = not mobs and not is_looting and fsm_for_buff_eval in ["IDLE", "PARTY_WAIT", "SQUAD_WAIT", "PARTY_ACTIVE_STANDBY"]
+            # 1. 비전투 시 버프 조건 (단, 팟바람 집결/대기 중에는 일반 자가버프 개입 차단)
+            is_pb_standby_buff_lock = state.get("req_party_buff", False) or state.get("party_buff_status") in ["MOVING", "ARRIVED"] or ("팟바람" in str(state.get("standby_reason", "")) and state.get("is_active_standby", False))
+            is_idle_buff_ready = not mobs and not is_looting and not is_pb_standby_buff_lock and fsm_for_buff_eval in ["IDLE", "PARTY_WAIT", "SQUAD_WAIT", "PARTY_ACTIVE_STANDBY"]
             
-            # 💡 [파랭이 1프레임 기억 깃발 꽂기]
+            # 💡 [파랭이 3프레임 검증 및 MP 회복 시 즉시 취소 시스템]
             if settings.get("use_blue_pot", False) and state.get("is_hunt_active", False):
                 try: blue_pct_limit = float(settings.get("blue_mp_pct", 15.0))
                 except: blue_pct_limit = 15.0
-                if curr_time > state.get("buff_blue_pot_time", 0) and (curr_time - MACRO_GLOBAL_START_TIME >= 180.0) and not locals().get("is_heavy", False):
-                    if mp <= blue_pct_limit:
+
+                # 마나가 이미 설정치(예: 30%)를 초과해 회복되었거나 무거움/엠탐 중이면 예약 깃발 즉시 취소!
+                if mp > blue_pct_limit or locals().get("is_heavy", False) or state.get("is_mptam_mode", False):
+                    state["blue_pot_low_ticks"] = 0
+                    state["pending_blue_pot"] = False
+                elif curr_time > state.get("buff_blue_pot_time", 0) and (curr_time - MACRO_GLOBAL_START_TIME >= 180.0) and hp > 0.0:
+                    state["blue_pot_low_ticks"] = state.get("blue_pot_low_ticks", 0) + 1
+                    if state["blue_pot_low_ticks"] >= 3:
                         state["pending_blue_pot"] = True
+            else:
+                state["blue_pot_low_ticks"] = 0
+                state["pending_blue_pot"] = False
             
             # 2. 전투 중 버프 조건 (GUI 체크됨 + 전투 중 + 체력 안전 + 마나 30% 이상)
             is_combat_buff_ready = False
@@ -19768,10 +19817,16 @@ def ai_commander_worker(target_pc):
                     except: dur_seconds = 600.0
                     expired_buffs.append({"name": "extra_f10", "page": 2, "key": KEY_F10, "double": False, "dur": dur_seconds})
 
-                # 💡 [핵심] 마나가 찼더라도 깃발(pending)이 꽂혀있으면 묻지도 따지지도 않고 만료 버프 리스트에 추가!
+                # 💡 [최종 안전장치] 실제로 마시는 순간에도 현재 MP가 설정치 이하일 때만 만료 버프 리스트에 추가!
+                try: blue_pct_limit_chk = float(settings.get("blue_mp_pct", 15.0))
+                except: blue_pct_limit_chk = 15.0
                 if settings.get("use_blue_pot") and state.get("pending_blue_pot", False):
-                    blue_cd_seconds = settings.get("blue_cd_min", 20.0) * 60.0
-                    expired_buffs.append({"name": "blue_pot", "page": 3, "key": KEY_F6, "double": False, "dur": blue_cd_seconds})
+                    if mp <= blue_pct_limit_chk and not locals().get("is_heavy", False):
+                        blue_cd_seconds = settings.get("blue_cd_min", 20.0) * 60.0
+                        expired_buffs.append({"name": "blue_pot", "page": 3, "key": KEY_F6, "double": False, "dur": blue_cd_seconds})
+                    else:
+                        state["pending_blue_pot"] = False
+                        state["blue_pot_low_ticks"] = 0
 
                 is_guard_waiting = state.get("mptam_standby_guard", False) or (state.get("target_fsm") == "PARTY_ACTIVE_STANDBY" and state.get("mptam_extend_95", False))
 
@@ -20353,8 +20408,9 @@ def ai_commander_worker(target_pc):
                             dist_to_best = math.hypot(best_box_eval['x'] - char_screen_cx, (best_box_eval['y'] + 15 - char_screen_cy) / 0.50)
 
                             should_loot_now = True
+                            is_pb_arrived_loot_now = (state.get("party_buff_status") == "ARRIVED") or (state.get("is_active_standby", False) and "팟바람" in str(state.get("standby_reason", "")))
 
-                            if settings.get("hunt_first", False) and dist_to_best < 57.0:
+                            if is_pb_arrived_loot_now or (settings.get("hunt_first", False) and dist_to_best < 57.0):
                                 should_loot_now = False
 
                             if should_loot_now:
@@ -21690,7 +21746,13 @@ def ai_commander_worker(target_pc):
                         state["cooldown"] = curr_time + 0.05
                     action_taken = True
 
-                if not action_taken and state.get("target_fsm") == "PARTY_ACTIVE_STANDBY":
+                is_pb_standby_active = (
+                    state.get("is_active_standby", False) and
+                    "팟바람" in str(state.get("standby_reason", "")) and
+                    not str(state.get("target_fsm", "")).startswith("BUFFING") and
+                    state.get("target_fsm") not in ["PARTY_BUFF_L_DONE", "PARTY_RETREAT_NAV", "EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"]
+                )
+                if (not action_taken and state.get("target_fsm") == "PARTY_ACTIVE_STANDBY") or is_pb_standby_active:
                     if curr_time >= state.get("cooldown", 0):
                         standby_reason = state.get("standby_reason", "")
                         is_reason_resolved = False
@@ -21735,24 +21797,49 @@ def ai_commander_worker(target_pc):
                                 is_call_settled = (curr_time - state.get("party_buff_req_time", curr_time) >= 1.5)
                                 is_timeout = (curr_time - state.get("pb_wait_start", curr_time) > 30.0)
                                 if (is_call_settled and ready_count >= expected_count) or is_timeout:
-                                    if is_timeout and ready_count < expected_count:
-                                        any_member_excluded = True
-                                        dprint(key, f"⏰ [팟바람 30초 타임아웃] 30초 경과! 미도착 인원을 불참 처리하고 현재 모인 인원({ready_count + 1}명)으로 시전합니다!")
+                                    if mp < 15.0:
+                                        dprint(key, f"⚠️ [팟바람 시전 보류] 집결은 완료되었으나 현재 MP({mp:.1f}%)가 부족하여 호출을 일시 해제하고 마나 회복 후 재시도합니다!")
+                                        state["req_party_buff"] = False
+                                        state["party_buff_status"] = "IDLE"
+                                        state["missed_party_buff"] = True
+                                        state["pb_caster_retry_cd"] = curr_time + 5.0
+                                        state["is_active_standby"] = False
+                                        state["designated_base_node"] = None
+                                        state["target_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
+                                        state["cooldown"] = curr_time + 0.1
+                                        action_taken = True
                                     else:
-                                        dprint(key, f"👥 [팟바람 집결 완료] 참여 가능 인원 전원({ready_count + 1}명) 7px+시야 안착! 팟바람을 시전합니다!")
+                                        if is_timeout and ready_count < expected_count:
+                                            any_member_excluded = True
+                                            dprint(key, f"⏰ [팟바람 30초 타임아웃] 30초 경과! 미도착 인원을 불참 처리하고 현재 모인 인원({ready_count + 1}명)으로 시전합니다!")
+                                        else:
+                                            dprint(key, f"👥 [팟바람 집결 완료] 참여 가능 인원 전원({ready_count + 1}명) 7px+시야 안착! 팟바람을 시전합니다!")
 
-                                    state["pb_cast_had_missing_members"] = bool(state.get("pb_cast_had_missing_members", False) or any_member_excluded)
-                                    state["is_attacking"] = False
-                                    state["arrow_is_firing"] = False
-                                    state["has_fired_arrow"] = False
-                                    state["buff_start_mp"] = mp
-                                    state["current_buff"] = {"name": "element", "page": 2, "key": 199, "double": False, "dur": 1200.0}
-                                    state["buff_retry_cnt"] = 0
+                                        state["abort_macro"] = True
+                                        with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                                        clear_movements_only(pico_queues[key])
+                                        if state.get("sweep_active", False):
+                                            pico_queues[key].put({"action": "SWEEP_STOP"})
+                                            state["sweep_active"] = False
+                                        if state.get("body_held", False):
+                                            if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                                            state["body_held"] = False
 
-                                    state["buff_return_fsm"] = "PARTY_BUFF_L_DONE"
-                                    state["target_fsm"] = "BUFFING_START_PAGE"
-                                    state["cooldown"] = curr_time + 0.1
-                                    action_taken = True
+                                        state["is_mptam_mode"] = False
+                                        state["mptam_standby_guard"] = False
+                                        state["pending_mptam"] = False
+                                        state["pb_cast_had_missing_members"] = bool(state.get("pb_cast_had_missing_members", False) or any_member_excluded)
+                                        state["is_attacking"] = False
+                                        state["arrow_is_firing"] = False
+                                        state["has_fired_arrow"] = False
+                                        state["buff_start_mp"] = mp
+                                        state["current_buff"] = {"name": "element", "page": 2, "key": 199, "double": False, "dur": 1200.0}
+                                        state["buff_retry_cnt"] = 0
+
+                                        state["buff_return_fsm"] = "PARTY_BUFF_L_DONE"
+                                        state["target_fsm"] = "BUFFING_START_PAGE"
+                                        state["cooldown"] = curr_time + 0.1
+                                        action_taken = True
                                     continue
 
                         elif standby_reason == "팟바람 수령 집합":
@@ -21795,7 +21882,8 @@ def ai_commander_worker(target_pc):
                                 state["party_buff_status"] = "IDLE"
                                 is_buff_resolved = True
 
-                        # 팟바람 전용 집결이었을 경우 버프가 끝나면 엠탐 강제 잔류 없이 즉시 사냥터로 해산!
+                        # 팟바람 전용 집결이었을 경우 버프가 끝나면 엠탐 강제 잔류 없이 즉시 사냥터로 해산하고,
+                        # 대기 중일 때는 하단 120px 근접 몹 자위 타격 및 9.5px 버프존 이탈 복귀(Leash), 디버그 뷰가 정상 작동하도록 흘려보냄!
                         if "팟바람" in standby_reason:
                             if is_reason_resolved and is_buff_resolved:
                                 dprint(key, "🏃‍♂️ [팟바람 해산] 집결 상황이 종료되어 원래 사냥 구역으로 복귀합니다!")
@@ -21812,104 +21900,101 @@ def ai_commander_worker(target_pc):
                                 state["dungeon_global_path"] = []
                                 clear_movements_only(pico_queues[key])
                                 state["cooldown"] = curr_time + 0.1
-                            else:
-                                state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.05)
-                            action_taken = True
-                            continue
-
-                        dng_name_stop = settings.get("dungeon_name", "")
-                        target_stop_pct = 95.0 if ("event" in dng_name_stop or "오땅" in dng_name_stop) else settings.get("mptam_stop_pct", 65.0)
-                        is_my_mp_full = mp >= target_stop_pct
-
-                        partner_state = "IDLE"
-                        partner_mp = 100.0
-                        partner_ready = True
-
-                        if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
-                            if my_team_group_sb != "선택안함":
-                                with party_lock:
-                                    for p_key, p_data in local_party_states.items():
-                                        if p_data.get("party_group") == my_team_group_sb and p_key != key:
-                                            if curr_time - p_data.get("recv_time", 0) < 3.0:
-                                                partner_mp = p_data.get("mp", 100.0)
-                                                partner_state = str(p_data.get("party_state", "IDLE"))
-
-                                                if partner_state in ["MPTAM", "TACTIC"] or p_data.get("mptam_extend_95", False):
-                                                    if partner_mp >= target_stop_pct or partner_mp >= 95.0:
-                                                        partner_ready = True
-                                                    else:
-                                                        partner_ready = False
-                                            break
-
-                        is_mp_resolved = is_my_mp_full
-
-                        if is_reason_resolved and is_buff_resolved and is_mp_resolved and partner_ready:
-                            dprint(key, f"🎉 [통합 대기 완전 종료] 1순위(버프) 및 2순위(MP {mp:.1f}%), 파트너({partner_mp:.1f}%) 준비까지 완료! 전선으로 복귀합니다!")
-
-                            state["party_buff_status"] = "IDLE"
-                            state["is_mptam_mode"] = False
-                            state["mptam_extend_95"] = False
-                            state["mptam_extend_80"] = False
-                            state["mptam_standby_guard"] = False
-                            state["is_active_standby"] = False
-                            state["designated_base_node"] = None
-
-                            state["help_requester"] = False
-                            state["helping_who"] = None
-
-                            if state.get("body_held", False):
-                                if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0)
-                                state["body_held"] = False
-
-                            state["target_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
-
-                            state["current_target_node"] = None
-                            state["dungeon_global_path"] = []
-                            clear_movements_only(pico_queues[key])
-
-                            state["cooldown"] = curr_time + 0.1
+                                action_taken = True
                         else:
-                            if mp >= 95.0 and not partner_ready:
-                                if state.get("is_mptam_mode", False):
-                                    dprint(key, f"🛡️ [호위 모드 전환] 내 MP가 95% 이상({mp:.1f}%) 찼습니다! 일어나서 파트너({partner_mp:.1f}%)를 호위하며 기다립니다.")
+                            dng_name_stop = settings.get("dungeon_name", "")
+                            target_stop_pct = 95.0 if ("event" in dng_name_stop or "오땅" in dng_name_stop) else settings.get("mptam_stop_pct", 65.0)
+                            is_my_mp_full = mp >= target_stop_pct
+
+                            partner_state = "IDLE"
+                            partner_mp = 100.0
+                            partner_ready = True
+
+                            if settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False):
+                                if my_team_group_sb != "선택안함":
+                                    with party_lock:
+                                        for p_key, p_data in local_party_states.items():
+                                            if p_data.get("party_group") == my_team_group_sb and p_key != key:
+                                                if curr_time - p_data.get("recv_time", 0) < 3.0:
+                                                    partner_mp = p_data.get("mp", 100.0)
+                                                    partner_state = str(p_data.get("party_state", "IDLE"))
+
+                                                    if partner_state in ["MPTAM", "TACTIC"] or p_data.get("mptam_extend_95", False):
+                                                        if partner_mp >= target_stop_pct or partner_mp >= 95.0:
+                                                            partner_ready = True
+                                                        else:
+                                                            partner_ready = False
+                                                break
+
+                            is_mp_resolved = is_my_mp_full
+
+                            if is_reason_resolved and is_buff_resolved and is_mp_resolved and partner_ready:
+                                dprint(key, f"🎉 [통합 대기 완전 종료] 1순위(버프) 및 2순위(MP {mp:.1f}%), 파트너({partner_mp:.1f}%) 준비까지 완료! 전선으로 복귀합니다!")
+
+                                state["party_buff_status"] = "IDLE"
+                                state["is_mptam_mode"] = False
                                 state["mptam_extend_95"] = False
                                 state["mptam_extend_80"] = False
-                                state["is_mptam_mode"] = False
+                                state["mptam_standby_guard"] = False
+                                state["is_active_standby"] = False
+                                state["designated_base_node"] = None
+
+                                state["help_requester"] = False
+                                state["helping_who"] = None
+
+                                if state.get("body_held", False):
+                                    if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0)
+                                    state["body_held"] = False
+
+                                state["target_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
+
+                                state["current_target_node"] = None
+                                state["dungeon_global_path"] = []
+                                clear_movements_only(pico_queues[key])
+
+                                state["cooldown"] = curr_time + 0.1
                             else:
-                                if not is_buff_resolved or not is_mp_resolved or not partner_ready:
-                                    if not partner_ready and is_mp_resolved:
-                                        if not state.get("mptam_extend_80", False) and not state.get("mptam_extend_95", False):
-                                            dprint(key, f"🔋 [의리 연장] 나는 완료했으나 파트너({partner_mp:.1f}%) 대기 중! 파트너 끝날때까지 계속 쉬며 기다립니다.")
-                                        state["mptam_extend_95"] = True
-                                    elif not partner_ready and not is_mp_resolved:
-                                        pass
-                                    else:
-                                        if not state.get("mptam_extend_80", False) and not state.get("mptam_extend_95", False):
-                                            dprint(key, f"🔋 [엠탐 연장] 2순위 달성! 하지만 버프 대기 중이므로 MP를 계속 연장 회복합니다!")
-                                        state["mptam_extend_95"] = True
-
-                                    state["is_mptam_mode"] = True
-
-                            if curr_time - state.get("log_active_standby", 0) > 3.0:
-                                resolve_txt = "대기목적 달성완료" if is_reason_resolved else f"목적진행중({standby_reason})"
-                                wait_txt = " / 1순위 대기중(버프)" if not is_buff_resolved else ""
-
-                                if state.get("mptam_extend_80", False):
-                                    mp_txt = f" / 동반 엠탐 중 (목표 80%)"
-                                elif state.get("mptam_extend_95", False):
-                                    if not partner_ready:
-                                        mp_txt = f" / 파트너({partner_mp:.1f}%) 대기 ➔ 동반 회복 중!"
-                                    else:
-                                        mp_txt = f" / 2순위 달성완료 ➔ 연장 회복 중!"
+                                if mp >= 95.0 and not partner_ready:
+                                    if state.get("is_mptam_mode", False):
+                                        dprint(key, f"🛡️ [호위 모드 전환] 내 MP가 95% 이상({mp:.1f}%) 찼습니다! 일어나서 파트너({partner_mp:.1f}%)를 호위하며 기다립니다.")
+                                    state["mptam_extend_95"] = False
+                                    state["mptam_extend_80"] = False
+                                    state["is_mptam_mode"] = False
                                 else:
-                                    mp_txt = f" / 2순위 대기중(MP부족, 내MP:{mp:.1f}%, 파트너:{partner_mp:.1f}%)" if not is_mp_resolved or not partner_ready else ""
-                                    if mp >= 95.0 and not partner_ready:
-                                        mp_txt = f" / 파트너({partner_mp:.1f}%) 대기 ➔ 서서 호위 중!"
+                                    if not is_buff_resolved or not is_mp_resolved or not partner_ready:
+                                        if not partner_ready and is_mp_resolved:
+                                            if not state.get("mptam_extend_80", False) and not state.get("mptam_extend_95", False):
+                                                dprint(key, f"🔋 [의리 연장] 나는 완료했으나 파트너({partner_mp:.1f}%) 대기 중! 파트너 끝날때까지 계속 쉬며 기다립니다.")
+                                            state["mptam_extend_95"] = True
+                                        elif not partner_ready and not is_mp_resolved:
+                                            pass
+                                        else:
+                                            if not state.get("mptam_extend_80", False) and not state.get("mptam_extend_95", False):
+                                                dprint(key, f"🔋 [엠탐 연장] 2순위 달성! 하지만 버프 대기 중이므로 MP를 계속 연장 회복합니다!")
+                                            state["mptam_extend_95"] = True
 
-                                dprint(key, f"🛡️ [능동 대기/사냥 중] {resolve_txt}{wait_txt}{mp_txt}")
-                                state["log_active_standby"] = curr_time
+                                        state["is_mptam_mode"] = True
 
-                            state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.05)
+                                if curr_time - state.get("log_active_standby", 0) > 3.0:
+                                    resolve_txt = "대기목적 달성완료" if is_reason_resolved else f"목적진행중({standby_reason})"
+                                    wait_txt = " / 1순위 대기중(버프)" if not is_buff_resolved else ""
+
+                                    if state.get("mptam_extend_80", False):
+                                        mp_txt = f" / 동반 엠탐 중 (목표 80%)"
+                                    elif state.get("mptam_extend_95", False):
+                                        if not partner_ready:
+                                            mp_txt = f" / 파트너({partner_mp:.1f}%) 대기 ➔ 동반 회복 중!"
+                                        else:
+                                            mp_txt = f" / 2순위 달성완료 ➔ 연장 회복 중!"
+                                    else:
+                                        mp_txt = f" / 2순위 대기중(MP부족, 내MP:{mp:.1f}%, 파트너:{partner_mp:.1f}%)" if not is_mp_resolved or not partner_ready else ""
+                                        if mp >= 95.0 and not partner_ready:
+                                            mp_txt = f" / 파트너({partner_mp:.1f}%) 대기 ➔ 서서 호위 중!"
+
+                                    dprint(key, f"🛡️ [능동 대기/사냥 중] {resolve_txt}{wait_txt}{mp_txt}")
+                                    state["log_active_standby"] = curr_time
+
+                                state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.05)
 
                 elif not action_taken and state.get("target_fsm") == "PARTY_BUFF_L_DONE":
                     if curr_time >= state.get("cooldown", 0):
@@ -22887,13 +22972,20 @@ def ai_commander_worker(target_pc):
                     dprint(key, "🔗 [기억 복구] 사냥/루팅 종료 확인! 잊고 있던 통합 대기(ACTIVE_STANDBY) 모드로 즉각 복귀합니다.")
                     state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
                     state["cooldown"] = curr_time + 0.1
+                elif state.get("target_fsm") == "IDLE" and state.get("party_buff_status") == "MOVING" and state.get("designated_base_node") is not None:
+                    dprint(key, "🔗 [팟바람 이동 복구] 회피/인터럽트 종료 확인! 버프존 이동(PARTY_RETREAT_NAV) 경로를 즉시 재개합니다.")
+                    state["target_fsm"] = "PARTY_RETREAT_NAV"
+                    state["retreat_reason"] = "리더 팟바람 선진입" if state.get("req_party_buff", False) else "팟바람 수령 집합"
+                    state["current_target_node"] = str(state["designated_base_node"])
+                    state["dungeon_global_path"] = []
+                    state["cooldown"] = curr_time + 0.05
 
                 target_fsm_nav = state.get("target_fsm")
 
-                # 👇👇 [수정] PORTAL_DIVE_HOVER_WAIT 및 사던 4층 정밀 입장 FSM 추가
-                allow_nav_fsm = target_fsm_nav in ["IDLE", "PARTY_WAIT", "PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY", "SQUAD_WAIT", "PORTAL_DIVE_BRAKE_WAIT", "PORTAL_DIVE_SEARCH", "PORTAL_DIVE_HOVER_WAIT", "PORTAL_ENTER_STEP1", "PORTAL_ENTER_STEP2", "PORTAL_DIVE_STEP1", "PORTAL_DIVE_STEP2", "PORTAL_DIVE_6F_RUSH", "SADEON_PORTAL_STEP_CHECK", "SADEON_PORTAL_STEP_HOVER_WAIT", "SADEON_PORTAL_STEP_WALK_WAIT", "SADEON_PORTAL_DIRECT_SEARCH", "SADEON_PORTAL_DIRECT_HOVER_WAIT"]
+                portal_nav_fsms = ["PORTAL_DIVE_BRAKE_WAIT", "PORTAL_DIVE_SEARCH", "PORTAL_DIVE_HOVER_WAIT", "PORTAL_ENTER_STEP1", "PORTAL_ENTER_STEP2", "PORTAL_DIVE_STEP1", "PORTAL_DIVE_STEP2", "PORTAL_DIVE_6F_RUSH", "SADEON_PORTAL_STEP_CHECK", "SADEON_PORTAL_STEP_HOVER_WAIT", "SADEON_PORTAL_STEP_WALK_WAIT", "SADEON_PORTAL_DIRECT_SEARCH", "SADEON_PORTAL_DIRECT_HOVER_WAIT"]
+                allow_nav_fsm = target_fsm_nav in (["IDLE", "PARTY_WAIT", "PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY", "SQUAD_WAIT"] + portal_nav_fsms)
 
-                is_fleeing_state = target_fsm_nav in ["PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV"]
+                is_fleeing_state = target_fsm_nav in (["PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV"] + portal_nav_fsms)
                 can_start_nav = not mobs or is_fleeing_state
 
                 if role in ["LEADER", "DUNGEON"] and not action_taken and can_start_nav and (not state.get("is_mptam_mode", False) or is_fleeing_state or target_fsm_nav == "PARTY_ACTIVE_STANDBY") and not state.get("mptam_standby_guard", False) and allow_nav_fsm and curr_time >= state.get("cooldown", 0):
@@ -23683,6 +23775,7 @@ def ai_commander_worker(target_pc):
 
                                             # 사던 8.0px (본던 7.2px) 이내 도착 또는 이미 포탈 정밀 진입 FSM 진행 중일 때
                                             if dist_to_portal_hj <= portal_arrive_dist or state.get("target_fsm") in all_portal_fsms:
+                                                state["current_target_node"] = portal_node
                                                 state["dungeon_global_path"] = []
                                                 state["dungeon_stuck_timer"] = curr_time
 
@@ -23888,16 +23981,20 @@ def ai_commander_worker(target_pc):
                                                     dprint(key, f"🚨 [버프존 이탈] 반경({leash_limit_wait}px) 밖이거나 벽에 가려짐! 버프노드(7px 이내)로 재진입합니다.")
                                                     state["log_buff_out"] = curr_time
 
-                                                if state.get("target_fsm") == "PARTY_ACTIVE_STANDBY":
+                                                if state.get("target_fsm") == "PARTY_ACTIVE_STANDBY" or is_pb_standby_now:
                                                     state["retreat_reason"] = state.get("standby_reason", "대기 중 8.5px 이탈")
                                                 else:
                                                     state["retreat_reason"] = "대기 중 8.5px 이탈"
 
+                                                if "팟바람" in str(state.get("retreat_reason", "")):
+                                                    state["party_buff_status"] = "MOVING"
+                                                    state["is_active_standby"] = False
+
                                                 state["pb_move_best_dist"] = dist_to_buff
                                                 state["pb_move_progress_time"] = curr_time
                                                 state["target_fsm"] = "PARTY_RETREAT_NAV"
+                                                state["dungeon_global_path"] = []
                                                 goal_node = buff_node
-                                                action_taken = True
                                             else:
                                                 state["dungeon_global_path"] = []
 
@@ -24606,9 +24703,9 @@ def ai_commander_worker(target_pc):
                                     else:
                                         dist_to_final = math.hypot(global_path[-1][0] - cx, global_path[-1][1] - cy)
                                         
-                                        # 👇👇 [핵심 추가] 6층 포탈 진입 및 재시도 노드 도착 판정
+                                        # 👇👇 [핵심 추가] 6층/4층 포탈 진입 및 재시도 노드 도착 판정
                                         is_next_floor_arr = pc_graph and pc_graph.get("next_floor_node") and str(state.get("current_target_node")) == str(pc_graph.get("next_floor_node"))
-                                        is_retry_node_arr = pc_graph and state.get("portal_retry_mode", False) and str(state.get("current_target_node")) == str(pc_graph.get("retry_node", ""))
+                                        is_retry_node_arr = pc_graph and state.get("portal_retry_mode", False) and str(state.get("current_target_node")) == str(state.get("active_retry_node") or pc_graph.get("retry_node", ""))
                                         
                                         if is_next_floor_arr:
                                             if dist_to_final <= (8.0 if ("사던" in active_dungeon or "silver" in active_dungeon.lower()) else 7.2): is_arrived = True
@@ -24616,7 +24713,8 @@ def ai_commander_worker(target_pc):
                                             if dist_to_final <= 10.0: is_arrived = True
                                         # 👆👆 ----------------------------------------------------
                                         elif is_precise_tracking:
-                                            if dist_to_final <= 10.0: is_arrived = True
+                                            prec_limit = 6.0 if is_party_tracking else 10.0
+                                            if dist_to_final <= prec_limit: is_arrived = True
                                         else:
                                             if is_special_map:
                                                 if dist_to_final <= 10.0: is_arrived = True
@@ -25321,13 +25419,15 @@ def ai_commander_worker(target_pc):
                                     (fsm_retreat == "PARTY_ACTIVE_STANDBY" and "팟바람" in str(state.get("standby_reason", ""))) or
                                     fsm_retreat in ["PARTY_BUFF_L_WAIT", "PARTY_BUFF_L_DONE"] or
                                     (fsm_retreat.startswith("BUFFING") and state.get("buff_return_fsm") == "PARTY_BUFF_L_DONE") or
-                                    (state.get("req_party_buff", False) and state.get("is_active_standby", False))
+                                    (state.get("req_party_buff", False) and (state.get("is_active_standby", False) or state.get("party_buff_status") in ["MOVING", "ARRIVED"] or fsm_retreat.startswith("MOTION_")))
                                 )
 
-                                # 만약 시전자가 버프존으로 이동 중(MOVING) 장애물 회피(MOTION_EVADING) 후 IDLE로 풀렸다면 즉시 이동 재개
+                                # 만약 시전자가 버프존으로 이동 중(MOVING) 장애물 회피(MOTION_EVADING) 후 IDLE로 풀렸다면 즉시 이동 및 경로 재개
                                 if state.get("req_party_buff", False) and state.get("party_buff_status") == "MOVING" and fsm_retreat == "IDLE" and state.get("designated_base_node") is not None:
                                     state["target_fsm"] = "PARTY_RETREAT_NAV"
                                     state["retreat_reason"] = "리더 팟바람 선진입"
+                                    state["current_target_node"] = str(state["designated_base_node"])
+                                    state["dungeon_global_path"] = []
                                     is_already_processing = True
 
                                 # 🛡️ [좀비 호출 플래그 방어막] 시전자가 팟바람 진행 중(is_already_processing)이 아닌 일반 사냥 중이거나 60초를 초과했는데도 req_party_buff가 켜져 있다면 즉시 소거!
@@ -25343,7 +25443,7 @@ def ai_commander_worker(target_pc):
                                     is_ui_busy_pb = fsm_retreat.startswith("INV_CLEAN") or fsm_retreat.startswith("HK_HEAL") or fsm_retreat.startswith("WEAPON_REPAIR") or fsm_retreat.startswith("BUFFING") or fsm_retreat.startswith("F1_INIT") or fsm_retreat.startswith("CHAT_RECOVER")
                                     char_pos_chk = state.get("dungeon_map_pos")
                                     in_my_zone_pb = (not state.get("is_out_of_zone", False)) and (char_pos_chk is not None)
-                                    in_party_pb = bool(state.get("in_ingame_party", True))
+                                    in_party_pb = bool(state.get("in_ingame_party", False))
                                     buff_mp_req = float(settings.get("buff_mp_pct", 50.0))
                                     mp_ok_pb = (mp >= buff_mp_req)
                                     has_b_node_pb = bool(pc_graph and pc_graph.get("buff_spot_nodes"))
@@ -25365,10 +25465,6 @@ def ai_commander_worker(target_pc):
                                             m.get("in_game", False) and m.get("in_party", False) and m.get("in_hunting_ground", False) and
                                             (not m.get("is_out_of_zone", False)) and (str(m.get("party_state", "")) not in ["TOWN", "MAINT", "SURVIVAL"])
                                         )
-                                        all_members_ready_now = bool(
-                                            len(same_grp_members) >= 1 and
-                                            ready_partied_cnt >= total_group_cnt
-                                        )
 
                                         elem_t = state.get("buff_element_time", 0.0)
                                         is_post_certi_zero = (elem_t == 0.0)
@@ -25377,10 +25473,10 @@ def ai_commander_worker(target_pc):
                                         should_call_pb = False
                                         call_type_desc = ""
                                         if is_post_certi_zero:
-                                            # 시전자 인증/재접속 복귀 후(0.0초): 모든 파티원이 사냥터에 복귀했을 때만 소집하여 전원 수령
-                                            if all_members_ready_now:
+                                            # 시전자 인증/사망 복귀 후(0.0초): 정기 시전과 동일하게 파티원 과반수가 사냥터에 있을 때 소집하여 시전
+                                            if ready_partied_cnt >= majority_cnt:
                                                 should_call_pb = True
-                                                call_type_desc = f"시전자 인증 복귀 후 파티원 전원({ready_partied_cnt}/{total_group_cnt}인) 사냥터 합류"
+                                                call_type_desc = f"시전자 복귀 후 과반수({ready_partied_cnt}/{total_group_cnt}인, 기준:{majority_cnt}인) 사냥터 합류"
                                         elif is_normal_expired:
                                             # 정기 타이머 만료 시: 파티원 과반수가 사냥터에 있을 때 소집하여 시전
                                             if ready_partied_cnt >= majority_cnt:
@@ -25419,7 +25515,16 @@ def ai_commander_worker(target_pc):
                                             clear_movements_only(pico_queues[key])
                                             if state.get("sweep_active", False):
                                                 pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
+                                            if state.get("body_held", False):
+                                                if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                                                state["body_held"] = False
 
+                                            state["is_mptam_mode"] = False
+                                            state["mptam_extend_95"] = False
+                                            state["mptam_extend_80"] = False
+                                            state["mptam_standby_guard"] = False
+                                            state["pending_mptam"] = False
+                                            state["moving_to_mptam_partner"] = False
                                             state["is_attacking"] = False; state["arrow_is_firing"] = False; state["has_fired_arrow"] = False; state["is_pulling"] = False; state["loot_state"] = "IDLE"
                                             state["dungeon_global_path"] = []
                                             state["current_target_node"] = b_node_id
@@ -25475,6 +25580,11 @@ def ai_commander_worker(target_pc):
                             # 1순위: 시전 완료 신호 수신 시 즉시 복귀
                             if leader_done and state.get("party_buff_status") in ["MOVING", "ARRIVED"]:
                                 dprint(key, "🎉 [팟바람 수령 완료] 시전자의 캐스팅 완료 신호 확인! 버프 타이머 갱신 후 사냥터로 즉시 복귀합니다.")
+                                state["abort_macro"] = True
+                                clear_movements_only(pico_queues[key])
+                                if fsm_retreat.startswith("BUFFING"):
+                                    pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
+                                state["is_attacking"] = False; state["arrow_is_firing"] = False; state["has_fired_arrow"] = False
                                 state["party_buff_status"] = "IDLE"
                                 state["post_certi_need_pb"] = False
                                 state["portal_blind_mode"] = False
@@ -25492,6 +25602,11 @@ def ai_commander_worker(target_pc):
                             # 2순위: 시전자 호출 취소/증발 시 즉시 사냥 복귀
                             elif not leader_calling and state.get("party_buff_status") in ["MOVING", "ARRIVED"]:
                                 dprint(key, "🚨 [팟바람 호출 해제] 시전자의 호출이 취소/종료되었습니다! 경로를 파기하고 사냥으로 복귀합니다.")
+                                state["abort_macro"] = True
+                                clear_movements_only(pico_queues[key])
+                                if fsm_retreat.startswith("BUFFING"):
+                                    pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
+                                state["is_attacking"] = False; state["arrow_is_firing"] = False; state["has_fired_arrow"] = False
                                 state["party_buff_status"] = "IDLE"
                                 state["portal_blind_mode"] = False
                                 state["yolo_blind_active"] = False
@@ -25505,7 +25620,7 @@ def ai_commander_worker(target_pc):
                             # 3순위: 시전자가 호출 중일 때 참여 가능 여부 판별 및 이동
                             elif leader_calling:
                                 is_in_crisis_m = fsm_retreat.startswith("TOWN_MAINT") or fsm_retreat.startswith("DEATH") or fsm_retreat.startswith("CERTI_") or fsm_retreat in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] or state.get("town_thread_running", False)
-                                is_not_in_party_m = not state.get("in_ingame_party", True)
+                                is_not_in_party_m = not state.get("in_ingame_party", False)
                                 is_out_zone_m = state.get("is_out_of_zone", False)
                                 char_pos_m = state.get("dungeon_map_pos")
                                 has_b_node_m = bool(pc_graph and (pc_graph.get("buff_spot_nodes") or (leader_base_node and str(leader_base_node) in pc_graph.get("nodes", {}))))
@@ -25524,14 +25639,10 @@ def ai_commander_worker(target_pc):
                                             dprint(key, "🚫 [팟바람 불참(EXCLUDED)] 현재 참여 불가 상태(마을/인증/Zone이탈/미파티)이므로 대기열에서 제외합니다.")
                                     else:
                                         state["pb_joined_call_id"] = active_call_id
-                                        if pc_graph.get("buff_spot_nodes"):
+                                        if leader_base_node and str(leader_base_node) in pc_graph.get("nodes", {}):
+                                            target_b_node = str(leader_base_node)
+                                        elif pc_graph.get("buff_spot_nodes"):
                                             target_b_node = str(pc_graph["buff_spot_nodes"][0])
-                                            if len(pc_graph["buff_spot_nodes"]) > 1:
-                                                target_b_node = str(min(
-                                                    pc_graph["buff_spot_nodes"],
-                                                    key=lambda bn: (pc_graph["nodes"][str(bn)].get("x", 0) - char_pos_m[0])**2 + (pc_graph["nodes"][str(bn)].get("y", 0) - char_pos_m[1])**2
-                                                    if str(bn) in pc_graph["nodes"] else float('inf')
-                                                ))
                                         else:
                                             target_b_node = str(leader_base_node)
 
@@ -25551,7 +25662,16 @@ def ai_commander_worker(target_pc):
                                         clear_movements_only(pico_queues[key])
                                         if state.get("sweep_active", False):
                                             pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
+                                        if state.get("body_held", False):
+                                            if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                                            state["body_held"] = False
 
+                                        state["is_mptam_mode"] = False
+                                        state["mptam_extend_95"] = False
+                                        state["mptam_extend_80"] = False
+                                        state["mptam_standby_guard"] = False
+                                        state["pending_mptam"] = False
+                                        state["moving_to_mptam_partner"] = False
                                         state["is_attacking"] = False; state["arrow_is_firing"] = False; state["has_fired_arrow"] = False; state["is_pulling"] = False; state["loot_state"] = "IDLE"
                                         state["dungeon_global_path"] = []
                                         state["current_target_node"] = target_b_node
@@ -25583,9 +25703,11 @@ def ai_commander_worker(target_pc):
                                             state["pb_excluded_call_id"] = active_call_id
                                         state["is_active_standby"] = False
                                         state["designated_base_node"] = None
-                                    elif state.get("party_buff_status") == "MOVING" and fsm_retreat == "IDLE":
+                                    elif state.get("party_buff_status") == "MOVING" and fsm_retreat == "IDLE" and state.get("designated_base_node") is not None:
                                         state["target_fsm"] = "PARTY_RETREAT_NAV"
                                         state["retreat_reason"] = "팟바람 수령 집합"
+                                        state["current_target_node"] = str(state["designated_base_node"])
+                                        state["dungeon_global_path"] = []
                             else:
                                 if state.get("party_buff_status") != "IDLE":
                                     state["party_buff_status"] = "IDLE"
@@ -25870,7 +25992,12 @@ def ai_commander_worker(target_pc):
                             state["cooldown"] = curr_time + 0.1
                             if not is_combat_sos_in_base: action_taken = True
 
-                if state.get("pending_mptam", False) and not mobs and state.get("target_fsm") in ["IDLE", "PATROL", "SQUAD_WAIT", "PARTY_ACTIVE_STANDBY"] and state.get("loot_state") == "IDLE" and not state.get("sweep_active", False) and not state.get("is_attacking", False):
+                is_pb_busy_for_mptam = (
+                    state.get("req_party_buff", False) or
+                    state.get("party_buff_status") in ["MOVING", "ARRIVED"] or
+                    (str(state.get("target_fsm", "")) in ["PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY"] and ("팟바람" in str(state.get("retreat_reason", "")) or "팟바람" in str(state.get("standby_reason", ""))))
+                )
+                if state.get("pending_mptam", False) and not is_pb_busy_for_mptam and not mobs and state.get("target_fsm") in ["IDLE", "PATROL", "SQUAD_WAIT", "PARTY_ACTIVE_STANDBY"] and state.get("loot_state") == "IDLE" and not state.get("sweep_active", False) and not state.get("is_attacking", False):
 
                     dprint(key, "💤 [예약 엠탐 돌입] 교전/루팅이 끝났습니다! 제자리 엠탐을 가동합니다.")
                     state["pending_mptam"] = False
@@ -25914,8 +26041,8 @@ def ai_commander_worker(target_pc):
 
                 fsm_mptam_chk = str(state.get("target_fsm", ""))
 
-                # 💡 [버그 픽스] 마을 귀환/정비 중이거나 비상 텔포/사망 대기 중일 때는 들판 엠탐 로직이 개입하지 못하게 완벽 차단!
-                is_mptam_invalid_fsm = fsm_mptam_chk.startswith("TOWN_MAINT") or fsm_mptam_chk in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY"] or fsm_mptam_chk.startswith("DEATH") or fsm_mptam_chk.startswith("BUFFING")
+                # 💡 [버그 픽스] 마을 귀환/정비 중이거나 비상 텔포/사망 대기 및 팟바람 진행 중일 때는 들판 엠탐 로직이 개입하지 못하게 완벽 차단!
+                is_mptam_invalid_fsm = fsm_mptam_chk.startswith("TOWN_MAINT") or fsm_mptam_chk in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY", "PARTY_BUFF_L_DONE"] or fsm_mptam_chk.startswith("DEATH") or fsm_mptam_chk.startswith("BUFFING") or is_pb_busy_for_mptam
 
                 if not action_taken and use_mptam and not state.get("is_mptam_mode", False) and mp <= mptam_start_mp and not is_help_busy and allow_mptam_block and not is_mptam_invalid_fsm and not state.get("moving_to_mptam_partner", False):
                     active_combat_fsms_local = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_LOCKED", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD", "TARGET_AIMING", "WAIT_FOR_STOP"]
@@ -27024,7 +27151,10 @@ def toggle_individual_hunt(key):
         state["designated_base_node"] = None
         state["is_combat_emergency_buff"] = False
 
-        # 💡 자동사냥 버튼을 다시 켤 때 파티 초대 3x3(9회) 실패 락아웃 및 파장 잠금/강등 초기화
+        # 💡 자동사냥 버튼을 다시 켤 때 미니맵 파티 확인 전 오발동 방지 및 파티 초대 락아웃/강등 초기화
+        state["in_ingame_party"] = False
+        state["no_red_arrow_streak"] = 0
+        state["solo_red_arrow_streak"] = 0
         state["party_invite_giveup"] = False
         state["party_accept_try_cnt"] = 0
         state["party_accept_cycle_cnt"] = 0
