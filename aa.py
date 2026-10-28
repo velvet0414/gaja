@@ -17961,7 +17961,7 @@ def ai_commander_worker(target_pc):
                                     is_out_of_zone = True
                                 else:
                                     z_path = calculate_graph_astar_path(pc_graph, char_map_pos_for_zone, closest_zn, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
-                                    if not z_path or len(z_path) > 16:
+                                    if not z_path or len(z_path) > 25:
                                         is_out_of_zone = True
 
                     if is_out_of_zone and not was_out:
