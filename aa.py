@@ -27459,7 +27459,7 @@ for i, pc in enumerate(MINI_PCS):
     ttk.Combobox(party_mid_frame, textvariable=vars_dict["party_group"], values=["선택안함", "A조", "B조", "C조", "D조"], state="readonly", width=5, font=("맑은 고딕", 9)).pack(side="left", padx=0)
 
     tk.Label(party_mid_frame, text="| 초대조:", bg=BG_PANEL, fg="#FFD54F", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(4, 1))
-    ttk.Combobox(party_mid_frame, textvariable=vars_dict["invite_group"], values=["선택안함"] + [str(n) for n in range(1, 13)], state="readonly", width=5, font=("맑은 고딕", 9)).pack(side="left", padx=0)
+    ttk.Combobox(party_mid_frame, textvariable=vars_dict["invite_group"], values=["선택안함"] + [str(n) for n in range(1, 21)], state="readonly", width=5, font=("맑은 고딕", 9)).pack(side="left", padx=0)
 
     ttk.Separator(tab_party, orient="horizontal").pack(fill="x", padx=2, pady=4)
 
