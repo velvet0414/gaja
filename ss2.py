@@ -874,8 +874,8 @@ def dispatcher_thread():
             target_server = None
             
             with global_req_queue.mutex:
-                    # 🚀 [VIP 수던 새치기 자동 정렬] 
-                    sorted_queue = sorted(list(global_req_queue.queue), key=lambda req: 0 if any(d in str(req.get("dungeon_name", "")) for d in ["본던", "수던"]) else 1)
+                    # 🚀 [VIP 수던/본던/사던 새치기 자동 정렬] 
+                    sorted_queue = sorted(list(global_req_queue.queue), key=lambda req: 0 if any(d in str(req.get("dungeon_name", "")) for d in ["본던", "수던", "사던"]) else 1)
                     global_req_queue.queue.clear()
                     global_req_queue.queue.extend(sorted_queue)
 
@@ -1008,9 +1008,9 @@ def dispatcher_thread():
                             if r_cid != char_id:
                                 queue_length += 1
                                 
-                            # 🚀 [신규 추가] 해당 서버 대기열에 쌓인 수던/본던 캐릭 수를 정확하게 카운트 (본인 포함)
+                            # 🚀 [신규 추가] 해당 서버 대기열에 쌓인 수던/본던/사던 캐릭 수를 정확하게 카운트 (본인 포함)
                             r_dname = str(r.get("dungeon_name", ""))
-                            if any(d in r_dname for d in ["본던", "수던"]):
+                            if any(d in r_dname for d in ["본던", "수던", "사던"]):
                                 fixed_dungeon_wait_count += 1
                                 
                 # =====================================================================
@@ -1118,7 +1118,7 @@ def dispatcher_thread():
                             
                     if actually_drink_minis:
                         if needed_vip_drinks > 0 and any(m in vip_candidates for m in actually_drink_minis):
-                            print(f"🚨 [{target_server}] VIP 수던/본던 대기자 {fixed_dungeon_wait_count}명! 계단식 파랭이 부스터 투입: {actually_drink_minis}")
+                            print(f"🚨 [{target_server}] VIP 수던/본던/사던 대기자 {fixed_dungeon_wait_count}명! 계단식 파랭이 부스터 투입: {actually_drink_minis}")
                         elif deficit_trigger:
                             print(f"💊 [{target_server}] 파랭이 결손치 부스터 가동: {actually_drink_minis} (결핍:{deficit_casts}방 >= 임계치:{final_threshold}방)")
                             
@@ -1145,8 +1145,8 @@ def dispatcher_thread():
                 if char_id in history_target_casts:
                     remembered_target = history_target_casts[char_id]["casts"]
                 
-                # 🚀 [고정 사냥터] "본던" 또는 "수던"은 복수버퍼/탄력 룰 모두 씹고 무조건 6방 고정!
-                is_fixed_dungeon = any(d in str(dungeon_name) for d in ["본던", "수던"])
+                # 🚀 [고정 사냥터] "본던", "수던", "사던"은 복수버퍼/탄력 룰 모두 씹고 무조건 6방 고정!
+                is_fixed_dungeon = any(d in str(dungeon_name) for d in ["본던", "수던", "사던"])
                 
                 # 🚀 [파랭이 부스터 & 고정 사냥터] 무조건 6방 풀버프 고정!
                 if is_blue_pot_active or is_fixed_dungeon:
@@ -1248,7 +1248,7 @@ def dispatcher_thread():
                                 # 💡 [핵심] 현재 target_server(파아/캐스톨) 소속인 캐릭들만 핀셋으로 골라냅니다!
                                 if get_target_server(r_pc, r_cid) == target_server:
                                     r_dname = str(r.get("dungeon_name", ""))
-                                    mark = "[수던VIP]" if any(d in r_dname for d in ["본던", "수던"]) else ""
+                                    mark = "[수던VIP]" if any(d in r_dname for d in ["본던", "수던", "사던"]) else ""
                                     waiting_chars.append(f"{r_cid}{mark}")
                         
                         mp_status = " / ".join([f"{k}:{v:.1f}%({get_buffer_casts(v)}방)" for k, v in buffers_mp.items()])
@@ -2414,7 +2414,11 @@ BUFF_DUR_LIGHT    = 7200
 # =================================================================
 BUFF_SAVE_FILE = "buff_times_cc.json"
 SETTINGS_SAVE_FILE = "settings_cc.json"
-file_io_lock = threading.Lock()
+buff_io_lock = threading.Lock()
+settings_io_lock = threading.Lock()
+file_io_lock = settings_io_lock  # 종료 시(on_closing) 호환 유지
+_GUI_TASK_QUEUE = queue.Queue()
+_NEED_SAVE_SETTINGS = False
 
 def load_buff_times():
     if os.path.exists(BUFF_SAVE_FILE):
@@ -2424,7 +2428,7 @@ def load_buff_times():
     return {}
 
 def save_buff_times(states_dict):
-    with file_io_lock: return _save_buff_times_internal(states_dict)
+    with buff_io_lock: return _save_buff_times_internal(states_dict)
 
 def _save_buff_times_internal(states_dict): # 💡 들여쓰기 보호 마법
     try:
@@ -2455,7 +2459,12 @@ def load_settings():
     return {}
 
 def save_settings():
-    with file_io_lock: return _save_settings_internal()
+    global _NEED_SAVE_SETTINGS
+    # 백그라운드 스레드(인증 모드 등)에서 호출 시 플래그만 켜고 메인 스레드에 저장 위임
+    if threading.current_thread() is not threading.main_thread():
+        _NEED_SAVE_SETTINGS = True
+        return
+    with settings_io_lock: return _save_settings_internal()
 
 def _save_settings_internal():
     try:
@@ -7480,9 +7489,9 @@ def toggle_manual(key):
                 manual_mouse_state[1] = False
                 manual_mouse_state[2] = False
 
-            # 🚨 [프리징 완벽 차단] 메인 스레드에 창 삭제를 안전하게 위임!
-            root.after(0, sync_overlay_ui, None)
-            root.after(10, arrange_windows)
+            # 🚨 [프리징 완벽 차단] 메인 스레드 전용 큐에 창 삭제 및 정렬을 안전하게 위임!
+            _GUI_TASK_QUEUE.put((sync_overlay_ui, (None,)))
+            _GUI_TASK_QUEUE.put((arrange_windows, ()))
         return
 
     if active_manual_target == key: return
@@ -7527,8 +7536,8 @@ def toggle_manual(key):
         ai_states[key]["skid_dx"] = 0
         ai_states[key]["skid_dy"] = 0
         
-    # 🚨 [프리징 완벽 차단] 메인 스레드에서만 창을 덮어씌우도록 안전장치 부착!
-    root.after(0, sync_overlay_ui, key)
+    # 🚨 [프리징 완벽 차단] 메인 스레드 전용 큐에 오버레이 생성을 안전하게 위임!
+    _GUI_TASK_QUEUE.put((sync_overlay_ui, (key,)))
 
 def manual_transmitter_thread():
     global sensor_raw_dx, sensor_raw_dy, ignore_clicks 
@@ -7902,7 +7911,22 @@ def sync_gui_vars():
                     fsm_status = "대기중 (IDLE)"
                 btn_dict[k].config(text=f" 👑 [{k}] 군주 통제 패널 (상태: {fsm_status})")
 
+    global _NEED_SAVE_SETTINGS
+    if _NEED_SAVE_SETTINGS:
+        _NEED_SAVE_SETTINGS = False
+        save_settings()
+
     root.after(500, sync_gui_vars)
+
+def _poll_gui_task_queue():
+    while not _GUI_TASK_QUEUE.empty():
+        try:
+            func, args = _GUI_TASK_QUEUE.get_nowait()
+            func(*args)
+        except Exception:
+            pass
+    root.after(50, _poll_gui_task_queue)
+root.after(50, _poll_gui_task_queue)
 
 
 def toggle_buff_bot(key):
@@ -9058,8 +9082,7 @@ def auto_shop_worker_thread():
                                     s_print(key, f"💀 [장사봇 비상] 5회 재시도 완료! 창고에 [{item_name}] 재고가 완벽히 오링났습니다! 매크로 강제 정지.")
                                     state["shop_fsm"] = "IDLE"
                                     state["item_search_fail_count"] = 0
-                                    import tkinter as tk
-                                    root.after(0, lambda k=key: toggle_shop_bot(k) if ai_states[k].get("is_shop_active") else None)
+                                    _GUI_TASK_QUEUE.put((lambda k=key: toggle_shop_bot(k) if ai_states[k].get("is_shop_active") else None, ()))
                                 else:
                                     s_print(key, f"⚠️ [장사 봇] 창고 스크롤 실패 ({fail_cnt}/5). ESC 연타 후 창고지기(고담)부터 다시 찾습니다.")
                                     
@@ -9208,8 +9231,7 @@ def auto_shop_worker_thread():
                                 s_print(key, f"💀 [장사봇 비상] 20회 스크롤 완료! 인벤토리에 팔려는 [{item_name}] 이/가 전혀 없습니다! 매크로 강제 정지.")
                                 state["shop_fsm"] = "IDLE"
                                 state["shop_scroll_count"] = 0
-                                import tkinter as tk
-                                root.after(0, lambda k=key: toggle_shop_bot(k) if ai_states[k].get("is_shop_active") else None)
+                                _GUI_TASK_QUEUE.put((lambda k=key: toggle_shop_bot(k) if ai_states[k].get("is_shop_active") else None, ()))
 
                 # 💡 [상태 3-3-2: 스크롤 관성 정지 후 팩트 좌표 드래그]
                 elif fsm == "DRAG_ITEM_STABLE":
