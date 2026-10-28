@@ -21869,13 +21869,11 @@ def ai_commander_worker(target_pc):
                                             if p_data.get("req_party_buff", False) and p_data.get("in_game", False) and str(p_data.get("party_state", "")) not in ["TOWN", "MAINT", "SURVIVAL"]:
                                                 leader_alive = True
 
-                            # 💡 [버그 수정] leader_done을 최우선으로 체크하여 완료 순간 증발 오판 원천 차단!
+                            # 💡 [버그 수정] leader_done을 최우선으로 체크하여 완료 순간 증발 오판 원천 차단! (일반 파티원의 개인 계열마법 타이머는 건드리지 않음)
                             if leader_done:
                                 dprint(key, "🎉 [팟바람 수령 확인] 시전자 버프 완료 신호 수신! 각자 사냥터로 즉시 복귀합니다!")
                                 state["party_buff_status"] = "IDLE"
                                 state["post_certi_need_pb"] = False
-                                state["buff_element_time"] = curr_time + 1200.0 + g_val(-10, 10)
-                                save_buff_times(ai_states)
                                 is_buff_resolved = True
                             elif not leader_alive or (curr_time - state.get("party_buff_req_time", curr_time) > 45.0):
                                 dprint(key, "🚨 [팟바람 대기 해제] 시전자 호출 취소(마을/인증/길막) 또는 대기시간 초과! 사냥으로 복귀합니다.")
@@ -21892,6 +21890,8 @@ def ai_commander_worker(target_pc):
                                 dprint(key, "🏃‍♂️ [팟바람 해산] 집결 상황이 종료되어 원래 사냥 구역으로 복귀합니다!")
                                 state["party_buff_status"] = "IDLE"
                                 state["is_active_standby"] = False
+                                state["standby_reason"] = ""
+                                state["retreat_reason"] = ""
                                 state["designated_base_node"] = None
                                 state["portal_blind_mode"] = False
                                 state["yolo_blind_active"] = False
@@ -25580,9 +25580,9 @@ def ai_commander_worker(target_pc):
                             active_call_id = int(leader_data.get("pb_call_id", 0))
                             leader_base_node = leader_data.get("designated_base_node")
 
-                            # 1순위: 시전 완료 신호 수신 시 즉시 복귀
+                            # 1순위: 시전 완료 신호 수신 시 즉시 복귀 (개인 계열마법 타이머는 건드리지 않고 독립 유지)
                             if leader_done and state.get("party_buff_status") in ["MOVING", "ARRIVED"]:
-                                dprint(key, "🎉 [팟바람 수령 완료] 시전자의 캐스팅 완료 신호 확인! 버프 타이머 갱신 후 사냥터로 즉시 복귀합니다.")
+                                dprint(key, "🎉 [팟바람 수령 완료] 시전자의 캐스팅 완료 신호 확인! 사냥터로 즉시 복귀합니다.")
                                 state["abort_macro"] = True
                                 clear_movements_only(pico_queues[key])
                                 if fsm_retreat.startswith("BUFFING"):
@@ -25593,11 +25593,11 @@ def ai_commander_worker(target_pc):
                                 state["portal_blind_mode"] = False
                                 state["yolo_blind_active"] = False
                                 state["is_active_standby"] = False
+                                state["standby_reason"] = ""
+                                state["retreat_reason"] = ""
                                 state["designated_base_node"] = None
                                 state["dungeon_global_path"] = []
                                 state["current_target_node"] = None
-                                state["buff_element_time"] = curr_time + 1200.0 + g_val(-10, 10)
-                                save_buff_times(ai_states)
                                 state["target_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
                                 state["cooldown"] = curr_time + 0.5
                                 action_taken = True
@@ -25614,6 +25614,8 @@ def ai_commander_worker(target_pc):
                                 state["portal_blind_mode"] = False
                                 state["yolo_blind_active"] = False
                                 state["is_active_standby"] = False
+                                state["standby_reason"] = ""
+                                state["retreat_reason"] = ""
                                 state["designated_base_node"] = None
                                 state["dungeon_global_path"] = []
                                 state["current_target_node"] = None
