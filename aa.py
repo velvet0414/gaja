@@ -10196,8 +10196,10 @@ def ai_commander_worker(target_pc):
                         global_path_for_tele = state.get("dungeon_global_path", [])
                         try: zone_tele_limit = int(settings.get("zone_tele_nodes", 120))
                         except: zone_tele_limit = 120
+
+                        is_sadeon_4f_no_tele = ("사던 4" in active_dungeon or "silver4" in active_dungeon.lower()) and active_dungeon != "사던 3to4"
                         
-                        if zone_tele_limit > 0 and len(global_path_for_tele) >= zone_tele_limit and mp >= 50.0:
+                        if not is_sadeon_4f_no_tele and zone_tele_limit > 0 and len(global_path_for_tele) >= zone_tele_limit and mp >= 50.0:
                             if curr_time > state.get("zone_tele_cd", 0):
                                 dprint(key, f"🌀 [구역 복귀 텔레포트] 내 구역까지 너무 멉니다 (경로 {len(global_path_for_tele)}칸 >= 기준 {zone_tele_limit}칸, MP {mp:.1f}%). 3초 쿨 일반텔(F11) 시도!")
                                 clear_movements_only(pico_queues[key])
@@ -16025,7 +16027,7 @@ def ai_commander_worker(target_pc):
                     if "teleport_start_pos" not in state:
                         state["teleport_start_pos"] = state.get("dungeon_map_pos")
                         state["teleport_timeout"] = curr_time + 4.0
-                        state["teleport_next_spam"] = curr_time + 0.3
+                        state["teleport_next_spam"] = curr_time + g_val(0.75, 0.85)
 
                     start_pos = state.get("teleport_start_pos")
                     saved_screen = state.get("tele_snapshot")
@@ -16054,7 +16056,7 @@ def ai_commander_worker(target_pc):
 
                         state["target_fsm"] = "IDLE"
                         state.pop("teleport_start_pos", None)
-                        state["hp_danger_cd"] = curr_time + 3.0
+                        state["hp_danger_cd"] = curr_time + g_val(10.0, 12.0)
 
                         state["is_attacking"] = False
                         state["arrow_is_firing"] = False
@@ -16104,6 +16106,9 @@ def ai_commander_worker(target_pc):
 
                     if state.get("target_fsm") == "EMERGENCY_TELEPORT_VERIFY":
                         continue
+
+                if hp > danger_pct and state.get("hp_danger_cd", 0) > curr_time + 1.5:
+                    state["hp_danger_cd"] = 0.0
 
                 if hp > 0.0 and hp <= danger_pct and curr_time > state.get("hp_danger_cd", 0):
                     danger_action = settings.get("hp_20_action", "귀환 (F8)")
@@ -17484,7 +17489,7 @@ def ai_commander_worker(target_pc):
                                         state["perc_routine"] = curr_time + wait_time
                                         continue
 
-                                    pico_queues[key].put({"action": "POTION"}); state["potion_cd"] = curr_time + g_time(0.8, 1.2, key)
+                                    pico_queues[key].put({"action": "POTION"}); state["potion_cd"] = curr_time + g_time(0.27, 0.33, key)
                                     state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
                                     state["perc_routine"] = 0.0
                         else:
@@ -24362,8 +24367,9 @@ def ai_commander_worker(target_pc):
                                             continue
                                     # 👆👆 ----------------------------------------------------------
 
-                                    # [스마트 Zone 텔레포트 (본던 & 사던 4층 도착 후 자기 Zone 찾아갈 때 공통 작동)]
-                                    if state.get("is_out_of_zone", False) and zone_tele_limit > 0 and len(global_path) >= zone_tele_limit and mp >= 50.0:
+                                    # [스마트 Zone 텔레포트 (본던 도착 후 자기 Zone 찾아갈 때 작동 / 사던 4층은 도보 복귀)]
+                                    is_sadeon_4f_no_tele = ("사던 4" in active_dungeon or "silver4" in active_dungeon.lower()) and active_dungeon != "사던 3to4"
+                                    if not is_sadeon_4f_no_tele and state.get("is_out_of_zone", False) and zone_tele_limit > 0 and len(global_path) >= zone_tele_limit and mp >= 50.0:
                                         if curr_time > state.get("zone_tele_cd", 0):
                                             dprint(key, f"🌀 [구역 복귀 텔레포트] 내 구역까지 너무 멉니다 (남은 경로 {len(global_path)}칸 >= 기준 {zone_tele_limit}칸, MP {mp:.1f}%). 3초 쿨 일반텔(F11) 시도!")
                                             clear_movements_only(pico_queues[key])
