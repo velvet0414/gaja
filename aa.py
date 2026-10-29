@@ -1343,12 +1343,16 @@ def local_ipc_broadcaster_thread(my_key):
 
                 raw_fsm = str(st.get("target_fsm", "IDLE"))
                 party_state = "IDLE"
+                is_town_sub_ui = (
+                    ("INV_CLEAN" in raw_fsm and str(st.get("inv_clean_done_next_fsm", "")).startswith("TOWN_MAINT")) or
+                    ("HK_HEAL" in raw_fsm and str(st.get("hk_return_fsm", "")).startswith("TOWN_MAINT"))
+                )
 
-                if "DEATH" in raw_fsm or "TOWN_MAINT" in raw_fsm or "SHUTDOWN" in raw_fsm or "CERTI" in raw_fsm:
+                if "DEATH" in raw_fsm or "TOWN_MAINT" in raw_fsm or "SHUTDOWN" in raw_fsm or "CERTI" in raw_fsm or is_town_sub_ui:
                     if "MP_REST" in raw_fsm or "MOTHER" in raw_fsm: party_state = "MPTAM"
                     else: party_state = "TOWN"
                 elif st.get("is_mptam_mode", False): party_state = "MPTAM"
-                elif "INV_CLEAN" in raw_fsm or "WEAPON_REPAIR" in raw_fsm or "HK_HEAL" in raw_fsm: party_state = "MAINT"
+                elif "WEAPON_REPAIR" in raw_fsm: party_state = "MAINT"
 
                 elif "EMERGENCY" in raw_fsm or st.get("perc_pk", 0) > 0: party_state = "SURVIVAL"
                 elif "MOTION_EVADING" in raw_fsm or raw_fsm.startswith("PARTY_"): party_state = "TACTIC"
@@ -5025,6 +5029,31 @@ def pico_worker_thread(key):
 
                 if active_manual_target == key: continue
 
+                # 🛡️ [정지 커서 보라돌이 판독 헬퍼] 커서가 멈춘 직후 클릭 전 보라돌이 감지 시 즉시 클릭 취소 및 회피 트리거 발동
+                def _abort_if_purple_on_cursor(expected_cx, expected_cy):
+                    scr_now = latest_frames.get(key)
+                    if scr_now is None:
+                        return False
+                    real_c = find_cursor_pos(scr_now, last_pos=(expected_cx, expected_cy), check_circle=False, allow_full_scan=False)
+                    chk_x, chk_y = (real_c[0], real_c[1]) if real_c else (expected_cx, expected_cy)
+                    if real_c and key in ai_states:
+                        ai_states[key]["cursor_pos"] = [chk_x, chk_y]
+
+                    if check_purple_name(scr_now, chk_x, chk_y):
+                        settings_data = current_settings.get(key, {})
+                        is_party_mode = settings_data.get("use_party_hunt", False) or settings_data.get("use_party_fixed", False)
+                        if is_party_mode:
+                            if key in ai_states:
+                                ai_states[key]["purple_party_ignore_trigger"] = True
+                                ai_states[key]["purple_party_ignore_pos"] = (chk_x, chk_y)
+                            dprint(key, f"🚨 [이동 중 보라돌이 방어] 정지 커서(X:{int(chk_x)}, Y:{int(chk_y)}) 보라돌이 감지! 클릭을 취소하고 커서를 치웁니다.")
+                        else:
+                            if key in ai_states:
+                                ai_states[key]["purple_teleport_trigger"] = True
+                            dprint(key, f"🚨 [이동 중 보라돌이 방어] 정지 커서(X:{int(chk_x)}, Y:{int(chk_y)}) 보라돌이 감지! 클릭 취소 및 대피 발동!")
+                        return True
+                    return False
+
                 if is_pulling_shot:
 
                     if dist > 80: patterns, weights = ["E", "A", "B"], [45, 40, 15]
@@ -5036,20 +5065,29 @@ def pico_worker_thread(key):
                         weights = [92, 8]
 
                     elif dist <= 120:
-
+                        # 💡 B(0.7%) + E(0.8%) 합산 1.5% (2% 미만) 적용
                         patterns = ["A", "E", "B"]
-                        weights = [50, 25, 25]
+                        weights = [98.5, 0.8, 0.7]
 
                     else:
-
-                        patterns = ["E", "B", "A"]
-                        weights = [45, 30, 25]
+                        # 💡 B(0.7%) + E(0.8%) 합산 1.5% (2% 미만) 적용
+                        patterns = ["A", "E", "B"]
+                        weights = [98.5, 0.8, 0.7]
 
                 pattern = random.choices(patterns, weights=weights, k=1)[0]
 
                 if dist < 15: pattern = "A"
 
                 if pattern == "E":
+                    # E패턴 출발 전 목적지 예상 좌표에 보라돌이가 있으면 즉시 취소
+                    exp_x, exp_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
+                    if _abort_if_purple_on_cursor(exp_x, exp_y):
+                        if key in ai_states:
+                            ai_states[key]["cursor_pos"][0] -= dx
+                            ai_states[key]["cursor_pos"][1] -= dy
+                        if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                        continue
+
                     raw_deltas = list(generate_human_deltas(dx, dy, behavior="PATROL", key=key))
                     total_len = len(raw_deltas)
 
@@ -5111,6 +5149,12 @@ def pico_worker_thread(key):
                         send_macro_buffer(p_serial, p_lock, generate_human_deltas(dx, dy, behavior="HOVER", key=key), key)
                         h_sleep(0.08, 0.15)
 
+                    # 🔍 커서가 완전히 멈춘 직후(h_sleep 이후) 클릭하기 직전에 보라돌이 검사!
+                    exp_x, exp_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
+                    if _abort_if_purple_on_cursor(exp_x, exp_y):
+                        if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                        continue
+
                     if is_pulling_shot:
                         click_cnt = random.randint(2, 3)
                     else:
@@ -5125,6 +5169,16 @@ def pico_worker_thread(key):
                     mid = len(deltas) // random.randint(2, 3)
                     if mid > 0:
                         send_macro_buffer(p_serial, p_lock, deltas[:mid], key)
+
+                    exp_x, exp_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
+                    mid_x = exp_x - sum(d[0] for d in deltas[mid:]) if mid > 0 else exp_x
+                    mid_y = exp_y - sum(d[1] for d in deltas[mid:]) if mid > 0 else exp_y
+                    if _abort_if_purple_on_cursor(mid_x, mid_y):
+                        if mid > 0 and key in ai_states:
+                            ai_states[key]["cursor_pos"] = [mid_x, mid_y]
+                        if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                        continue
+
                     if active_manual_target != key:
                         b_clicks = random.choices([1, 2], weights=[60, 40])[0]
                         for i in range(b_clicks):
@@ -5135,12 +5189,24 @@ def pico_worker_thread(key):
                         send_macro_buffer(p_serial, p_lock, deltas[mid:], key)
                     if active_manual_target != key and (random.random() < 0.75 or is_pulling_shot):
                         h_sleep(0.06, 0.12)
+                        if _abort_if_purple_on_cursor(exp_x, exp_y):
+                            if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                            continue
                         b_clicks2 = random.choices([1, 2], weights=[60, 40])[0]
                         for i in range(b_clicks2):
                             send_mouse_click(p_serial, p_lock, 1, 1); h_sleep(0.059, 0.095); send_mouse_click(p_serial, p_lock, 1, 0)
                             if i < b_clicks2 - 1: h_sleep(0.07, 0.12)
 
                 elif pattern == "D":
+                    # D패턴은 현재 정지해 있는 위치(이동 전 위치)에서 먼저 클릭하므로 해당 좌표 기준으로 보라돌이 검사
+                    exp_x, exp_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
+                    start_x, start_y = exp_x - dx, exp_y - dy
+                    if _abort_if_purple_on_cursor(start_x, start_y):
+                        if key in ai_states:
+                            ai_states[key]["cursor_pos"] = [start_x, start_y]
+                        if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                        continue
+
                     if active_manual_target != key:
                         send_mouse_click(p_serial, p_lock, 1, 1); h_sleep(0.059, 0.095); send_mouse_click(p_serial, p_lock, 1, 0)
                         h_sleep(0.06, 0.12)
@@ -22370,6 +22436,13 @@ def ai_commander_worker(target_pc):
                     action_taken = True
 
                 elif not action_taken and state.get("target_fsm") == "MOTION_EVADING_ACK_WAIT":
+                    is_pb_evading = (state.get("party_buff_status") == "MOVING") and (
+                        "팟바람" in str(state.get("retreat_reason", "")) or
+                        "팟바람" in str(state.get("standby_reason", "")) or
+                        state.get("req_party_buff", False)
+                    )
+                    is_blind_evade = state.get("portal_blind_mode", False) or is_pb_evading
+
                     if state.pop("special_ack_arrived", False) or curr_time > state.get("evade_ack_timeout", 0):
                         real_cursor = find_cursor_pos(img_bgr, last_pos=(cur_x, cur_y), check_circle=False, allow_full_scan=False)
                         if real_cursor:
@@ -22380,7 +22453,7 @@ def ai_commander_worker(target_pc):
                         if is_sword:
                             state["evade_parking_attempts"] = state.get("evade_parking_attempts", 0) + 1
 
-                            if not state.get("portal_blind_mode", False):
+                            if not is_blind_evade:
                                 dist = math.hypot(char_screen_cx - cur_x, char_screen_cy - cur_y)
                                 nx, ny = ((char_screen_cx - cur_x) / dist, (char_screen_cy - cur_y) / dist) if dist > 0 else (0, 1)
                                 drag_len = int(max(g_val(70, 90), dist * g_val(0.45, 0.70)))
@@ -22391,17 +22464,25 @@ def ai_commander_worker(target_pc):
                                 state["cursor_pos"] = [cur_x_after_drag, cur_y_after_drag]
                             else:
                                 cur_x_after_drag, cur_y_after_drag = cur_x, cur_y
-                                dprint(key, "🚧 [맹인 탈출 중] 회피 경로에 몹(칼) 겹침! 때리지 않고 즉시 다음 각도로 우회합니다.")
+                                dprint(key, "🚧 [맹인/팟바람 탈출 중] 회피 경로에 몹(칼) 겹침! 때리지 않고 즉시 다음 거리/각도로 우회합니다.")
 
                             if state["evade_parking_attempts"] >= 3:
                                 flip_cnt = state.get("evade_side_flips", 0)
 
                                 if flip_cnt >= 3:
 
-                                    if state.get("portal_blind_mode", False):
-                                        dprint(key, "🚨 [맹인 탈출 실패] 4방향 모두 막힘! 일단 IDLE로 돌아가 재돌파를 시도합니다.")
-                                        state["target_fsm"] = "IDLE"
-                                        state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.5)
+                                    if is_blind_evade:
+                                        if is_pb_evading and state.get("designated_base_node") is not None:
+                                            dprint(key, "🚨 [팟바람 우회 재탐색] 4방향 몹 겹침! 전투 전환 없이 버프존 A* 경로를 즉시 재탐색합니다.")
+                                            state["target_fsm"] = "PARTY_RETREAT_NAV"
+                                            state["retreat_reason"] = "리더 팟바람 선진입" if state.get("req_party_buff", False) else "팟바람 수령 집합"
+                                            state["current_target_node"] = str(state["designated_base_node"])
+                                            state["dungeon_global_path"] = []
+                                            state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
+                                        else:
+                                            dprint(key, "🚨 [맹인 탈출 실패] 4방향 모두 막힘! 일단 IDLE로 돌아가 재돌파를 시도합니다.")
+                                            state["target_fsm"] = "IDLE"
+                                            state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.5)
                                     else:
                                         dprint(key, "🚨 [이동 회피 실패] 90도까지 4방향 모두 몹으로 꽉 찼습니다! 2차 조치: 모션 스냅(피격 검사) 강제 전환!")
                                         state["target_fsm"] = "MOTION_SNAP_BRAKE_WAIT"
@@ -22464,10 +22545,24 @@ def ai_commander_worker(target_pc):
                     action_taken = True
 
                 elif not action_taken and state.get("target_fsm") == "MOTION_EVADING_SPAM":
+                    is_pb_evading = (state.get("party_buff_status") == "MOVING") and (
+                        "팟바람" in str(state.get("retreat_reason", "")) or
+                        "팟바람" in str(state.get("standby_reason", "")) or
+                        state.get("req_party_buff", False)
+                    )
+                    is_blind_evade = state.get("portal_blind_mode", False) or is_pb_evading
+
                     if state.get("is_char_moving", False):
-                        dprint(key, "💨 [모션 회피 성공] 우회 이동 감지! 길이 뚫렸습니다. 바디 3초 금지 연장 후 IDLE 복귀.")
                         clear_movements_only(pico_queues[key])
-                        state["target_fsm"] = "IDLE"
+                        if is_pb_evading and state.get("designated_base_node") is not None:
+                            dprint(key, "💨 [팟바람 우회 이동 성공] 길막을 뚫었습니다! 새 위치에서 버프존 A* 이동을 즉시 이어갑니다.")
+                            state["target_fsm"] = "PARTY_RETREAT_NAV"
+                            state["retreat_reason"] = "리더 팟바람 선진입" if state.get("req_party_buff", False) else "팟바람 수령 집합"
+                            state["current_target_node"] = str(state["designated_base_node"])
+                            state["dungeon_global_path"] = []
+                        else:
+                            dprint(key, "💨 [모션 회피 성공] 우회 이동 감지! 길이 뚫렸습니다. 바디 3초 금지 연장 후 IDLE 복귀.")
+                            state["target_fsm"] = "IDLE"
 
                         state["body_block_time"] = curr_time + 3.0
 
@@ -22480,6 +22575,8 @@ def ai_commander_worker(target_pc):
                         if state.get("dungeon_map_pos"):
                             state["dungeon_last_map_pos"] = state.get("dungeon_map_pos")
                         state["dungeon_stuck_timer"] = curr_time
+                        state["sandbag_tried_in_stuck"] = False
+                        state["repath_tried"] = False
 
                         state.pop("evade_side_flips", None)
                         state.pop("evade_parking_attempts", None)
@@ -22506,14 +22603,28 @@ def ai_commander_worker(target_pc):
                             state["target_fsm"] = "MOTION_EVADING_CALC"
                             state["cooldown"] = curr_time + 0.05
                         else:
-                            dprint(key, "🚨 [이동 회피 완전 실패] 90도까지 스팸 돌파 막힘! 2차 조치: 모션 스냅(피격 검사) 강제 발동!")
                             clear_movements_only(pico_queues[key])
                             state.pop("evade_side_flips", None)
                             state.pop("evade_parking_attempts", None)
+                            state["sandbag_tried_in_stuck"] = False
 
-                            state["target_fsm"] = "MOTION_SNAP_BRAKE_WAIT"
-                            state["brake_end_time"] = curr_time + 0.15
-                            state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
+                            if is_blind_evade:
+                                if is_pb_evading and state.get("designated_base_node") is not None:
+                                    dprint(key, "🚨 [팟바람 스팸 돌파 실패] 4방향 막힘! 전투 전환 없이 버프존 A* 경로를 즉시 재탐색합니다.")
+                                    state["target_fsm"] = "PARTY_RETREAT_NAV"
+                                    state["retreat_reason"] = "리더 팟바람 선진입" if state.get("req_party_buff", False) else "팟바람 수령 집합"
+                                    state["current_target_node"] = str(state["designated_base_node"])
+                                    state["dungeon_global_path"] = []
+                                    state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
+                                else:
+                                    dprint(key, "🚨 [맹인 스팸 돌파 실패] 4방향 모두 막힘! 일단 IDLE로 복귀하여 재시도합니다.")
+                                    state["target_fsm"] = "IDLE"
+                                    state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.3)
+                            else:
+                                dprint(key, "🚨 [이동 회피 완전 실패] 90도까지 스팸 돌파 막힘! 2차 조치: 모션 스냅(피격 검사) 강제 발동!")
+                                state["target_fsm"] = "MOTION_SNAP_BRAKE_WAIT"
+                                state["brake_end_time"] = curr_time + 0.15
+                                state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
                     else:
                         if curr_time >= state.get("evade_spam_next_click", 0):
                             pico_queues[key].put({"action": "SINGLE_ATTACK"})
@@ -22888,10 +22999,10 @@ def ai_commander_worker(target_pc):
                             state["cooldown"] = curr_time + 0.1
                             action_taken = True
 
-                if state.get("target_fsm") == "IDLE" and not state.get("is_paused", False) and state.get("is_hunt_active", False) and not action_taken and not state.get("is_mptam_mode", False):
+                if state.get("target_fsm") in ["IDLE", "PARTY_RETREAT_NAV"] and not state.get("is_paused", False) and state.get("is_hunt_active", False) and not action_taken and not state.get("is_mptam_mode", False):
 
                     is_parked_safely = False
-                    if (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)) and not settings.get("is_puller", False):
+                    if state.get("target_fsm") != "PARTY_RETREAT_NAV" and (settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)) and not settings.get("is_puller", False):
 
                         idle_target_base = state.get("designated_base_node") or (str(pc_graph["buff_spot_nodes"][0]) if pc_graph and pc_graph.get("buff_spot_nodes") else None)
                         if settings.get("use_party_hunt", False) and (state.get("target_fsm") == "PARTY_WAIT" or state.get("is_mptam_mode", False)) and pc_graph and idle_target_base:
