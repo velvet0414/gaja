@@ -11665,16 +11665,14 @@ def ai_commander_worker(target_pc):
                                 total_target_count = len(pick_targets)
 
                                 if PICK_TEMPLATES:
-                                    dprint(key, f"▶ [찾기 고속 스크롤 모드] {pick_retry_cnt + 1}회차 창고 스캔 시작...")
-                                    stuck_scrolls = 0
-                                    last_scroll_img = None
+                                    dprint(key, f"▶ [찾기 고속 스크롤 모드] {pick_retry_cnt + 1}회차 창고 스캔 시작 (미발견 시 의무 70회 스크롤)...")
                                     found_any_this_turn = False
                                     just_scrolled = False
 
                                     if total_target_count == 0:
                                         dprint(key, "✅ 찾을 물건이 설정되지 않았습니다. 즉시 스킵합니다.")
                                     else:
-                                        for scroll_idx in range(50):
+                                        for scroll_idx in range(70):
                                             if len(found_items) >= total_target_count:
                                                 dprint(key, "✅ [찾기 조기 달성] 지정된 모든 물건을 찾았습니다. 헛발질(스크롤) 조기 종료!")
                                                 break
@@ -11705,35 +11703,16 @@ def ai_commander_worker(target_pc):
                                                     found_any = True
                                                     found_any_this_turn = True
 
+                                            if len(found_items) >= total_target_count:
+                                                dprint(key, "✅ [찾기 조기 달성] 지정된 모든 물건을 찾았습니다. 헛발질(스크롤) 조기 종료!")
+                                                break
+
                                             if found_any:
-                                                stuck_scrolls = 0
                                                 continue
 
                                             cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [150, 220])
                                             if cur_x > 280 or cur_y > 380:
                                                 m_click_wh_fast(150, 220, jx=10, jy=10, d_min=0.05, d_max=0.1, double=False)
-
-                                            screen = latest_frames.get(key)
-                                            if screen is not None:
-                                                h_scr, w_scr = screen.shape[:2]
-                                                c_x, c_y = ai_states.get(key, {}).get("cursor_pos", [120, 200])
-
-                                                chk_x1, chk_y1 = max(0, int(c_x) - 50), max(0, int(c_y) - 15)
-                                                chk_x2, chk_y2 = min(w_scr, int(c_x) + 50), min(h_scr, int(c_y) + 15)
-
-                                                if chk_x2 > chk_x1 and chk_y2 > chk_y1:
-                                                    curr_scroll_img = cv2.cvtColor(screen[chk_y1:chk_y2, chk_x1:chk_x2], cv2.COLOR_BGR2GRAY)
-
-                                                    if last_scroll_img is not None and last_scroll_img.shape == curr_scroll_img.shape:
-                                                        diff = cv2.absdiff(last_scroll_img, curr_scroll_img)
-                                                        _, thresh = cv2.threshold(diff, 10, 255, cv2.THRESH_BINARY)
-                                                        if cv2.countNonZero(thresh) < 5: stuck_scrolls += 1
-                                                        else: stuck_scrolls = 0
-                                                    last_scroll_img = curr_scroll_img
-
-                                                if stuck_scrolls >= random.randint(5, 6):
-                                                    dprint(key, "🛑 [찾기 스크롤 끝] 커서 반경 변화 없음. 바닥 도달 확정.")
-                                                    break
 
                                             send_mouse_scroll(p_serial, p_lock, -3)
                                             time.sleep(g_val(0.04, 0.06))
