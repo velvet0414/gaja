@@ -11682,6 +11682,7 @@ def ai_commander_worker(target_pc):
                                                 just_scrolled = False
 
                                             found_any = False
+                                            settled_this_loop = False
                                             for item_key_name, qty in list(pick_targets.items()):
                                                 if item_key_name in found_items: continue
 
@@ -11694,14 +11695,29 @@ def ai_commander_worker(target_pc):
                                                 pos = find_img_universal(tmpl_dict, th=0.82, ui_only=True)
 
                                                 if pos:
-                                                    dprint(key, f"📦 [창고 찾기] '{tmpl_dict['name']}' 고속 선택({pos[0]}, {pos[1]}) ➔ {qty}개 입력!")
-                                                    m_click_wh_fast(pos[0], pos[1], jx=13, jy=3, d_min=0.05, d_max=0.08)
-                                                    m_type_num(qty)
-                                                    time.sleep(g_val(0.08, 0.12))
+                                                    # 🛑 1) 스크롤 직후 1차 포착 시: 관성이 완전히 멈출 때까지 대기 후 최신 좌표 재확인!
+                                                    if not settled_this_loop:
+                                                        time.sleep(g_val(0.28, 0.35))
+                                                        settled_this_loop = True
 
-                                                    found_items.add(item_key_name)
-                                                    found_any = True
-                                                    found_any_this_turn = True
+                                                    real_pos = find_img_universal(tmpl_dict, th=0.82, ui_only=True)
+                                                    if not real_pos:
+                                                        # 관성으로 인해 맨 윗줄 위로 넘어가버린 경우: 휠을 위로 살짝 되돌려 재탐색
+                                                        dprint(key, f"⚠️ [관성 이탈 복구] '{tmpl_dict['name']}'이(가) 스크롤 관성으로 지나갔습니다! 위로 살짝 되돌려 다시 잡습니다.")
+                                                        send_mouse_scroll(p_serial, p_lock, 3)
+                                                        time.sleep(g_val(0.28, 0.35))
+                                                        real_pos = find_img_universal(tmpl_dict, th=0.82, ui_only=True)
+
+                                                    if real_pos:
+                                                        dprint(key, f"📦 [창고 찾기] '{tmpl_dict['name']}' 관성 정지 후 정밀 선택({real_pos[0]}, {real_pos[1]}) ➔ {qty}개 입력!")
+                                                        # 아래 줄 물건 오클릭 방지를 위해 Y-1 보정 및 상하 지터(jy=1) 최소화
+                                                        m_click_wh_fast(real_pos[0], real_pos[1] - 1, jx=10, jy=1, d_min=0.05, d_max=0.08)
+                                                        m_type_num(qty)
+                                                        time.sleep(g_val(0.08, 0.12))
+
+                                                        found_items.add(item_key_name)
+                                                        found_any = True
+                                                        found_any_this_turn = True
 
                                             if len(found_items) >= total_target_count:
                                                 dprint(key, "✅ [찾기 조기 달성] 지정된 모든 물건을 찾았습니다. 헛발질(스크롤) 조기 종료!")
