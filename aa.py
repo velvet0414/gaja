@@ -11558,6 +11558,68 @@ def ai_commander_worker(target_pc):
                                         time.sleep(g_val(0.05, 0.08))
                                         just_scrolled = True
 
+                                    # 💡 [마지막 스크롤 커서 가림 방지] O.K.를 누르기 전 커서를 위쪽 상단 여백으로 치워 가려진 마지막 물건을 1회 추가 스캔합니다.
+                                    scr_up = latest_frames.get(key)
+                                    cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [150, 220])
+                                    if scr_up is not None:
+                                        real_c = find_cursor_pos(scr_up, last_pos=(cur_x, cur_y), allow_full_scan=True)
+                                        if real_c:
+                                            cur_x, cur_y = real_c[0], real_c[1]
+                                            if key in ai_states:
+                                                ai_states[key]["cursor_pos"] = [cur_x, cur_y]
+
+                                    safe_up_x = int(g_val(140, 175))
+                                    safe_up_y = int(g_val(45, 65))
+                                    dist_up = math.hypot(safe_up_x - cur_x, safe_up_y - cur_y)
+                                    if dist_up > 10:
+                                        dur_up = apply_human_variance(0.06 + 0.03 * math.log2((dist_up / 20.0) + 1.0)) * 0.85
+                                        deltas_up = generate_human_deltas(safe_up_x - cur_x, safe_up_y - cur_y, duration=dur_up, behavior="NORMAL", key=key)
+                                        if deltas_up:
+                                            send_macro_buffer(p_serial, p_lock, deltas_up, key)
+                                        if key in ai_states:
+                                            ai_states[key]["cursor_pos"] = [safe_up_x, safe_up_y]
+                                        time.sleep(dur_up + g_val(0.12, 0.18))
+                                    else:
+                                        time.sleep(g_val(0.10, 0.15))
+
+                                    for tmpl_dict in LEAVE_TEMPLATES:
+                                        tmpl_name = tmpl_dict['name']
+                                        is_ent_item = ("ent" in tmpl_name.lower() or "엔줄" in tmpl_name or "엔테" in tmpl_name or "엔트" in tmpl_name)
+                                        if is_ent_item and any(kw in dng_name.lower() for kw in skip_ent_dungeons):
+                                            continue
+
+                                        pos_list = find_all_imgs_universal(tmpl_dict, th=0.82, ui_only=True)
+                                        if not pos_list:
+                                            continue
+
+                                        for pos in pos_list:
+                                            screen_chk = latest_frames.get(key)
+                                            if screen_chk is None:
+                                                continue
+
+                                            h_s, w_s = screen_chk.shape[:2]
+                                            is_already_selected = False
+                                            chk_x1 = int(pos[0])
+                                            chk_y1 = int(pos[1])
+                                            chk_x2 = min(w_s, chk_x1 + 60)
+                                            chk_y2 = min(h_s, chk_y1 + 20)
+
+                                            if chk_x2 > chk_x1 and chk_y2 > chk_y1:
+                                                chk_roi = screen_chk[chk_y1:chk_y2, chk_x1:chk_x2]
+                                                hsv_roi = cv2.cvtColor(chk_roi, cv2.COLOR_BGR2HSV)
+                                                mask_blue = cv2.inRange(hsv_roi, np.array([100, 50, 30]), np.array([140, 255, 150]))
+                                                if cv2.countNonZero(mask_blue) >= 20:
+                                                    is_already_selected = True
+
+                                            if is_already_selected:
+                                                continue
+
+                                            dprint(key, f"📦 [창고 마지막 가림 확인] 커서에 가려져 있던 맡길 템({tmpl_name}) 발견({pos[0]}, {pos[1]}) ➔ 수량 입력 후 즉시 완료합니다!")
+                                            m_click_wh_fast(pos[0], pos[1], jx=13, jy=3, d_min=0.05, d_max=0.08)
+                                            m_spam_one()
+                                            time.sleep(g_val(0.08, 0.12))
+                                            has_handled_any = True
+
                                     if has_handled_any:
                                         dprint(key, f"▶ [통합 결제] O.K. 버튼을 딱 1번 눌러 일괄 위탁합니다.")
                                         click_img("qq/ok.png", "O.K. 버튼", th=0.75, jx=3, jy=2, d_min=0.3, d_max=0.45, ui_only=True)
@@ -17821,6 +17883,7 @@ def ai_commander_worker(target_pc):
                                 
                             state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
                             state["current_is_m_elf"] = False; state["next_is_m_elf"] = False
+                            state["is_evade_combat"] = False
                     else:
                         time_since_arrow = curr_time - state.get("last_arrow_change_time", curr_time)
 
@@ -17841,6 +17904,7 @@ def ai_commander_worker(target_pc):
                                     
                                 state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
                                 state["current_is_m_elf"] = False; state["next_is_m_elf"] = False
+                                state["is_evade_combat"] = False
                         else:
                             if time_since_arrow > 2.0 and time_since_spell > 2.0:
                                 reason_str = "마법 사용 후 사격 지연" if time_since_spell <= 3.0 else "빠른 사격 중단"
@@ -17856,6 +17920,7 @@ def ai_commander_worker(target_pc):
                                     
                                 state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
                                 state["current_is_m_elf"] = False; state["next_is_m_elf"] = False
+                                state["is_evade_combat"] = False
 
                     max_combat_time = float(settings.get("max_combat_time", 15.0))
 
@@ -17867,6 +17932,9 @@ def ai_commander_worker(target_pc):
 
                     if state.get("current_is_m_elf", False):
                         max_combat_time = 10.0
+                    elif state.get("is_evade_combat", False):
+                        # 💡 회피 기동 중 칼 표시로 진입한 교전은 GUI 설정과 무관하게 최대 5초로 강제 제한!
+                        max_combat_time = 5.0
                     elif "event" in dng_combat_name or "오땅" in dng_combat_name:
                         if "오땅" in dng_combat_name:
 
@@ -17884,8 +17952,11 @@ def ai_commander_worker(target_pc):
                     # ================= [ 변경 코드 ] =================
                     if combat_dur > max_combat_time or force_timeout:
                         was_m_elf_combat = state.get("current_is_m_elf", False)
+                        was_evade_combat = state.get("is_evade_combat", False)
                         if was_m_elf_combat:
                             dprint(key, f"⚔️ [남요정 PK 제한시간 종료] {max_combat_time}초 경과! 공격을 멈추고 IDLE로 복귀합니다.")
+                        elif was_evade_combat:
+                            dprint(key, f"⏱️ [회피 중 교전 5초 제한 종료] {max_combat_time}초 경과! (벽 너머 오감지 방어) 공격을 멈추고 다음 행동에서 재감지합니다.")
                         elif force_timeout:
                             dprint(key, "🧱 [이벤트 던전 벽몹 감지] 15초간 1대도 안 맞음! 벽 몹(또는 갇힘)으로 간주하고 타겟 포기!")
                         else:
@@ -17893,11 +17964,11 @@ def ai_commander_worker(target_pc):
 
                         clear_movements_only(pico_queues[key])
                         
-                        # 👇 [변경] 남요정 PK 10초 종료 시에는 바로 IDLE로 복귀
+                        # 👇 [변경] 남요정 PK 10초 종료 또는 회피 기동 교전 5초 종료 시 바로 IDLE 복귀
                         if str(state.get("target_fsm", "")).startswith("BUFFING"):
-                            state["buff_return_fsm"] = "IDLE" if was_m_elf_combat else "BRAKE_WAIT"
+                            state["buff_return_fsm"] = "IDLE" if (was_m_elf_combat or was_evade_combat) else "BRAKE_WAIT"
                         else:
-                            state["target_fsm"] = "IDLE" if was_m_elf_combat else "BRAKE_WAIT"
+                            state["target_fsm"] = "IDLE" if (was_m_elf_combat or was_evade_combat) else "BRAKE_WAIT"
                             
                         state["brake_end_time"] = curr_time + 0.15
                         state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
@@ -17908,6 +17979,7 @@ def ai_commander_worker(target_pc):
                         state["current_is_g_mob"] = False
                         state["current_is_m_elf"] = False
                         state["next_is_m_elf"] = False
+                        state["is_evade_combat"] = False
 
                 active_fsms_for_aim = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_LOCKED", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD"]
                 is_fighting_now = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or state.get("target_fsm") in active_fsms_for_aim
@@ -18807,6 +18879,7 @@ def ai_commander_worker(target_pc):
                 state["current_is_avoid"] = False # 💡 완벽 초기화
                 state["current_is_m_elf"] = False
                 state["next_is_m_elf"] = False
+                state["is_evade_combat"] = False
                 state["combat_enchant_failed"] = False
                 state["is_combat_emergency_buff"] = False
 
@@ -19105,9 +19178,10 @@ def ai_commander_worker(target_pc):
                 # 👆👆 ---------------------------------------------------------------------------------
 
                 if is_unexplained_hit:
-                    if state.get("target_fsm") in ["IDLE", "PATROL", "SQUAD_WAIT"]:
+                    if state.get("target_fsm") in ["IDLE", "PATROL", "SQUAD_WAIT", "MOTION_EVADING_CALC", "MOTION_EVADING_ACK_WAIT", "MOTION_EVADING_SPAM"]:
 
-                        dprint(key, "🚨 [피격 확정] 보이지 않는 적에게 피격! 즉시 모션 스냅으로 범인 색출!")
+                        was_walking_hit = state.get("is_char_moving", False) or state.get("is_pulling", False)
+                        dprint(key, "🚨 [피격 확정] 보이지 않는 적에게 피격! 진행 중인 이동/회피를 멈추고 즉시 모션 스냅으로 범인 색출!")
 
                         state["abort_macro"] = True
 
@@ -19117,23 +19191,34 @@ def ai_commander_worker(target_pc):
                         state["loot_state"] = "IDLE"
 
                         clear_movements_only(pico_queues[key])
+                        if was_walking_hit:
+                            pico_queues[key].put({"action": "SHIFT_CLICK_BRAKE"})
+                            state["pico_arrived"] = False
 
+                        state["motion_failed_dirs"] = set()
+                        state["motion_candidates"] = []
                         state["target_fsm"] = "MOTION_SNAP_BRAKE_WAIT"
-                        state["brake_end_time"] = curr_time + 0.4
+                        state["brake_end_time"] = curr_time + (0.35 if was_walking_hit else 0.18)
+                        state["brake_max_wait"] = curr_time + 0.9
                         state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
 
                 elif state.get("target_fsm") == "MOTION_SNAP_BRAKE_WAIT":
 
                     if state.get("pico_arrived", False) and not state.get("hw_busy", False) and pico_queues[key].empty():
                         state["pico_arrived"] = False
-                        state["brake_end_time"] = curr_time + g_val(0.05, 0.10)
+                        state["brake_end_time"] = min(state.get("brake_end_time", curr_time), curr_time + g_val(0.05, 0.10))
 
-                    if curr_time >= state.get("brake_end_time", 0):
+                    max_wait_t = state.get("brake_max_wait") or (state.get("brake_end_time", curr_time) + 0.5)
+                    max_wait_t = state.get("brake_max_wait") or (state.get("brake_end_time", curr_time) + 0.5)
+                    is_char_stopped_now = state.get("is_completely_stopped", False) or (curr_time >= max_wait_t)
+
+                    if curr_time >= state.get("brake_end_time", 0) and is_char_stopped_now:
+                        state.pop("brake_max_wait", None)
                         real_cursor = find_cursor_pos(img_bgr, last_pos=(cur_x, cur_y))
                         if real_cursor:
                             state["cursor_pos"] = list(real_cursor)
                             cur_x, cur_y = real_cursor[0], real_cursor[1]
-                            dprint(key, f"🔄 [영점 동기화] 물리적 마우스 제동 완료. 1.5초 연속 스캔 돌입!")
+                            dprint(key, f"🔄 [영점 동기화] 캐릭터 및 마우스 제동 완료. 다중 타겟 모션 스캔 돌입!")
 
                         scan_cy = char_screen_cy - 20
                         roi_size = 80
@@ -19148,23 +19233,37 @@ def ai_commander_worker(target_pc):
                         else:
                             state["motion_img1"] = None
 
+                        state["motion_failed_dirs"] = set()
+                        state["motion_candidates"] = []
                         state["target_fsm"] = "MOTION_SNAP_SCANNING"
-                        state["motion_scan_end"] = curr_time + 1.5
+                        state["motion_scan_end"] = curr_time + 1.2
                         state["cooldown"] = curr_time
 
                 elif state.get("target_fsm") == "MOTION_SNAP_SCANNING":
 
                     if mobs:
                         state.pop("mptam_wall_hit_search", None)
+                        state.pop("loot_evade_after_snap", None)
+                        state["motion_failed_dirs"] = set()
+                        state["motion_candidates"] = []
                         dprint(key, "👁️ [YOLO 감지] 연속 스캔 중 욜로가 몹을 찾았습니다! 정상 타격 전환!")
                         state["target_fsm"], state["cooldown"] = "IDLE", curr_time + 0.1
                         continue
 
                     x1, y1, x2, y2 = state.get("motion_roi", (0, 0, 0, 0))
                     img1 = state.get("motion_img1")
+                    failed_dirs = state.get("motion_failed_dirs", set())
 
-                    if curr_time > state.get("motion_scan_end", 0):
+                    # 1) 이전 프레임에서 이미 포착해 둔 후보(2순위, 3순위 등)가 남아있다면 스캔 대기 없이 즉시 꺼내서 찌름!
+                    cand_queue = [c for c in state.get("motion_candidates", []) if c[0] not in failed_dirs]
+                    state["motion_candidates"] = cand_queue
+
+                    # 최대 4곳까지 찔러봤거나, 대기 중인 후보가 없고 스캔 시간이 끝난 경우 종료
+                    if len(failed_dirs) >= 4 or (not cand_queue and curr_time > state.get("motion_scan_end", 0)):
+                        state["motion_failed_dirs"] = set()
+                        state["motion_candidates"] = []
                         if state.pop("mptam_wall_hit_search", False):
+                            state.pop("loot_evade_after_snap", None)
                             dprint(key, "🕵️ [엠탐 피격 ➔ 8각 모션 미감지] 픽셀 변화가 없어 8방향 이동 수색(POISON_WALL_SEARCH)으로 토스하여 숨은 몹을 끌어냅니다!")
                             state["target_fsm"] = "POISON_WALL_SEARCH"
                             state["poison_search_step"] = 0
@@ -19172,18 +19271,32 @@ def ai_commander_worker(target_pc):
                             random.shuffle(angles)
                             state["poison_search_angles"] = angles
                             state["cooldown"] = curr_time + 0.1
+                        elif state.pop("loot_evade_after_snap", False):
+                            dprint(key, f"🤷 [루팅 1차 모션 스냅 종료] 숨은 몹 미발견(확인:{len(failed_dirs)}곳). 2차 조치로 루팅 45도 우회(LOOT_EVADING)를 시작합니다!")
+                            state["target_fsm"] = "LOOT_EVADING"
+                            state["evade_side"] = random.choice([0, 1])
+                            state["evade_side_flips"] = 0
+                            state["evade_parking_attempts"] = 0
+                            state.pop("evade_dist", None)
+                            state["cooldown"] = curr_time + 0.05
                         else:
-                            dprint(key, "🤷 [모션 스냅 종료] 스캔 실패. 장애물로 간주하여 사냥(IDLE)으로 복귀합니다.")
-                            state["target_fsm"] = "IDLE"
-                            state["cooldown"] = curr_time + 0.1
-
-                            state["idle_stop_start_time"] = 0
-                            state["idle_stuck_map_pos"] = None
-                            if state.get("dungeon_map_pos"):
-                                state["dungeon_last_map_pos"] = state.get("dungeon_map_pos")
-                            state["dungeon_stuck_timer"] = curr_time
+                            dprint(key, f"🤷 [1차 모션 스냅 종료] 숨은 몹 미발견(확인한 구역:{len(failed_dirs)}곳). 2차 조치로 45도 회피 기동(MOTION_EVADING)을 시작합니다.")
+                            state["target_fsm"] = "MOTION_EVADING_CALC"
+                            state["evade_side"] = random.choice([0, 1])
+                            state["evade_side_flips"] = 0
+                            state["evade_parking_attempts"] = 0
+                            state.pop("evade_dist", None)
+                            state["cooldown"] = curr_time + 0.05
                     else:
-                        if img1 is not None and x2 > x1 and y2 > y1:
+                        best_tx, best_ty = None, None
+                        best_dir_idx = -1
+                        max_changed = 0
+
+                        if cand_queue:
+                            best_dir_idx, best_tx, best_ty, max_changed = cand_queue.pop(0)
+                            state["motion_candidates"] = cand_queue
+                            dprint(key, f"🎯 [연속 후보 찌르기] 대기 중이던 다음 순위({best_dir_idx+1}번 구역, {max_changed}px) 즉시 락온 시도!")
+                        elif img1 is not None and x2 > x1 and y2 > y1:
                             img2 = cv2.cvtColor(img_bgr[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
                             diff = cv2.absdiff(img1, img2)
                             _, thresh = cv2.threshold(diff, 18, 255, cv2.THRESH_BINARY)
@@ -19209,10 +19322,10 @@ def ai_commander_worker(target_pc):
                             kernel = np.ones((3, 3), np.uint8)
                             thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
 
-                            best_tx, best_ty = None, None
-                            max_changed = 8
-
+                            detected_list = []
                             for i in range(8):
+                                if i in failed_dirs:
+                                    continue
                                 angle = i * (math.pi / 4)
                                 zx = int(cx_roi + math.cos(angle) * 45)
                                 zy = int(cy_roi + math.sin(angle) * 45 * 0.85)
@@ -19228,66 +19341,72 @@ def ai_commander_worker(target_pc):
                                 if rx2 > rx1 and ry2 > ry1:
                                     zone_roi = thresh[ry1:ry2, rx1:rx2]
                                     changed = cv2.countNonZero(zone_roi)
+                                    if changed > 8:
+                                        detected_list.append((changed, i, g_cx, g_cy))
 
-                                    if changed > max_changed:
-                                        max_changed = changed
-                                        best_tx = g_cx
-                                        best_ty = g_cy
-
-                            if best_tx is not None and best_ty is not None:
-                                dprint(key, f"🎯 [피격 움직임 포착] 8각 센서 1등 구역({max_changed}px)! 락온 시도!")
-
-                                if check_purple_name(img_bgr, best_tx, best_ty):
-                                    is_party_mode = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
-                                    if is_party_mode:
-                                        state.setdefault("purple_blackouts", []).append((best_tx - 20, best_ty - 20, best_tx + 20, best_ty + 20, curr_time + 5.0))
-                                        dprint(key, "🚨 [파티모드 보라돌이] 피격 모션 타겟이 보라돌이입니다! 5초간 시야 차단 처리.")
-                                        state["target_fsm"] = "IDLE"
-                                        state["cooldown"] = curr_time + 0.1
-                                        continue
-                                    else:
-                                        if state.get("perc_purple2", 0) == 0:
-                                            state["perc_purple2"] = curr_time + g_val(0.25, 0.45)
-
-                                if state.get("perc_purple2", 0) > 0:
-                                    if curr_time > state["perc_purple2"]:
-                                        dprint(key, "🚨 [PK 도망] 모션 타겟이 보라돌이입니다! 즉시 텔레포트!")
-                                        state["abort_macro"] = True
-                                        with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                                        if state.get("sweep_active", False):
-                                            pico_queues[key].put({"action": "SWEEP_STOP"})
-                                            state["sweep_active"] = False
-                                        pico_queues[key].put({"action": "TELEPORT"})
-                                        state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
-                                        state["teleport_start_mp"] = mp
-                                        if h >= 200 and w >= 200:
-                                            state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY)
-                                        else:
-                                            state["tele_snapshot"] = None
-                                        state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
-                                        state["tele_retry_cnt"] = 0
-                                        state["perc_purple2"] = 0.0
-                                    continue
-
-                                tx = int(max(10, min(740, best_tx + int(round(random.gauss(0, 4))))))
-                                ty = int(max(5, min(h * 0.73, best_ty + int(round(random.gauss(0, 4))))))
-
-                                pico_queues[key].put({"action": "HOVER", "dx": tx - cur_x, "dy": ty - cur_y})
-                                pico_queues[key].put({"action": "SPECIAL_ACK"})
-                                state["pico_arrived"] = False
-                                state["cursor_pos"] = [tx, ty]
-                                state["hover_pos"] = (tx, ty)
-
-                                dist = math.hypot(tx - cur_x, ty - cur_y)
-                                physical_move_time = 0.1 + 0.08 * math.log2((dist / 20.0) + 1.0)
-                                physical_move_time = apply_human_variance(physical_move_time)
-
-                                state["hover_start_time"] = curr_time + physical_move_time + g_time(0.13, 0.16, key)
-                                state["target_fsm"] = "MOTION_SNAP_CHECK_SWORD"
-                                state["cooldown"] = curr_time
+                            if detected_list:
+                                # 변화량이 큰 순서대로 정렬하여 1등은 지금 찌르고, 2~4등은 후보 큐에 보관!
+                                detected_list.sort(key=lambda item: item[0], reverse=True)
+                                max_changed, best_dir_idx, best_tx, best_ty = detected_list[0]
+                                state["motion_candidates"] = [(d_i, d_x, d_y, d_c) for d_c, d_i, d_x, d_y in detected_list[1:4]]
+                                dprint(key, f"🎯 [움직임 포착] 8각 센서 {best_dir_idx+1}번 구역({max_changed}px, 추가후보:{len(state['motion_candidates'])}곳)! 락온 시도!")
                             else:
                                 state["motion_img1"] = img2
                                 state["cooldown"] = curr_time + 0.03
+
+                        if best_tx is not None and best_ty is not None:
+                            state["motion_last_dir_idx"] = best_dir_idx
+
+                            if check_purple_name(img_bgr, best_tx, best_ty):
+                                is_party_mode = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
+                                if is_party_mode:
+                                    state.setdefault("purple_blackouts", []).append((best_tx - 20, best_ty - 20, best_tx + 20, best_ty + 20, curr_time + 5.0))
+                                    dprint(key, "🚨 [파티모드 보라돌이] 피격 모션 타겟이 보라돌이입니다! 5초간 시야 차단 처리.")
+                                    state["target_fsm"] = "IDLE"
+                                    state["cooldown"] = curr_time + 0.1
+                                    continue
+                                else:
+                                    if state.get("perc_purple2", 0) == 0:
+                                        state["perc_purple2"] = curr_time + g_val(0.25, 0.45)
+
+                            if state.get("perc_purple2", 0) > 0:
+                                if curr_time > state["perc_purple2"]:
+                                    dprint(key, "🚨 [PK 도망] 모션 타겟이 보라돌이입니다! 즉시 텔레포트!")
+                                    state["abort_macro"] = True
+                                    with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                                    if state.get("sweep_active", False):
+                                        pico_queues[key].put({"action": "SWEEP_STOP"})
+                                        state["sweep_active"] = False
+                                    pico_queues[key].put({"action": "TELEPORT"})
+                                    state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
+                                    state["teleport_start_mp"] = mp
+                                    if h >= 200 and w >= 200:
+                                        state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY)
+                                    else:
+                                        state["tele_snapshot"] = None
+                                    state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
+                                    state["tele_retry_cnt"] = 0
+                                    state["perc_purple2"] = 0.0
+                                continue
+
+                            tx = int(max(10, min(740, best_tx + int(round(random.gauss(0, 4))))))
+                            ty = int(max(5, min(h * 0.73, best_ty + int(round(random.gauss(0, 4))))))
+
+                            pico_queues[key].put({"action": "HOVER", "dx": tx - cur_x, "dy": ty - cur_y})
+                            pico_queues[key].put({"action": "SPECIAL_ACK"})
+                            state["pico_arrived"] = False
+                            state["cursor_pos"] = [tx, ty]
+                            state["hover_pos"] = (tx, ty)
+
+                            dist = math.hypot(tx - cur_x, ty - cur_y)
+                            physical_move_time = 0.1 + 0.08 * math.log2((dist / 20.0) + 1.0)
+                            physical_move_time = apply_human_variance(physical_move_time)
+
+                            # 💡 마우스 이동 및 칼 확인 시간 동안 스캔 타이머가 깎이지 않도록 연장
+                            state["motion_poke_start_t"] = curr_time
+                            state["hover_start_time"] = curr_time + physical_move_time + g_time(0.13, 0.16, key)
+                            state["target_fsm"] = "MOTION_SNAP_CHECK_SWORD"
+                            state["cooldown"] = curr_time
 
                 elif state.get("target_fsm") == "MOTION_SNAP_CHECK_SWORD":
 
@@ -19307,7 +19426,10 @@ def ai_commander_worker(target_pc):
                         if is_sword:
                             state["sword_verify_active"] = False
                             state.pop("mptam_wall_hit_search", None)
-                            dprint(key, "🗡️ [모션 스냅 성공] 0.12초 내 칼 아이콘 확인 완료! 타격 개시!")
+                            state.pop("loot_evade_after_snap", None)
+                            state["motion_failed_dirs"] = set()
+                            state["motion_candidates"] = []
+                            dprint(key, "🗡️ [모션 스냅 성공] 0.12초 내 칼 아이콘 확인 완료! 숨은 길막 몹 타격 개시!")
                             dist = math.hypot(char_screen_cx - hx, char_screen_cy - hy)
                             nx, ny = ((char_screen_cx - hx) / dist, (char_screen_cy - hy) / dist) if dist > 0 else (0, 1)
 
@@ -19327,6 +19449,7 @@ def ai_commander_worker(target_pc):
 
                             state["target_fsm"] = "COMBAT"
                             state["is_motion_target"] = True
+                            state["is_evade_combat"] = False
                             state["current_is_g_mob"] = False
                             state["hover_start_time"] = 0
                         else:
@@ -19337,16 +19460,31 @@ def ai_commander_worker(target_pc):
                             else:
                                 state["sword_verify_active"] = False
                                 state["hover_start_time"] = 0
-                                if curr_time < state.get("motion_scan_end", 0):
-                                    dprint(key, "⚠️ [오인식] 칼이 안 뜹니다. 남은 시간 동안 스캔 즉시 재개!")
+                                last_dir = state.get("motion_last_dir_idx", -1)
+                                if last_dir >= 0:
+                                    state.setdefault("motion_failed_dirs", set()).add(last_dir)
 
-                                    x1, y1, x2, y2 = state.get("motion_roi", (0, 0, 0, 0))
-                                    if x2 > x1 and y2 > y1:
-                                        state["motion_img1"] = cv2.cvtColor(img_bgr[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+                                # 찌르는 데 소모된 물리적 시간만큼 스캔 타이머를 환불하여 다음 후보/방향 탐색 시간 보장
+                                poke_elapsed = max(0.0, min(0.6, curr_time - state.get("motion_poke_start_t", curr_time)))
+                                state["motion_scan_end"] = state.get("motion_scan_end", curr_time) + poke_elapsed
+
+                                failed_cnt = len(state.get("motion_failed_dirs", set()))
+                                has_more_cands = len(state.get("motion_candidates", [])) > 0
+
+                                if failed_cnt < 4 and (has_more_cands or curr_time < state.get("motion_scan_end", 0)):
+                                    dprint(key, f"⚠️ [오인식 구역 제외] {last_dir+1}번 구역 칼 안 뜸({failed_cnt}/4회)! 제외 후 다음 구역을 즉시 확인합니다.")
+
+                                    if not has_more_cands:
+                                        x1, y1, x2, y2 = state.get("motion_roi", (0, 0, 0, 0))
+                                        if x2 > x1 and y2 > y1:
+                                            state["motion_img1"] = cv2.cvtColor(img_bgr[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
 
                                     state["target_fsm"] = "MOTION_SNAP_SCANNING"
                                     state["cooldown"] = curr_time
                                 elif state.pop("mptam_wall_hit_search", False):
+                                    state.pop("loot_evade_after_snap", None)
+                                    state["motion_failed_dirs"] = set()
+                                    state["motion_candidates"] = []
                                     dprint(key, "🕵️ [엠탐 피격 ➔ 칼 미감지] 모션 지점에 칼 표시가 안 떠 8방향 이동 수색(POISON_WALL_SEARCH)으로 토스합니다!")
                                     state["target_fsm"] = "POISON_WALL_SEARCH"
                                     state["poison_search_step"] = 0
@@ -19354,12 +19492,25 @@ def ai_commander_worker(target_pc):
                                     random.shuffle(angles)
                                     state["poison_search_angles"] = angles
                                     state["cooldown"] = curr_time + 0.1
+                                elif state.pop("loot_evade_after_snap", False):
+                                    state["motion_failed_dirs"] = set()
+                                    state["motion_candidates"] = []
+                                    dprint(key, f"🤷 [루팅 1차 모션 스냅 종료] 칼 없음 확인({failed_cnt}곳 확인). 2차 조치로 루팅 45도 우회(LOOT_EVADING)를 시작합니다!")
+                                    state["target_fsm"] = "LOOT_EVADING"
+                                    state["evade_side"] = random.choice([0, 1])
+                                    state["evade_side_flips"] = 0
+                                    state["evade_parking_attempts"] = 0
+                                    state.pop("evade_dist", None)
+                                    state["cooldown"] = curr_time + 0.05
                                 else:
-                                    dprint(key, "🤷 [모션 스냅 종료] 칼 없음 및 시간 초과. 장애물로 간주하여 회피 기동을 준비합니다.")
+                                    state["motion_failed_dirs"] = set()
+                                    state["motion_candidates"] = []
+                                    dprint(key, f"🤷 [1차 모션 스냅 종료] 칼 없음 확인({failed_cnt}곳 확인). 2차 조치로 회피 기동(MOTION_EVADING)을 시작합니다.")
                                     state["target_fsm"] = "MOTION_EVADING_CALC"
                                     state["evade_side"] = random.choice([0, 1])
                                     state["evade_side_flips"] = 0
                                     state["evade_parking_attempts"] = 0
+                                    state.pop("evade_dist", None)
                                     state["cooldown"] = curr_time + 0.05
                     else:
                         state["cooldown"] = curr_time + 0.05
@@ -21165,7 +21316,7 @@ def ai_commander_worker(target_pc):
                                 state["loot_spam_cd"] = curr_time + g_val(0.15, 0.18)
                             state["cooldown"] = curr_time + 0.02
                         else:
-                            dprint(key, "🚧 [3셀 출발 타임아웃] 제자리 길막 감지! 60도 대각선 회피 기동 발동!")
+                            dprint(key, "🚧 [3셀 출발 타임아웃] 제자리 길막 감지! 1차 조치: 모션 스냅으로 숨은 길막 몹부터 색출합니다!")
                             clear_movements_only(pico_queues[key])
                             if state.get("sweep_active", False):
                                 pico_queues[key].put({"action": "SWEEP_STOP"})
@@ -21173,22 +21324,19 @@ def ai_commander_worker(target_pc):
 
                             if item_boxes:
                                 best_box = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
-
-                                state["target_fsm"] = "LOOT_EVADING"
-                                state["evade_side"] = 0
-                                state["evade_attempts"] = 0
-                                state["evade_flip_count"] = 0
-                                state.pop("evade_dist", None)
-                                state["evade_cooldown"] = curr_time
-                                state["evade_start_time"] = curr_time
                                 state["evade_target_box"] = best_box
+                                move_dx = best_box['x'] - char_screen_cx
+                                move_dy = best_box['y'] + 15 - char_screen_cy
+                                state["stuck_intended_angle"] = math.atan2(move_dy, move_dx) if math.hypot(move_dx, move_dy) > 10 else state.get("dungeon_angle", 0.0)
 
-                                dx_box = best_box['x'] - char_screen_cx
-                                dy_box = (best_box['y'] + 15 - char_screen_cy) / 0.50
-                                state["evade_start_dist"] = math.hypot(dx_box, dy_box)
-                                state["cooldown"] = curr_time + 0.05
+                                state["loot_evade_after_snap"] = True
+                                state["motion_failed_dirs"] = set()
+                                state["motion_candidates"] = []
+                                state["target_fsm"] = "MOTION_SNAP_BRAKE_WAIT"
+                                state["brake_end_time"] = curr_time + 0.15
+                                state["brake_max_wait"] = curr_time + 0.8
+                                state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.10)
                             else:
-
                                 state["target_fsm"] = "IDLE"
                                 state["cooldown"] = curr_time + 0.1
 
@@ -21223,6 +21371,7 @@ def ai_commander_worker(target_pc):
                                 clear_movements_only(pico_queues[key])
                                 state["target_fsm"] = "MOTION_SNAP_BRAKE_WAIT"
                                 state["brake_end_time"] = curr_time + 0.15
+                                state["brake_max_wait"] = curr_time + 0.8
                                 state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
                                 continue
                         else:
@@ -21299,16 +21448,25 @@ def ai_commander_worker(target_pc):
                                 state["loot_stuck_timer"] = curr_time
                                 state["cooldown"] = curr_time + 0.05
                             elif curr_time - state.get("loot_stuck_timer", curr_time) > 0.5:
-                                dprint(key, "⚠️ [3셀 접근] 0.5초 이상 템과 거리가 좁혀지지 않음! 길막/비비기 감지, 회피 기동 발동!")
-                                state["target_fsm"] = "LOOT_EVADING"
-                                state["evade_side"] = 0
-                                state["evade_attempts"] = 0
-                                state["evade_flip_count"] = 0
-                                state["evade_cooldown"] = curr_time
-                                state["evade_start_time"] = curr_time
+                                dprint(key, "⚠️ [3셀 접근 길막] 0.5초 이상 템과 거리가 좁혀지지 않음! 1차 조치: 모션 스냅으로 숨은 길막 몹부터 색출합니다!")
+                                clear_movements_only(pico_queues[key])
+                                if state.get("sweep_active", False):
+                                    pico_queues[key].put({"action": "SWEEP_STOP"})
+                                    state["sweep_active"] = False
+
                                 state["evade_target_box"] = best_box
                                 state["evade_start_dist"] = current_dist
-                                state["cooldown"] = curr_time + 0.05
+                                move_dx = best_box['x'] - char_screen_cx
+                                move_dy = best_box['y'] + 15 - char_screen_cy
+                                state["stuck_intended_angle"] = math.atan2(move_dy, move_dx) if math.hypot(move_dx, move_dy) > 10 else state.get("dungeon_angle", 0.0)
+
+                                state["loot_evade_after_snap"] = True
+                                state["motion_failed_dirs"] = set()
+                                state["motion_candidates"] = []
+                                state["target_fsm"] = "MOTION_SNAP_BRAKE_WAIT"
+                                state["brake_end_time"] = curr_time + 0.15
+                                state["brake_max_wait"] = curr_time + 0.8
+                                state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.10)
                             else:
                                 state["cooldown"] = curr_time + 0.05
 
@@ -21379,58 +21537,31 @@ def ai_commander_worker(target_pc):
 
                             is_sword = check_attack_cursor(img_bgr, cur_x, cur_y, pc_key=key)
                             if is_sword:
-                                state["evade_parking_attempts"] = state.get("evade_parking_attempts", 0) + 1
-
+                                # 💡 [핵심 수정] 루팅 우회 지점에 칼 표시가 뜨면 마우스를 치우지 않고 즉시 COMBAT(최대 5초 제한)으로 돌입!
+                                dprint(key, "⚔️ [루팅 회피 중 몹 발견] 우회 지점 칼 표시 확인! 마우스를 치우지 않고 즉시 교전(COMBAT, 최대 5초 제한)으로 전환합니다!")
                                 dist = math.hypot(char_screen_cx - cur_x, char_screen_cy - cur_y)
                                 nx, ny = ((char_screen_cx - cur_x) / dist, (char_screen_cy - cur_y) / dist) if dist > 0 else (0, 1)
                                 drag_len = int(max(g_val(70, 90), dist * g_val(0.45, 0.70)))
                                 pico_queues[key].put({"action": "DRAG_ATTACK", "drag_dx": int(nx * drag_len), "drag_dy": int(ny * drag_len), "check_arrow": (role == "ARCHER")})
+                                state["pico_arrived"] = False
+                                state["cursor_pos"] = [int(cur_x + nx * drag_len), int(cur_y + ny * drag_len)]
 
-                                cur_x_after_drag = int(cur_x + nx * drag_len)
-                                cur_y_after_drag = int(cur_y + ny * drag_len)
-                                state["cursor_pos"] = [cur_x_after_drag, cur_y_after_drag]
+                                state["is_attacking"] = True
+                                state["attack_cmd_time"] = curr_time
+                                state["has_fired_arrow"] = False
+                                state["humanize_cd"] = 0
+                                state["park_push_dist"] = g_val(110, 130)
 
-                                if state["evade_parking_attempts"] >= 3:
-                                    state["evade_side_flips"] = state.get("evade_side_flips", 0) + 1
+                                state["target_fsm"] = "COMBAT"
+                                state["is_motion_target"] = True
+                                state["is_evade_combat"] = True
+                                state["current_is_g_mob"] = False
+                                state["hover_start_time"] = 0
+                                state["cooldown"] = curr_time + 0.05
 
-                                    if state["evade_side_flips"] >= 2:
-                                        dprint(key, "🚨 [루팅 회피 포기] 양방향 모두 몹으로 꽉 찼습니다! 3초간 템 줍기를 보류하고 포위망을 뚫습니다.")
-                                        state["target_fsm"] = "IDLE"
-                                        state["global_loot_ban_time"] = curr_time + 3.0
-                                        state["cooldown"] = curr_time + 0.5
-                                        state.pop("evade_side_flips", None)
-                                        state.pop("evade_parking_attempts", None)
-                                    else:
-                                        dprint(key, "🔄 [회피 방향 전환] 3회 연속 칼(몹) 겹침! 반대쪽 45도로 꺾어서 다시 시도합니다.")
-                                        state["evade_side"] = 1 - state.get("evade_side", 0)
-                                        state["evade_parking_attempts"] = 0
-                                        state["evade_dist"] = g_val(90.0, 120.0)
-                                        state["target_fsm"] = "LOOT_EVADING"
-                                        state["cooldown"] = curr_time + 0.05
-                                else:
-                                    dprint(key, f"⚔️ [회피 중 몹 발견] {state['evade_parking_attempts']}회째 칼 뜸! 같은 각도로 거리를 조절합니다.")
-                                    new_dist = state.get("evade_dist", 100.0) + 40.0
-                                    if new_dist > 250: new_dist = 60.0
-                                    state["evade_dist"] = new_dist
-
-                                    evade_rad = state.get("evade_rad", 0.0)
-                                    tx = int(char_screen_cx + math.cos(evade_rad) * new_dist)
-                                    ty = int(char_screen_cy + math.sin(evade_rad) * (new_dist * 0.85))
-                                    tx = int(max(10, min(740, tx)))
-                                    ty = int(max(5, min(int(h * 0.68), ty)))
-
-                                    if tx < 165 and ty < 150:
-                                        if (165 - tx) < (150 - ty): tx = 165
-                                        else: ty = 150
-
-                                    pico_queues[key].put({"action": "HOVER", "dx": tx - cur_x_after_drag, "dy": ty - cur_y_after_drag})
-                                    pico_queues[key].put({"action": "LOOT_ACK"})
-                                    state["loot_ack_arrived"] = False
-                                    state["pico_arrived"] = False
-                                    state["cursor_pos"] = [tx, ty]
-
-                                    state["evade_ack_timeout"] = curr_time + 1.5
-                                    state["cooldown"] = curr_time + 0.05
+                                state.pop("evade_side_flips", None)
+                                state.pop("evade_parking_attempts", None)
+                                state.pop("evade_dist", None)
                             else:
                                 dprint(key, f"✅ [회피 동기화] 빈 땅(돌바닥) 팩트 확인({cur_x}, {cur_y})! 0.5초 돌파 스팸 개시!")
                                 state["target_fsm"] = "LOOT_EVADING_SPAM"
@@ -21484,7 +21615,8 @@ def ai_commander_worker(target_pc):
                                     state["target_fsm"] = "LOOT_EVADING"
                                     state["cooldown"] = curr_time + 0.05
                                 else:
-                                    dprint(key, "🚨 [회피 완전 실패] 양방향 모두 스팸 돌파 막힘! 3초간 템 줍기를 끄고 막고 있는 몹부터 썰어버립니다!")
+                                    # 💡 이미 1차로 모션 감지를 거치고 온 2차 우회이므로, 양방향 모두 막혔다면 3초 루팅 금지 후 즉시 IDLE로 복귀하여 무한 루프를 차단합니다.
+                                    dprint(key, "🚨 [루팅 2차 회피 완전 실패] 양방향 모두 스팸 돌파 막힘! 3초간 템 줍기를 보류하고 사냥(IDLE)으로 복귀합니다.")
                                     clear_movements_only(pico_queues[key])
 
                                     if state.get("sweep_active", False):
@@ -21494,19 +21626,8 @@ def ai_commander_worker(target_pc):
                                     state["global_loot_ban_time"] = curr_time + 3.0
                                     state.pop("evade_side_flips", None)
                                     state.pop("evade_parking_attempts", None)
-
-                                    best_box = state.get("evade_target_box", min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy)) if item_boxes else None)
-
-                                    if best_box:
-                                        move_dx = best_box['x'] - char_screen_cx
-                                        move_dy = best_box['y'] + 15 - char_screen_cy
-                                        state["stuck_intended_angle"] = math.atan2(move_dy, move_dx) if math.hypot(move_dx, move_dy) > 10 else state.get("dungeon_angle", 0.0)
-                                    else:
-                                        state["stuck_intended_angle"] = state.get("dungeon_angle", 0.0)
-
-                                    state["target_fsm"] = "MOTION_SNAP_BRAKE_WAIT"
-                                    state["brake_end_time"] = curr_time + 0.15
-                                    state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
+                                    state["target_fsm"] = "IDLE"
+                                    state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.2)
 
                             else:
                                 if curr_time >= state.get("evade_spam_next_click", 0):
@@ -21674,6 +21795,7 @@ def ai_commander_worker(target_pc):
                             state["has_fired_arrow"] = False
 
                             state["is_motion_target"] = False
+                            state["is_evade_combat"] = False
                             # 💡 갈아탄 몹의 속성으로 전투 상태 완벽 업데이트
                             sw_type = state.pop("switch_target_type", "")
                             state["current_is_m_elf"] = (sw_type == "MELF")
@@ -21967,6 +22089,11 @@ def ai_commander_worker(target_pc):
                                 if state.get("body_held", False):
                                     if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0)
                                     state["body_held"] = False
+                                if state.pop("was_mptam_before_pb", False):
+                                    dng_n_pb = settings.get("dungeon_name", "")
+                                    stop_mp_pb = 95.0 if ("event" in dng_n_pb or "오땅" in dng_n_pb) else float(settings.get("mptam_stop_pct", 65.0))
+                                    if mp < stop_mp_pb:
+                                        state["pending_mptam"] = True
                                 state["target_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
                                 state["current_target_node"] = None
                                 state["dungeon_global_path"] = []
@@ -22166,6 +22293,7 @@ def ai_commander_worker(target_pc):
                             state["target_fsm"] = "IDLE" if state.get("next_attack_type") == "PULL" else "COMBAT"
                             state["hover_retry_count"] = 0
                             state["hover_start_time"] = 0
+                            state["is_evade_combat"] = False
 
                             state["current_is_g_mob"] = state.get("next_is_g_mob", False)
                             state["current_is_normal"] = state.get("next_is_normal", True)
@@ -22454,27 +22582,42 @@ def ai_commander_worker(target_pc):
 
                         is_sword = check_attack_cursor(img_bgr, cur_x, cur_y, pc_key=key)
                         if is_sword:
-                            state["evade_parking_attempts"] = state.get("evade_parking_attempts", 0) + 1
-
                             if not is_blind_evade:
+                                # 💡 [핵심 수정] 회피 지점에 칼 표시가 뜨면 마우스를 치우지 않고 즉시 COMBAT(최대 5초 제한)으로 돌입!
+                                dprint(key, "⚔️ [회피 중 몹 발견] 우회 지점 칼 표시 확인! 마우스를 치우지 않고 즉시 교전(COMBAT, 최대 5초 제한)으로 전환합니다!")
                                 dist = math.hypot(char_screen_cx - cur_x, char_screen_cy - cur_y)
                                 nx, ny = ((char_screen_cx - cur_x) / dist, (char_screen_cy - cur_y) / dist) if dist > 0 else (0, 1)
                                 drag_len = int(max(g_val(70, 90), dist * g_val(0.45, 0.70)))
                                 pico_queues[key].put({"action": "DRAG_ATTACK", "drag_dx": int(nx * drag_len), "drag_dy": int(ny * drag_len), "check_arrow": (role == "ARCHER")})
+                                state["pico_arrived"] = False
+                                state["cursor_pos"] = [int(cur_x + nx * drag_len), int(cur_y + ny * drag_len)]
 
-                                cur_x_after_drag = int(cur_x + nx * drag_len)
-                                cur_y_after_drag = int(cur_y + ny * drag_len)
-                                state["cursor_pos"] = [cur_x_after_drag, cur_y_after_drag]
+                                state["is_attacking"] = True
+                                state["attack_cmd_time"] = curr_time
+                                state["has_fired_arrow"] = False
+                                state["humanize_cd"] = 0
+                                state["park_push_dist"] = g_val(110, 130)
+
+                                state["target_fsm"] = "COMBAT"
+                                state["is_motion_target"] = True
+                                state["is_evade_combat"] = True
+                                state["current_is_g_mob"] = False
+                                state["hover_start_time"] = 0
+                                state["cooldown"] = curr_time + 0.05
+
+                                state.pop("evade_side_flips", None)
+                                state.pop("evade_parking_attempts", None)
+                                state.pop("evade_dist", None)
+                                action_taken = True
+                                continue
                             else:
+                                state["evade_parking_attempts"] = state.get("evade_parking_attempts", 0) + 1
                                 cur_x_after_drag, cur_y_after_drag = cur_x, cur_y
                                 dprint(key, "🚧 [맹인/팟바람 탈출 중] 회피 경로에 몹(칼) 겹침! 때리지 않고 즉시 다음 거리/각도로 우회합니다.")
 
-                            if state["evade_parking_attempts"] >= 3:
-                                flip_cnt = state.get("evade_side_flips", 0)
-
-                                if flip_cnt >= 3:
-
-                                    if is_blind_evade:
+                                if state["evade_parking_attempts"] >= 3:
+                                    flip_cnt = state.get("evade_side_flips", 0)
+                                    if flip_cnt >= 3:
                                         if is_pb_evading and state.get("designated_base_node") is not None:
                                             dprint(key, "🚨 [팟바람 우회 재탐색] 4방향 몹 겹침! 전투 전환 없이 버프존 A* 경로를 즉시 재탐색합니다.")
                                             state["target_fsm"] = "PARTY_RETREAT_NAV"
@@ -22486,62 +22629,56 @@ def ai_commander_worker(target_pc):
                                             dprint(key, "🚨 [맹인 탈출 실패] 4방향 모두 막힘! 일단 IDLE로 돌아가 재돌파를 시도합니다.")
                                             state["target_fsm"] = "IDLE"
                                             state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.5)
+                                        state.pop("evade_side_flips", None)
+                                        state.pop("evade_parking_attempts", None)
                                     else:
-                                        dprint(key, "🚨 [이동 회피 실패] 90도까지 4방향 모두 몹으로 꽉 찼습니다! 2차 조치: 모션 스냅(피격 검사) 강제 전환!")
-                                        state["target_fsm"] = "MOTION_SNAP_BRAKE_WAIT"
-                                        state["brake_end_time"] = curr_time + 0.15
-                                        state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
+                                        if flip_cnt == 0:
+                                            next_side = 1 - state.get("evade_side", 0)
+                                            dir_str = "반대쪽 45도"
+                                        elif flip_cnt == 1:
+                                            next_side = 2 if state.get("evade_side", 0) == 1 else 3
+                                            dir_str = "좌측 90도" if next_side == 2 else "우측 90도"
+                                        else:
+                                            next_side = 5 - state.get("evade_side", 0)
+                                            dir_str = "우측 90도" if next_side == 3 else "좌측 90도"
 
-                                    state.pop("evade_side_flips", None)
-                                    state.pop("evade_parking_attempts", None)
+                                        dprint(key, f"🔄 [맹인 회피 전환] 3회 연속 칼(몹) 겹침! {dir_str}로 꺾어서 다시 시도합니다.")
+                                        state["evade_side"] = next_side
+                                        state["evade_side_flips"] = flip_cnt + 1
+                                        state["evade_parking_attempts"] = 0
+                                        state["evade_dist"] = g_val(90.0, 120.0)
+                                        state["target_fsm"] = "MOTION_EVADING_CALC"
+                                        state["cooldown"] = curr_time + 0.05
                                 else:
-                                    if flip_cnt == 0:
-                                        next_side = 1 - state.get("evade_side", 0)
-                                        dir_str = "반대쪽 45도"
-                                    elif flip_cnt == 1:
-                                        next_side = 2 if state.get("evade_side", 0) == 1 else 3
-                                        dir_str = "좌측 90도" if next_side == 2 else "우측 90도"
-                                    else:
-                                        next_side = 5 - state.get("evade_side", 0)
-                                        dir_str = "우측 90도" if next_side == 3 else "좌측 90도"
+                                    new_dist = state.get("evade_dist", 100.0) + 40.0
+                                    if new_dist > 250: new_dist = 60.0
+                                    state["evade_dist"] = new_dist
 
-                                    dprint(key, f"🔄 [이동 회피 전환] 3회 연속 칼(몹) 겹침! {dir_str}로 꺾어서 다시 시도합니다.")
-                                    state["evade_side"] = next_side
-                                    state["evade_side_flips"] = flip_cnt + 1
-                                    state["evade_parking_attempts"] = 0
-                                    state["evade_dist"] = g_val(90.0, 120.0)
-                                    state["target_fsm"] = "MOTION_EVADING_CALC"
+                                    evade_rad = state.get("evade_rad", 0.0)
+                                    tx = int(char_screen_cx + math.cos(evade_rad) * new_dist)
+                                    ty = int(char_screen_cy + math.sin(evade_rad) * (new_dist * 0.85))
+                                    tx = int(max(10, min(740, tx)))
+                                    ty = int(max(5, min(int(h * 0.68), ty)))
+
+                                    if tx < 165 and ty < 150:
+                                        if (165 - tx) < (150 - ty): tx = 165
+                                        else: ty = 150
+
+                                    pico_queues[key].put({"action": "HOVER", "dx": tx - cur_x_after_drag, "dy": ty - cur_y_after_drag})
+                                    pico_queues[key].put({"action": "SPECIAL_ACK"})
+                                    state["special_ack_arrived"] = False
+                                    state["pico_arrived"] = False
+                                    state["cursor_pos"] = [tx, ty]
+
+                                    state["evade_ack_timeout"] = curr_time + 1.5
                                     state["cooldown"] = curr_time + 0.05
-                            else:
-                                dprint(key, f"⚔️ [회피 중 몹 발견] {state['evade_parking_attempts']}회째 칼 뜸! 같은 각도로 거리를 조절합니다.")
-                                new_dist = state.get("evade_dist", 100.0) + 40.0
-                                if new_dist > 250: new_dist = 60.0
-                                state["evade_dist"] = new_dist
-
-                                evade_rad = state.get("evade_rad", 0.0)
-                                tx = int(char_screen_cx + math.cos(evade_rad) * new_dist)
-                                ty = int(char_screen_cy + math.sin(evade_rad) * (new_dist * 0.85))
-                                tx = int(max(10, min(740, tx)))
-                                ty = int(max(5, min(int(h * 0.68), ty)))
-
-                                if tx < 165 and ty < 150:
-                                    if (165 - tx) < (150 - ty): tx = 165
-                                    else: ty = 150
-
-                                pico_queues[key].put({"action": "HOVER", "dx": tx - cur_x_after_drag, "dy": ty - cur_y_after_drag})
-                                pico_queues[key].put({"action": "SPECIAL_ACK"})
-                                state["special_ack_arrived"] = False
-                                state["pico_arrived"] = False
-                                state["cursor_pos"] = [tx, ty]
-
-                                state["evade_ack_timeout"] = curr_time + 1.5
-                                state["cooldown"] = curr_time + 0.05
                         else:
 
                             dprint(key, f"✅ [이동 회피 동기화] 빈 땅(돌바닥) 확인! 0.5초 돌파 스팸 개시!")
                             state["target_fsm"] = "MOTION_EVADING_SPAM"
                             state["evade_spam_end_time"] = curr_time + 0.5
                             state["evade_spam_next_click"] = 0
+                            state["evade_moved_any"] = False
                             state["cooldown"] = curr_time + 0.02
                     else:
                         state["cooldown"] = curr_time + 0.05
@@ -22556,78 +22693,87 @@ def ai_commander_worker(target_pc):
                     is_blind_evade = state.get("portal_blind_mode", False) or is_pb_evading
 
                     if state.get("is_char_moving", False):
+                        state["evade_moved_any"] = True
+
+                    # 우회 이동 중 YOLO에 몹이 포착되면 즉시 멈추고 사냥으로 전환
+                    if mobs and not is_blind_evade:
                         clear_movements_only(pico_queues[key])
-                        if is_pb_evading and state.get("designated_base_node") is not None:
-                            dprint(key, "💨 [팟바람 우회 이동 성공] 길막을 뚫었습니다! 새 위치에서 버프존 A* 이동을 즉시 이어갑니다.")
-                            state["target_fsm"] = "PARTY_RETREAT_NAV"
-                            state["retreat_reason"] = "리더 팟바람 선진입" if state.get("req_party_buff", False) else "팟바람 수령 집합"
-                            state["current_target_node"] = str(state["designated_base_node"])
-                            state["dungeon_global_path"] = []
-                        else:
-                            dprint(key, "💨 [모션 회피 성공] 우회 이동 감지! 길이 뚫렸습니다. 바디 3초 금지 연장 후 IDLE 복귀.")
-                            state["target_fsm"] = "IDLE"
-
-                        state["body_block_time"] = curr_time + 3.0
-
-                        state["cooldown"] = curr_time + 0.1
+                        dprint(key, "👁️ [회피 기동 중 YOLO 몹 포착] 우회 이동을 멈추고 즉시 사냥(IDLE)으로 전환합니다!")
+                        state["target_fsm"] = "IDLE"
+                        state["cooldown"] = curr_time + 0.05
                         state["is_motion_target"] = False
                         state["stuck_intended_angle"] = None
-
-                        state["idle_stop_start_time"] = 0
-                        state["idle_stuck_map_pos"] = None
-                        if state.get("dungeon_map_pos"):
-                            state["dungeon_last_map_pos"] = state.get("dungeon_map_pos")
-                        state["dungeon_stuck_timer"] = curr_time
-                        state["sandbag_tried_in_stuck"] = False
-                        state["repath_tried"] = False
-
                         state.pop("evade_side_flips", None)
                         state.pop("evade_parking_attempts", None)
+                        state.pop("evade_moved_any", None)
 
                     elif curr_time > state.get("evade_spam_end_time", 0):
-                        flip_cnt = state.get("evade_side_flips", 0)
-
-                        if flip_cnt < 3:
-                            if flip_cnt == 0:
-                                next_side = 1 - state.get("evade_side", 0)
-                                dir_str = "반대쪽 45도"
-                            elif flip_cnt == 1:
-                                next_side = 2 if state.get("evade_side", 0) == 1 else 3
-                                dir_str = "좌측 90도" if next_side == 2 else "우측 90도"
-                            else:
-                                next_side = 5 - state.get("evade_side", 0)
-                                dir_str = "우측 90도" if next_side == 3 else "좌측 90도"
-
-                            dprint(key, f"🔄 [모션 회피 전환] 0.5초 스팸 이동 실패! {dir_str}로 턴을 넘깁니다.")
-                            state["evade_side"] = next_side
-                            state["evade_side_flips"] = flip_cnt + 1
-                            state["evade_parking_attempts"] = 0
-                            state["evade_dist"] = g_val(90.0, 120.0)
-                            state["target_fsm"] = "MOTION_EVADING_CALC"
-                            state["cooldown"] = curr_time + 0.05
-                        else:
+                        if state.pop("evade_moved_any", False):
                             clear_movements_only(pico_queues[key])
+                            if is_pb_evading and state.get("designated_base_node") is not None:
+                                dprint(key, "💨 [팟바람 우회 이동 성공] 0.5초 우회 기동 완료! 새 위치에서 버프존 A* 이동을 즉시 이어갑니다.")
+                                state["target_fsm"] = "PARTY_RETREAT_NAV"
+                                state["retreat_reason"] = "리더 팟바람 선진입" if state.get("req_party_buff", False) else "팟바람 수령 집합"
+                                state["current_target_node"] = str(state["designated_base_node"])
+                                state["dungeon_global_path"] = []
+                            else:
+                                dprint(key, "💨 [모션 회피 성공] 0.5초 우회 이동 완료! 바디 3초 금지 연장 후 IDLE 복귀.")
+                                state["target_fsm"] = "IDLE"
+
+                            state["body_block_time"] = curr_time + 3.0
+                            state["cooldown"] = curr_time + 0.1
+                            state["is_motion_target"] = False
+                            state["stuck_intended_angle"] = None
+
+                            state["idle_stop_start_time"] = 0
+                            state["idle_stuck_map_pos"] = None
+                            if state.get("dungeon_map_pos"):
+                                state["dungeon_last_map_pos"] = state.get("dungeon_map_pos")
+                            state["dungeon_stuck_timer"] = curr_time
+                            state["sandbag_tried_in_stuck"] = False
+                            state["repath_tried"] = False
+
                             state.pop("evade_side_flips", None)
                             state.pop("evade_parking_attempts", None)
-                            state["sandbag_tried_in_stuck"] = False
+                        else:
+                            flip_cnt = state.get("evade_side_flips", 0)
 
-                            if is_blind_evade:
+                            if flip_cnt < 3:
+                                if flip_cnt == 0:
+                                    next_side = 1 - state.get("evade_side", 0)
+                                    dir_str = "반대쪽 45도"
+                                elif flip_cnt == 1:
+                                    next_side = 2 if state.get("evade_side", 0) == 1 else 3
+                                    dir_str = "좌측 90도" if next_side == 2 else "우측 90도"
+                                else:
+                                    next_side = 5 - state.get("evade_side", 0)
+                                    dir_str = "우측 90도" if next_side == 3 else "좌측 90도"
+
+                                dprint(key, f"🔄 [모션 회피 전환] 0.5초 스팸 이동 실패! {dir_str}로 턴을 넘깁니다.")
+                                state["evade_side"] = next_side
+                                state["evade_side_flips"] = flip_cnt + 1
+                                state["evade_parking_attempts"] = 0
+                                state["evade_dist"] = g_val(90.0, 120.0)
+                                state["target_fsm"] = "MOTION_EVADING_CALC"
+                                state["cooldown"] = curr_time + 0.05
+                            else:
+                                clear_movements_only(pico_queues[key])
+                                state.pop("evade_side_flips", None)
+                                state.pop("evade_parking_attempts", None)
+                                state["sandbag_tried_in_stuck"] = False
+
                                 if is_pb_evading and state.get("designated_base_node") is not None:
-                                    dprint(key, "🚨 [팟바람 스팸 돌파 실패] 4방향 막힘! 전투 전환 없이 버프존 A* 경로를 즉시 재탐색합니다.")
+                                    dprint(key, "🚨 [팟바람 스팸 돌파 실패] 4방향 막힘! 버프존 A* 경로를 즉시 재탐색합니다.")
                                     state["target_fsm"] = "PARTY_RETREAT_NAV"
                                     state["retreat_reason"] = "리더 팟바람 선진입" if state.get("req_party_buff", False) else "팟바람 수령 집합"
                                     state["current_target_node"] = str(state["designated_base_node"])
                                     state["dungeon_global_path"] = []
                                     state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
                                 else:
-                                    dprint(key, "🚨 [맹인 스팸 돌파 실패] 4방향 모두 막힘! 일단 IDLE로 복귀하여 재시도합니다.")
+                                    dprint(key, "🚨 [회피 4방향 모두 실패] 기존 A* 경로를 파기하고 IDLE로 복귀하여 새 경로/모션 재탐색을 유도합니다.")
+                                    state["dungeon_global_path"] = []
                                     state["target_fsm"] = "IDLE"
-                                    state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.3)
-                            else:
-                                dprint(key, "🚨 [이동 회피 완전 실패] 90도까지 스팸 돌파 막힘! 2차 조치: 모션 스냅(피격 검사) 강제 발동!")
-                                state["target_fsm"] = "MOTION_SNAP_BRAKE_WAIT"
-                                state["brake_end_time"] = curr_time + 0.15
-                                state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
+                                    state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.2)
                     else:
                         if curr_time >= state.get("evade_spam_next_click", 0):
                             pico_queues[key].put({"action": "SINGLE_ATTACK"})
@@ -23055,8 +23201,6 @@ def ai_commander_worker(target_pc):
                                     is_map_stuck = False
 
                             if is_map_stuck and (curr_time - state.get("idle_stop_start_time", 0) > stuck_wait) and curr_time >= state.get("cooldown", 0):
-                                dprint(key, f"🚨 [IDLE 갇힘] {stuck_wait:.1f}초 이상 미니맵 갇힘 확정! 3초간 바디를 멈추고 45도 회피 기동 발동!")
-
                                 state["body_block_time"] = curr_time + 3.0
 
                                 state["abort_macro"] = True
@@ -23069,11 +23213,27 @@ def ai_commander_worker(target_pc):
                                 else:
                                     state["stuck_intended_angle"] = current_facing_angle if current_facing_angle is not None else state.get("dungeon_angle", 0.0)
 
-                                state["target_fsm"] = "MOTION_EVADING_CALC"
-                                state["evade_side"] = random.choice([0, 1])
-                                state["evade_side_flips"] = 0
-                                state["evade_parking_attempts"] = 0
-                                state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.05)
+                                is_pb_moving_stuck = (state.get("party_buff_status") == "MOVING") and (
+                                    "팟바람" in str(state.get("retreat_reason", "")) or
+                                    "팟바람" in str(state.get("standby_reason", "")) or
+                                    state.get("req_party_buff", False)
+                                )
+
+                                if state.get("portal_blind_mode", False) or is_pb_moving_stuck:
+                                    dprint(key, f"🚨 [IDLE 갇힘 - 맹인/집결] {stuck_wait:.1f}초 이상 미니맵 갇힘 확정! 45도 회피 기동 발동!")
+                                    state["target_fsm"] = "MOTION_EVADING_CALC"
+                                    state["evade_side"] = random.choice([0, 1])
+                                    state["evade_side_flips"] = 0
+                                    state["evade_parking_attempts"] = 0
+                                    state.pop("evade_dist", None)
+                                    state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.05)
+                                else:
+                                    dprint(key, f"🚨 [IDLE 갇힘] {stuck_wait:.1f}초 이상 미니맵 갇힘 확정! 1차 조치: 모션 스냅으로 숨은 길막 몹부터 색출합니다!")
+                                    state["motion_failed_dirs"] = set()
+                                    state["target_fsm"] = "MOTION_SNAP_BRAKE_WAIT"
+                                    state["brake_end_time"] = curr_time + 0.15
+                                    state["brake_max_wait"] = curr_time + 0.8
+                                    state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.10)
 
                                 state["idle_stop_start_time"] = 0
                                 state["idle_stuck_map_pos"] = None
@@ -23568,8 +23728,6 @@ def ai_commander_worker(target_pc):
                                     is_squad_waiting = state.get("target_fsm") == "SQUAD_WAIT"
 
                                     if stuck_duration > stuck_wait and not state.get("sandbag_tried_in_stuck", False) and not is_fsm_busy and curr_time >= state.get("cooldown", 0) and not is_fixed_dealer_parked and not is_squad_waiting:
-                                        dprint(key, f"🚨 [네비게이션 길막] 갇힘 확정! 3초간 바디를 멈추고 45도 회피 기동 발동!")
-
                                         state["body_block_time"] = curr_time + 3.0
 
                                         state["hidden_track_node"] = None
@@ -23584,11 +23742,28 @@ def ai_commander_worker(target_pc):
                                         else:
                                             state["stuck_intended_angle"] = state.get("dungeon_angle", 0.0)
 
-                                        state["target_fsm"] = "MOTION_EVADING_CALC"
-                                        state["evade_side"] = random.choice([0, 1])
-                                        state["evade_side_flips"] = 0
-                                        state["evade_parking_attempts"] = 0
-                                        state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.05)
+                                        is_pb_moving_stuck = (state.get("party_buff_status") == "MOVING") and (
+                                            "팟바람" in str(state.get("retreat_reason", "")) or
+                                            "팟바람" in str(state.get("standby_reason", "")) or
+                                            state.get("req_party_buff", False)
+                                        )
+
+                                        if state.get("portal_blind_mode", False) or is_pb_moving_stuck:
+                                            dprint(key, f"🚨 [네비게이션 길막 - 맹인/집결] 갇힘 확정! 45도 회피 기동 발동!")
+                                            state["target_fsm"] = "MOTION_EVADING_CALC"
+                                            state["evade_side"] = random.choice([0, 1])
+                                            state["evade_side_flips"] = 0
+                                            state["evade_parking_attempts"] = 0
+                                            state.pop("evade_dist", None)
+                                            state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.05)
+                                        else:
+                                            dprint(key, f"🚨 [네비게이션 길막] 갇힘 확정! 1차 조치: 모션 스냅으로 숨은 길막 몹부터 색출합니다!")
+                                            state["motion_failed_dirs"] = set()
+                                            state["target_fsm"] = "MOTION_SNAP_BRAKE_WAIT"
+                                            state["brake_end_time"] = curr_time + 0.15
+                                            state["brake_max_wait"] = curr_time + 0.8
+                                            state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.10)
+
                                         state["sandbag_tried_in_stuck"] = True
                                         action_taken = True
                                         continue
@@ -24066,6 +24241,7 @@ def ai_commander_worker(target_pc):
                                                 state["portal_blind_mode"] = False
                                                 state["yolo_blind_active"] = False
                                                 state["yolo_blind_expire"] = 0
+                                                state["body_block_time"] = 0.0
 
                                                 if "팟바람" not in retreat_r:
                                                     state["is_mptam_mode"] = True
@@ -24083,6 +24259,7 @@ def ai_commander_worker(target_pc):
                                                     dprint(key, "🛡️ [팟바람 파티원 안착] 도착 신호(ARRIVED) 송출 완료! 시전자의 버프를 대기합니다.")
 
                                                 action_taken = True
+                                                state["nav_standby_parked"] = True
 
                                         elif is_party_wait:
 
@@ -24120,6 +24297,7 @@ def ai_commander_worker(target_pc):
 
                                                 if not is_doing_action:
                                                     action_taken = True
+                                                    state["nav_standby_parked"] = True
 
                                         pass
 
@@ -24305,6 +24483,7 @@ def ai_commander_worker(target_pc):
                                                 state["dungeon_global_path"] = []
                                                 if not is_doing_action_dealer:
                                                     action_taken = True
+                                                    state["nav_standby_parked"] = True
 
                                                 if curr_time - state.get("log_fixed_dealer", 0) > 10.0:
                                                     dprint(key, f"🎯 [고정 딜러] 베이스캠프({dist_to_base:.1f}px) 안착 완료! 사거리 내 몹만 요격합니다.")
@@ -25500,7 +25679,8 @@ def ai_commander_worker(target_pc):
                                         p_ready = bool(
                                             p_data.get("in_game", False) and p_data.get("in_party", False) and
                                             p_data.get("in_hunting_ground", False) and (not p_data.get("is_out_of_zone", False)) and
-                                            str(p_data.get("party_state", "")) not in ["TOWN", "MAINT", "SURVIVAL"]
+                                            (not p_data.get("is_mptam", False)) and
+                                            str(p_data.get("party_state", "")) not in ["TOWN", "MAINT", "SURVIVAL", "MPTAM"]
                                         )
                                         if p_calling or p_done:
                                             if (not state.get("req_party_buff", False)) or (p_rank < my_rank_pb):
@@ -25558,6 +25738,15 @@ def ai_commander_worker(target_pc):
 
                                 if not is_already_processing and not state.get("party_buff_done", False) and curr_time >= state.get("pb_caster_retry_cd", 0.0):
                                     is_ui_busy_pb = fsm_retreat.startswith("INV_CLEAN") or fsm_retreat.startswith("HK_HEAL") or fsm_retreat.startswith("WEAPON_REPAIR") or fsm_retreat.startswith("BUFFING") or fsm_retreat.startswith("F1_INIT") or fsm_retreat.startswith("CHAT_RECOVER")
+                                    # 💡 시전자가 본인 엠탐(예약 엠탐/동반 엠탐 포함) 중일 때는 엠탐이 완전히 종료된 후에 소집하도록 대기!
+                                    is_caster_mptam = (
+                                        state.get("is_mptam_mode", False) or
+                                        state.get("pending_mptam", False) or
+                                        state.get("mptam_standby_guard", False) or
+                                        state.get("mptam_extend_80", False) or
+                                        state.get("mptam_extend_95", False) or
+                                        (fsm_retreat == "PARTY_ACTIVE_STANDBY" and "팟바람" not in str(state.get("standby_reason", "")))
+                                    )
                                     char_pos_chk = state.get("dungeon_map_pos")
                                     in_my_zone_pb = (not state.get("is_out_of_zone", False)) and (char_pos_chk is not None)
                                     in_party_pb = bool(state.get("in_ingame_party", False))
@@ -25565,7 +25754,7 @@ def ai_commander_worker(target_pc):
                                     mp_ok_pb = (mp >= buff_mp_req)
                                     has_b_node_pb = bool(pc_graph and pc_graph.get("buff_spot_nodes"))
 
-                                    if (not is_ui_busy_pb) and in_my_zone_pb and in_party_pb and mp_ok_pb and has_b_node_pb:
+                                    if (not is_ui_busy_pb) and (not is_caster_mptam) and in_my_zone_pb and in_party_pb and mp_ok_pb and has_b_node_pb:
                                         same_grp_members = []
                                         with party_lock:
                                             for p_uid, p_data in global_invite_states.items():
@@ -25648,6 +25837,7 @@ def ai_commander_worker(target_pc):
                                             state["portal_blind_mode"] = False
                                             state["yolo_blind_active"] = False
                                             state["yolo_blind_expire"] = 0
+                                            state["body_block_time"] = 0.0
 
                                             if dist_b <= 7.0 and has_los_b:
                                                 state["party_buff_status"] = "ARRIVED"
@@ -25712,6 +25902,11 @@ def ai_commander_worker(target_pc):
                                 state["designated_base_node"] = None
                                 state["dungeon_global_path"] = []
                                 state["current_target_node"] = None
+                                if state.pop("was_mptam_before_pb", False):
+                                    dng_n_pb = settings.get("dungeon_name", "")
+                                    stop_mp_pb = 95.0 if ("event" in dng_n_pb or "오땅" in dng_n_pb) else float(settings.get("mptam_stop_pct", 65.0))
+                                    if mp < stop_mp_pb:
+                                        state["pending_mptam"] = True
                                 state["target_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
                                 state["cooldown"] = curr_time + 0.5
                                 action_taken = True
@@ -25733,6 +25928,11 @@ def ai_commander_worker(target_pc):
                                 state["designated_base_node"] = None
                                 state["dungeon_global_path"] = []
                                 state["current_target_node"] = None
+                                if state.pop("was_mptam_before_pb", False):
+                                    dng_n_pb = settings.get("dungeon_name", "")
+                                    stop_mp_pb = 95.0 if ("event" in dng_n_pb or "오땅" in dng_n_pb) else float(settings.get("mptam_stop_pct", 65.0))
+                                    if mp < stop_mp_pb:
+                                        state["pending_mptam"] = True
                                 state["target_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
                                 state["cooldown"] = curr_time + 0.1
 
@@ -25744,14 +25944,14 @@ def ai_commander_worker(target_pc):
                                 char_pos_m = state.get("dungeon_map_pos")
                                 has_b_node_m = bool(pc_graph and (pc_graph.get("buff_spot_nodes") or (leader_base_node and str(leader_base_node) in pc_graph.get("nodes", {}))))
 
-                                # 이미 이번 호출(active_call_id)에서 영구 불참(마을/인증/10초길막/45초타임아웃)으로 분류된 경우 불참 유지
+                                # 이미 이번 호출(active_call_id)에서 영구 불참(마을/인증/Zone이탈/10초길막/45초타임아웃)으로 분류된 경우 불참 유지
                                 if active_call_id != 0 and state.get("pb_excluded_call_id") == active_call_id:
                                     state["party_buff_status"] = "EXCLUDED"
                                 elif state.get("pb_joined_call_id") != active_call_id or state.get("party_buff_status") not in ["MOVING", "ARRIVED"]:
                                     if is_in_crisis_m or is_not_in_party_m or is_out_zone_m or (char_pos_m is None) or (not has_b_node_m):
                                         state["party_buff_status"] = "EXCLUDED"
-                                        # 💡 실제로 마을/인증/미파티 상태일 때만 영구 불참 락을 걸고, 단순 구역경계 이탈(is_out_zone_m)이나 미니맵 1프레임 깜빡임(char_pos_m is None)은 구역 복귀 즉시 이번 호출에 정상 합류하도록 허용!
-                                        if (is_in_crisis_m or is_not_in_party_m or not has_b_node_m) and active_call_id != 0:
+                                        # 💡 마을/인증/미파티뿐만 아니라 Zone 이탈(엠탐 중 존 이탈 포함) 상태일 때도 이번 호출 불참(EXCLUDED)으로 즉시 확정!
+                                        if (is_in_crisis_m or is_not_in_party_m or is_out_zone_m or not has_b_node_m) and active_call_id != 0:
                                             state["pb_excluded_call_id"] = active_call_id
                                         if state.get("last_pb_excl_log_id") != active_call_id:
                                             state["last_pb_excl_log_id"] = active_call_id
@@ -25770,6 +25970,15 @@ def ai_commander_worker(target_pc):
                                         by_m = bn_d.get("y", 0) if isinstance(bn_d, dict) else bn_d[1]
                                         dist_b_m = math.hypot(char_pos_m[0] - bx_m, char_pos_m[1] - by_m)
                                         has_los_m = check_line_of_sight(pc_map_gray_los, char_pos_m, (bx_m, by_m), margin_steps=1) if pc_map_gray_los is not None else True
+
+                                        was_member_mptam = bool(
+                                            state.get("is_mptam_mode", False) or
+                                            state.get("pending_mptam", False) or
+                                            state.get("mptam_standby_guard", False) or
+                                            state.get("mptam_extend_80", False) or
+                                            state.get("mptam_extend_95", False)
+                                        )
+                                        state["was_mptam_before_pb"] = was_member_mptam
 
                                         state["help_requester"] = False
                                         state["helping_who"] = None
@@ -25797,20 +26006,21 @@ def ai_commander_worker(target_pc):
                                         state["portal_blind_mode"] = False
                                         state["yolo_blind_active"] = False
                                         state["yolo_blind_expire"] = 0
+                                        state["body_block_time"] = 0.0
 
                                         if dist_b_m <= 7.0 and has_los_m:
                                             state["party_buff_status"] = "ARRIVED"
                                             state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
                                             state["is_active_standby"] = True
                                             state["standby_reason"] = "팟바람 수령 집합"
-                                            dprint(key, "🛡️ [팟바람 즉시 대기] 이미 버프존(7px 내)에 있어 즉시 도착(ARRIVED) 상태로 대기합니다!")
+                                            dprint(key, f"🛡️ [팟바람 즉시 대기] 본인 Zone 확인 완료{'(엠탐 중 합류)' if was_member_mptam else ''}! 이미 버프존(7px 내)에 있어 도착(ARRIVED) 상태로 대기합니다!")
                                         else:
                                             state["party_buff_status"] = "MOVING"
                                             state["target_fsm"] = "PARTY_RETREAT_NAV"
                                             state["retreat_reason"] = "팟바람 수령 집합"
                                             state["pb_move_best_dist"] = dist_b_m
                                             state["pb_move_progress_time"] = curr_time
-                                            dprint(key, f"🏃‍♂️ [팟바람 집결 이동] 호출 수신! 전투를 멈추고 시야 0px로 버프존(ID:{target_b_node})으로 이동합니다!")
+                                            dprint(key, f"🏃‍♂️ [팟바람 집결 이동] 호출 수신 & 본인 Zone 확인{'(엠탐 중단 후 합류)' if was_member_mptam else ''}! 시야 0px로 버프존(ID:{target_b_node})으로 이동합니다!")
 
                                         state["cooldown"] = curr_time + 0.1
                                         action_taken = True
@@ -26383,7 +26593,9 @@ def ai_commander_worker(target_pc):
                     state["is_mptam_mode"] = False
 
             if state.get("is_hunt_active", False) and not state.get("is_paused", False):
-                
+                if state.pop("nav_standby_parked", False):
+                    action_taken = False
+
                 # 👇👇 [추가] 잉여 체력 바디 투 마인드 (패시브 단타) 👇👇
                 if not action_taken:
                     fsm_for_passive = str(state.get("target_fsm", ""))
@@ -26410,11 +26622,20 @@ def ai_commander_worker(target_pc):
                     body_start_mp = settings.get("body_percent", 50.0)
 
                     body_stop_mp = 80.0 if state.get("mptam_extend_80", False) else (95.0 if state.get("mptam_extend_95", False) else settings.get("body_stop_percent", 90.0))
+                    is_pb_standby_body = (
+                        (str(state.get("target_fsm", "")) == "PARTY_ACTIVE_STANDBY" and "팟바람" in str(state.get("standby_reason", ""))) or
+                        (state.get("party_buff_status") == "ARRIVED" and state.get("is_active_standby", False))
+                    )
 
                     if use_body_setting:
-                        if mp <= body_start_mp: state["body_to_mind_active"] = True
-                        elif mp >= body_stop_mp: state["body_to_mind_active"] = False
-                    else: state["body_to_mind_active"] = False
+                        if is_pb_standby_body and mp < body_stop_mp:
+                            state["body_to_mind_active"] = True
+                        elif mp <= body_start_mp:
+                            state["body_to_mind_active"] = True
+                        elif mp >= body_stop_mp:
+                            state["body_to_mind_active"] = False
+                    else:
+                        state["body_to_mind_active"] = False
 
                     heal_mp_limit = settings.get("heal_mp_percent", 30.0)
                     is_critical_hp = state.get("is_panic", False)
