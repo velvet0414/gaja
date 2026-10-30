@@ -21443,12 +21443,12 @@ def ai_commander_worker(target_pc):
                                 state["loot_pick_timeout"] = curr_time + loot_limit_1cell
                                 state["loot_motion_scan_timer"] = curr_time + 0.5
                                 state["cooldown"] = curr_time + 0.05
-                            elif current_dist < state.get("loot_start_dist", 9999.0) - 4.0:
+                            elif current_dist < state.get("loot_start_dist", 9999.0) - 2.0:
                                 state["loot_start_dist"] = current_dist
                                 state["loot_stuck_timer"] = curr_time
                                 state["cooldown"] = curr_time + 0.05
-                            elif curr_time - state.get("loot_stuck_timer", curr_time) > 0.5:
-                                dprint(key, "⚠️ [3셀 접근 길막] 0.5초 이상 템과 거리가 좁혀지지 않음! 1차 조치: 모션 스냅으로 숨은 길막 몹부터 색출합니다!")
+                            elif curr_time - state.get("loot_stuck_timer", curr_time) > 1.0:
+                                dprint(key, "⚠️ [3셀 접근 길막] 1.0초 이상 템과 거리가 좁혀지지 않음! 1차 조치: 모션 스냅으로 숨은 길막 몹부터 색출합니다!")
                                 clear_movements_only(pico_queues[key])
                                 if state.get("sweep_active", False):
                                     pico_queues[key].put({"action": "SWEEP_STOP"})
