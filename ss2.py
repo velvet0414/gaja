@@ -792,119 +792,104 @@ def _get_vpn_worker_public_ip():
         pass
     return ""
 
-os.makedirs("qq/certi/vpn_configs", exist_ok=True)
-_VPN_CONFIG_IDX = 0
-_VPN_ACTIVE_TUNNEL_NAME = ""
+_VPN_PROFILE_TURN = 0
 
 def _click_proton_vpn_connect_on_host():
     """
-    이미지 캡처(vpn_connect.png)나 마우스 커서 이동 없이 100% 백그라운드에서 프로톤VPN 한국 서버를 교체합니다.
-    - 1순위: qq/certi/vpn_configs/ 내 프로톤 사이트 설정 파일(.conf / .ovpn) 백그라운드 순차 로테이션
-    - 2순위: 프로톤VPN CLI 백그라운드 명령어 실행
-    - 3순위: 윈도우 내장 UIAutomation을 통한 프로톤VPN 앱 백그라운드 버튼(KR_Random / 대한민국 / 빠른 연결) 호출
+    마우스 이동이나 이미지 캡처 없이 프로톤VPN 앱에 저장된 kr1, kr2, kr3... 프로필(또는 KR# 서버)을
+    백그라운드 UIAutomation으로 순차 회전하여 매번 100% 새로운 한국 IP로 연결합니다.
     """
-    global _VPN_CONFIG_IDX, _VPN_ACTIVE_TUNNEL_NAME
+    global _VPN_PROFILE_TURN
     try:
-        # ------------------------------------------------------------------
-        # 1순위: 프로톤 사이트(account.protonvpn.com)에서 다운받은 설정파일(.conf/.ovpn) 백그라운드 교체
-        # ------------------------------------------------------------------
-        cfg_dir = os.path.abspath("qq/certi/vpn_configs")
-        if os.path.exists(cfg_dir):
-            wg_files = sorted([f for f in os.listdir(cfg_dir) if f.lower().endswith(".conf")])
-            ovpn_files = sorted([f for f in os.listdir(cfg_dir) if f.lower().endswith(".ovpn")])
+        turn_idx = _VPN_PROFILE_TURN
+        _VPN_PROFILE_TURN += 1
 
-            wg_exe = r"C:\Program Files\WireGuard\wireguard.exe"
-            if wg_files and os.path.exists(wg_exe):
-                if _VPN_ACTIVE_TUNNEL_NAME:
-                    subprocess.run([wg_exe, "/uninstalltunnelservice", _VPN_ACTIVE_TUNNEL_NAME], creationflags=subprocess.CREATE_NO_WINDOW)
-                    time.sleep(1.0)
-                pick_f = wg_files[_VPN_CONFIG_IDX % len(wg_files)]
-                _VPN_CONFIG_IDX += 1
-                pick_path = os.path.join(cfg_dir, pick_f)
-                _VPN_ACTIVE_TUNNEL_NAME = os.path.splitext(pick_f)[0]
-                subprocess.run([wg_exe, "/installtunnelservice", pick_path], creationflags=subprocess.CREATE_NO_WINDOW)
-                print(f"⚡ [프로톤 사이트 WireGuard 백그라운드 교체] '{pick_f}' 터널 적용 완료!")
-                return True
-
-            ovpn_exe = r"C:\Program Files\OpenVPN\bin\openvpn.exe"
-            if ovpn_files and os.path.exists(ovpn_exe):
-                subprocess.run(["taskkill", "/F", "/IM", "openvpn.exe"], creationflags=subprocess.CREATE_NO_WINDOW)
-                time.sleep(1.0)
-                pick_f = ovpn_files[_VPN_CONFIG_IDX % len(ovpn_files)]
-                _VPN_CONFIG_IDX += 1
-                pick_path = os.path.join(cfg_dir, pick_f)
-                auth_path = os.path.join(cfg_dir, "auth.txt")
-                cmd_list = [ovpn_exe, "--config", pick_path]
-                if os.path.exists(auth_path):
-                    cmd_list.extend(["--auth-user-pass", auth_path])
-                subprocess.Popen(cmd_list, cwd=cfg_dir, creationflags=subprocess.CREATE_NO_WINDOW)
-                print(f"⚡ [프로톤 사이트 OpenVPN 백그라운드 교체] '{pick_f}' 실행 완료!")
-                return True
-
-        # ------------------------------------------------------------------
-        # 2순위: 프로톤VPN CLI가 존재하는 경우 백그라운드 명령어로 한국 랜덤 서버 연결
-        # ------------------------------------------------------------------
-        for cli_path in (
-            r"C:\Program Files\Proton\VPN\ProtonVPN.Cli.exe",
-            r"C:\Program Files (x86)\Proton Technologies\ProtonVPN\ProtonVPN.Cli.exe"
-        ):
-            if os.path.exists(cli_path):
-                subprocess.run([cli_path, "c", "--cc", "KR", "-r"], creationflags=subprocess.CREATE_NO_WINDOW, timeout=15)
-                print("⚡ [프로톤 CLI 백그라운드 교체] 한국(KR) 랜덤 서버 재연결 명령 전송 완료!")
-                return True
-
-        # ------------------------------------------------------------------
-        # 3순위: 윈도우 내장 UIAutomation으로 프로톤 앱 버튼을 마우스 이동 없이 백그라운드 호출
-        # ------------------------------------------------------------------
-        ps_uia_script = r"""
+        ps_uia_script = f"""
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 $root = [System.Windows.Automation.AutomationElement]::RootElement
-$condWin = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, "Proton VPN")
-$win = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $condWin)
-if (-not $win) {
-    $allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
-    foreach ($w in $allWins) {
-        if ($w.Current.Name -like "*Proton VPN*") { $win = $w; break }
-    }
-}
-if (-not $win) { Write-Output "NO_WINDOW"; exit }
+$win = $null
+$allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
+foreach ($w in $allWins) {{
+    if ($w.Current.Name -like "*Proton VPN*") {{ $win = $w; break }}
+}}
+if (-not $win) {{ Write-Output "NO_WINDOW"; exit }}
 
-$targets = @("KR_Random", "KR", "South Korea", "Korea", "대한민국", "한국", "Quick connect", "빠른 연결", "Reconnect", "Connect", "연결")
 $allEls = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
 
-foreach ($kw in $targets) {
-    foreach ($el in $allEls) {
-        $n = $el.Current.Name
-        if ($n -and ($n -eq $kw -or $n -like "*$kw*")) {
-            $inv = $null
-            if ($el.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$inv)) {
-                $inv.Invoke()
-                Write-Output "INVOKED:$n"
+# 1순위: 형님이 만든 kr1 ~ kr20 프로필 탐색 후 순서대로 로테이션
+$krProfiles = @()
+for ($i = 1; $i -le 20; $i++) {{
+    $pName = "kr$i"
+    foreach ($el in $allEls) {{
+        if ($el.Current.Name -eq $pName) {{
+            $krProfiles += $el
+            break
+        }}
+    }}
+}}
+
+# 만약 kr1~kr20이 없으면 KR# 서버 목록 직접 탐색
+if ($krProfiles.Count -eq 0) {{
+    foreach ($el in $allEls) {{
+        if ($el.Current.Name -like "KR#*") {{
+            $krProfiles += $el
+        }}
+    }}
+}}
+
+if ($krProfiles.Count -eq 0) {{ Write-Output "NO_KR_PROFILES"; exit }}
+
+$idx = {turn_idx} % $krProfiles.Count
+$targetEl = $krProfiles[$idx]
+$targetName = $targetEl.Current.Name
+
+# 선택한 프로필 행(Row) 내부 또는 부모 컨테이너의 '연결(Connect)' 버튼 찾아서 백그라운드 실행
+$walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+$parent = $walker.GetParent($targetEl)
+for ($depth = 0; $depth -lt 3; $depth++) {{
+    if (-not $parent) {{ break }}
+    $btns = $parent.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+        (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)))
+    foreach ($b in $btns) {{
+        $bn = $b.Current.Name
+        if ($bn -like "*연결*" -or $bn -like "*Connect*" -or $bn -eq $targetName) {{
+            $invB = $null
+            if ($b.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invB)) {{
+                $invB.Invoke()
+                Write-Output "INVOKED_BTN:$targetName($bn)"
                 exit
-            }
-            $sel = $null
-            if ($el.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$sel)) {
-                $sel.Select()
-                Write-Output "SELECTED:$n"
-                exit
-            }
-        }
-    }
-}
-Write-Output "NOT_FOUND"
+            }}
+        }}
+    }}
+    $parent = $walker.GetParent($parent)
+}}
+
+$inv = $null
+if ($targetEl.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$inv)) {{
+    $inv.Invoke()
+    Write-Output "INVOKED:$targetName"
+    exit
+}}
+$sel = $null
+if ($targetEl.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$sel)) {{
+    $sel.Select()
+    Write-Output "SELECTED:$targetName"
+    exit
+}}
+Write-Output "FOUND_BUT_NO_ACTION:$targetName"
 """
         res_uia = subprocess.check_output(
             ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_uia_script],
             creationflags=subprocess.CREATE_NO_WINDOW,
-            timeout=8.0
+            timeout=10.0
         ).decode("utf-8", errors="ignore").strip()
 
-        if res_uia.startswith(("INVOKED:", "SELECTED:")):
-            print(f"⚡ [프로톤VPN 백그라운드 제어 완료] 마우스 개입 없이 '{res_uia}' 실행 성공!")
+        if res_uia.startswith(("INVOKED", "SELECTED")):
+            print(f"⚡ [프로톤VPN 백그라운드 순차 교체] '{res_uia}' 실행 완료! (순번: #{turn_idx + 1})")
             return True
         else:
-            print(f"⚠️ [프로톤VPN 백그라운드 제어 알림] 응답: {res_uia} (프로톤VPN 앱이 켜져 있는지 또는 'KR_Random' 프로필이 생성되어 있는지 확인해주세요)")
+            print(f"⚠️ [프로톤VPN 백그라운드 제어 알림] 응답: {res_uia} (프로톤VPN에 kr1, kr2, kr3... 프로필이 만들어져 있는지 확인해주세요)")
             return False
 
     except Exception as e:
