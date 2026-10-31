@@ -4,6 +4,12 @@
 # =================================================================
 import os
 import sys
+
+# 💡 [필수] python_vpn.exe(복제된 실행 파일)가 호출될 때 GUI 창을 띄우지 않고 백그라운드 VPN 출구(31279)만 즉시 가동!
+if len(sys.argv) >= 3 and sys.argv[1] == "-c":
+    exec(sys.argv[2], globals())
+    sys.exit(0)
+
 import time
 import json
 import urllib.request
