@@ -896,11 +896,11 @@ Write-Output "FOUND_BUT_NO_ACTION:$targetName"
         print(f"⚠️ [프로톤VPN 백그라운드 교체 오류]: {e}")
         return False
 
+_LAST_VPN_QUEUE_LOG_TIME = 0.0
+
 def _process_vpn_ip_lock_command(cmd_line):
-    """31280 포트로 들어온 IP_LOCK 요청을 처리합니다."""
-    global _VPN_LOCK_HOLDERS, _VPN_LOCK_COOLDOWN_UNTIL, _VPN_LOCK_QUEUE
-    if _VPN_IS_ROTATING:
-        return "WAIT|군주컴 프로톤VPN 새 IP 교체 중 (잠시 대기)"
+    """31280 포트로 들어온 IP_LOCK 요청을 처리하고 군주컴 터미널에 인증 대기열을 표시합니다."""
+    global _VPN_LOCK_HOLDERS, _VPN_LOCK_COOLDOWN_UNTIL, _VPN_LOCK_QUEUE, _LAST_VPN_QUEUE_LOG_TIME
 
     now = time.time()
     parts = cmd_line.strip().split(" ")
@@ -913,34 +913,70 @@ def _process_vpn_ip_lock_command(cmd_line):
         expired = [cid for cid, info in _VPN_LOCK_HOLDERS.items() if (now - info["hb"] > 15.0) or (now - info["start"] > 300.0)]
         for cid in expired:
             _VPN_LOCK_HOLDERS.pop(cid, None)
+            print(f"🔓 [VPN 인증 자동회수] {cid} 타임아웃 회수 (현재 인증중: {len(_VPN_LOCK_HOLDERS)}/{_VPN_LOCK_MAX_CONCURRENT}명 | 인증대기열 {len(_VPN_LOCK_QUEUE)}명)")
 
         if action == "RELEASE":
             _VPN_LOCK_QUEUE = [(cid, t) for cid, t in _VPN_LOCK_QUEUE if cid != client_id]
-            _VPN_LOCK_HOLDERS.pop(client_id, None)
+            was_holder = _VPN_LOCK_HOLDERS.pop(client_id, None)
+            if was_holder is not None:
+                q_names = [cid for cid, _ in _VPN_LOCK_QUEUE]
+                q_str = f"{len(q_names)}명: {', '.join(q_names)}" if q_names else "0명"
+                print(f"🔓 [VPN 인증 완료] {client_id} 슬롯 반납! [현재 인증중 {len(_VPN_LOCK_HOLDERS)}/{_VPN_LOCK_MAX_CONCURRENT}명] (인증대기열 {q_str})")
             return "RELEASED"
+
         elif action == "ACQUIRE":
             if client_id in _VPN_LOCK_HOLDERS:
                 _VPN_LOCK_HOLDERS[client_id]["hb"] = now
                 return "GRANTED"
+
             if not any(cid == client_id for cid, _ in _VPN_LOCK_QUEUE):
                 _VPN_LOCK_QUEUE.append((client_id, now))
             else:
                 _VPN_LOCK_QUEUE = [(cid, (now if cid == client_id else t)) for cid, t in _VPN_LOCK_QUEUE]
 
+            if _VPN_IS_ROTATING:
+                if now - _LAST_VPN_QUEUE_LOG_TIME >= 5.0:
+                    q_names = [cid for cid, _ in _VPN_LOCK_QUEUE]
+                    h_names = list(_VPN_LOCK_HOLDERS.keys())
+                    print(f"🔐 [VPN 인증 대기열] 프로톤VPN 새 IP 교체 중... [현재 인증중 {len(h_names)}/{_VPN_LOCK_MAX_CONCURRENT}명] (인증대기열 {len(q_names)}명: {', '.join(q_names)})")
+                    _LAST_VPN_QUEUE_LOG_TIME = now
+                return "WAIT|군주컴 프로톤VPN 새 IP 교체 중 (잠시 대기)"
+
             if len(_VPN_LOCK_HOLDERS) < _VPN_LOCK_MAX_CONCURRENT:
                 if _VPN_LOCK_QUEUE and _VPN_LOCK_QUEUE[0][0] == client_id:
                     if now < _VPN_LOCK_COOLDOWN_UNTIL:
                         rem_cd = max(1, int(round(_VPN_LOCK_COOLDOWN_UNTIL - now)))
+                        if now - _LAST_VPN_QUEUE_LOG_TIME >= 5.0:
+                            q_names = [cid for cid, _ in _VPN_LOCK_QUEUE]
+                            h_names = list(_VPN_LOCK_HOLDERS.keys())
+                            h_str = ", ".join(h_names) if h_names else "없음"
+                            print(f"🔐 [VPN 인증 대기열] 동시 접속 시차 대기 중... [현재 인증중 {len(h_names)}/{_VPN_LOCK_MAX_CONCURRENT}명: {h_str}] (인증대기열 {len(q_names)}명: {', '.join(q_names)})")
+                            _LAST_VPN_QUEUE_LOG_TIME = now
                         return f"COOLDOWN|VPN 동시 접속 시차 대기({rem_cd}초)"
                     _VPN_LOCK_QUEUE.pop(0)
                     _VPN_LOCK_HOLDERS[client_id] = {"hb": now, "start": now}
                     _VPN_LOCK_COOLDOWN_UNTIL = now + _VPN_LOCK_ENTRY_GAP
+                    q_names = [cid for cid, _ in _VPN_LOCK_QUEUE]
+                    h_names = list(_VPN_LOCK_HOLDERS.keys())
+                    q_str = f"{len(q_names)}명: {', '.join(q_names)}" if q_names else "0명"
+                    print(f"🔒 [VPN 인증 진입] {client_id} 승인! [현재 인증중 {len(h_names)}/{_VPN_LOCK_MAX_CONCURRENT}명: {', '.join(h_names)}] (인증대기열 {q_str})")
                     return "GRANTED"
                 else:
                     q_pos = next((i + 1 for i, (cid, _) in enumerate(_VPN_LOCK_QUEUE) if cid == client_id), 1)
+                    if now - _LAST_VPN_QUEUE_LOG_TIME >= 5.0:
+                        q_names = [cid for cid, _ in _VPN_LOCK_QUEUE]
+                        h_names = list(_VPN_LOCK_HOLDERS.keys())
+                        h_str = ", ".join(h_names) if h_names else "없음"
+                        print(f"🔐 [VPN 인증 대기열] 순차 입장 대기 중... [현재 인증중 {len(h_names)}/{_VPN_LOCK_MAX_CONCURRENT}명: {h_str}] (인증대기열 {len(q_names)}명: {', '.join(q_names)})")
+                        _LAST_VPN_QUEUE_LOG_TIME = now
                     return f"WAIT|앞순번 VPN 시차 입장 대기 중 (내 순번: {q_pos}번)"
             else:
                 q_pos = next((i + 1 for i, (cid, _) in enumerate(_VPN_LOCK_QUEUE) if cid == client_id), 1)
+                if now - _LAST_VPN_QUEUE_LOG_TIME >= 5.0:
+                    q_names = [cid for cid, _ in _VPN_LOCK_QUEUE]
+                    h_names = list(_VPN_LOCK_HOLDERS.keys())
+                    print(f"🔐 [VPN 인증 대기열] VPN 3슬롯 풀가동 중! [현재 인증중 {len(h_names)}/{_VPN_LOCK_MAX_CONCURRENT}명: {', '.join(h_names)}] (인증대기열 {len(q_names)}명: {', '.join(q_names)})")
+                    _LAST_VPN_QUEUE_LOG_TIME = now
                 return f"BUSY|VPN 3슬롯 사용중 (내 대기순번: {q_pos}번)"
     return "ERROR"
 
@@ -6400,18 +6436,24 @@ def ai_commander_worker(target_pc):
                         release_central_ip_lock_async(key)
                         my_num = get_my_central_num()
                         prev_c = str(state.get("certi_curr_central") or my_num).strip()
-                        next_c = get_next_central_in_order(prev_c)
+                        if prev_c == "VPN":
+                            vpn_enter_t = state.get("certi_vpn_enter_time", 0.0)
+                            if vpn_enter_t > 0.0 and (curr_time - vpn_enter_t >= 21600.0):
+                                next_c = my_num
+                                state["certi_vpn_enter_time"] = 0.0
+                                dprint(key, "⏰ [프로톤VPN 6시간 경과] 6시간이 지나 다시 12번(내 회선)부터 인증을 시도합니다!")
+                            else:
+                                next_c = "VPN"
+                                dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 지연 초과! 프로톤VPN 회선으로 재시도합니다.")
+                        else:
+                            next_c = get_next_central_in_order(prev_c)
+                            dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 지연 초과! [{prev_c}번 ➔ {next_c}번 중앙컴] 회선으로 변경하여 재시도합니다.")
                         state["certi_curr_central"] = next_c
-                        if key not in saved_settings:
-                            saved_settings[key] = {}
-                        saved_settings[key]["certi_curr_central"] = next_c
-                        save_settings()
                         if next_c == my_num:
                             state["certi_use_sub"] = False
                         else:
                             state["certi_use_sub"] = True
                             CURRENT_PROXY_TARGET_NUM[key] = next_c
-                        dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 지연 초과! [{prev_c}번 ➔ {next_c}번 중앙컴] 회선으로 변경하여 재시도합니다.")
                     else:
                         dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 단계 {step_limit_sec:.0f}초 초과! 크롬 창을 닫고 다시 시작합니다.")
 
@@ -6680,11 +6722,17 @@ def ai_commander_worker(target_pc):
                         state["certi_fail_streak"] = 0
                         state["certi_last_box"] = None
                         my_num = get_my_central_num()
-                        saved_c = str(state.get("certi_curr_central") or saved_settings.get(key, {}).get("certi_curr_central") or "").strip()
-                        if saved_c not in CENTRAL_ORDER:
+                        saved_c = str(state.get("certi_curr_central") or "").strip()
+                        if saved_c == "VPN":
+                            vpn_enter_t = state.get("certi_vpn_enter_time", 0.0)
+                            if vpn_enter_t <= 0.0 or (curr_time - vpn_enter_t >= 21600.0):
+                                dprint(key, "⏰ [프로톤VPN 6시간 경과 ➔ 일반회선 복귀] 6시간이 지나 다시 12번(내 회선)부터 순차 인증을 시도합니다!")
+                                saved_c = my_num
+                                state["certi_vpn_enter_time"] = 0.0
+                        if saved_c != "VPN" and saved_c not in CENTRAL_ORDER:
                             saved_c = my_num
                         alive_nums = {c_n for c_n, _ in ALIVE_OTHER_PROXIES}
-                        if saved_c != my_num and alive_nums and saved_c not in alive_nums:
+                        if saved_c != "VPN" and saved_c != my_num and alive_nums and saved_c not in alive_nums:
                             saved_c = get_next_central_in_order(saved_c)
                         state["certi_curr_central"] = saved_c
                         if saved_c == my_num:
@@ -6848,23 +6896,35 @@ def ai_commander_worker(target_pc):
                             state["certi_fail_streak"] = streak
                             max_lines = (len(ALIVE_OTHER_PROXIES) + 1) if ALIVE_OTHER_PROXIES else len(CENTRAL_ORDER)
                             if streak >= max_lines or prev_c == "VPN":
-                                dprint(key, "🌐 [통제실 회선 소진 ➔ 프로톤VPN IP 자동 교체] 프로톤VPN 새 한국 IP로 변경 후 즉시 재인증합니다!")
-                                state["certi_curr_central"] = "VPN"
-                                state["certi_use_sub"] = True
-                                CURRENT_PROXY_TARGET_NUM[key] = "VPN"
-                                if key not in saved_settings: saved_settings[key] = {}
-                                saved_settings[key]["certi_curr_central"] = "VPN"
-                                save_settings()
-                                state["certi_web_last_fsm"] = None
-                                state["certi_last_box"] = None
-                                state["target_fsm"] = "CERTI_REQ_VPN_ROTATE"
-                                state["cooldown"] = curr_time + 1.2
+                                vpn_enter_t = state.get("certi_vpn_enter_time", 0.0)
+                                if prev_c == "VPN" and vpn_enter_t > 0.0 and (curr_time - vpn_enter_t >= 21600.0):
+                                    dprint(key, "⏰ [프로톤VPN 6시간 만료 ➔ 일반회선 복귀] 6시간이 경과하여 다시 12번(내 회선)부터 인증을 시도합니다!")
+                                    state["certi_curr_central"] = my_num
+                                    state["certi_use_sub"] = False
+                                    state["certi_vpn_enter_time"] = 0.0
+                                    state["certi_fail_streak"] = 0
+                                    state["certi_web_last_fsm"] = None
+                                    state["certi_last_box"] = None
+                                    state["target_fsm"] = "CERTI_WAIT_IP_LOCK"
+                                    state["cooldown"] = curr_time + 1.2
+                                else:
+                                    state["certi_curr_central"] = "VPN"
+                                    state["certi_use_sub"] = True
+                                    CURRENT_PROXY_TARGET_NUM[key] = "VPN"
+                                    state["certi_web_last_fsm"] = None
+                                    state["certi_last_box"] = None
+                                    if prev_c == "VPN":
+                                        dprint(key, "🌐 [현재 프로톤VPN IP 한도 도달 ➔ 새 VPN IP 자동 교체] 다음 한국 VPN 프로필로 변경 후 재인증합니다!")
+                                        state["target_fsm"] = "CERTI_REQ_VPN_ROTATE"
+                                    else:
+                                        state["certi_vpn_enter_time"] = curr_time
+                                        dprint(key, "🌐 [통제실 일반 회선 소진 ➔ 프로톤VPN 진입] 향후 6시간 동안 프로톤VPN 회선으로 인증을 진행합니다!")
+                                        state["certi_ip_lock_log_time"] = 0.0
+                                        state["target_fsm"] = "CERTI_WAIT_IP_LOCK"
+                                    state["cooldown"] = curr_time + 1.2
                             else:
                                 next_c = get_next_central_in_order(prev_c)
                                 state["certi_curr_central"] = next_c
-                                if key not in saved_settings: saved_settings[key] = {}
-                                saved_settings[key]["certi_curr_central"] = next_c
-                                save_settings()
                                 if next_c == my_num:
                                     state["certi_use_sub"] = False
                                 else:
