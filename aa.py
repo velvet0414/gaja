@@ -1453,8 +1453,8 @@ def local_ipc_broadcaster_thread(my_key):
                     "group_join_time": st.get("invite_group_join_time", 0.0),
                     "leader_since": st.get("invite_leader_since", 0.0),
                     "party_order": st.get("party_order", []),
-                    "last_invited_uid": st.get("last_invited_uid", "") if (now_req_t - st.get("last_invited_ts", 0.0) <= 8.0) else "",
-                    "last_invited_ts": st.get("last_invited_ts", 0.0) if (now_req_t - st.get("last_invited_ts", 0.0) <= 8.0) else 0.0,
+                    "last_invited_uid": st.get("last_invited_uid", "") if (is_inv_leader and now_req_t - st.get("last_invited_ts", 0.0) <= 8.0) else "",
+                    "last_invited_ts": st.get("last_invited_ts", 0.0) if (is_inv_leader and now_req_t - st.get("last_invited_ts", 0.0) <= 8.0) else 0.0,
                     "is_party_inviter": current_settings.get(my_key, {}).get("is_party_inviter", False),
                     "party_state": party_state,
                     "mob_map_pos": mob_map_pos,
@@ -3268,7 +3268,7 @@ _GUI_DEFAULT_SCHEMA = {
     "hp_20_action": "텔레포트 (F11)", "hp_danger_pct": "45",
     "abs_return_use": False, "abs_return_pct": "15",
     "pk_drop_pct": "12", "max_combat_time": "15", "return_cond": "은화살부족",
-    "move_sens": "2000", "hunt_first": False, "chain_kill": False,
+    "move_sens": "2000", "hunt_first": False, "hunt_first_keep_loot": False, "chain_kill": False,
     "haste_match_rate": "92", "zone_tele_nodes": "120", "oak_thresh": "127",
     "motion_sensitivity": "35", "gb_count_normal": "3", "gb_count_dng": "4",
     "use_gb_detect": False, "gb_exc_user": True,
@@ -4474,20 +4474,25 @@ def pico_worker_thread(key):
                     eng_name = str(cmd.get("eng_name", "")).strip()
                     need_han_eng = cmd.get("need_han_eng", False)
                     if eng_name:
+                        def k_tap_fast(kcode):
+                            send_keyboard_key(p_serial, p_lock, kcode, 1)
+                            h_sleep(0.055, 0.066)
+                            send_keyboard_key(p_serial, p_lock, kcode, 0)
+
                         # 1) 모든 눌린 키/마우스 상태 초기화 및 안정화 대기
                         reset_hw_key_states(p_serial)
                         send_keyboard_key(p_serial, p_lock, 129, 0, is_manual=True)
                         send_keyboard_key(p_serial, p_lock, 32, 0, is_manual=True)
-                        h_sleep(0.15, 0.22)
+                        h_sleep(0.12, 0.18)
 
                         # 2) '/' 입력 전 채팅창 ROI에서 yungta.png 감지 시 피코 직결 한영키(234)로 한글 전환
                         scr_now = latest_frames.get(key)
                         if need_han_eng or (scr_now is not None and check_chat_template_match(scr_now, "yungta.png", th=0.80)):
                             dprint(key, "🔄 [파장 한/영 전환] 'yungta.png' 감지! 미니컴 직결 한영키(234)로 한글 전환합니다.")
                             send_keyboard_key(p_serial, p_lock, 234, 1, is_manual=True)
-                            h_sleep(0.06, 0.10)
+                            h_sleep(0.05, 0.08)
                             send_keyboard_key(p_serial, p_lock, 234, 0, is_manual=True)
-                            h_sleep(0.25, 0.35)
+                            h_sleep(0.20, 0.28)
 
                             # 🔎 [피코 타건 결과 팩트 체크] 키를 누른 뒤 실제로 영타(yungta.png)가 풀렸는지 즉시 확인!
                             scr_verify = latest_frames.get(key)
@@ -4496,52 +4501,71 @@ def pico_worker_thread(key):
                             else:
                                 dprint(key, "✅ [피코 타건 검증 완료] 인게임 한/영 전환 성공! ('yungta.png' 사라짐 확인)")
 
-                        # 3) '/초대 ' 입력 (/cheo + Space) - 선엔터 없이 즉시 입력
+                        def _is_invite_aborted():
+                            st_chk = ai_states.get(key, {})
+                            return (
+                                active_manual_target == key or
+                                st_chk.get("is_paused", False) or
+                                st_chk.get("abort_macro", False) or
+                                not st_chk.get("is_hunt_active", False) or
+                                str(st_chk.get("target_fsm", "")).startswith("CERTI_")
+                            )
+
+                        # 3) '/초대 ' 입력 (/cheo + Space) - 선엔터 없이 즉시 입력 (20% 가속)
                         for ch_cmd in "/cheo":
-                            k_tap(ord(ch_cmd))
-                            h_sleep(0.05, 0.09)
+                            if _is_invite_aborted():
+                                break
+                            k_tap_fast(ord(ch_cmd))
+                            h_sleep(0.04, 0.07)
 
-                        k_tap(32) # Space
-                        h_sleep(0.15, 0.22)
+                        if not _is_invite_aborted():
+                            k_tap_fast(32) # Space
+                            h_sleep(0.12, 0.18)
 
-                        # 4) 변환된 케릭명(쌍자음 대문자 Shift 포함) 입력 후 엔터
+                        # 4) 변환된 케릭명(쌍자음 대문자 Shift 포함) 입력 후 엔터 (20% 가속)
                         for ch in eng_name:
-                            if active_manual_target == key or ai_states[key].get("is_paused"):
+                            if _is_invite_aborted():
                                 break
                             if 'A' <= ch <= 'Z':
                                 kcode = ord(ch.lower())
                                 send_keyboard_key(p_serial, p_lock, 129, 1, is_manual=True) # Shift DOWN
-                                h_sleep(0.08, 0.12)
-                                send_keyboard_key(p_serial, p_lock, kcode, 1, is_manual=True)
-                                h_sleep(0.05, 0.09)
-                                send_keyboard_key(p_serial, p_lock, kcode, 0, is_manual=True)
                                 h_sleep(0.06, 0.10)
+                                send_keyboard_key(p_serial, p_lock, kcode, 1, is_manual=True)
+                                h_sleep(0.04, 0.07)
+                                send_keyboard_key(p_serial, p_lock, kcode, 0, is_manual=True)
+                                h_sleep(0.05, 0.08)
                                 send_keyboard_key(p_serial, p_lock, 129, 0, is_manual=True) # Shift UP
                             else:
-                                k_tap(ord(ch))
-                            h_sleep(0.05, 0.10)
+                                k_tap_fast(ord(ch))
+                            h_sleep(0.04, 0.08)
 
-                        h_sleep(0.12, 0.20)
-                        k_tap(176) # Enter
+                        if _is_invite_aborted():
+                            send_keyboard_key(p_serial, p_lock, 129, 0, is_manual=True)
+                            dprint(key, "🛑 [파장 초대 타건 중단] 타이핑 도중 인터럽트(인증/위기/수동)가 발생하여 초대 신호 송출을 취소합니다.")
+                        else:
+                            h_sleep(0.10, 0.16)
+                            k_tap_fast(176) # Enter
 
-                        # 💡 엔터 타건 직후 즉시 초대 완료 신호를 먼저 기록하여 파티원에게 송출!
-                        inv_ts_now = time.time()
-                        if key in ai_states:
-                            ai_states[key]["last_invited_uid"] = str(cmd.get("target_uid", ""))
-                            ai_states[key]["last_invited_ts"] = inv_ts_now
-                        dprint(key, f"✅ [파장 초대 타건 완료] '{cmd.get('raw_name', '')}' 초대 엔터 입력 완료! 파티원에게 수락 신호를 송출합니다.")
+                            h_sleep(0.30, 0.40) # 시스템 메시지('파티장만이 초대할 수 있습니다.') 출력 대기
 
-                        h_sleep(0.30, 0.40) # 시스템 메시지('파티장만이 초대할 수 있습니다.') 출력 대기
-
-                        scr_after_inv = latest_frames.get(key)
-                        if scr_after_inv is not None and check_pratyjangx_in_chat(scr_after_inv):
-                            if key in ai_states:
-                                ai_states[key]["is_invite_leader"] = False
-                                ai_states[key]["not_party_leader_locked"] = True
-                                ai_states[key]["need_lock_snapshot"] = True
-                                ai_states[key]["last_invited_uid"] = ""
-                                ai_states[key]["last_invited_ts"] = 0.0
-                            dprint(key, "🚫 [파장 권한 없음 감지] 채팅창 'pratyjangx.png'(파티장만이 초대 가능) 확인! 현재 파티원 구성이 바뀔 때까지 파장 권한을 내려놓고 대기합니다.")
+                            scr_after_inv = latest_frames.get(key)
+                            if _is_invite_aborted():
+                                dprint(key, "🛑 [파장 초대 검증 중단] 엔터 직후 인터럽트(인증/위기) 감지로 초대 신호 송출을 취소합니다.")
+                            elif scr_after_inv is not None and check_pratyjangx_in_chat(scr_after_inv):
+                                if key in ai_states:
+                                    ai_states[key]["is_invite_leader"] = False
+                                    ai_states[key]["not_party_leader_locked"] = True
+                                    ai_states[key]["need_lock_snapshot"] = True
+                                    ai_states[key]["last_invited_uid"] = ""
+                                    ai_states[key]["last_invited_ts"] = 0.0
+                                dprint(key, "🚫 [파장 권한 없음 감지] 채팅창 'pratyjangx.png'(파티장만이 초대 가능) 확인! 수락 신호를 보내지 않고 파장 권한을 내려놓습니다.")
+                            else:
+                                # 💡 권한 없음(pratyjangx) 및 인터럽트가 없는 것이 확실히 검증된 직후에만 파티원에게 수락 신호 송출!
+                                inv_ts_now = time.time()
+                                if key in ai_states:
+                                    ai_states[key]["last_invited_uid"] = str(cmd.get("target_uid", ""))
+                                    ai_states[key]["last_invited_ts"] = inv_ts_now
+                                dprint(key, f"✅ [파장 초대 타건 완료] '{cmd.get('raw_name', '')}' 초대 정상 입력 확인 완료! 파티원에게 수락 신호를 송출합니다.")
                 finally:
                     if key in ai_states:
                         ai_states[key]["is_chat_typing"] = False
@@ -4643,15 +4667,19 @@ def pico_worker_thread(key):
                     h_sleep(0.15, 0.25)
                 # 2) 커서를 치웠는데도 3개가 다 안 보이면 창(리니지/퍼플/크롬)이 화면을 가리고 있는 상태이므로 Win+D 실행!
                 else:
-                    dprint(key, f"🖥️ [바탕화면 전환] 아이콘 {visible_icons}/{target_icon_cnt}개만 감지됨 ➔ Win+D를 눌러 창을 내립니다!")
-                    send_keyboard_key(p_serial, p_lock, 131, 1) # Win키 DOWN
-                    h_sleep(0.04, 0.08)
-                    send_keyboard_key(p_serial, p_lock, 100, 1) # 'D'키 DOWN
-                    h_sleep(0.07, 0.12)
-                    send_keyboard_key(p_serial, p_lock, 100, 0) # 'D'키 UP
-                    h_sleep(0.04, 0.08)
-                    send_keyboard_key(p_serial, p_lock, 131, 0) # Win키 UP
-                    h_sleep(0.5, 0.8)
+                    dprint(key, f"🖥️ [바탕화면 전환] 아이콘 {visible_icons}/{target_icon_cnt}개만 감지됨 ➔ 보조키 초기화 후 Win+D를 눌러 창을 내립니다!")
+                    reset_hw_key_states(p_serial)
+                    for mod_k in (128, 129, 130, 131):
+                        send_keyboard_key(p_serial, p_lock, mod_k, 0, is_manual=True)
+                    h_sleep(0.05, 0.08)
+                    send_keyboard_key(p_serial, p_lock, 131, 1, is_manual=True) # Win키 DOWN
+                    h_sleep(0.08, 0.14)
+                    send_keyboard_key(p_serial, p_lock, 100, 1, is_manual=True) # 'D'키 DOWN
+                    h_sleep(0.08, 0.14)
+                    send_keyboard_key(p_serial, p_lock, 100, 0, is_manual=True) # 'D'키 UP
+                    h_sleep(0.06, 0.10)
+                    send_keyboard_key(p_serial, p_lock, 131, 0, is_manual=True) # Win키 UP
+                    h_sleep(0.55, 0.85)
 
             elif action == "CERTI_CLICK":
                 is_double = cmd.get("double", False)
@@ -4672,18 +4700,41 @@ def pico_worker_thread(key):
                 clear_first = cmd.get("clear_first", False)
                 press_enter = cmd.get("press_enter", False)
 
-                # 기존 입력칸 내용 지우기 옵션 (Ctrl + A -> Backspace)
+                # 💡 패닉(is_panic) 가속에 영향받지 않는 웹 타이핑 전용 정밀 대기 함수
+                def web_sleep(a, b):
+                    target_t = time.perf_counter() + g_val(a, b)
+                    while True:
+                        rem = target_t - time.perf_counter()
+                        if rem <= 0 or active_manual_target == key or ai_states[key].get("abort_macro", False):
+                            break
+                        if rem > 0.002:
+                            time.sleep(0.001)
+                        else:
+                            time.sleep(0)
+
+                def web_key_tap(kcode):
+                    send_keyboard_key(p_serial, p_lock, kcode, 1, is_manual=True)
+                    web_sleep(0.065, 0.090)
+                    send_keyboard_key(p_serial, p_lock, kcode, 0, is_manual=True)
+
+                # 타이핑 시작 전 하드웨어 키 장부 및 보조키(Shift/Ctrl/Alt) 잔류 상태 완전 초기화
+                reset_hw_key_states(p_serial)
+                for mod_k in (128, 129, 130):
+                    send_keyboard_key(p_serial, p_lock, mod_k, 0, is_manual=True)
+                web_sleep(0.06, 0.10)
+
+                # 기존 입력칸 내용 지우기 옵션 (Ctrl + A -> Backspace 후 커서 안정화 대기)
                 if clear_first:
-                    send_keyboard_key(p_serial, p_lock, 128, 1) # Ctrl DOWN
-                    h_sleep(0.04, 0.08)
-                    send_keyboard_key(p_serial, p_lock, 97, 1)  # 'a' DOWN
-                    h_sleep(0.05, 0.09)
-                    send_keyboard_key(p_serial, p_lock, 97, 0)  # 'a' UP
-                    h_sleep(0.04, 0.08)
-                    send_keyboard_key(p_serial, p_lock, 128, 0) # Ctrl UP
-                    h_sleep(0.08, 0.14)
-                    k_tap(178) # Backspace
-                    h_sleep(0.10, 0.18)
+                    send_keyboard_key(p_serial, p_lock, 128, 1, is_manual=True) # Ctrl DOWN
+                    web_sleep(0.05, 0.08)
+                    send_keyboard_key(p_serial, p_lock, 97, 1, is_manual=True)  # 'a' DOWN
+                    web_sleep(0.06, 0.09)
+                    send_keyboard_key(p_serial, p_lock, 97, 0, is_manual=True)  # 'a' UP
+                    web_sleep(0.05, 0.08)
+                    send_keyboard_key(p_serial, p_lock, 128, 0, is_manual=True) # Ctrl UP
+                    web_sleep(0.08, 0.12)
+                    web_key_tap(178) # Backspace
+                    web_sleep(0.18, 0.26)
 
                 shift_char_map = {
                     '!': ord('1'), '@': ord('2'), '#': ord('3'), '$': ord('4'), '%': ord('5'),
@@ -4698,32 +4749,32 @@ def pico_worker_thread(key):
 
                     if ch in shift_char_map:
                         base_k = shift_char_map[ch]
-                        send_keyboard_key(p_serial, p_lock, 129, 1) # Shift DOWN
-                        h_sleep(0.04, 0.08)
-                        send_keyboard_key(p_serial, p_lock, base_k, 1)
-                        h_sleep(0.05, 0.09)
-                        send_keyboard_key(p_serial, p_lock, base_k, 0)
-                        h_sleep(0.04, 0.08)
-                        send_keyboard_key(p_serial, p_lock, 129, 0) # Shift UP
+                        send_keyboard_key(p_serial, p_lock, 129, 1, is_manual=True) # Shift DOWN
+                        web_sleep(0.06, 0.09)
+                        send_keyboard_key(p_serial, p_lock, base_k, 1, is_manual=True)
+                        web_sleep(0.065, 0.095)
+                        send_keyboard_key(p_serial, p_lock, base_k, 0, is_manual=True)
+                        web_sleep(0.05, 0.08)
+                        send_keyboard_key(p_serial, p_lock, 129, 0, is_manual=True) # Shift UP
                     elif 'A' <= ch <= 'Z':
                         kcode = ord(ch.lower())
-                        send_keyboard_key(p_serial, p_lock, 129, 1) # Shift DOWN
-                        h_sleep(0.04, 0.08)
-                        send_keyboard_key(p_serial, p_lock, kcode, 1)
-                        h_sleep(0.05, 0.09)
-                        send_keyboard_key(p_serial, p_lock, kcode, 0)
-                        h_sleep(0.04, 0.08)
-                        send_keyboard_key(p_serial, p_lock, 129, 0) # Shift UP
+                        send_keyboard_key(p_serial, p_lock, 129, 1, is_manual=True) # Shift DOWN
+                        web_sleep(0.06, 0.09)
+                        send_keyboard_key(p_serial, p_lock, kcode, 1, is_manual=True)
+                        web_sleep(0.065, 0.095)
+                        send_keyboard_key(p_serial, p_lock, kcode, 0, is_manual=True)
+                        web_sleep(0.05, 0.08)
+                        send_keyboard_key(p_serial, p_lock, 129, 0, is_manual=True) # Shift UP
                     else:
-                        k_tap(ord(ch))
+                        web_key_tap(ord(ch))
 
-                    # 글자 간 가우스 난수 타건 간격
-                    h_sleep(0.05, 0.12)
+                    # 💡 브라우저 입력창 리렌더링 및 커서(Caret) 이동이 100% 끝난 뒤 다음 글자가 들어가도록 간격 보장 (글자 씹힘/순서 바뀜 원천 차단)
+                    web_sleep(0.11, 0.16)
 
                 if press_enter:
-                    h_sleep(0.18, 0.30)
-                    k_tap(176) # Enter 키 입력
-                    h_sleep(0.20, 0.35)
+                    web_sleep(0.22, 0.32)
+                    web_key_tap(176) # Enter 키 입력
+                    web_sleep(0.22, 0.35)
 
             elif action == "CLOSE_TAB":
                 # 크롬 창 전체 완전 종료 (Ctrl + Shift + W)
@@ -6243,18 +6294,27 @@ def ai_commander_worker(target_pc):
                             else:
                                 is_in_time_range = (curr_m >= start_m or curr_m <= end_m)
 
+                            state["certi_need_web_after_quit"] = True
+                            state["certi_from_closed_game"] = True
+                            state["certi_ok2_find_start"] = curr_time
+                            state["certi_ok2_evaded"] = False
+
                             if use_delay and is_in_time_range and delay_s > 0:
                                 final_delay = g_val(max(1.0, delay_s - 2.0), delay_s + 2.0)
                                 state["certi_delay_until"] = curr_time + final_delay
                                 state["certi_delay_log_time"] = curr_time
-                                dprint(key, f"⏳ [특정시간 인증 딜레이 발동] 현재 시각({now_dt.strftime('%H:%M:%S')})이 매시 {start_m}~{end_m}분 구간입니다! {final_delay:.1f}초 대기 후 인증을 시작합니다!")
-                                state["target_fsm"] = "CERTI_DELAY_WAIT"
-                                current_fsm = "CERTI_DELAY_WAIT"
+                                dprint(key, f"⏳ [인증 감지 + 특정시간 딜레이 예약] certi.png ({detected_val*100:.1f}%) 포착! 먼저 ok2 ➔ quit으로 게임을 종료한 뒤 {final_delay:.1f}초 대기 후 웹 인증을 시작합니다!")
                             else:
-                                dprint(key, f"🚨 [인증 최우선 감지] certi.png ({detected_val*100:.1f}%) 포착! 죽음(Restart) 오발동을 캔슬하고 인증 모드로 진입합니다!")
-                                state["target_fsm"] = "CERTI_GOTO_DESKTOP"
-                                current_fsm = "CERTI_GOTO_DESKTOP"
+                                state["certi_delay_until"] = 0.0
+                                dprint(key, f"🚨 [인증 최우선 감지] certi.png ({detected_val*100:.1f}%) 포착! 먼저 ok2 ➔ quit을 눌러 게임을 종료하고 3초 뒤 바탕화면(Win+D) 웹 인증으로 진입합니다!")
+
+                            state["target_fsm"] = "CERTI_FIND_OK2_FIRST"
+                            current_fsm = "CERTI_FIND_OK2_FIRST"
                         else:
+                            state["certi_need_web_after_quit"] = False
+                            state["certi_delay_until"] = 0.0
+                            state["certi_ok2_find_start"] = curr_time
+                            state["certi_ok2_evaded"] = False
                             dprint(key, f"🚨 [이용시간 만료 감지] ticket2.png ({detected_val*100:.1f}%) 포착! ok2 ➔ quit 클릭 후 바탕화면 13.png 재접속 단계로 직행합니다!")
                             state["target_fsm"] = "CERTI_FIND_OK2_FIRST"
                             current_fsm = "CERTI_FIND_OK2_FIRST"
@@ -6990,9 +7050,9 @@ def ai_commander_worker(target_pc):
 
                                 if t_text is not None:
                                     state["cursor_pos"] = [tx, ty]
-                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.22, "delay_max": 0.40})
-                                    pico_queues[key].put({"action": "TYPE_STRING", "text": t_text, "clear_first": False, "press_enter": p_enter, "allow_typo": True})
-                                    dprint(key, f"⌨️ [{desc_str}] 클릭 후 제자리 인간화 타이핑{'+엔터' if p_enter else ''} 전송 완료!")
+                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.30, "delay_max": 0.45})
+                                    pico_queues[key].put({"action": "TYPE_STRING", "text": t_text, "clear_first": True, "press_enter": p_enter, "allow_typo": False})
+                                    dprint(key, f"⌨️ [{desc_str}] 클릭 후 입력창 비우기 및 정밀 타이핑{'+엔터' if p_enter else ''} 전송 완료!")
                                 else:
                                     dprint(key, f"✅ [{desc_str}] 커서 안착 및 클릭{'(더블)' if is_dbl else ''} 명령 전송 완료! ➔ 다음: {next_fsm_val}")
 
@@ -7490,6 +7550,9 @@ def ai_commander_worker(target_pc):
                         pos_12 = find_certi_img("12.png", th=0.82, roi_rect=(0, 550, 800, 600))
                         if pos_12:
                             state["certi_from_closed_game"] = False
+                            state["certi_need_web_after_quit"] = False
+                            state["certi_ok2_find_start"] = curr_time
+                            state["certi_ok2_evaded"] = False
                             dprint(key, f"🔎 [게임창 활성화] 작업표시줄 '12.png' 발견({pos_12[0]}, {pos_12[1]})! 원클릭하여 리니지 창을 띄우고 종료(ok2 ➔ quit)를 진행합니다.")
                             start_certi_move_and_action(pos_12[0], pos_12[1], next_fsm="CERTI_FIND_OK2_FIRST", double=False, post_wait=0.8, desc="12.png 리니지창 활성화")
                         else:
@@ -7510,16 +7573,37 @@ def ai_commander_worker(target_pc):
                             dprint(key, f"🔎 [팝업 확인] 'ok2.png' 발견({pos_ok2[0]}, {pos_ok2[1]})! 이동 후 원클릭합니다.")
                             start_certi_move_and_action(pos_ok2[0], pos_ok2[1], next_fsm="CERTI_FIND_QUIT", double=False, post_wait=0.6, desc="ok2.png 팝업 닫기")
                         else:
-                            state["cooldown"] = curr_time + 0.2
+                            elapsed_ok2 = curr_time - state.get("certi_ok2_find_start", curr_time)
+                            if elapsed_ok2 >= 3.0 and not state.get("certi_ok2_evaded", False):
+                                cur_cx, cur_cy = state.get("cursor_pos", [400, 300])
+                                evade_tx, evade_ty = int(round(g_val(560, 650))), int(round(g_val(260, 340)))
+                                dur_ev = apply_human_variance(0.10 + 0.035 * math.log2((math.hypot(evade_tx - cur_cx, evade_ty - cur_cy) / 20.0) + 1.0))
+                                pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(evade_tx - cur_cx, evade_ty - cur_cy, duration=dur_ev, behavior="CERTI", key=key)})
+                                state["cursor_pos"] = [evade_tx, evade_ty]
+                                state["certi_ok2_evaded"] = True
+                                state["cooldown"] = curr_time + dur_ev + 0.3
+                                dprint(key, "👀 [ok2.png 가림 방지] 커서를 옆으로 치운 뒤 확인 버튼을 다시 스캔합니다.")
+                            else:
+                                state["cooldown"] = curr_time + 0.2
 
-                    # 12-2단계: 우측 quit.png 찾아 원클릭 후 게임 종료(3초) 대기 -> 13.png 탐색으로 전환
+                    # 12-2단계: 우측 quit.png 찾아 원클릭 후 게임 종료(3초) 대기 -> 웹 인증(CERTI_GOTO_DESKTOP) 또는 13.png 탐색으로 전환
                     elif current_fsm == "CERTI_FIND_QUIT":
                         pos_quit = find_certi_img("quit.png", th=0.82)
                         if pos_quit:
-                            dprint(key, f"🔎 [게임 종료] 'quit.png' 발견({pos_quit[0]}, {pos_quit[1]})! 원클릭 후 3초 대기 뒤 바탕화면(13.png) 탐색에 돌입합니다.")
-                            state["certi_13_wait_mode"] = "NORMAL"
-                            state["certi_next_desktop_time"] = 0.0
-                            start_certi_move_and_action(pos_quit[0], pos_quit[1], next_fsm="CERTI_STEP_13_FIND", double=False, post_wait=3.0, desc="quit.png 게임 종료")
+                            if state.pop("certi_need_web_after_quit", False):
+                                state["certi_from_closed_game"] = True
+                                if state.get("certi_delay_until", 0.0) > curr_time:
+                                    next_after_quit = "CERTI_DELAY_WAIT"
+                                    dprint(key, f"🔎 [인증 전 게임 종료] 'quit.png' 발견({pos_quit[0]}, {pos_quit[1]})! 원클릭 후 3초 대기 뒤 특정시간 딜레이 대기(CERTI_DELAY_WAIT)로 이동합니다.")
+                                else:
+                                    next_after_quit = "CERTI_GOTO_DESKTOP"
+                                    dprint(key, f"🔎 [인증 전 게임 종료] 'quit.png' 발견({pos_quit[0]}, {pos_quit[1]})! 원클릭 후 3초 대기 뒤 바탕화면 가기(Win+D) 및 1단계 웹 인증으로 진입합니다.")
+                                start_certi_move_and_action(pos_quit[0], pos_quit[1], next_fsm=next_after_quit, double=False, post_wait=3.0, desc="quit.png 게임 선종료")
+                            else:
+                                dprint(key, f"🔎 [게임 종료] 'quit.png' 발견({pos_quit[0]}, {pos_quit[1]})! 원클릭 후 3초 대기 뒤 바탕화면(13.png) 탐색에 돌입합니다.")
+                                state["certi_13_wait_mode"] = "NORMAL"
+                                state["certi_next_desktop_time"] = 0.0
+                                start_certi_move_and_action(pos_quit[0], pos_quit[1], next_fsm="CERTI_STEP_13_FIND", double=False, post_wait=3.0, desc="quit.png 게임 종료")
                         else:
                             state["cooldown"] = curr_time + 0.2
 
@@ -7566,16 +7650,24 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.2
 
-                    # 13-1단계: 더블클릭 완료 직후 1분 타이머 및 delay.png / rec.png 타이머 초기화 후 감시 돌입
+                    # 13-1단계: 더블클릭 완료 직후 커서를 우측 검은 바탕화면으로 치워 13.png 보호 및 감시 돌입
                     elif current_fsm == "CERTI_LAUNCH_TIMER_INIT":
+                        cur_cx, cur_cy = state.get("cursor_pos", [400, 300])
+                        safe_tx, safe_ty = int(round(g_val(520, 620))), int(round(g_val(280, 360)))
+                        if math.hypot(safe_tx - cur_cx, safe_ty - cur_cy) > 20:
+                            dur_mv = apply_human_variance(0.08 + 0.03 * math.log2((math.hypot(safe_tx - cur_cx, safe_ty - cur_cy) / 20.0) + 1.0))
+                            pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(safe_tx - cur_cx, safe_ty - cur_cy, duration=dur_mv, behavior="CERTI", key=key)})
+                            state["cursor_pos"] = [safe_tx, safe_ty]
+                            state["real_cursor_pos"] = [safe_tx, safe_ty]
+
                         state["certi_launch_time"] = curr_time
                         state["certi_waiting_seen"] = False
                         state["certi_delay_seen_time"] = 0.0
                         state["certi_rec_seen_time"] = 0.0
                         state["certi_rec_miss_cnt"] = 0
                         state["target_fsm"] = "CERTI_WAIT_GAME_LAUNCH"
-                        state["cooldown"] = curr_time + 0.2
-                        dprint(key, "👀 [구동 감시 시작] 'purple.png', 'waiting.png', 'rec.png'(10초), 'delay.png'(10초), '14.png' 및 recerti 감지를 시작합니다.")
+                        state["cooldown"] = curr_time + 0.35
+                        dprint(key, "👀 [구동 감시 시작] 커서를 우측 안전지대로 이동 완료! 'purple.png', 'waiting.png', 'rec.png'(10초), 'delay.png'(10초), '14.png' 및 recerti 감지를 시작합니다.")
 
                     # 14단계(구동 감시 및 14.png 클릭): recerti 감시 + purple.png(퍼플 미실행) + delay.png(10초) + rec.png(10초) + waiting.png(1분)
                     elif current_fsm == "CERTI_WAIT_GAME_LAUNCH":
@@ -7811,31 +7903,64 @@ def ai_commander_worker(target_pc):
                     # =========================================================================
                     # 🛠️ [re3~ & delay.png 전용: 작업 관리자 실행 ➔ lineage.png 4초 대기 재감지 ➔ 강종 ➔ 재인증]
                     # =========================================================================
-                    # R-1단계: 바탕화면 도착 후 작업 관리자(Ctrl+Shift+Esc) 실행
+                    # R-1단계: 바탕화면 도착 후 작업표시줄(Y:550~600)에 tm_icon.png(이미 열린 작업관리자)가 있으면 클릭해서 띄우고, 없으면 Ctrl+Shift+Esc 실행
                     elif current_fsm == "CERTI_RECERTI_OPEN_TM":
-                        dprint(key, "🖥️ [작업관리자 호출] 피코 하드웨어로 Ctrl+Shift+Esc 신호를 전송합니다!")
-                        pico_queues[key].put({"action": "OPEN_TASKMGR"})
                         state["recerti_tm_open_time"] = curr_time
                         state["recerti_tm_retried"] = False
                         state["recerti_kill_try_cnt"] = 0
-                        state["target_fsm"] = "CERTI_RECERTI_TM_FIND_FIRST"
-                        state["cooldown"] = curr_time + g_val(1.2, 1.5)
 
-                    # R-2단계: 작업 관리자에서 lineage.png 최초 감지 (감지 즉시 4초 대기 타이머 가동)
+                        pos_tm_bar = (
+                            find_certi_img("recerti/tm_icon.png", th=0.82, roi_rect=(0, 550, 800, 600)) or
+                            find_certi_img("tm_icon.png", th=0.82, roi_rect=(0, 550, 800, 600))
+                        )
+                        if pos_tm_bar:
+                            dprint(key, f"🔎 [기존 작업관리자 감지] 작업표시줄에 이미 실행 중인 'tm_icon.png'({pos_tm_bar[0]}, {pos_tm_bar[1]}) 포착! 단축키 대신 아이콘을 원클릭하여 창을 앞으로 띄웁니다!")
+                            start_certi_move_and_action(
+                                pos_tm_bar[0], pos_tm_bar[1],
+                                next_fsm="CERTI_RECERTI_TM_FIND_FIRST",
+                                double=False,
+                                use_jitter=True,
+                                post_wait=0.8,
+                                desc="작업표시줄 tm_icon.png 클릭(창 활성화)"
+                            )
+                            state["certi_strict_aim"] = False
+                        else:
+                            dprint(key, "🖥️ [작업관리자 신규 호출] 피코 하드웨어로 Ctrl+Shift+Esc 신호를 전송합니다!")
+                            pico_queues[key].put({"action": "OPEN_TASKMGR"})
+                            state["target_fsm"] = "CERTI_RECERTI_TM_FIND_FIRST"
+                            state["cooldown"] = curr_time + g_val(1.2, 1.5)
+
+                    # R-2단계: 작업 관리자에서 lineage.png(88%↑) 최초 감지 (감지 즉시 4초 대기 타이머 가동)
                     elif current_fsm == "CERTI_RECERTI_TM_FIND_FIRST":
-                        pos_lin = find_certi_img("recerti/lineage.png", th=0.82) or find_certi_img("lineage.png", th=0.82)
+                        pos_lin = find_certi_img("recerti/lineage.png", th=0.88, roi_rect=(0, 25, 800, 540)) or find_certi_img("lineage.png", th=0.88, roi_rect=(0, 25, 800, 540))
                         if pos_lin:
-                            dprint(key, f"🔎 [리니지 아이콘 최초 감지] 작업관리자 내 'lineage.png' 포착({pos_lin[0]}, {pos_lin[1]})! 목록 움직임 안정화를 위해 4.0초 대기 후 좌표를 재감지합니다.")
+                            dprint(key, f"🔎 [리니지 프로세스 최초 감지] 작업관리자 내 'lineage.png'(88%↑) 포착({pos_lin[0]}, {pos_lin[1]})! 목록 움직임 안정화를 위해 4.0초 대기 후 좌표를 재감지합니다.")
                             state["recerti_lineage_stabilize_until"] = curr_time + g_val(4.0, 4.3)
                             state["target_fsm"] = "CERTI_RECERTI_TM_WAIT_4S"
                             state["cooldown"] = curr_time + 0.2
                         else:
                             elapsed_tm = curr_time - state.get("recerti_tm_open_time", curr_time)
-                            if elapsed_tm >= 6.0 and not state.get("recerti_tm_retried", False):
-                                dprint(key, "⚠️ [작업관리자 재호출] 6초간 'lineage.png' 미감지 ➔ Ctrl+Shift+Esc를 한 번 더 전송합니다.")
-                                pico_queues[key].put({"action": "OPEN_TASKMGR"})
+                            if elapsed_tm >= 5.0 and not state.get("recerti_tm_retried", False):
                                 state["recerti_tm_retried"] = True
-                                state["cooldown"] = curr_time + 1.2
+                                pos_tm_bar_retry = (
+                                    find_certi_img("recerti/tm_icon.png", th=0.82, roi_rect=(0, 550, 800, 600)) or
+                                    find_certi_img("tm_icon.png", th=0.82, roi_rect=(0, 550, 800, 600))
+                                )
+                                if pos_tm_bar_retry:
+                                    dprint(key, f"⚠️ [작업관리자 최소화 복구] 5초간 'lineage.png' 미감지 & 작업표시줄 'tm_icon.png' 확인! 아이콘({pos_tm_bar_retry[0]}, {pos_tm_bar_retry[1]})을 클릭해 창을 띄웁니다.")
+                                    start_certi_move_and_action(
+                                        pos_tm_bar_retry[0], pos_tm_bar_retry[1],
+                                        next_fsm="CERTI_RECERTI_TM_FIND_FIRST",
+                                        double=False,
+                                        use_jitter=True,
+                                        post_wait=0.8,
+                                        desc="작업표시줄 tm_icon.png 재클릭"
+                                    )
+                                    state["certi_strict_aim"] = False
+                                else:
+                                    dprint(key, "⚠️ [작업관리자 재호출] 5초간 'lineage.png' 미감지 ➔ Ctrl+Shift+Esc를 한 번 더 전송합니다.")
+                                    pico_queues[key].put({"action": "OPEN_TASKMGR"})
+                                    state["cooldown"] = curr_time + 1.2
                             elif elapsed_tm >= 12.0:
                                 dprint(key, "ℹ️ [리니지 프로세스 없음] 12초간 작업관리자에 'lineage.png'가 없습니다(이미 종료됨). 작업관리자를 닫고 1단계 재인증으로 이동합니다.")
                                 pico_queues[key].put({"action": "CLOSE_TASKMGR"})
@@ -7845,12 +7970,17 @@ def ai_commander_worker(target_pc):
                             else:
                                 state["cooldown"] = curr_time + 0.25
 
-                    # R-3단계: 최초 감지 4초 경과 후 현재 lineage.png 좌표를 재감지하여 커서 이동 및 원클릭
+                    # R-3단계: 최초 감지 4초 경과 후 현재 lineage.png(88%↑) 좌표를 재감지하여 1회 이동 후 원클릭 (하얀 배경 커서 재조준 오작동 원천 차단!)
                     elif current_fsm == "CERTI_RECERTI_TM_WAIT_4S":
                         if curr_time >= state.get("recerti_lineage_stabilize_until", 0):
-                            pos_lin_now = find_certi_img("recerti/lineage.png", th=0.82) or find_certi_img("lineage.png", th=0.82)
+                            pos_lin_now = find_certi_img("recerti/lineage.png", th=0.88, roi_rect=(0, 25, 800, 540)) or find_certi_img("lineage.png", th=0.88, roi_rect=(0, 25, 800, 540))
+                            pos_13_now = find_certi_img("13.png", th=0.82)
+                            if pos_lin_now and pos_13_now and math.hypot(pos_lin_now[0] - pos_13_now[0], pos_lin_now[1] - pos_13_now[1]) <= 45.0:
+                                dprint(key, "🛡️ [바탕화면 아이콘 보호] 감지된 좌표가 바탕화면 '13.png'와 겹쳐 클릭을 취소합니다!")
+                                pos_lin_now = None
+
                             if pos_lin_now:
-                                dprint(key, f"🎯 [4초 대기 완료 ➔ 좌표 재감지] 현재 'lineage.png' 위치({pos_lin_now[0]}, {pos_lin_now[1]})로 이동하여 원클릭합니다!")
+                                dprint(key, f"🎯 [4초 대기 완료 ➔ 좌표 재감지] 현재 'lineage.png' 위치({pos_lin_now[0]}, {pos_lin_now[1]})로 단일 이동하여 원클릭합니다! (하얀 배경 재조준 OFF)")
                                 start_certi_move_and_action(
                                     pos_lin_now[0], pos_lin_now[1],
                                     next_fsm="CERTI_RECERTI_TM_PRESS_DEL",
@@ -7859,8 +7989,9 @@ def ai_commander_worker(target_pc):
                                     post_wait=0.35,
                                     desc="작업관리자 lineage.png 원클릭"
                                 )
+                                # 💡 핵심: 하얀 작업관리자 창 위에서 하얀 커서를 다시 찾다가 바탕화면으로 튕겨나가는 현상을 100% 차단!
+                                state["certi_strict_aim"] = False
                             else:
-                                # 4초 대기 직후 순간적으로 못 찾았을 경우 최대 2초간 추가 스캔
                                 if curr_time <= state.get("recerti_lineage_stabilize_until", 0) + 2.0:
                                     state["cooldown"] = curr_time + 0.2
                                 else:
@@ -7872,15 +8003,21 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.2
 
-                    # R-4단계: 원클릭 직후 Delete 키 1회 전송 (퍼플 오종료 방지를 위해 작업관리자 내 재클릭 금지!)
+                    # R-4단계: 원클릭 직후 작업관리자 창 존재 확인 후 Delete 키 1회 전송
                     elif current_fsm == "CERTI_RECERTI_TM_PRESS_DEL":
-                        state["recerti_kill_try_cnt"] = state.get("recerti_kill_try_cnt", 0) + 1
-                        dprint(key, f"💀 [델키 1회 강제종료] Delete 키를 1회 전송합니다! ({state['recerti_kill_try_cnt']}회차)")
-                        pico_queues[key].put({"action": "TASKMGR_DEL"})
-                        state["target_fsm"] = "CERTI_RECERTI_TM_CLOSE_AND_HOME"
-                        state["cooldown"] = curr_time + 0.6
+                        has_tm_lin_on_scr = bool(find_certi_img("recerti/lineage.png", th=0.85, roi_rect=(0, 25, 800, 540)) or find_certi_img("lineage.png", th=0.85, roi_rect=(0, 25, 800, 540)))
+                        if not has_tm_lin_on_scr:
+                            dprint(key, "🛡️ [바탕화면 아이콘 삭제 방지] 화면에 작업관리자 'lineage.png'가 없어 Delete 키 전송을 차단합니다!")
+                            state["target_fsm"] = "CERTI_RECERTI_TM_CLOSE_AND_HOME"
+                            state["cooldown"] = curr_time + 0.2
+                        else:
+                            state["recerti_kill_try_cnt"] = state.get("recerti_kill_try_cnt", 0) + 1
+                            dprint(key, f"💀 [델키 1회 강제종료] Delete 키를 1회 전송합니다! ({state['recerti_kill_try_cnt']}회차)")
+                            pico_queues[key].put({"action": "TASKMGR_DEL"})
+                            state["target_fsm"] = "CERTI_RECERTI_TM_CLOSE_AND_HOME"
+                            state["cooldown"] = curr_time + 0.5
 
-                    # R-5단계: confirm2.png(종료 확인창) 유무만 1회 체크 후 즉시 작업관리자를 닫고 바탕화면으로 이동
+                    # R-5단계: confirm2.png(종료 확인창) 유무 체크 후 작업관리자에 포커스가 있는 상태에서 즉시 닫기(Alt+F4)
                     elif current_fsm == "CERTI_RECERTI_TM_CLOSE_AND_HOME":
                         pos_c2 = find_certi_img("recerti/confirm2.png", th=0.82) or find_certi_img("confirm2.png", th=0.82)
                         if pos_c2:
@@ -7893,32 +8030,34 @@ def ai_commander_worker(target_pc):
                                 post_wait=0.5,
                                 desc="confirm2.png 종료오류 확인 클릭"
                             )
+                            state["certi_strict_aim"] = False
                         else:
-                            dprint(key, "🖥️ [작업관리자 종료 ➔ 바탕화면] 작업관리자를 닫고 작업표시줄 '12.png' 소멸을 최대 7초간 확인합니다.")
+                            dprint(key, "🖥️ [작업관리자 종료 ➔ 바탕화면] 포커스가 유지된 상태에서 작업관리자를 닫고(Alt+F4) 작업표시줄 '12.png' 소멸을 확인합니다.")
                             pico_queues[key].put({"action": "CLOSE_TASKMGR"})
+                            pico_queues[key].put({"action": "WAIT", "delay_min": 0.30, "delay_max": 0.45})
                             pico_queues[key].put({"action": "HOME_MACRO"})
-                            # 혹시 마우스 커서가 작업표시줄(Y>=530)에 있으면 가림 방지를 위해 위로 치움
                             cur_cx, cur_cy = state.get("cursor_pos", [400, 300])
-                            if cur_cy >= 530:
+                            if cur_cy >= 530 or cur_cx < 300:
                                 safe_tx, safe_ty = int(round(g_val(550, 650))), int(round(g_val(260, 340)))
                                 pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(safe_tx - cur_cx, safe_ty - cur_cy, duration=0.15, behavior="CERTI", key=key)})
                                 state["cursor_pos"] = [safe_tx, safe_ty]
                             now_real = time.time()
-                            state["recerti_12_gone_deadline"] = now_real + 8.2 # 닫기/바탕화면 전환(1.2s) + 최대 7.0초 대기
+                            state["recerti_12_gone_deadline"] = now_real + 8.5
                             state["recerti_12_gone_streak"] = 0
                             state["target_fsm"] = "CERTI_RECERTI_WAIT_12_GONE"
-                            state["cooldown"] = now_real + 1.2
+                            state["cooldown"] = now_real + 1.4
 
                     # R-5-1단계: confirm2.png 클릭 직후 즉시 작업관리자를 닫고 바탕화면으로 이동
                     elif current_fsm == "CERTI_RECERTI_TM_AFTER_CONFIRM2":
                         dprint(key, "🖥️ [확인창 클릭 완료 ➔ 바탕화면] 작업관리자를 닫고 작업표시줄 '12.png' 소멸을 최대 7초간 확인합니다.")
                         pico_queues[key].put({"action": "CLOSE_TASKMGR"})
+                        pico_queues[key].put({"action": "WAIT", "delay_min": 0.30, "delay_max": 0.45})
                         pico_queues[key].put({"action": "HOME_MACRO"})
                         now_real = time.time()
-                        state["recerti_12_gone_deadline"] = now_real + 8.2
+                        state["recerti_12_gone_deadline"] = now_real + 8.5
                         state["recerti_12_gone_streak"] = 0
                         state["target_fsm"] = "CERTI_RECERTI_WAIT_12_GONE"
-                        state["cooldown"] = now_real + 1.2
+                        state["cooldown"] = now_real + 1.4
 
                     # R-6단계: 바탕화면 작업표시줄(Y:550~600)에서 12.png가 사라지기를 최대 7초간 대기 (안 사라지면 작업관리자 재실행!)
                     elif current_fsm == "CERTI_RECERTI_WAIT_12_GONE":
@@ -8464,24 +8603,40 @@ def ai_commander_worker(target_pc):
                         online_inv_members[my_uid]["not_leader_locked"] = False
                         dprint(key, "🔓 [파장 잠금 자동 해제] 기존 파티원 이탈(또는 전원 미파티/잠금) 감지! 파장 후보 자격을 복구합니다.")
 
-                # 2) 파장 단독 파탈 시 자동 권위 이양 체크
+                # 🛡️ 내가 파장인 동안에는 잔류 수락 신호(pending_leader_invite_sig)를 상시 제거하여 파장이 y+엔터를 치는 현상 원천 차단
+                if state.get("is_invite_leader", False):
+                    state["pending_leader_invite_sig"] = False
+
+                # 2) 파장 단독 파탈 시 자동 권위 이양 체크 (통신/인증감지 시차 2.0초 검증 적용)
                 if state.get("is_invite_leader", False) and state.get("had_party_as_leader", False) and not state.get("in_ingame_party", True):
-                    other_in_party = [u for u, m in online_inv_members.items() if u != my_uid and m.get("in_party", False)]
+                    other_in_party = [
+                        u for u, m in online_inv_members.items()
+                        if u != my_uid and m.get("in_party", False) and (curr_time - m.get("recv_time", 0.0) <= 1.2)
+                    ]
                     if other_in_party:
-                        dprint(key, "🔄 [파장 단독 파탈 감지] 나만 파티에서 이탈되었습니다! 기존 수락 순서 다음 캐릭터에게 파장을 넘기고 초대를 요청합니다.")
-                        state["is_invite_leader"] = False
-                        state["had_party_as_leader"] = False
-                        state["invite_leader_since"] = 0.0
-                        state["need_party_invite_req"] = True
-                        if my_uid in state.get("party_order", []):
-                            state["party_order"].remove(my_uid)
-                        online_inv_members[my_uid]["is_invite_leader"] = False
-                        online_inv_members[my_uid]["need_invite"] = True
+                        # 💡 파티원 전원이 인증하러 나가서 파티가 깨졌을 때 UDP/인증감지 시차(약 1초)로 인해 단독 파탈로 오판하는 것을 막기 위해 2.0초간 유예 검증
+                        if state.get("leader_solo_drop_check_t", 0.0) == 0.0:
+                            state["leader_solo_drop_check_t"] = curr_time
+                        elif curr_time - state.get("leader_solo_drop_check_t", curr_time) >= 2.0:
+                            state["leader_solo_drop_check_t"] = 0.0
+                            dprint(key, "🔄 [파장 단독 파탈 감지] 2초 검증 후에도 다른 파티원들의 파티가 유지 중입니다! 다음 캐릭터에게 파장을 넘기고 초대를 요청합니다.")
+                            state["is_invite_leader"] = False
+                            state["had_party_as_leader"] = False
+                            state["invite_leader_since"] = 0.0
+                            state["need_party_invite_req"] = True
+                            if my_uid in state.get("party_order", []):
+                                state["party_order"].remove(my_uid)
+                            online_inv_members[my_uid]["is_invite_leader"] = False
+                            online_inv_members[my_uid]["need_invite"] = True
                     else:
+                        state["leader_solo_drop_check_t"] = 0.0
                         state["had_party_as_leader"] = False
                         state["need_party_invite_req"] = False
+                        state["pending_leader_invite_sig"] = False
                         state["party_order"] = [my_uid]
                         dprint(key, "ℹ️ [파티원 전원 이탈/인증] 다른 파티원이 모두 빠져 파티가 해산되었습니다. 파장 자격을 유지하며 파티원 복귀를 대기합니다.")
+                else:
+                    state["leader_solo_drop_check_t"] = 0.0
 
                 # ⏱️ [2분 무파티 워치독 & 파장 강제 교체]
                 # 같은 초대조에서 2캐릭 이상이 사냥터(in_hunting_ground)에 있는데 파티 맺어진 캐릭이 하나도 없는 상태가 2분(120초) 이상 지속되면,
@@ -20414,6 +20569,30 @@ def ai_commander_worker(target_pc):
                             hard_ban_list.append((ban_data[0], ban_data[1], curr_time, "BANNED"))
                     state["hard_ban_item_map_list"] = hard_ban_list
 
+                    # 💡 [사냥우선 + 3셀유지 판독] 3셀 아이템 클릭 후 실제로 움직이며 아이템과 가까워지고 있는 중인지 팩트 체크
+                    is_keep_3cell_looting = False
+                    fsm_loot_chk = str(state.get("target_fsm", "IDLE"))
+                    if settings.get("hunt_first", False) and settings.get("hunt_first_keep_loot", False):
+                        if fsm_loot_chk in ["LOOTING_3CELL_APPROACH", "LOOTING_3CELL_WAIT_MOVE"] and state.get("is_char_moving", False):
+                            if fsm_loot_chk == "LOOTING_3CELL_WAIT_MOVE":
+                                # 클릭 직후 이번 프레임에 막 발을 떼기 시작한 상태
+                                is_keep_3cell_looting = True
+                            elif raw_item_boxes:
+                                best_raw_b = min(raw_item_boxes, key=lambda rb: math.hypot(rb['x'] - char_screen_cx, rb['y'] - char_screen_cy))
+                                curr_raw_dist = math.hypot(best_raw_b['x'] - char_screen_cx, (best_raw_b['y'] + 15 - char_screen_cy) / 0.50)
+                                prev_start_dist = state.get("loot_start_dist", 9999.0)
+                                # 거리가 줄어들고 있거나 최근 0.45초 이내에 거리가 좁혀진 상태일 때만 접근 유지 인정
+                                is_dist_closing = (curr_raw_dist < prev_start_dist - 2.0) or (
+                                    curr_raw_dist <= prev_start_dist + 4.0 and (curr_time - state.get("loot_stuck_timer", curr_time) <= 0.45)
+                                )
+                                if is_dist_closing:
+                                    is_keep_3cell_looting = True
+                            else:
+                                # 아이템 박스가 1프레임 깜빡였거나 방금 발밑에서 먹어진 직후(0.2초 유예)
+                                if state.get("loot_missing_timer", 0) == 0 or (curr_time - state.get("loot_missing_timer", 0) <= state.get("loot_missing_delay", 0.25)):
+                                    if curr_time - state.get("loot_stuck_timer", curr_time) <= 0.45:
+                                        is_keep_3cell_looting = True
+
                     for b in raw_item_boxes:
                         ix, iy = b['x'], b['y']
                         ignore_reason = ""
@@ -20449,15 +20628,15 @@ def ai_commander_worker(target_pc):
                                 ignored_boxes.append(b)
                                 continue
 
-                        if settings.get("hunt_first", False) and mobs:
-                            if dist_to_b >= 57.0:
+                        if settings.get("hunt_first", False) and mobs and not is_keep_3cell_looting:
+                            if dist_to_b >= 40.0:
                                 b['ignore_reason'] = "HUNT_FIRST(>1cell)"
                                 ignored_boxes.append(b)
                                 continue
 
                         is_pb_arrived_loot = (state.get("party_buff_status") == "ARRIVED") or (state.get("is_active_standby", False) and "팟바람" in str(state.get("standby_reason", "")))
-                        if is_pb_arrived_loot and dist_to_b >= 57.0:
-                            b['ignore_reason'] = "PB_1CELL_ONLY(>57px)"
+                        if is_pb_arrived_loot and dist_to_b >= 40.0:
+                            b['ignore_reason'] = "PB_1CELL_ONLY(>40px)"
                             ignored_boxes.append(b)
                             continue
 
@@ -20466,7 +20645,7 @@ def ai_commander_worker(target_pc):
 
                         is_bondon_or_sadeon_loot = ("본던" in active_dungeon or "gludio" in active_dungeon.lower() or "사던" in active_dungeon or "silver" in active_dungeon.lower())
                         if is_parked_loot_mode and not state.get("helping_who") and not state.get("help_requester", False):
-                            parked_dist_limit = 120.0 if is_bondon_or_sadeon_loot else 57.0
+                            parked_dist_limit = 120.0 if is_bondon_or_sadeon_loot else 40.0
                             if dist_to_b >= parked_dist_limit:
                                 b['ignore_reason'] = f"PARKED_LIMIT(>{int(parked_dist_limit)}px)"
                                 ignored_boxes.append(b)
@@ -20633,7 +20812,7 @@ def ai_commander_worker(target_pc):
                             should_loot_now = True
                             is_pb_arrived_loot_now = (state.get("party_buff_status") == "ARRIVED") or (state.get("is_active_standby", False) and "팟바람" in str(state.get("standby_reason", "")))
 
-                            if is_pb_arrived_loot_now or (settings.get("hunt_first", False) and dist_to_best < 57.0):
+                            if is_pb_arrived_loot_now or (settings.get("hunt_first", False) and dist_to_best < 40.0):
                                 should_loot_now = False
 
                             if should_loot_now:
@@ -20709,8 +20888,8 @@ def ai_commander_worker(target_pc):
                 fsm = state.get("target_fsm", "IDLE")
 
                 if str(fsm).startswith("LOOT") and settings.get("hunt_first", False) and mobs:
-                    if fsm not in ["LOOT_SCAN_WAIT", "LOOTING_1CELL", "LOOTING_MOTION_VERIFY"]:
-                        dprint(key, "🚨 [사냥 우선 인터럽트] 원거리 루팅 중 몹 출현 감지! 즉시 템을 포기하고 사냥에 돌입합니다!")
+                    if fsm not in ["LOOT_SCAN_WAIT", "LOOTING_1CELL", "LOOTING_MOTION_VERIFY"] and not is_keep_3cell_looting:
+                        dprint(key, "🚨 [사냥 우선 인터럽트] 원거리 루팅(미이동/접근중단) 중 몹 출현 감지! 즉시 템을 포기하고 사냥에 돌입합니다!")
                         clear_movements_only(pico_queues[key])
                         if state.get("sweep_active", False):
                             pico_queues[key].put({"action": "SWEEP_STOP"})
@@ -20807,7 +20986,7 @@ def ai_commander_worker(target_pc):
                                         state["astar_loot_click_cd"] = 0
                                         state["cooldown"] = curr_time + 0.05
 
-                                elif true_pixel_dist < 57:
+                                elif true_pixel_dist < 54:
                                     dprint(key, "💎 [상황 1] 1셀 내 드랍. 제자리 F4 획득 + 주변 모션 사냥 동시 개시!")
                                     state["target_fsm"] = "LOOTING_1CELL"
 
@@ -20893,7 +21072,7 @@ def ai_commander_worker(target_pc):
                             dy_box = (best_box['y'] + 15 - char_screen_cy) / 0.50
                             current_dist = math.hypot(dx_box, dy_box)
 
-                            if current_dist >= 57.0:
+                            if current_dist >= 54.0:
                                 dprint(key, f"📦 [다중 드랍 연속 줍기] 발밑 템 획득 완료! 남은 템이 {current_dist:.1f}px 밖에 있습니다. 이동하여 마저 줍습니다!")
                                 state["target_fsm"] = "LOOT_SCAN_WAIT"
                                 state["loot_wait_start"] = curr_time - 1.0
@@ -21202,7 +21381,7 @@ def ai_commander_worker(target_pc):
                                 dy_box = (best_box['y'] + 15 - char_screen_cy) / 0.50
                                 current_dist = math.hypot(dx_box, dy_box)
 
-                                if current_dist <  57:
+                                if current_dist < 40:
                                     dprint(key, f"💎 [2셀 루팅 팩트체크] 1칸 전진 제동 완료! (남은 거리: {current_dist:.1f}px) 1셀 획득(F4) 구역으로 합류!")
                                     state["target_fsm"] = "LOOTING_1CELL"
                                     is_fixed_dealer_loot = settings.get("use_party_fixed", False) and not settings.get("is_puller", False)
@@ -21281,6 +21460,13 @@ def ai_commander_worker(target_pc):
                             dprint(key, f"✅ [루팅 동기화] 커서 팩트 체크 완료({cur_x}, {cur_y})! 정확한 위치에 클릭 발사!")
 
                             pico_queues[key].put({"action": "SINGLE_ATTACK"})
+
+                            if item_boxes:
+                                best_b_init = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
+                                state["loot_start_dist"] = math.hypot(best_b_init['x'] - char_screen_cx, (best_b_init['y'] + 15 - char_screen_cy) / 0.50)
+                            else:
+                                state["loot_start_dist"] = math.hypot(cur_x - char_screen_cx, (cur_y - char_screen_cy) / 0.50)
+                            state["loot_stuck_timer"] = curr_time
 
                             state["target_fsm"] = "LOOTING_3CELL_WAIT_MOVE"
                             state["loot_move_timeout"] = curr_time + 0.6
@@ -21434,7 +21620,7 @@ def ai_commander_worker(target_pc):
                             dy_box = (best_box['y'] + 15 - char_screen_cy) / 0.50
                             current_dist = math.hypot(dx_box, dy_box)
 
-                            if current_dist < 57:
+                            if current_dist < 40:
                                 dprint(key, "🎯 [3셀 접근] 1셀 이내로 접근 성공! 정밀 1셀 줍기 상태로 전환합니다.")
                                 state["target_fsm"] = "LOOTING_1CELL"
                                 is_fixed_dealer_loot = settings.get("use_party_fixed", False) and not settings.get("is_puller", False)
@@ -27359,6 +27545,7 @@ def sync_gui_vars():
                 "tele_hunt_time": sf(v, "tele_hunt_time", 10.0),
                 "move_sens": si(v, "move_sens", 2000.0),
                 "hunt_first": v["hunt_first"].get(),
+                "hunt_first_keep_loot": bool(v["hunt_first"].get() and v.get("hunt_first_keep_loot", tk.BooleanVar(value=False)).get()),
                 "chain_kill": False,
                 "haste_match_rate": 92.0,
                 "zone_tele_nodes": si(v, "zone_tele_nodes", 120.0),
@@ -27987,7 +28174,33 @@ for i, pc in enumerate(MINI_PCS):
     tk.Label(sens_frame, text="🏃 픽셀감도:", bg=BG_PANEL, fg="#B2FF59", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(4, 2))
     tk.Entry(sens_frame, textvariable=vars_dict["move_sens"], width=4, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
 
-    tk.Checkbutton(sens_frame, text="사냥우선", variable=vars_dict["hunt_first"], bg=BG_PANEL, fg="#FF9800", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(2, 1))
+    chk_hunt_first = tk.Checkbutton(sens_frame, text="사냥우선", variable=vars_dict["hunt_first"], bg=BG_PANEL, fg="#FF9800", activebackground=BG_PANEL, activeforeground="#FF9800", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold"))
+    chk_hunt_first.pack(side="left", padx=(2, 0))
+
+    chk_keep_loot = tk.Checkbutton(
+        sens_frame,
+        text="3셀유지",
+        variable=vars_dict["hunt_first_keep_loot"],
+        bg=BG_PANEL,
+        fg="#FFD54F",
+        activebackground=BG_PANEL,
+        activeforeground="#FFD54F",
+        disabledforeground="#616161",
+        selectcolor="#3E3E42",
+        font=("맑은 고딕", 8, "bold")
+    )
+    chk_keep_loot.pack(side="left", padx=(0, 1))
+
+    def _update_keep_loot_state(*_args, v_d=vars_dict, chk_w=chk_keep_loot):
+        if v_d["hunt_first"].get():
+            chk_w.config(state="normal")
+        else:
+            v_d["hunt_first_keep_loot"].set(False)
+            chk_w.config(state="disabled")
+
+    chk_hunt_first.config(command=_update_keep_loot_state)
+    vars_dict["hunt_first"].trace_add("write", _update_keep_loot_state)
+    _update_keep_loot_state()
 
     # 💡 체인킬, 헤이감도 UI 삭제 및 Zone 스마트 텔레포트 UI 추가
     tk.Label(sens_frame, text=" | zone:", bg=BG_PANEL, fg="#E91E63", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(2, 0))
