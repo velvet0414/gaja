@@ -6706,18 +6706,24 @@ def ai_commander_worker(target_pc):
                         release_central_ip_lock_async(key)
                         my_num = get_my_central_num()
                         prev_c = str(state.get("certi_curr_central") or my_num).strip()
-                        next_c = get_next_central_in_order(prev_c)
+                        if prev_c == "VPN":
+                            vpn_enter_t = state.get("certi_vpn_enter_time", 0.0)
+                            if vpn_enter_t > 0.0 and (curr_time - vpn_enter_t >= 21600.0):
+                                next_c = my_num
+                                state["certi_vpn_enter_time"] = 0.0
+                                dprint(key, "⏰ [프로톤VPN 6시간 경과] 6시간이 지나 다시 내 중앙컴(1~13번) 회선부터 인증을 시도합니다!")
+                            else:
+                                next_c = "VPN"
+                                dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 지연 초과! 군주컴 프로톤VPN 회선으로 재시도합니다.")
+                        else:
+                            next_c = get_next_central_in_order(prev_c)
+                            dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 지연 초과! [{prev_c}번 ➔ {next_c}번 중앙컴] 회선으로 변경하여 재시도합니다.")
                         state["certi_curr_central"] = next_c
-                        if key not in saved_settings:
-                            saved_settings[key] = {}
-                        saved_settings[key]["certi_curr_central"] = next_c
-                        save_settings()
                         if next_c == my_num:
                             state["certi_use_sub"] = False
                         else:
                             state["certi_use_sub"] = True
                             CURRENT_PROXY_TARGET_NUM[key] = next_c
-                        dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 지연 초과! [{prev_c}번 ➔ {next_c}번 중앙컴] 회선으로 변경하여 재시도합니다.")
                     else:
                         dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 단계에서 {step_limit_sec:.0f}초간 다음 이미지를 찾지 못해 크롬 창을 닫고 다시 시작합니다.")
 
@@ -7036,7 +7042,17 @@ def ai_commander_worker(target_pc):
                         state["certi_done_logged"] = False
 
                         my_num = get_my_central_num()
-                        saved_c = str(state.get("certi_curr_central") or saved_settings.get(key, {}).get("certi_curr_central") or "").strip()
+                        # 💡 매크로 재시작 시에는 무조건 내 중앙컴(my_num)부터 시작하도록 메모리(state) 값만 참조!
+                        saved_c = str(state.get("certi_curr_central") or "").strip()
+
+                        # 💡 군주컴 VPN 사용 중 현실시간 6시간(21600초)이 경과했으면 다시 내 중앙컴(1~13번)으로 복귀!
+                        if saved_c == "VPN":
+                            vpn_enter_t = state.get("certi_vpn_enter_time", 0.0)
+                            if vpn_enter_t <= 0.0 or (curr_time - vpn_enter_t >= 21600.0):
+                                dprint(key, "⏰ [프로톤VPN 6시간 경과 ➔ 중앙컴 복귀] 군주컴 VPN 사용 6시간이 지나 다시 내 중앙컴(1~13번)부터 순차 인증을 시도합니다!")
+                                saved_c = my_num
+                                state["certi_vpn_enter_time"] = 0.0
+
                         if saved_c != "VPN" and saved_c not in CENTRAL_ORDER:
                             saved_c = my_num
 
@@ -7318,26 +7334,38 @@ def ai_commander_worker(target_pc):
                             max_lines = (len(ALIVE_OTHER_PROXIES) + 1) if ALIVE_OTHER_PROXIES else len(CENTRAL_ORDER)
 
                             if streak >= max_lines or prev_c == "VPN":
-                                dprint(key, f"🌐 [일반 회선 모두 소진 ➔ 군주컴 프로톤VPN 교체 요청] 막힌 1~13번을 건너뛰고 군주컴 프로톤VPN 새 IP로 즉시 교체합니다!")
-                                state["certi_curr_central"] = "VPN"
-                                state["certi_use_sub"] = True
-                                CURRENT_PROXY_TARGET_NUM[key] = "VPN"
-                                if key not in saved_settings:
-                                    saved_settings[key] = {}
-                                saved_settings[key]["certi_curr_central"] = "VPN"
-                                save_settings()
+                                vpn_enter_t = state.get("certi_vpn_enter_time", 0.0)
+                                # 만약 VPN 사용 중 6시간이 지난 시점에 fail.png가 떴다면 다시 내 중앙컴(1~13번)부터 순회!
+                                if prev_c == "VPN" and vpn_enter_t > 0.0 and (curr_time - vpn_enter_t >= 21600.0):
+                                    dprint(key, "⏰ [프로톤VPN 6시간 만료 ➔ 중앙컴 복귀] 6시간이 경과하여 다시 내 중앙컴(1~13번)부터 인증을 시도합니다!")
+                                    state["certi_curr_central"] = my_num
+                                    state["certi_use_sub"] = False
+                                    state["certi_vpn_enter_time"] = 0.0
+                                    state["certi_fail_streak"] = 0
+                                    state["certi_web_last_fsm"] = None
+                                    state["certi_last_box"] = None
+                                    state["certi_ip_lock_log_time"] = 0.0
+                                    state["target_fsm"] = "CERTI_WAIT_IP_LOCK"
+                                    state["cooldown"] = curr_time + 1.2
+                                else:
+                                    state["certi_curr_central"] = "VPN"
+                                    state["certi_use_sub"] = True
+                                    CURRENT_PROXY_TARGET_NUM[key] = "VPN"
+                                    state["certi_web_last_fsm"] = None
+                                    state["certi_last_box"] = None
 
-                                state["certi_web_last_fsm"] = None
-                                state["certi_last_box"] = None
-                                state["target_fsm"] = "CERTI_REQ_VPN_ROTATE"
-                                state["cooldown"] = curr_time + 1.2
+                                    if prev_c == "VPN":
+                                        dprint(key, "🌐 [현재 프로톤VPN IP 한도 도달 ➔ 새 VPN IP 교체 요청] 군주컴에 다음 프로톤VPN 프로필로 교체를 요청합니다!")
+                                        state["target_fsm"] = "CERTI_REQ_VPN_ROTATE"
+                                    else:
+                                        state["certi_vpn_enter_time"] = curr_time
+                                        dprint(key, "🌐 [1~13번 중앙컴 모두 소진 ➔ 군주컴 프로톤VPN 진입] 향후 6시간 동안 군주컴 프로톤VPN 회선으로 인증을 진행합니다!")
+                                        state["certi_ip_lock_log_time"] = 0.0
+                                        state["target_fsm"] = "CERTI_WAIT_IP_LOCK"
+                                    state["cooldown"] = curr_time + 1.2
                             else:
                                 next_c = get_next_central_in_order(prev_c)
                                 state["certi_curr_central"] = next_c
-                                if key not in saved_settings:
-                                    saved_settings[key] = {}
-                                saved_settings[key]["certi_curr_central"] = next_c
-                                save_settings()
 
                                 if next_c == my_num:
                                     state["certi_use_sub"] = False
