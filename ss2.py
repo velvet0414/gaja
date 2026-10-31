@@ -24,7 +24,8 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 AUTH_SERVER_URL = "https://raw.githubusercontent.com/velvet0414/gaja/main/keys.json"
 SS2_GITHUB_URL = "https://raw.githubusercontent.com/velvet0414/gaja/main/ss2.py"
 
-if not globals().get("_SS2_GITHUB_LOADED", False):
+# 💡 exe로 패키징된 실행 파일일 때만 깃허브 실시간 코드를 불러오고, 로컬 .py 직접 실행 시에는 현재 로컬 코드를 그대로 가동합니다!
+if getattr(sys, "frozen", False) and not globals().get("_SS2_GITHUB_LOADED", False):
     globals()["_SS2_GITHUB_LOADED"] = True
     try:
         print("🔄 [자동 업데이트] 깃허브에서 최신 ss2.py 코드를 확인 중입니다...")
@@ -482,18 +483,19 @@ def analyze_captcha_with_gemini(img_bgr, banner_bottom_y=272):
 #   fail.png 발생 시 1번~11번 중앙컴(sub.png)을 순차 로테이션합니다.
 # ==============================================================================
 CENTRAL_TAILSCALE_MAP = {
-    "1":  "100.106.98.27",   # no1
-    "2":  "100.102.199.44",  # no2
-    "3":  "100.102.229.12",  # no3
-    "4":  "100.117.6.55",    # no4
-    "5":  "100.82.40.120",   # no5
-    "6":  "100.111.124.91",  # no6
-    "7":  "100.118.150.90",  # no7
-    "8":  "100.99.116.37",   # no8
-    "9":  "100.110.17.117",  # no9
-    "10": "100.93.134.45",   # no10-2
-    "11": "100.66.194.109",  # no11
-    "12": "100.74.191.120",  # no12 (커맨드컴과 동일 물리 회선 공유)
+    "1":   "100.106.98.27",   # no1
+    "2":   "100.102.199.44",  # no2
+    "3":   "100.102.229.12",  # no3
+    "4":   "100.117.6.55",    # no4
+    "5":   "100.82.40.120",   # no5
+    "6":   "100.111.124.91",  # no6
+    "7":   "100.118.150.90",  # no7
+    "8":   "100.99.116.37",   # no8
+    "9":   "100.110.17.117",  # no9
+    "10":  "100.93.134.45",   # no10-2
+    "11":  "100.66.194.109",  # no11
+    "12":  "100.74.191.120",  # no12 (커맨드컴과 동일 물리 회선 공유)
+    "VPN": "127.0.0.1",       # 군주컴 로컬 프로톤VPN 출구
 }
 CENTRAL_ORDER = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]
 PROXY_DIRECT_EXIT_PORT = 31280
@@ -582,16 +584,40 @@ def _local_ip_lock_fallback(action, client_id):
 def request_central_ip_lock(pc_key, target_c_num, action="ACQUIRE"):
     my_num = get_my_central_num()
     t_num = str(target_c_num or my_num).strip()
-    if action == "RELEASE" or t_num == my_num:
-        return True, "GRANTED"
+    client_id = f"군주컴-{pc_key}"
 
-    # 타 중앙컴 프록시(sub.png) 사용 시 해당 중앙컴(31280)이 켜져 있는지만 확인하고 대기 없이 즉시 동시 통과!
+    # 1) 프로톤VPN("VPN") 사용 시: 군주컴 로컬 31280(_process_vpn_ip_lock_command)에 슬롯 요청/반납 (회전 중 진입 방지 및 3슬롯 보호)
+    if t_num == "VPN":
+        try:
+            s = socket.create_connection(("127.0.0.1", PROXY_DIRECT_EXIT_PORT), timeout=1.2)
+            s.settimeout(1.2)
+            s.sendall(f"IP_LOCK {action} {client_id}\r\n\r\n".encode("utf-8"))
+            resp = s.recv(1024).decode("utf-8", errors="ignore").strip()
+            s.close()
+            if resp.startswith(("GRANTED", "RELEASED")):
+                return True, resp
+            elif resp:
+                return False, resp
+            return True, "GRANTED"
+        except Exception:
+            return _local_ip_lock_fallback(action, client_id)
+
+    # 2) 본인 회선("12") 또는 타 중앙컴("1"~"11") 사용 시: 해당 중앙컴 31280의 3슬롯 시차 대기열 연동
     host = CENTRAL_TAILSCALE_MAP.get(t_num, "100.74.191.120")
     try:
-        s = socket.create_connection((host, PROXY_DIRECT_EXIT_PORT), timeout=1.0)
+        s = socket.create_connection((host, PROXY_DIRECT_EXIT_PORT), timeout=1.2)
+        s.settimeout(1.2)
+        s.sendall(f"IP_LOCK {action} {client_id}\r\n\r\n".encode("utf-8"))
+        resp = s.recv(1024).decode("utf-8", errors="ignore").strip()
         s.close()
+        if resp.startswith(("GRANTED", "RELEASED")):
+            return True, resp
+        elif resp:
+            return False, resp
         return True, "GRANTED"
     except Exception:
+        if t_num == my_num:
+            return _local_ip_lock_fallback(action, client_id)
         return False, "OFFLINE|타 중앙컴 연결 불가"
 
 def release_central_ip_lock_async(pc_key):
@@ -601,6 +627,403 @@ def release_central_ip_lock_async(pc_key):
     locked_c = st.pop("certi_locked_central", None)
     if locked_c:
         threading.Thread(target=request_central_ip_lock, args=(pc_key, locked_c, "RELEASE"), daemon=True).start()
+
+# ==============================================================================
+# 🛡️ [군주컴 프로톤VPN 스플릿 터널링 출구(31279) & IP 자동 교체 서버]
+# ==============================================================================
+VPN_INTERNAL_EXIT_PORT = 31279
+_VPN_ROTATE_MUTEX = threading.Lock()
+_VPN_IS_ROTATING = False
+_VPN_LAST_ROTATE_TIME = 0.0
+_VPN_CURRENT_PUBLIC_IP = ""
+
+_VPN_LOCK_MUTEX = threading.Lock()
+_VPN_LOCK_MAX_CONCURRENT = 3
+_VPN_LOCK_ENTRY_GAP = 3.0
+_VPN_LOCK_HOLDERS = {}
+_VPN_LOCK_COOLDOWN_UNTIL = 0.0
+_VPN_LOCK_QUEUE = []
+
+_VPN_WORKER_CODE = """
+import socket, threading, ssl, urllib.request
+
+EXIT_PORT = 31279
+
+def get_my_vpn_ip():
+    for url in ("https://api.ipify.org", "https://icanhazip.com", "https://ident.me"):
+        try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=4.0, context=ctx) as r:
+                ip = r.read().decode("utf-8", errors="ignore").strip()
+                if ip:
+                    return ip
+        except Exception:
+            continue
+    return "UNKNOWN"
+
+def pipe(s1, s2):
+    try:
+        while True:
+            d = s1.recv(8192)
+            if not d:
+                break
+            s2.sendall(d)
+    except Exception:
+        pass
+    finally:
+        try: s1.close()
+        except Exception: pass
+        try: s2.close()
+        except Exception: pass
+
+def handle(csock):
+    rsock = None
+    try:
+        csock.settimeout(10.0)
+        req = b""
+        while b"\\r\\n\\r\\n" not in req and len(req) < 16384:
+            chunk = csock.recv(4096)
+            if not chunk:
+                break
+            req += chunk
+        if not req:
+            csock.close()
+            return
+        first = req.split(b"\\r\\n", 1)[0].decode("utf-8", errors="ignore").strip()
+        if first == "CHECK_VPN_IP":
+            ip = get_my_vpn_ip()
+            csock.sendall((ip + "\\r\\n").encode("utf-8"))
+            csock.close()
+            return
+        parts = first.split(" ")
+        if len(parts) < 2:
+            csock.close()
+            return
+        method, target = parts[0].upper(), parts[1]
+        if method == "CONNECT":
+            host, port = (target.rsplit(":", 1)[0], int(target.rsplit(":", 1)[1])) if ":" in target else (target, 443)
+            rsock = socket.create_connection((host, port), timeout=8.0)
+            csock.sendall(b"HTTP/1.1 200 Connection Established\\r\\n\\r\\n")
+            csock.settimeout(None); rsock.settimeout(None)
+            threading.Thread(target=pipe, args=(csock, rsock), daemon=True).start()
+            pipe(rsock, csock)
+        else:
+            host, port = "", 80
+            for line in req.split(b"\\r\\n")[1:]:
+                if not line:
+                    break
+                if line.lower().startswith(b"host:"):
+                    hv = line.split(b":", 1)[1].strip().decode("latin-1", errors="ignore")
+                    host, port = (hv.rsplit(":", 1)[0], int(hv.rsplit(":", 1)[1])) if ":" in hv else (hv, 80)
+                    break
+            if not host:
+                csock.close()
+                return
+            rsock = socket.create_connection((host, port), timeout=8.0)
+            rsock.sendall(req)
+            csock.settimeout(None); rsock.settimeout(None)
+            threading.Thread(target=pipe, args=(csock, rsock), daemon=True).start()
+            pipe(rsock, csock)
+    except Exception:
+        try: csock.close()
+        except Exception: pass
+        if rsock:
+            try: rsock.close()
+            except Exception: pass
+
+srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", EXIT_PORT))
+srv.listen(128)
+while True:
+    c, _ = srv.accept()
+    threading.Thread(target=handle, args=(c,), daemon=True).start()
+"""
+
+def _ensure_and_start_python_vpn_worker():
+    """python.exe를 python_vpn.exe로 자동 복제하고 내부 31279 VPN 전용 출구 프로세스를 가동합니다."""
+    import shutil
+    try:
+        py_dir = os.path.dirname(sys.executable)
+        vpn_exe = os.path.join(py_dir, "python_vpn.exe")
+        if not os.path.exists(vpn_exe):
+            shutil.copy2(sys.executable, vpn_exe)
+            print(f"✅ [VPN 분리 엔진] '{vpn_exe}' 자동 생성 완료!")
+        print(f"📌 [프로톤VPN 스플릿 터널링 등록 경로]: {vpn_exe}")
+
+        try:
+            s = socket.create_connection(("127.0.0.1", VPN_INTERNAL_EXIT_PORT), timeout=0.5)
+            s.close()
+            print(f"🌐 [VPN 전용 출구] 이미 127.0.0.1:{VPN_INTERNAL_EXIT_PORT} 프로세스가 가동 중입니다.")
+            return
+        except Exception:
+            pass
+
+        subprocess.Popen(
+            [vpn_exe, "-c", _VPN_WORKER_CODE],
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        print(f"🚀 [VPN 전용 출구 개통] python_vpn.exe (127.0.0.1:{VPN_INTERNAL_EXIT_PORT}) 백그라운드 가동 완료!")
+    except Exception as e:
+        print(f"⚠️ [VPN 전용 출구 생성 실패]: {e}")
+
+threading.Thread(target=_ensure_and_start_python_vpn_worker, daemon=True).start()
+
+def _get_vpn_worker_public_ip():
+    """python_vpn.exe(31279 포트)를 통해 현재 프로톤VPN의 실제 외부 공인 IP를 조회합니다."""
+    try:
+        s = socket.create_connection(("127.0.0.1", VPN_INTERNAL_EXIT_PORT), timeout=5.0)
+        s.settimeout(5.0)
+        s.sendall(b"CHECK_VPN_IP\r\n\r\n")
+        ip_str = s.recv(256).decode("utf-8", errors="ignore").strip()
+        s.close()
+        if ip_str and ip_str != "UNKNOWN":
+            return ip_str
+    except Exception:
+        pass
+    return ""
+
+os.makedirs("qq/certi/vpn_configs", exist_ok=True)
+_VPN_CONFIG_IDX = 0
+_VPN_ACTIVE_TUNNEL_NAME = ""
+
+def _click_proton_vpn_connect_on_host():
+    """
+    이미지 캡처(vpn_connect.png)나 마우스 커서 이동 없이 100% 백그라운드에서 프로톤VPN 한국 서버를 교체합니다.
+    - 1순위: qq/certi/vpn_configs/ 내 프로톤 사이트 설정 파일(.conf / .ovpn) 백그라운드 순차 로테이션
+    - 2순위: 프로톤VPN CLI 백그라운드 명령어 실행
+    - 3순위: 윈도우 내장 UIAutomation을 통한 프로톤VPN 앱 백그라운드 버튼(KR_Random / 대한민국 / 빠른 연결) 호출
+    """
+    global _VPN_CONFIG_IDX, _VPN_ACTIVE_TUNNEL_NAME
+    try:
+        # ------------------------------------------------------------------
+        # 1순위: 프로톤 사이트(account.protonvpn.com)에서 다운받은 설정파일(.conf/.ovpn) 백그라운드 교체
+        # ------------------------------------------------------------------
+        cfg_dir = os.path.abspath("qq/certi/vpn_configs")
+        if os.path.exists(cfg_dir):
+            wg_files = sorted([f for f in os.listdir(cfg_dir) if f.lower().endswith(".conf")])
+            ovpn_files = sorted([f for f in os.listdir(cfg_dir) if f.lower().endswith(".ovpn")])
+
+            wg_exe = r"C:\Program Files\WireGuard\wireguard.exe"
+            if wg_files and os.path.exists(wg_exe):
+                if _VPN_ACTIVE_TUNNEL_NAME:
+                    subprocess.run([wg_exe, "/uninstalltunnelservice", _VPN_ACTIVE_TUNNEL_NAME], creationflags=subprocess.CREATE_NO_WINDOW)
+                    time.sleep(1.0)
+                pick_f = wg_files[_VPN_CONFIG_IDX % len(wg_files)]
+                _VPN_CONFIG_IDX += 1
+                pick_path = os.path.join(cfg_dir, pick_f)
+                _VPN_ACTIVE_TUNNEL_NAME = os.path.splitext(pick_f)[0]
+                subprocess.run([wg_exe, "/installtunnelservice", pick_path], creationflags=subprocess.CREATE_NO_WINDOW)
+                print(f"⚡ [프로톤 사이트 WireGuard 백그라운드 교체] '{pick_f}' 터널 적용 완료!")
+                return True
+
+            ovpn_exe = r"C:\Program Files\OpenVPN\bin\openvpn.exe"
+            if ovpn_files and os.path.exists(ovpn_exe):
+                subprocess.run(["taskkill", "/F", "/IM", "openvpn.exe"], creationflags=subprocess.CREATE_NO_WINDOW)
+                time.sleep(1.0)
+                pick_f = ovpn_files[_VPN_CONFIG_IDX % len(ovpn_files)]
+                _VPN_CONFIG_IDX += 1
+                pick_path = os.path.join(cfg_dir, pick_f)
+                auth_path = os.path.join(cfg_dir, "auth.txt")
+                cmd_list = [ovpn_exe, "--config", pick_path]
+                if os.path.exists(auth_path):
+                    cmd_list.extend(["--auth-user-pass", auth_path])
+                subprocess.Popen(cmd_list, cwd=cfg_dir, creationflags=subprocess.CREATE_NO_WINDOW)
+                print(f"⚡ [프로톤 사이트 OpenVPN 백그라운드 교체] '{pick_f}' 실행 완료!")
+                return True
+
+        # ------------------------------------------------------------------
+        # 2순위: 프로톤VPN CLI가 존재하는 경우 백그라운드 명령어로 한국 랜덤 서버 연결
+        # ------------------------------------------------------------------
+        for cli_path in (
+            r"C:\Program Files\Proton\VPN\ProtonVPN.Cli.exe",
+            r"C:\Program Files (x86)\Proton Technologies\ProtonVPN\ProtonVPN.Cli.exe"
+        ):
+            if os.path.exists(cli_path):
+                subprocess.run([cli_path, "c", "--cc", "KR", "-r"], creationflags=subprocess.CREATE_NO_WINDOW, timeout=15)
+                print("⚡ [프로톤 CLI 백그라운드 교체] 한국(KR) 랜덤 서버 재연결 명령 전송 완료!")
+                return True
+
+        # ------------------------------------------------------------------
+        # 3순위: 윈도우 내장 UIAutomation으로 프로톤 앱 버튼을 마우스 이동 없이 백그라운드 호출
+        # ------------------------------------------------------------------
+        ps_uia_script = r"""
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$root = [System.Windows.Automation.AutomationElement]::RootElement
+$condWin = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, "Proton VPN")
+$win = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $condWin)
+if (-not $win) {
+    $allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
+    foreach ($w in $allWins) {
+        if ($w.Current.Name -like "*Proton VPN*") { $win = $w; break }
+    }
+}
+if (-not $win) { Write-Output "NO_WINDOW"; exit }
+
+$targets = @("KR_Random", "KR", "South Korea", "Korea", "대한민국", "한국", "Quick connect", "빠른 연결", "Reconnect", "Connect", "연결")
+$allEls = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+
+foreach ($kw in $targets) {
+    foreach ($el in $allEls) {
+        $n = $el.Current.Name
+        if ($n -and ($n -eq $kw -or $n -like "*$kw*")) {
+            $inv = $null
+            if ($el.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$inv)) {
+                $inv.Invoke()
+                Write-Output "INVOKED:$n"
+                exit
+            }
+            $sel = $null
+            if ($el.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$sel)) {
+                $sel.Select()
+                Write-Output "SELECTED:$n"
+                exit
+            }
+        }
+    }
+}
+Write-Output "NOT_FOUND"
+"""
+        res_uia = subprocess.check_output(
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_uia_script],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=8.0
+        ).decode("utf-8", errors="ignore").strip()
+
+        if res_uia.startswith(("INVOKED:", "SELECTED:")):
+            print(f"⚡ [프로톤VPN 백그라운드 제어 완료] 마우스 개입 없이 '{res_uia}' 실행 성공!")
+            return True
+        else:
+            print(f"⚠️ [프로톤VPN 백그라운드 제어 알림] 응답: {res_uia} (프로톤VPN 앱이 켜져 있는지 또는 'KR_Random' 프로필이 생성되어 있는지 확인해주세요)")
+            return False
+
+    except Exception as e:
+        print(f"⚠️ [프로톤VPN 백그라운드 교체 오류]: {e}")
+        return False
+
+def _process_vpn_ip_lock_command(cmd_line):
+    """31280 포트로 들어온 IP_LOCK 요청을 처리합니다."""
+    global _VPN_LOCK_HOLDERS, _VPN_LOCK_COOLDOWN_UNTIL, _VPN_LOCK_QUEUE
+    if _VPN_IS_ROTATING:
+        return "WAIT|군주컴 프로톤VPN 새 IP 교체 중 (잠시 대기)"
+
+    now = time.time()
+    parts = cmd_line.strip().split(" ")
+    if len(parts) < 3:
+        return "ERROR"
+    action, client_id = parts[1].upper(), parts[2].strip()
+
+    with _VPN_LOCK_MUTEX:
+        _VPN_LOCK_QUEUE = [(cid, t) for cid, t in _VPN_LOCK_QUEUE if now - t <= 15.0]
+        expired = [cid for cid, info in _VPN_LOCK_HOLDERS.items() if (now - info["hb"] > 15.0) or (now - info["start"] > 300.0)]
+        for cid in expired:
+            _VPN_LOCK_HOLDERS.pop(cid, None)
+
+        if action == "RELEASE":
+            _VPN_LOCK_QUEUE = [(cid, t) for cid, t in _VPN_LOCK_QUEUE if cid != client_id]
+            _VPN_LOCK_HOLDERS.pop(client_id, None)
+            return "RELEASED"
+        elif action == "ACQUIRE":
+            if client_id in _VPN_LOCK_HOLDERS:
+                _VPN_LOCK_HOLDERS[client_id]["hb"] = now
+                return "GRANTED"
+            if not any(cid == client_id for cid, _ in _VPN_LOCK_QUEUE):
+                _VPN_LOCK_QUEUE.append((client_id, now))
+            else:
+                _VPN_LOCK_QUEUE = [(cid, (now if cid == client_id else t)) for cid, t in _VPN_LOCK_QUEUE]
+
+            if len(_VPN_LOCK_HOLDERS) < _VPN_LOCK_MAX_CONCURRENT:
+                if _VPN_LOCK_QUEUE and _VPN_LOCK_QUEUE[0][0] == client_id:
+                    if now < _VPN_LOCK_COOLDOWN_UNTIL:
+                        rem_cd = max(1, int(round(_VPN_LOCK_COOLDOWN_UNTIL - now)))
+                        return f"COOLDOWN|VPN 동시 접속 시차 대기({rem_cd}초)"
+                    _VPN_LOCK_QUEUE.pop(0)
+                    _VPN_LOCK_HOLDERS[client_id] = {"hb": now, "start": now}
+                    _VPN_LOCK_COOLDOWN_UNTIL = now + _VPN_LOCK_ENTRY_GAP
+                    return "GRANTED"
+                else:
+                    q_pos = next((i + 1 for i, (cid, _) in enumerate(_VPN_LOCK_QUEUE) if cid == client_id), 1)
+                    return f"WAIT|앞순번 VPN 시차 입장 대기 중 (내 순번: {q_pos}번)"
+            else:
+                q_pos = next((i + 1 for i, (cid, _) in enumerate(_VPN_LOCK_QUEUE) if cid == client_id), 1)
+                return f"BUSY|VPN 3슬롯 사용중 (내 대기순번: {q_pos}번)"
+    return "ERROR"
+
+def _process_vpn_rotate_command(cmd_line):
+    """사냥컴/군주컴에서 들어온 VPN_ROTATE 명령을 받아 프로톤VPN IP를 바꾸고 결과를 반환합니다."""
+    global _VPN_IS_ROTATING, _VPN_LAST_ROTATE_TIME, _VPN_CURRENT_PUBLIC_IP
+    parts = cmd_line.strip().split(" ")
+    requester_id = parts[1] if len(parts) >= 2 else "UNKNOWN"
+
+    if _VPN_IS_ROTATING:
+        return "ROTATING|현재 프로톤VPN IP 변경 진행 중입니다"
+
+    with _VPN_ROTATE_MUTEX:
+        now = time.time()
+        if now - _VPN_LAST_ROTATE_TIME < 30.0 and _VPN_CURRENT_PUBLIC_IP:
+            print(f"♻️ [VPN 중복교체 패스] {requester_id} 요청 ➔ 방금 바뀐 새 IP({_VPN_CURRENT_PUBLIC_IP})를 즉시 공유합니다!")
+            return f"ROTATED|{_VPN_CURRENT_PUBLIC_IP}"
+
+        with _VPN_LOCK_MUTEX:
+            now_l = time.time()
+            expired = [cid for cid, info in _VPN_LOCK_HOLDERS.items() if (now_l - info["hb"] > 15.0) or (now_l - info["start"] > 300.0)]
+            for cid in expired:
+                _VPN_LOCK_HOLDERS.pop(cid, None)
+            others = [cid for cid in _VPN_LOCK_HOLDERS.keys() if cid != requester_id]
+            if others:
+                return f"WAIT_HOLDERS|다른 미니컴({', '.join(others)}) VPN 인증 종료 대기 중"
+
+        _VPN_IS_ROTATING = True
+
+    try:
+        old_ip = _get_vpn_worker_public_ip() or _VPN_CURRENT_PUBLIC_IP
+        print(f"🔄 [프로톤VPN IP 교체 시작] 요청: {requester_id} | 기존 VPN IP: {old_ip}")
+
+        clicked = _click_proton_vpn_connect_on_host()
+        if not clicked:
+            return "FAIL|vpn_connect.png 버튼을 찾지 못했습니다"
+
+        # 클릭 직후 VPN 재연결이 시작될 때까지 4.5초 선대기 (기존 IP를 새 IP로 오판하는 현상 원천 차단)
+        time.sleep(4.5)
+        start_wait = time.time()
+        new_ip = ""
+        while time.time() - start_wait < 22.0:
+            cand_ip = _get_vpn_worker_public_ip()
+            if cand_ip and cand_ip != old_ip:
+                new_ip = cand_ip
+                break
+            time.sleep(2.0)
+
+        if new_ip:
+            _VPN_CURRENT_PUBLIC_IP = new_ip
+            _VPN_LAST_ROTATE_TIME = time.time()
+            print(f"🎉 [프로톤VPN 새 IP 개통 완료] {old_ip} ➔ {new_ip}")
+            return f"ROTATED|{new_ip}"
+        else:
+            print(f"⚠️ [프로톤VPN IP 변경 미확인] 현재 IP: {old_ip}")
+            return "FAIL|IP 변경 미확인"
+    finally:
+        _VPN_IS_ROTATING = False
+
+def request_vpn_server_rotate(pc_key):
+    """군주컴 내부 미니1~4가 로컬 VPN 서버(127.0.0.1:31280)에 프로톤VPN 교체를 요청합니다."""
+    client_id = f"군주컴-{pc_key}"
+    try:
+        s = socket.create_connection(("127.0.0.1", PROXY_DIRECT_EXIT_PORT), timeout=30.0)
+        s.settimeout(30.0)
+        s.sendall(f"VPN_ROTATE {client_id}\r\n\r\n".encode("utf-8"))
+        resp = s.recv(1024).decode("utf-8", errors="ignore").strip()
+        s.close()
+        if resp.startswith("ROTATED"):
+            new_ip = resp.split("|", 1)[1] if "|" in resp else "NEW_IP"
+            return True, new_ip
+        return False, resp
+    except Exception as e:
+        return False, f"OFFLINE|{e}"
 
 def _proxy_health_checker_thread():
     global ALIVE_OTHER_PROXIES
@@ -637,7 +1060,7 @@ def _proxy_pipe_sockets(s1, s2):
         try: s2.close()
         except Exception: pass
 
-def _handle_proxy_client(client_sock, pc_key):
+def _handle_proxy_client(client_sock, is_exit_server=False, pc_key=None):
     global _LAST_PROXY_LOG_TIME
     remote_sock = None
     try:
@@ -645,32 +1068,68 @@ def _handle_proxy_client(client_sock, pc_key):
         try: client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except Exception: pass
 
-        now_t = time.time()
-        my_num = get_my_central_num()
-        target_num = CURRENT_PROXY_TARGET_NUM.get(pc_key) if pc_key else None
-        if not target_num or target_num == my_num or target_num not in CENTRAL_TAILSCALE_MAP:
-            target_num = get_next_central_in_order(my_num)
-            if pc_key:
-                CURRENT_PROXY_TARGET_NUM[pc_key] = target_num
+        if not is_exit_server:
+            now_t = time.time()
+            my_num = get_my_central_num()
+            target_num = CURRENT_PROXY_TARGET_NUM.get(pc_key) if pc_key else None
+            if not target_num:
+                target_num = get_next_central_in_order(my_num)
+                if pc_key:
+                    CURRENT_PROXY_TARGET_NUM[pc_key] = target_num
 
-        ehost = CENTRAL_TAILSCALE_MAP.get(target_num)
-        if ehost:
-            try:
-                remote_sock = socket.create_connection((ehost, PROXY_DIRECT_EXIT_PORT), timeout=4.0)
-                if now_t - _LAST_PROXY_LOG_TIME > 3.0:
-                    print(f"🔗 [군주 프록시 우회] {pc_key} 크롬 ➔ [{target_num}번 중앙컴({ehost})] 회선으로 정상 연결됨!")
-                    _LAST_PROXY_LOG_TIME = now_t
-            except Exception:
-                remote_sock = None
+            ehost = "127.0.0.1" if target_num == "VPN" else CENTRAL_TAILSCALE_MAP.get(target_num)
+            if ehost:
+                try:
+                    remote_sock = socket.create_connection((ehost, PROXY_DIRECT_EXIT_PORT), timeout=4.0)
+                    if now_t - _LAST_PROXY_LOG_TIME > 3.0:
+                        print(f"🔗 [군주 프록시 우회] {pc_key} 크롬 ➔ [{target_num}({ehost})] 회선 연결됨!")
+                        _LAST_PROXY_LOG_TIME = now_t
+                except Exception:
+                    remote_sock = None
 
-        if remote_sock is not None:
-            try: remote_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            except Exception: pass
-            client_sock.settimeout(None)
-            remote_sock.settimeout(None)
-            threading.Thread(target=_proxy_pipe_sockets, args=(client_sock, remote_sock), daemon=True).start()
-            _proxy_pipe_sockets(remote_sock, client_sock)
+            if remote_sock is not None:
+                try: remote_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except Exception: pass
+                client_sock.settimeout(None)
+                remote_sock.settimeout(None)
+                threading.Thread(target=_proxy_pipe_sockets, args=(client_sock, remote_sock), daemon=True).start()
+                _proxy_pipe_sockets(remote_sock, client_sock)
+                return
+
+        req_data = b""
+        while b"\r\n\r\n" not in req_data and len(req_data) < 16384:
+            chunk = client_sock.recv(4096)
+            if not chunk:
+                break
+            req_data += chunk
+
+        if not req_data:
+            client_sock.close()
             return
+
+        first_line = req_data.split(b"\r\n", 1)[0].decode("utf-8", errors="ignore")
+
+        if first_line.startswith("IP_LOCK "):
+            reply_msg = _process_vpn_ip_lock_command(first_line)
+            client_sock.sendall((reply_msg + "\r\n").encode("utf-8"))
+            client_sock.close()
+            return
+
+        if first_line.startswith("VPN_ROTATE "):
+            reply_msg = _process_vpn_rotate_command(first_line)
+            client_sock.sendall((reply_msg + "\r\n").encode("utf-8"))
+            client_sock.close()
+            return
+
+        remote_sock = socket.create_connection(("127.0.0.1", VPN_INTERNAL_EXIT_PORT), timeout=8.0)
+        try: remote_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except Exception: pass
+        remote_sock.sendall(req_data)
+        client_sock.settimeout(None)
+        remote_sock.settimeout(None)
+        threading.Thread(target=_proxy_pipe_sockets, args=(client_sock, remote_sock), daemon=True).start()
+        _proxy_pipe_sockets(remote_sock, client_sock)
+
     except Exception:
         try: client_sock.close()
         except Exception: pass
@@ -678,27 +1137,32 @@ def _handle_proxy_client(client_sock, pc_key):
             try: remote_sock.close()
             except Exception: pass
 
-def _start_proxy_listener(bind_port, pc_key):
+def _start_proxy_listener(bind_port, pc_key=None):
+    is_exit = (pc_key is None)
     while True:
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             srv.bind(("0.0.0.0", bind_port))
-            srv.listen(64)
+            srv.listen(128)
             break
         except Exception:
             try: srv.close()
             except Exception: pass
             time.sleep(3.0)
-    print(f"🌐 [군주 우회 입구 개통] {pc_key} 전용 크롬 우회 포트({bind_port}) 오픈 완료!")
+    if pc_key:
+        print(f"🌐 [군주 우회 입구 개통] {pc_key} 전용 크롬 우회 포트({bind_port}) 오픈 완료!")
+    else:
+        print(f"🌐 [군주컴 프로톤VPN 통합 게이트 개통] 1~13번 중앙컴용 VPN 프록시 포트({bind_port}) 오픈 완료!")
     while True:
         try:
             c_sock, _ = srv.accept()
-            threading.Thread(target=_handle_proxy_client, args=(c_sock, pc_key), daemon=True).start()
+            threading.Thread(target=_handle_proxy_client, args=(c_sock, is_exit, pc_key), daemon=True).start()
         except Exception:
             time.sleep(0.05)
 
 threading.Thread(target=_proxy_health_checker_thread, daemon=True).start()
+threading.Thread(target=_start_proxy_listener, args=(PROXY_DIRECT_EXIT_PORT, None), daemon=True).start()
 for _mk, _mport in MINI_PROXY_PORTS.items():
     threading.Thread(target=_start_proxy_listener, args=(_mport, _mk), daemon=True).start()
 
@@ -3307,8 +3771,8 @@ def find_cursor_pos(img_bgr, last_pos=None, check_circle=False, allow_full_scan=
             return False
         return float(np.std(patch)) >= 18.0
 
-    local_err_limit = 0.12 if is_certi_mode else 0.20
-    full_err_limit = 0.10 if is_certi_mode else 0.12
+    local_err_limit = 0.17 if is_certi_mode else 0.20
+    full_err_limit = 0.15 if is_certi_mode else 0.12
 
     if last_pos:
         lx, ly = last_pos; pad = 90 
@@ -5875,9 +6339,10 @@ def ai_commander_worker(target_pc):
 
                 def start_certi_move_and_action(tx, ty, next_fsm, double=False, type_text=None, press_enter=False, use_jitter=True, post_wait=0.5, desc=""):
                     ingame_fsms = {
-                        "CERTI_FIND_OK2_FIRST", "CERTI_FIND_QUIT", "CERTI_STEP_17_FIND", "CERTI_RECERTI_OK_FIND", "CERTI_DRAGON_CLICK_HASTE"
+                        "CERTI_FIND_OK2_FIRST", "CERTI_FIND_QUIT", "CERTI_STEP_17_FIND", "CERTI_RECERTI_OK_FIND"
                     }
-                    c_mode = True if (current_fsm in ingame_fsms) else "WEB"
+                    # 군주 인게임 접속 완료 후 F6(헤이스트) 클릭 시에는 순수 인게임 커서(is_certi_mode=False)로 정밀 스캔!
+                    c_mode = False if current_fsm == "CERTI_DRAGON_CLICK_HASTE" else (True if (current_fsm in ingame_fsms) else "WEB")
                     real_c = find_cursor_pos(img_bgr, last_pos=state.get("cursor_pos", [400, 300]), allow_full_scan=True, is_certi_mode=c_mode)
                     if real_c:
                         cur_cx, cur_cy = real_c[0], real_c[1]
@@ -6241,6 +6706,21 @@ def ai_commander_worker(target_pc):
                         state["target_fsm"] = "CERTI_WAIT_IP_LOCK"
                         state["cooldown"] = curr_time + 1.5
 
+                    elif current_fsm == "CERTI_REQ_VPN_ROTATE":
+                        ok_vpn, vpn_msg = request_vpn_server_rotate(key)
+                        if ok_vpn:
+                            dprint(key, f"✅ [프로톤VPN 교체 완료] 새 IP({vpn_msg})로 웹 인증을 재개합니다!")
+                            state["certi_curr_central"] = "VPN"
+                            state["certi_use_sub"] = True
+                            CURRENT_PROXY_TARGET_NUM[key] = "VPN"
+                            state["certi_web_last_fsm"] = None
+                            state["certi_ip_lock_log_time"] = 0.0
+                            state["target_fsm"] = "CERTI_WAIT_IP_LOCK"
+                            state["cooldown"] = curr_time + 0.5
+                        else:
+                            dprint(key, f"⏳ [프로톤VPN 교체 대기] ({vpn_msg}) 3초 후 다시 요청합니다.")
+                            state["cooldown"] = curr_time + 3.0
+
                     elif current_fsm == "CERTI_WAIT_IP_LOCK":
                         my_num = get_my_central_num()
                         target_c = str(state.get("certi_curr_central") or my_num).strip()
@@ -6299,8 +6779,8 @@ def ai_commander_worker(target_pc):
                                 pico_queues[key].put({"action": "CERTI_CLICK", "double": is_dbl})
                                 if t_text is not None:
                                     state["cursor_pos"] = [tx, ty]
-                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.22, "delay_max": 0.40})
-                                    pico_queues[key].put({"action": "TYPE_STRING", "text": t_text, "clear_first": False, "press_enter": p_enter})
+                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.30, "delay_max": 0.45})
+                                    pico_queues[key].put({"action": "TYPE_STRING", "text": t_text, "clear_first": True, "press_enter": p_enter})
                                 state["target_fsm"] = next_fsm_val
                                 state["cooldown"] = curr_time + post_wait_val
                         else:
@@ -6376,11 +6856,18 @@ def ai_commander_worker(target_pc):
                             streak = state.get("certi_fail_streak", 0) + 1
                             state["certi_fail_streak"] = streak
                             max_lines = (len(ALIVE_OTHER_PROXIES) + 1) if ALIVE_OTHER_PROXIES else len(CENTRAL_ORDER)
-                            if streak >= max_lines:
-                                threading.Thread(target=play_tts_alert, args=(f"통제실 {key} 인증 회선 소진",), daemon=True).start()
-                                state["is_paused"] = True
-                                state["target_fsm"] = "IDLE"
-                                state["cooldown"] = curr_time + 1.0
+                            if streak >= max_lines or prev_c == "VPN":
+                                dprint(key, "🌐 [통제실 회선 소진 ➔ 프로톤VPN IP 자동 교체] 프로톤VPN 새 한국 IP로 변경 후 즉시 재인증합니다!")
+                                state["certi_curr_central"] = "VPN"
+                                state["certi_use_sub"] = True
+                                CURRENT_PROXY_TARGET_NUM[key] = "VPN"
+                                if key not in saved_settings: saved_settings[key] = {}
+                                saved_settings[key]["certi_curr_central"] = "VPN"
+                                save_settings()
+                                state["certi_web_last_fsm"] = None
+                                state["certi_last_box"] = None
+                                state["target_fsm"] = "CERTI_REQ_VPN_ROTATE"
+                                state["cooldown"] = curr_time + 1.2
                             else:
                                 next_c = get_next_central_in_order(prev_c)
                                 state["certi_curr_central"] = next_c
@@ -6854,30 +7341,63 @@ def ai_commander_worker(target_pc):
                     # 🛠️ [re3~ & delay.png 전용: 작업 관리자 실행 ➔ lineage.png 4초 대기 재감지 ➔ 강종 ➔ 재인증]
                     # =========================================================================
                     elif current_fsm == "CERTI_RECERTI_OPEN_TM":
-                        dprint(key, "🖥️ [작업관리자 호출] 피코 하드웨어로 Ctrl+Shift+Esc 신호를 전송합니다!")
-                        pico_queues[key].put({"action": "OPEN_TASKMGR"})
                         state["recerti_tm_open_time"] = curr_time
                         state["recerti_tm_retried"] = False
                         state["recerti_kill_try_cnt"] = 0
-                        state["target_fsm"] = "CERTI_RECERTI_TM_FIND_FIRST"
-                        state["cooldown"] = curr_time + g_val(1.2, 1.5)
+
+                        pos_tm_bar = (
+                            find_certi_img("recerti/tm_icon.png", th=0.82, roi_rect=(0, 550, 800, 600)) or
+                            find_certi_img("tm_icon.png", th=0.82, roi_rect=(0, 550, 800, 600))
+                        )
+                        if pos_tm_bar:
+                            dprint(key, f"🔎 [기존 작업관리자 감지] 작업표시줄에 이미 실행 중인 'tm_icon.png'({pos_tm_bar[0]}, {pos_tm_bar[1]}) 포착! 아이콘을 원클릭하여 창을 띄웁니다!")
+                            start_certi_move_and_action(
+                                pos_tm_bar[0], pos_tm_bar[1],
+                                next_fsm="CERTI_RECERTI_TM_FIND_FIRST",
+                                double=False,
+                                use_jitter=True,
+                                post_wait=0.8,
+                                desc="작업표시줄 tm_icon.png 클릭(창 활성화)"
+                            )
+                            state["certi_strict_aim"] = False
+                        else:
+                            dprint(key, "🖥️ [작업관리자 신규 호출] 피코 하드웨어로 Ctrl+Shift+Esc 신호를 전송합니다!")
+                            pico_queues[key].put({"action": "OPEN_TASKMGR"})
+                            state["target_fsm"] = "CERTI_RECERTI_TM_FIND_FIRST"
+                            state["cooldown"] = curr_time + g_val(1.2, 1.5)
 
                     elif current_fsm == "CERTI_RECERTI_TM_FIND_FIRST":
-                        pos_lin = find_certi_img("recerti/lineage.png", th=0.82) or find_certi_img("lineage.png", th=0.82)
+                        pos_lin = find_certi_img("recerti/lineage.png", th=0.88, roi_rect=(0, 25, 800, 540)) or find_certi_img("lineage.png", th=0.88, roi_rect=(0, 25, 800, 540))
                         if pos_lin:
-                            dprint(key, f"🔎 [리니지 아이콘 최초 감지] 작업관리자 내 'lineage.png' 포착({pos_lin[0]}, {pos_lin[1]})! 목록 움직임 안정화를 위해 4.0초 대기 후 좌표를 재감지합니다.")
+                            dprint(key, f"🔎 [리니지 프로세스 최초 감지] 작업관리자 내 'lineage.png'(88%↑) 포착({pos_lin[0]}, {pos_lin[1]})! 4.0초 대기 후 좌표를 재감지합니다.")
                             state["recerti_lineage_stabilize_until"] = curr_time + g_val(4.0, 4.3)
                             state["target_fsm"] = "CERTI_RECERTI_TM_WAIT_4S"
                             state["cooldown"] = curr_time + 0.2
                         else:
                             elapsed_tm = curr_time - state.get("recerti_tm_open_time", curr_time)
-                            if elapsed_tm >= 6.0 and not state.get("recerti_tm_retried", False):
-                                dprint(key, "⚠️ [작업관리자 재호출] 6초간 'lineage.png' 미감지 ➔ Ctrl+Shift+Esc를 한 번 더 전송합니다.")
-                                pico_queues[key].put({"action": "OPEN_TASKMGR"})
+                            if elapsed_tm >= 5.0 and not state.get("recerti_tm_retried", False):
                                 state["recerti_tm_retried"] = True
-                                state["cooldown"] = curr_time + 1.2
+                                pos_tm_bar_retry = (
+                                    find_certi_img("recerti/tm_icon.png", th=0.82, roi_rect=(0, 550, 800, 600)) or
+                                    find_certi_img("tm_icon.png", th=0.82, roi_rect=(0, 550, 800, 600))
+                                )
+                                if pos_tm_bar_retry:
+                                    dprint(key, f"⚠️ [작업관리자 최소화 복구] 작업표시줄 'tm_icon.png'({pos_tm_bar_retry[0]}, {pos_tm_bar_retry[1]})를 클릭해 창을 띄웁니다.")
+                                    start_certi_move_and_action(
+                                        pos_tm_bar_retry[0], pos_tm_bar_retry[1],
+                                        next_fsm="CERTI_RECERTI_TM_FIND_FIRST",
+                                        double=False,
+                                        use_jitter=True,
+                                        post_wait=0.8,
+                                        desc="작업표시줄 tm_icon.png 재클릭"
+                                    )
+                                    state["certi_strict_aim"] = False
+                                else:
+                                    dprint(key, "⚠️ [작업관리자 재호출] 5초간 'lineage.png' 미감지 ➔ Ctrl+Shift+Esc를 한 번 더 전송합니다.")
+                                    pico_queues[key].put({"action": "OPEN_TASKMGR"})
+                                    state["cooldown"] = curr_time + 1.2
                             elif elapsed_tm >= 12.0:
-                                dprint(key, "ℹ️ [리니지 프로세스 없음] 12초간 작업관리자에 'lineage.png'가 없습니다(이미 종료됨). 작업관리자를 닫고 1단계 재인증으로 이동합니다.")
+                                dprint(key, "ℹ️ [리니지 프로세스 없음] 12초간 작업관리자에 'lineage.png'가 없습니다. 작업관리자를 닫고 1단계 재인증으로 이동합니다.")
                                 pico_queues[key].put({"action": "CLOSE_TASKMGR"})
                                 state["certi_from_closed_game"] = True
                                 state["target_fsm"] = "CERTI_GOTO_DESKTOP"
@@ -6887,9 +7407,14 @@ def ai_commander_worker(target_pc):
 
                     elif current_fsm == "CERTI_RECERTI_TM_WAIT_4S":
                         if curr_time >= state.get("recerti_lineage_stabilize_until", 0):
-                            pos_lin_now = find_certi_img("recerti/lineage.png", th=0.82) or find_certi_img("lineage.png", th=0.82)
+                            pos_lin_now = find_certi_img("recerti/lineage.png", th=0.88, roi_rect=(0, 25, 800, 540)) or find_certi_img("lineage.png", th=0.88, roi_rect=(0, 25, 800, 540))
+                            pos_13_now = find_certi_img("13.png", th=0.82)
+                            if pos_lin_now and pos_13_now and math.hypot(pos_lin_now[0] - pos_13_now[0], pos_lin_now[1] - pos_13_now[1]) <= 45.0:
+                                dprint(key, "🛡️ [바탕화면 아이콘 보호] 감지된 좌표가 바탕화면 '13.png'와 겹쳐 클릭을 취소합니다!")
+                                pos_lin_now = None
+
                             if pos_lin_now:
-                                dprint(key, f"🎯 [4초 대기 완료 ➔ 좌표 재감지] 현재 'lineage.png' 위치({pos_lin_now[0]}, {pos_lin_now[1]})로 이동하여 원클릭합니다!")
+                                dprint(key, f"🎯 [4초 대기 완료 ➔ 좌표 재감지] 현재 'lineage.png' 위치({pos_lin_now[0]}, {pos_lin_now[1]})로 단일 이동하여 원클릭합니다! (하얀 배경 재조준 OFF)")
                                 start_certi_move_and_action(
                                     pos_lin_now[0], pos_lin_now[1],
                                     next_fsm="CERTI_RECERTI_TM_PRESS_DEL",
@@ -6898,6 +7423,7 @@ def ai_commander_worker(target_pc):
                                     post_wait=0.35,
                                     desc="작업관리자 lineage.png 원클릭"
                                 )
+                                state["certi_strict_aim"] = False
                             else:
                                 if curr_time <= state.get("recerti_lineage_stabilize_until", 0) + 2.0:
                                     state["cooldown"] = curr_time + 0.2
@@ -6910,15 +7436,19 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.2
 
-                    # R-4단계: 원클릭 직후 Delete 키 1회 전송 (퍼플 오종료 방지를 위해 작업관리자 내 재클릭 금지!)
                     elif current_fsm == "CERTI_RECERTI_TM_PRESS_DEL":
-                        state["recerti_kill_try_cnt"] = state.get("recerti_kill_try_cnt", 0) + 1
-                        dprint(key, f"💀 [델키 1회 강제종료] Delete 키를 1회 전송합니다! ({state['recerti_kill_try_cnt']}회차)")
-                        pico_queues[key].put({"action": "TASKMGR_DEL"})
-                        state["target_fsm"] = "CERTI_RECERTI_TM_CLOSE_AND_HOME"
-                        state["cooldown"] = curr_time + 0.6
+                        has_tm_lin_on_scr = bool(find_certi_img("recerti/lineage.png", th=0.85, roi_rect=(0, 25, 800, 540)) or find_certi_img("lineage.png", th=0.85, roi_rect=(0, 25, 800, 540)))
+                        if not has_tm_lin_on_scr:
+                            dprint(key, "🛡️ [바탕화면 아이콘 삭제 방지] 화면에 작업관리자 'lineage.png'가 없어 Delete 키 전송을 차단합니다!")
+                            state["target_fsm"] = "CERTI_RECERTI_TM_CLOSE_AND_HOME"
+                            state["cooldown"] = curr_time + 0.2
+                        else:
+                            state["recerti_kill_try_cnt"] = state.get("recerti_kill_try_cnt", 0) + 1
+                            dprint(key, f"💀 [델키 1회 강제종료] Delete 키를 1회 전송합니다! ({state['recerti_kill_try_cnt']}회차)")
+                            pico_queues[key].put({"action": "TASKMGR_DEL"})
+                            state["target_fsm"] = "CERTI_RECERTI_TM_CLOSE_AND_HOME"
+                            state["cooldown"] = curr_time + 0.5
 
-                    # R-5단계: confirm2.png(종료 확인창) 유무만 1회 체크 후 즉시 작업관리자를 닫고 바탕화면으로 이동
                     elif current_fsm == "CERTI_RECERTI_TM_CLOSE_AND_HOME":
                         pos_c2 = find_certi_img("recerti/confirm2.png", th=0.82) or find_certi_img("confirm2.png", th=0.82)
                         if pos_c2:
@@ -6931,31 +7461,33 @@ def ai_commander_worker(target_pc):
                                 post_wait=0.5,
                                 desc="confirm2.png 종료오류 확인 클릭"
                             )
+                            state["certi_strict_aim"] = False
                         else:
-                            dprint(key, "🖥️ [작업관리자 종료 ➔ 바탕화면] 작업관리자를 닫고 작업표시줄 '12.png' 소멸을 최대 7초간 확인합니다.")
+                            dprint(key, "🖥️ [작업관리자 종료 ➔ 바탕화면] 작업관리자를 닫고(Alt+F4) 작업표시줄 '12.png' 소멸을 확인합니다.")
                             pico_queues[key].put({"action": "CLOSE_TASKMGR"})
+                            pico_queues[key].put({"action": "WAIT", "delay_min": 0.30, "delay_max": 0.45})
                             pico_queues[key].put({"action": "HOME_MACRO"})
                             cur_cx, cur_cy = state.get("cursor_pos", [400, 300])
-                            if cur_cy >= 530:
+                            if cur_cy >= 530 or cur_cx < 300:
                                 safe_tx, safe_ty = int(round(g_val(550, 650))), int(round(g_val(260, 340)))
                                 pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(safe_tx - cur_cx, safe_ty - cur_cy, duration=0.15, behavior="CERTI", key=key)})
                                 state["cursor_pos"] = [safe_tx, safe_ty]
                             now_real = time.time()
-                            state["recerti_12_gone_deadline"] = now_real + 8.2
+                            state["recerti_12_gone_deadline"] = now_real + 8.5
                             state["recerti_12_gone_streak"] = 0
                             state["target_fsm"] = "CERTI_RECERTI_WAIT_12_GONE"
-                            state["cooldown"] = now_real + 1.2
+                            state["cooldown"] = now_real + 1.4
 
-                    # R-5-1단계: confirm2.png 클릭 직후 즉시 작업관리자를 닫고 바탕화면으로 이동
                     elif current_fsm == "CERTI_RECERTI_TM_AFTER_CONFIRM2":
                         dprint(key, "🖥️ [확인창 클릭 완료 ➔ 바탕화면] 작업관리자를 닫고 작업표시줄 '12.png' 소멸을 최대 7초간 확인합니다.")
                         pico_queues[key].put({"action": "CLOSE_TASKMGR"})
+                        pico_queues[key].put({"action": "WAIT", "delay_min": 0.30, "delay_max": 0.45})
                         pico_queues[key].put({"action": "HOME_MACRO"})
                         now_real = time.time()
-                        state["recerti_12_gone_deadline"] = now_real + 8.2
+                        state["recerti_12_gone_deadline"] = now_real + 8.5
                         state["recerti_12_gone_streak"] = 0
                         state["target_fsm"] = "CERTI_RECERTI_WAIT_12_GONE"
-                        state["cooldown"] = now_real + 1.2
+                        state["cooldown"] = now_real + 1.4
 
                     # R-6단계: 바탕화면 작업표시줄(Y:550~600)에서 12.png가 사라지기를 최대 7초간 대기 (안 사라지면 작업관리자 재실행!)
                     elif current_fsm == "CERTI_RECERTI_WAIT_12_GONE":
