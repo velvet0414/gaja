@@ -844,6 +844,17 @@ $idx = {turn_idx} % $krProfiles.Count
 $targetEl = $krProfiles[$idx]
 $targetName = $targetEl.Current.Name
 
+# 💡 화면 아래로 가려진 프로필(kr4~kr13 등)도 자동으로 스크롤을 내려서 활성화!
+$scrollItem = $null
+if ($targetEl.TryGetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern, [ref]$scrollItem)) {{
+    try {{ $scrollItem.ScrollIntoView(); Start-Sleep -Milliseconds 250 }} catch {{}}
+}}
+$ walker_tmp = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+$p_tmp = $walker_tmp.GetParent($targetEl)
+if ($p_tmp -and $p_tmp.TryGetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern, [ref]$scrollItem)) {{
+    try {{ $scrollItem.ScrollIntoView(); Start-Sleep -Milliseconds 250 }} catch {{}}
+}}
+
 # 선택한 프로필 행(Row) 내부 또는 부모 컨테이너의 '연결(Connect)' 버튼 찾아서 백그라운드 실행
 $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
 $parent = $walker.GetParent($targetEl)
