@@ -578,19 +578,20 @@ def send_to_cc(action, **kwargs):
 # 🌐 [12대 중앙컴 테일스케일 프록시 풀] 내 중앙컴은 자동 패스 & 타 중앙컴 회선 자동 로테이션
 # ==============================================================================
 CENTRAL_TAILSCALE_MAP = {
-    "1":  "100.106.98.27",   # no1
-    "2":  "100.102.199.44",  # no2
-    "3":  "100.102.229.12",  # no3
-    "4":  "100.117.6.55",    # no4
-    "5":  "100.82.40.120",   # no5
-    "6":  "100.111.124.91",  # no6
-    "7":  "100.118.150.90",  # no7
-    "8":  "100.99.116.37",   # no8
-    "9":  "100.110.17.117",  # no9
-    "10": "100.93.134.45",   # no10-2
-    "11": "100.66.194.109",  # no11
-    "12": "100.74.191.120",  # no12
-    "13": "100.73.27.56",    # home (작업 및 테스트용 중앙13번)
+    "1":   "100.106.98.27",   # no1
+    "2":   "100.102.199.44",  # no2
+    "3":   "100.102.229.12",  # no3
+    "4":   "100.117.6.55",    # no4
+    "5":   "100.82.40.120",   # no5
+    "6":   "100.111.124.91",  # no6
+    "7":   "100.118.150.90",  # no7
+    "8":   "100.99.116.37",   # no8
+    "9":   "100.110.17.117",  # no9
+    "10":  "100.93.134.45",   # no10-2
+    "11":  "100.66.194.109",  # no11
+    "12":  "100.74.191.120",  # no12
+    "13":  "100.73.27.56",    # home (작업 및 테스트용 중앙13번)
+    "VPN": "100.99.95.118",   # 헤이군주 통제실 프로톤VPN 전용 출구
 }
 
 CENTRAL_ORDER = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"]
@@ -776,6 +777,24 @@ def release_central_ip_lock_async(pc_key):
     locked_c = st.pop("certi_locked_central", None)
     if locked_c:
         threading.Thread(target=request_central_ip_lock, args=(pc_key, locked_c, "RELEASE"), daemon=True).start()
+
+def request_vpn_server_rotate(pc_key):
+    """모든 일반 IP 소진 시 군주컴(100.99.95.118:31280)에 프로톤VPN IP 교체를 요청합니다."""
+    my_num = get_my_central_num()
+    vpn_host = CENTRAL_TAILSCALE_MAP.get("VPN", COMMAND_CENTER_IP)
+    client_id = f"{my_num}번컴-{pc_key}"
+    try:
+        s = socket.create_connection((vpn_host, PROXY_DIRECT_EXIT_PORT), timeout=30.0)
+        s.settimeout(30.0)
+        s.sendall(f"VPN_ROTATE {client_id}\r\n\r\n".encode("utf-8"))
+        resp = s.recv(1024).decode("utf-8", errors="ignore").strip()
+        s.close()
+        if resp.startswith("ROTATED"):
+            new_ip = resp.split("|", 1)[1] if "|" in resp else "NEW_IP"
+            return True, new_ip
+        return False, resp
+    except Exception as e:
+        return False, f"OFFLINE|{e}"
 
 def _proxy_health_checker_thread():
     """5초마다 백그라운드에서 31280 포트가 열린 다른 중앙컴을 미리 체크하여 접속 딜레이를 0초로 만듭니다."""
@@ -4842,9 +4861,10 @@ def pico_worker_thread(key):
                     web_sleep(0.11, 0.16)
 
                 if press_enter:
-                    web_sleep(0.22, 0.32)
+                    # 💡 계정 마지막 글자가 입력창에 완전히 반영된 뒤 엔터를 치고, 엔터 직후 포커스가 넘어갈 시간을 충분히 확보
+                    web_sleep(0.45, 0.65)
                     web_key_tap(176) # Enter 키 입력
-                    web_sleep(0.22, 0.35)
+                    web_sleep(0.60, 0.85)
 
             elif action == "CLOSE_TAB":
                 # 크롬 창 전체 완전 종료 (Ctrl + Shift + W)
@@ -6668,14 +6688,14 @@ def ai_commander_worker(target_pc):
                     state["certi_lock_hb_time"] = curr_time
                     threading.Thread(target=request_central_ip_lock, args=(key, state["certi_locked_central"], "ACQUIRE"), daemon=True).start()
 
-                # ⏱️ [웹 인증 타임아웃 워치독] 로그인 처리(파란 동그라미) 구간은 최대 120초간 충분히 대기!
+                # ⏱️ [웹 인증 타임아웃 워치독] 아이디/비번 오류 등 페이지 미전환 시 30초 대기 후 즉시 재시도!
                 web_timeout_fsms = {
                     "CERTI_STEP_2_FIND", "CERTI_STEP_3_FIND", "CERTI_STEP_5_FIND",
                     "CERTI_STEP_7_FIND", "CERTI_STEP_8_FIND", "CERTI_STEP_8_BRANCH",
                     "CERTI_WAIT_SUC"
                 }
-                # 아이디/비번 입력 후 넘어가는 단계(5, 7, 8_BRANCH, WAIT_SUC)는 120초, 단순 버튼 탐색(2, 3, 8)은 15초 부여
-                step_limit_sec = 120.0 if current_fsm in {"CERTI_STEP_5_FIND", "CERTI_STEP_7_FIND", "CERTI_STEP_8_BRANCH", "CERTI_WAIT_SUC"} else 15.0
+                # 아이디/비번 입력 후 넘어가는 단계(5, 7, 8_BRANCH, WAIT_SUC)는 30초, 단순 버튼 탐색(2, 3, 8)은 15초 부여
+                step_limit_sec = 30.0 if current_fsm in {"CERTI_STEP_5_FIND", "CERTI_STEP_7_FIND", "CERTI_STEP_8_BRANCH", "CERTI_WAIT_SUC"} else 15.0
 
                 if current_fsm not in web_timeout_fsms or is_hw_working or state.get("certi_web_last_fsm") != current_fsm:
                     state["certi_web_last_fsm"] = current_fsm
@@ -7017,11 +7037,11 @@ def ai_commander_worker(target_pc):
 
                         my_num = get_my_central_num()
                         saved_c = str(state.get("certi_curr_central") or saved_settings.get(key, {}).get("certi_curr_central") or "").strip()
-                        if saved_c not in CENTRAL_ORDER:
+                        if saved_c != "VPN" and saved_c not in CENTRAL_ORDER:
                             saved_c = my_num
 
                         alive_nums = {c_n for c_n, _ in ALIVE_OTHER_PROXIES}
-                        if saved_c != my_num and alive_nums and saved_c not in alive_nums:
+                        if saved_c != "VPN" and saved_c != my_num and alive_nums and saved_c not in alive_nums:
                             saved_c = get_next_central_in_order(saved_c)
 
                         state["certi_curr_central"] = saved_c
@@ -7036,6 +7056,22 @@ def ai_commander_worker(target_pc):
                         state["certi_ip_lock_log_time"] = 0.0
                         state["target_fsm"] = "CERTI_WAIT_IP_LOCK"
                         state["cooldown"] = curr_time + 1.5
+
+                    # 0-0.5단계: 군주컴 프로톤VPN IP 자동 교체 요청 및 완료 대기
+                    elif current_fsm == "CERTI_REQ_VPN_ROTATE":
+                        ok_vpn, vpn_msg = request_vpn_server_rotate(key)
+                        if ok_vpn:
+                            dprint(key, f"🎉 [군주컴 프로톤VPN 새 IP 개통] 새 공인 IP({vpn_msg}) 적용 완료! 즉시 'sub.png' 인증으로 진입합니다.")
+                            state["certi_curr_central"] = "VPN"
+                            state["certi_use_sub"] = True
+                            CURRENT_PROXY_TARGET_NUM[key] = "VPN"
+                            state["certi_ip_lock_log_time"] = 0.0
+                            state["target_fsm"] = "CERTI_WAIT_IP_LOCK"
+                            state["cooldown"] = curr_time + 0.5
+                        else:
+                            reason_txt = vpn_msg.split("|", 1)[1] if "|" in vpn_msg else vpn_msg
+                            dprint(key, f"⏳ [프로톤VPN 교체 대기] {reason_txt} ➔ 3초 후 재요청합니다.")
+                            state["cooldown"] = curr_time + 3.0
 
                     # 0-1단계: 중앙컴 간 IP 중복 사용 방지 순차 대기열 (앞사람 인증 끝날 때까지 대기)
                     elif current_fsm == "CERTI_WAIT_IP_LOCK":
@@ -7052,19 +7088,20 @@ def ai_commander_worker(target_pc):
                                 state["certi_use_sub"] = True
                                 CURRENT_PROXY_TARGET_NUM[key] = target_c
                                 c_ip = CENTRAL_TAILSCALE_MAP.get(target_c, "")
-                                dprint(key, f"🔒 [IP 순차 승인 완료] [{target_c}번 중앙컴({c_ip})] 프록시 IP 사용권 획득! 'sub.png' 인증을 시작합니다.")
+                                label_c = "군주컴 프로톤VPN" if target_c == "VPN" else f"{target_c}번 중앙컴"
+                                dprint(key, f"🔒 [IP 순차 승인 완료] [{label_c}({c_ip})] 프록시 IP 사용권 획득! 'sub.png' 인증을 시작합니다.")
                             state["target_fsm"] = "CERTI_STEP_1_FIND"
                             state["cooldown"] = curr_time + 0.1
                         else:
                             if msg.startswith("OFFLINE"):
-                                next_c = get_next_central_in_order(target_c)
-                                dprint(key, f"⚠️ [{target_c}번 중앙컴 오프라인] 응답이 없어 다음 순번인 [{next_c}번 중앙컴]으로 이동합니다.")
+                                next_c = my_num if target_c == "VPN" else get_next_central_in_order(target_c)
+                                dprint(key, f"⚠️ [{target_c} 오프라인] 응답이 없어 [{next_c}번 중앙컴]으로 이동합니다.")
                                 state["certi_curr_central"] = next_c
                                 state["cooldown"] = curr_time + 0.2
                             else:
                                 if curr_time - state.get("certi_ip_lock_log_time", 0.0) >= 5.0:
                                     reason_txt = msg.split("|", 1)[1] if "|" in msg else msg
-                                    dprint(key, f"⏳ [{target_c}번 중앙컴 IP 순차 대기] {reason_txt} ➔ 앞선 인증이 끝나면 자동으로 출발합니다.")
+                                    dprint(key, f"⏳ [{target_c} IP 순차 대기] {reason_txt} ➔ 앞선 인증이 끝나면 자동으로 출발합니다.")
                                     state["certi_ip_lock_log_time"] = curr_time
                                 state["cooldown"] = curr_time + 1.0
 
@@ -7216,11 +7253,11 @@ def ai_commander_worker(target_pc):
                         else:
                             pos = find_certi_img("5.png", th=0.82)
                             if pos:
-                                dprint(key, "🔎 [인증 5단계] '5.png' 감지 완료! 커서 이동 없이 즉시 비밀번호 입력 후 엔터를 칩니다.")
-                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.22, "delay_max": 0.38})
+                                dprint(key, "🔎 [인증 5단계] '5.png' 감지 완료! 입력창 포커스 전환 대기(1.0~1.4초) 후 비밀번호 입력 및 엔터를 칩니다.")
+                                pico_queues[key].put({"action": "WAIT", "delay_min": 1.00, "delay_max": 1.40})
                                 pico_queues[key].put({"action": "TYPE_STRING", "text": curr_acc_pw, "clear_first": False, "press_enter": True, "allow_typo": False})
                                 state["target_fsm"] = "CERTI_STEP_7_FIND"
-                                state["cooldown"] = curr_time + 0.8
+                                state["cooldown"] = curr_time + 1.2
                             else:
                                 state["cooldown"] = curr_time + 0.2
 
@@ -7280,13 +7317,20 @@ def ai_commander_worker(target_pc):
                             state["certi_fail_streak"] = streak
                             max_lines = (len(ALIVE_OTHER_PROXIES) + 1) if ALIVE_OTHER_PROXIES else len(CENTRAL_ORDER)
 
-                            if streak >= max_lines:
-                                dprint(key, f"🚨 [모든 회선 소진] 본인 회선 및 가용한 모든 타 중앙컴 회선({max_lines}개)을 한 바퀴 다 돌았으나 모두 fail.png가 떴습니다! 일시정지합니다.")
-                                pc_num_str = current_pc_num if current_pc_num else my_num
-                                threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 {key} 인증 회선 모두 소진",), daemon=True).start()
-                                state["is_paused"] = True
-                                state["target_fsm"] = "IDLE"
-                                state["cooldown"] = curr_time + 1.0
+                            if streak >= max_lines or prev_c == "VPN":
+                                dprint(key, f"🌐 [일반 회선 모두 소진 ➔ 군주컴 프로톤VPN 교체 요청] 막힌 1~13번을 건너뛰고 군주컴 프로톤VPN 새 IP로 즉시 교체합니다!")
+                                state["certi_curr_central"] = "VPN"
+                                state["certi_use_sub"] = True
+                                CURRENT_PROXY_TARGET_NUM[key] = "VPN"
+                                if key not in saved_settings:
+                                    saved_settings[key] = {}
+                                saved_settings[key]["certi_curr_central"] = "VPN"
+                                save_settings()
+
+                                state["certi_web_last_fsm"] = None
+                                state["certi_last_box"] = None
+                                state["target_fsm"] = "CERTI_REQ_VPN_ROTATE"
+                                state["cooldown"] = curr_time + 1.2
                             else:
                                 next_c = get_next_central_in_order(prev_c)
                                 state["certi_curr_central"] = next_c
@@ -17557,35 +17601,6 @@ def ai_commander_worker(target_pc):
                                 def _hold_click(k=key):
                                     try:
                                         time.sleep(0.05)
-                                        ps, pl = picos.get(k), pico_locks.get(k)
-                                        if ps and pl: send_mouse_click(ps, pl, 1, 1, is_manual=True)
-                                    except: pass
-                                threading.Thread(target=_hold_click, daemon=True).start()
-
-                                dx, dy = tx - cur_x, ty - cur_y
-                                dur = apply_human_variance(0.15 + 0.05 * math.log2((math.hypot(dx, dy) / 20.0) + 1.0) if math.hypot(dx, dy) > 0 else 0.1)
-
-                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.2, "delay_max": 0.3})
-                                pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": generate_human_deltas(dx, dy, duration=dur, behavior="DRAG", key=key)})
-                                pico_queues[key].put({"action": "SPECIAL_ACK"})
-                                state["special_ack_arrived"] = False
-                                state["pico_arrived"] = False
-                                state["cursor_pos"] = [tx, ty]
-
-                                state["target_fsm"] = "HK_HEAL_DRAG_DROP"
-                                state["cooldown"] = curr_time + 0.05
-                            else:
-                                state["cooldown"] = curr_time + 0.02
-
-                        elif fsm_hk == "HK_HEAL_DRAG_START":
-                            if state.pop("special_ack_arrived", False):
-                                fx, fy = state["hk_found_pos"]
-                                tx, ty = state["hk_target_coord"]
-                                tx += int(random.gauss(0, 3))
-                                ty += int(random.gauss(0, 3))
-
-                                def _hold_click(k=key):
-                                    try:
                                         ps, pl = picos.get(k), pico_locks.get(k)
                                         if ps and pl: send_mouse_click(ps, pl, 1, 1, is_manual=True)
                                     except: pass
