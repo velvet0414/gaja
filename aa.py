@@ -19413,8 +19413,8 @@ def ai_commander_worker(target_pc):
                     cand_queue = [c for c in state.get("motion_candidates", []) if c[0] not in failed_dirs]
                     state["motion_candidates"] = cand_queue
 
-                    # 최대 4곳까지 찔러봤거나, 대기 중인 후보가 없고 스캔 시간이 끝난 경우 종료
-                    if len(failed_dirs) >= 4 or (not cand_queue and curr_time > state.get("motion_scan_end", 0)):
+                    # 최대 3곳까지 찔러봤거나, 대기 중인 후보가 없고 스캔 시간이 끝난 경우 종료
+                    if len(failed_dirs) >= 3 or (not cand_queue and curr_time > state.get("motion_scan_end", 0)):
                         state["motion_failed_dirs"] = set()
                         state["motion_candidates"] = []
                         if state.pop("mptam_wall_hit_search", False):
@@ -19500,10 +19500,10 @@ def ai_commander_worker(target_pc):
                                         detected_list.append((changed, i, g_cx, g_cy))
 
                             if detected_list:
-                                # 변화량이 큰 순서대로 정렬하여 1등은 지금 찌르고, 2~4등은 후보 큐에 보관!
+                                # 변화량이 큰 순서대로 정렬하여 1등은 지금 찌르고, 2~3등은 후보 큐에 보관!
                                 detected_list.sort(key=lambda item: item[0], reverse=True)
                                 max_changed, best_dir_idx, best_tx, best_ty = detected_list[0]
-                                state["motion_candidates"] = [(d_i, d_x, d_y, d_c) for d_c, d_i, d_x, d_y in detected_list[1:4]]
+                                state["motion_candidates"] = [(d_i, d_x, d_y, d_c) for d_c, d_i, d_x, d_y in detected_list[1:3]]
                                 dprint(key, f"🎯 [움직임 포착] 8각 센서 {best_dir_idx+1}번 구역({max_changed}px, 추가후보:{len(state['motion_candidates'])}곳)! 락온 시도!")
                             else:
                                 state["motion_img1"] = img2
@@ -19626,8 +19626,8 @@ def ai_commander_worker(target_pc):
                                 failed_cnt = len(state.get("motion_failed_dirs", set()))
                                 has_more_cands = len(state.get("motion_candidates", [])) > 0
 
-                                if failed_cnt < 4 and (has_more_cands or curr_time < state.get("motion_scan_end", 0)):
-                                    dprint(key, f"⚠️ [오인식 구역 제외] {last_dir+1}번 구역 칼 안 뜸({failed_cnt}/4회)! 제외 후 다음 구역을 즉시 확인합니다.")
+                                if failed_cnt < 3 and (has_more_cands or curr_time < state.get("motion_scan_end", 0)):
+                                    dprint(key, f"⚠️ [오인식 구역 제외] {last_dir+1}번 구역 칼 안 뜸({failed_cnt}/3회)! 제외 후 다음 구역을 즉시 확인합니다.")
 
                                     if not has_more_cands:
                                         x1, y1, x2, y2 = state.get("motion_roi", (0, 0, 0, 0))
@@ -20573,7 +20573,9 @@ def ai_commander_worker(target_pc):
                     is_keep_3cell_looting = False
                     fsm_loot_chk = str(state.get("target_fsm", "IDLE"))
                     if settings.get("hunt_first", False) and settings.get("hunt_first_keep_loot", False):
-                        if fsm_loot_chk in ["LOOTING_3CELL_APPROACH", "LOOTING_3CELL_WAIT_MOVE"] and state.get("is_char_moving", False):
+                        if curr_time < state.get("loot_chain_expire", 0.0) and fsm_loot_chk in ["LOOTING_3CELL", "LOOTING_3CELL_ACK_WAIT", "LOOTING_3CELL_WAIT_MOVE"]:
+                            is_keep_3cell_looting = True
+                        elif fsm_loot_chk in ["LOOTING_3CELL_APPROACH", "LOOTING_3CELL_WAIT_MOVE"] and state.get("is_char_moving", False):
                             if fsm_loot_chk == "LOOTING_3CELL_WAIT_MOVE":
                                 # 클릭 직후 이번 프레임에 막 발을 떼기 시작한 상태
                                 is_keep_3cell_looting = True
@@ -21073,7 +21075,8 @@ def ai_commander_worker(target_pc):
                             current_dist = math.hypot(dx_box, dy_box)
 
                             if current_dist >= 54.0:
-                                dprint(key, f"📦 [다중 드랍 연속 줍기] 발밑 템 획득 완료! 남은 템이 {current_dist:.1f}px 밖에 있습니다. 이동하여 마저 줍습니다!")
+                                dprint(key, f"📦 [다중 드랍 연속 줍기] 발밑 템 획득 완료! 남은 템이 {current_dist:.1f}px 밖에 있습니다. 직접 조준하여 마저 줍습니다!")
+                                state["has_tried_2cell_brake"] = True
                                 state["target_fsm"] = "LOOT_SCAN_WAIT"
                                 state["loot_wait_start"] = curr_time - 1.0
                                 state["cooldown"] = curr_time + 0.05
@@ -21422,6 +21425,8 @@ def ai_commander_worker(target_pc):
                             best_box = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
                             tx = int(max(10, min(740, best_box['x'])))
                             ty = int(max(5, min(int(h * 0.68), best_box['y'] + 15)))
+                            state["loot_aimed_box_cnt"] = len(item_boxes)
+                            state["loot_aimed_dist"] = math.hypot(best_box['x'] - char_screen_cx, (best_box['y'] + 15 - char_screen_cy) / 0.50)
 
                             pico_queues[key].put({"action": "HOVER", "dx": tx - cur_x, "dy": ty - cur_y})
 
@@ -21444,6 +21449,25 @@ def ai_commander_worker(target_pc):
                                 cur_x, cur_y = real_cursor[0], real_cursor[1]
                                 state["cursor_pos"] = [cur_x, cur_y]
 
+                            if not item_boxes:
+                                dprint(key, "✅ [3셀 조준 중 획득] 커서 이동 중 아이템이 모두 주워졌습니다! 즉시 마무리 단계로 전환합니다.")
+                                state["target_fsm"] = "LOOTING_3CELL_APPROACH"
+                                state["loot_missing_timer"] = 0
+                                state["cooldown"] = curr_time + 0.05
+                                continue
+
+                            best_b_init = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
+                            init_dist = math.hypot(best_b_init['x'] - char_screen_cx, (best_b_init['y'] + 15 - char_screen_cy) / 0.50)
+                            aimed_cnt = state.get("loot_aimed_box_cnt", len(item_boxes))
+                            aimed_dist = state.get("loot_aimed_dist", init_dist)
+
+                            if len(item_boxes) < aimed_cnt and init_dist > aimed_dist + 10.0:
+                                dprint(key, "📦 [3셀 조준 중 타겟 변경] 첫 아이템이 선제 획득되어 남은 다음 아이템으로 즉시 재조준합니다!")
+                                state["loot_chain_expire"] = curr_time + 0.6
+                                state["target_fsm"] = "LOOTING_3CELL"
+                                state["cooldown"] = curr_time + 0.02
+                                continue
+
                             # 👇👇 [핵심 픽스 4] 원거리 템을 클릭하기 직전, 그 자리에 보라돌이가 서 있는지 팩트 체크!
                             if check_purple_name(img_bgr, cur_x, cur_y):
                                 is_party_mode = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
@@ -21461,12 +21485,17 @@ def ai_commander_worker(target_pc):
 
                             pico_queues[key].put({"action": "SINGLE_ATTACK"})
 
-                            if item_boxes:
-                                best_b_init = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
-                                state["loot_start_dist"] = math.hypot(best_b_init['x'] - char_screen_cx, (best_b_init['y'] + 15 - char_screen_cy) / 0.50)
-                            else:
-                                state["loot_start_dist"] = math.hypot(cur_x - char_screen_cx, (cur_y - char_screen_cy) / 0.50)
+                            # 💡 클릭 직전 남아있던 이전 이동 잔상(0.4초 유지)을 초기화하여 가짜 출발 판정 원천 차단
+                            state["move_sensor_state"] = "STOPPED"
+                            state["is_char_moving"] = False
+                            state["loot_click_time"] = curr_time
+
+                            state["loot_start_dist"] = init_dist
+                            state["loot_min_dist"] = init_dist
+                            state["loot_last_box_pos"] = (best_b_init['x'], best_b_init['y'])
+                            state["loot_last_box_cnt"] = len(item_boxes)
                             state["loot_stuck_timer"] = curr_time
+                            state["loot_reclick_tried"] = True if state.pop("loot_is_reclick", False) else False
 
                             state["target_fsm"] = "LOOTING_3CELL_WAIT_MOVE"
                             state["loot_move_timeout"] = curr_time + 0.6
@@ -21476,7 +21505,13 @@ def ai_commander_worker(target_pc):
                             state["cooldown"] = curr_time + 0.02
 
                     elif fsm == "LOOTING_3CELL_WAIT_MOVE":
-                        if state.get("is_char_moving", False):
+                        if not item_boxes:
+                            dprint(key, "✅ [3셀 출발 대기 중 획득] 클릭 직후 아이템 획득 완료! 스팸 클릭을 멈추고 마무리합니다.")
+                            clear_movements_only(pico_queues[key])
+                            state["target_fsm"] = "LOOTING_3CELL_APPROACH"
+                            state["loot_missing_timer"] = 0
+                            state["cooldown"] = curr_time + 0.05
+                        elif state.get("is_char_moving", False) and (curr_time - state.get("loot_click_time", 0) >= 0.12):
                             dprint(key, "🛑 [3셀 루팅] 캐릭터 발걸음 감지! 스팸 클릭 멈추고 줍기(F4) 켜고 전진!")
                             clear_movements_only(pico_queues[key])
 
@@ -21485,31 +21520,43 @@ def ai_commander_worker(target_pc):
 
                             state["target_fsm"] = "LOOTING_3CELL_APPROACH"
 
-                            if item_boxes:
-                                best_box = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
-                                dx_box = best_box['x'] - char_screen_cx
-                                dy_box = (best_box['y'] + 15 - char_screen_cy) / 0.50
-                                state["loot_start_dist"] = math.hypot(dx_box, dy_box)
-                            else:
-                                state["loot_start_dist"] = 9999.0
+                            best_box = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
+                            dx_box = best_box['x'] - char_screen_cx
+                            dy_box = (best_box['y'] + 15 - char_screen_cy) / 0.50
+                            init_move_dist = math.hypot(dx_box, dy_box)
+                            state["loot_start_dist"] = init_move_dist
+                            state["loot_min_dist"] = min(state.get("loot_min_dist", init_move_dist), init_move_dist)
+                            state["loot_last_box_pos"] = (best_box['x'], best_box['y'])
+                            state["loot_last_box_cnt"] = len(item_boxes)
 
                             state["loot_stuck_timer"] = curr_time
                             state["cooldown"] = curr_time + 0.1
-
-                        elif curr_time <= state.get("loot_move_timeout", 0):
-                            if curr_time >= state.get("loot_spam_cd", 0):
-                                pico_queues[key].put({"action": "SINGLE_ATTACK"})
-                                state["loot_spam_cd"] = curr_time + g_val(0.15, 0.18)
-                            state["cooldown"] = curr_time + 0.02
                         else:
-                            dprint(key, "🚧 [3셀 출발 타임아웃] 제자리 길막 감지! 1차 조치: 모션 스냅으로 숨은 길막 몹부터 색출합니다!")
-                            clear_movements_only(pico_queues[key])
-                            if state.get("sweep_active", False):
-                                pico_queues[key].put({"action": "SWEEP_STOP"})
-                                state["sweep_active"] = False
+                            best_box = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
+                            curr_wait_dist = math.hypot(best_box['x'] - char_screen_cx, (best_box['y'] + 15 - char_screen_cy) / 0.50)
+                            prev_wait_cnt = state.get("loot_last_box_cnt", len(item_boxes))
 
-                            if item_boxes:
-                                best_box = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
+                            if (len(item_boxes) < prev_wait_cnt or curr_wait_dist > state.get("loot_start_dist", 9999.0) + 12.0) and not state.get("loot_reclick_tried", False):
+                                dprint(key, "📦 [3셀 출발 전 연속 루팅] 첫 아이템 획득 완료! 빈 땅 클릭을 멈추고 남은 다음 아이템으로 즉시 재조준합니다!")
+                                clear_movements_only(pico_queues[key])
+                                state["loot_is_reclick"] = True
+                                state["loot_reclick_tried"] = True
+                                state["loot_chain_expire"] = curr_time + 0.6
+                                state["loot_global_timeout"] = curr_time + (5.0 if state.get("is_mptam_mode", False) else 10.0)
+                                state["target_fsm"] = "LOOTING_3CELL"
+                                state["cooldown"] = curr_time + 0.03
+                            elif curr_time <= state.get("loot_move_timeout", 0):
+                                if curr_time >= state.get("loot_spam_cd", 0):
+                                    pico_queues[key].put({"action": "SINGLE_ATTACK"})
+                                    state["loot_spam_cd"] = curr_time + g_val(0.15, 0.18)
+                                state["cooldown"] = curr_time + 0.02
+                            else:
+                                dprint(key, "🚧 [3셀 출발 타임아웃] 제자리 길막 감지! 1차 조치: 모션 스냅으로 숨은 길막 몹부터 색출합니다!")
+                                clear_movements_only(pico_queues[key])
+                                if state.get("sweep_active", False):
+                                    pico_queues[key].put({"action": "SWEEP_STOP"})
+                                    state["sweep_active"] = False
+
                                 state["evade_target_box"] = best_box
                                 move_dx = best_box['x'] - char_screen_cx
                                 move_dy = best_box['y'] + 15 - char_screen_cy
@@ -21522,9 +21569,6 @@ def ai_commander_worker(target_pc):
                                 state["brake_end_time"] = curr_time + 0.15
                                 state["brake_max_wait"] = curr_time + 0.8
                                 state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.10)
-                            else:
-                                state["target_fsm"] = "IDLE"
-                                state["cooldown"] = curr_time + 0.1
 
                     elif fsm == "LOOTING_ASTAR_APPROACH":
                         best_box = state.get("loot_target_box")
@@ -21620,8 +21664,22 @@ def ai_commander_worker(target_pc):
                             dy_box = (best_box['y'] + 15 - char_screen_cy) / 0.50
                             current_dist = math.hypot(dx_box, dy_box)
 
+                            prev_box_cnt = state.get("loot_last_box_cnt", len(item_boxes))
+                            min_dist_so_far = min(state.get("loot_min_dist", current_dist), current_dist)
+                            state["loot_min_dist"] = min_dist_so_far
+
+                            # 💡 실제 첫 아이템이 획득되어 박스가 줄어들었거나, 1셀(<54px)까지 접근해 첫 템을 먹은 뒤 더 먼 다음 템으로 바뀐 경우만 판별
+                            is_next_item_switched = (
+                                (len(item_boxes) < prev_box_cnt) or
+                                (current_dist > min_dist_so_far + 12.0) or
+                                (not state.get("is_char_moving", False) and min_dist_so_far < 54.0 and current_dist >= 40.0)
+                            )
+
+                            state["loot_last_box_pos"] = (best_box['x'], best_box['y'])
+                            state["loot_last_box_cnt"] = len(item_boxes)
+
                             if current_dist < 40:
-                                dprint(key, "🎯 [3셀 접근] 1셀 이내로 접근 성공! 정밀 1셀 줍기 상태로 전환합니다.")
+                                dprint(key, f"🎯 [3셀 접근] 1셀 이내(거리: {current_dist:.1f}px) 접근 성공! 정밀 1셀 줍기 상태로 전환합니다.")
                                 state["target_fsm"] = "LOOTING_1CELL"
                                 is_fixed_dealer_loot = settings.get("use_party_fixed", False) and not settings.get("is_puller", False)
                                 is_party_wait_loot = settings.get("use_party_hunt", False) and (state.get("target_fsm") in ["PARTY_WAIT", "PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY"] or state.get("is_mptam_mode", False))
@@ -21629,9 +21687,22 @@ def ai_commander_worker(target_pc):
                                 state["loot_pick_timeout"] = curr_time + loot_limit_1cell
                                 state["loot_motion_scan_timer"] = curr_time + 0.5
                                 state["cooldown"] = curr_time + 0.05
+                            elif is_next_item_switched and not state.get("loot_reclick_tried", False):
+                                dprint(key, f"📦 [3셀 연속 루팅] 다음 아이템(거리: {current_dist:.1f}px) 포착! 모션 감지 대신 즉시 클릭하러 재조준합니다!")
+                                state["loot_is_reclick"] = True
+                                state["loot_reclick_tried"] = True
+                                state["loot_chain_expire"] = curr_time + 0.6
+                                state["loot_global_timeout"] = curr_time + (5.0 if state.get("is_mptam_mode", False) else 10.0)
+                                state["loot_start_dist"] = current_dist
+                                state["loot_min_dist"] = current_dist
+                                state["loot_stuck_timer"] = curr_time
+                                state["target_fsm"] = "LOOTING_3CELL"
+                                state["cooldown"] = curr_time + 0.05
                             elif current_dist < state.get("loot_start_dist", 9999.0) - 2.0:
                                 state["loot_start_dist"] = current_dist
                                 state["loot_stuck_timer"] = curr_time
+                                if len(item_boxes) < prev_box_cnt:
+                                    state["loot_reclick_tried"] = False
                                 state["cooldown"] = curr_time + 0.05
                             elif curr_time - state.get("loot_stuck_timer", curr_time) > 1.0:
                                 dprint(key, "⚠️ [3셀 접근 길막] 1.0초 이상 템과 거리가 좁혀지지 않음! 1차 조치: 모션 스냅으로 숨은 길막 몹부터 색출합니다!")
