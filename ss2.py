@@ -793,128 +793,162 @@ def _get_vpn_worker_public_ip():
     return ""
 
 _VPN_PROFILE_TURN = 0
+_VPN_LAST_ATTEMPT_TIME = 0.0
 
 def _click_proton_vpn_connect_on_host():
     """
-    마우스 커서를 절대 움직이지 않고(100% 백그라운드),
-    프로톤VPN의 kr1 ~ kr20 프로필 중 점검중(🔧)/연결중 서버를 건너뛰어 다음 정상 프로필에 연결합니다.
+    1) 프로톤VPN 창을 먼저 활성화(포커스)하고,
+    2) 점검중(🔧회색) 및 현재 연결중(초록점) 프로필을 제외한 정상(보라색) 프로필 1개를 골라,
+    3) 수동 조작과 동일하게 마우스를 부드럽게 미끄러뜨려(Glide) [연결] 버튼을 띄운 뒤 클릭하고 원위치합니다.
     """
-    global _VPN_PROFILE_TURN
-    try:
-        turn_idx = _VPN_PROFILE_TURN
+    global _VPN_PROFILE_TURN, _VPN_LAST_ATTEMPT_TIME
+    now_t = time.time()
 
-        ps_uia_script = f"""
+    # 수동 제어 중이거나 최근 15초 이내에 시도했다면 마우스 간섭 차단
+    if globals().get("active_manual_target") is not None:
+        return False
+    if now_t - _VPN_LAST_ATTEMPT_TIME < 15.0:
+        return False
+    _VPN_LAST_ATTEMPT_TIME = now_t
+
+    try:
+        ps_coord_script = """
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
-
-$koConnect = [string][char]0xC5F0 + [char]0xACB0
-$koDisconnect = [string][char]0xD574 + [char]0xC81C
-
 $root = [System.Windows.Automation.AutomationElement]::RootElement
 $win = $null
 $allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
-foreach ($w in $allWins) {{
-    if ($w.Current.Name -like "*Proton VPN*") {{ $win = $w; break }}
-}}
-if (-not $win) {{ Write-Output "NO_WINDOW"; exit }}
+foreach ($w in $allWins) {
+    if ($w.Current.Name -like "*Proton VPN*") { $win = $w; break }
+}
+if (-not $win) { Write-Output "NO_WINDOW"; exit }
 
+$wr = $win.Current.BoundingRectangle
 $textCond = New-Object System.Windows.Automation.PropertyCondition(
     [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
     [System.Windows.Automation.ControlType]::Text
 )
 $textEls = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, $textCond)
 
-$nameMap = @{{}}
-foreach ($el in $textEls) {{
-    $n = $el.Current.Name
-    if ($n -and -not $nameMap.ContainsKey($n)) {{
-        $nameMap[$n] = $el
-    }}
-}}
-
-$krProfiles = @()
-for ($i = 1; $i -le 20; $i++) {{
+for ($i = 1; $i -le 20; $i++) {
     $pName = "kr$i"
-    if ($nameMap.ContainsKey($pName)) {{
-        $krProfiles += $nameMap[$pName]
-    }}
-}}
-
-if ($krProfiles.Count -eq 0) {{ Write-Output "NO_KR_PROFILES"; exit }}
-
-$walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
-$btnCond = New-Object System.Windows.Automation.PropertyCondition(
-    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-    [System.Windows.Automation.ControlType]::Button
-)
-$total = $krProfiles.Count
-
-for ($step = 0; $step -lt $total; $step++) {{
-    $idx = ({turn_idx} + $step) % $total
-    $targetEl = $krProfiles[$idx]
-    $targetName = $targetEl.Current.Name
-
-    $scrollItem = $null
-    $pScroll = $targetEl
-    for ($s = 0; $s -lt 3; $s++) {{
-        if (-not $pScroll) {{ break }}
-        if ($pScroll.TryGetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern, [ref]$scrollItem)) {{
-            try {{ $scrollItem.ScrollIntoView(); Start-Sleep -Milliseconds 100 }} catch {{}}
-            break
-        }}
-        $pScroll = $walker.GetParent($pScroll)
-    }}
-
-    $parent = $walker.GetParent($targetEl)
-    for ($depth = 0; $depth -lt 2; $depth++) {{
-        if (-not $parent) {{ break }}
-        $btns = $parent.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond)
-        foreach ($b in $btns) {{
-            $bn = $b.Current.Name
-            if (-not $bn) {{ continue }}
-            if ($bn.Contains($koDisconnect) -or $bn -like "*Disconnect*" -or $bn -like "*Cancel*") {{ continue }}
-            if (($bn.Contains($koConnect) -or $bn -like "*Connect*") -and $b.Current.IsEnabled) {{
-                $invB = $null
-                if ($b.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invB)) {{
-                    $invB.Invoke()
-                    Write-Output "INVOKED_BTN:$targetName|$idx"
-                    exit
-                }}
-            }}
-        }}
-        $parent = $walker.GetParent($parent)
-    }}
-}}
-
-Write-Output "NO_AVAILABLE_PROFILE"
+    foreach ($el in $textEls) {
+        if ($el.Current.Name -eq $pName) {
+            $r = $el.Current.BoundingRectangle
+            if ($r.Width -gt 0 -and $r.Left -lt ($wr.Left + 220)) {
+                Write-Output ("ITEM:" + $pName + ":" + [int]$r.Left + ":" + [int]$r.Top)
+                break
+            }
+        }
+    }
+}
 """
         raw_out = subprocess.check_output(
-            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_uia_script],
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_coord_script],
             creationflags=subprocess.CREATE_NO_WINDOW,
-            timeout=15.0
+            timeout=8.0
         ).decode("utf-8", errors="ignore").strip()
 
-        lines = [line.strip() for line in raw_out.splitlines() if line.strip()]
-        res_uia = lines[-1] if lines else ""
-
-        if res_uia.startswith("INVOKED_BTN:"):
-            info = res_uia.split(":", 1)[1]
-            if "|" in info:
-                prof_name, used_idx_str = info.split("|", 1)
-                _VPN_PROFILE_TURN = int(used_idx_str) + 1
-            else:
-                prof_name = info
-                _VPN_PROFILE_TURN = turn_idx + 1
-            print(f"⚡ [프로톤VPN 백그라운드 교체 성공] '{prof_name}' 연결 실행 완료!")
-            return True
-        else:
-            _VPN_PROFILE_TURN = turn_idx + 1
-            print(f"⚠️ [프로톤VPN 백그라운드 제어 알림] 응답: {res_uia}")
+        if "NO_WINDOW" in raw_out:
+            print("⚠️ [프로톤VPN 오류] 프로톤VPN 창이 열려있지 않습니다.")
             return False
 
-    except Exception as e:
+        items = []
+        for line in raw_out.splitlines():
+            line = line.strip()
+            if line.startswith("ITEM:"):
+                parts = line.split(":")
+                if len(parts) == 4:
+                    items.append((parts[1], int(parts[2]), int(parts[3])))
+
+        if not items:
+            print("⚠️ [프로톤VPN 알림] 화면에서 kr1~kr20 프로필 목록을 찾지 못했습니다.")
+            return False
+
+        # 1) 프로톤VPN 창을 앞으로 활성화하여 마우스 호버(Hover)를 100% 인식하도록 보장
+        vpn_hwnd = None
+        def _find_vpn_hwnd(h, _):
+            nonlocal vpn_hwnd
+            if win32gui.IsWindowVisible(h) and "Proton VPN" in win32gui.GetWindowText(h):
+                vpn_hwnd = h
+        win32gui.EnumWindows(_find_vpn_hwnd, None)
+        if vpn_hwnd:
+            try:
+                ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)
+                win32gui.SetForegroundWindow(vpn_hwnd)
+                time.sleep(0.1)
+            except Exception:
+                pass
+
+        # 2) 화면 캡처로 점검중(회색 스패너 🔧) 및 현재 연결됨(초록점) 프로필 필터링
+        with mss.mss() as sct:
+            mon = sct.monitors[1]
+            scr = cv2.cvtColor(np.array(sct.grab(mon)), cv2.COLOR_BGRA2BGR)
+
+        sh, sw = scr.shape[:2]
+        valid_items = []
+        for p_name, tx, ty in items:
+            # 좌측 아이콘 영역(tx-38 ~ tx-2, ty-4 ~ ty+32)에 보라색 채도가 있는지 확인 (회색 스패너 🔧 제외)
+            ix1, iy1 = max(0, tx - 38), max(0, ty - 4)
+            ix2, iy2 = min(sw, tx - 2), min(sh, ty + 32)
+            if ix2 <= ix1 or iy2 <= iy1:
+                continue
+            icon_roi = scr[iy1:iy2, ix1:ix2]
+            hsv_icon = cv2.cvtColor(icon_roi, cv2.COLOR_BGR2HSV)
+            purple_mask = cv2.inRange(hsv_icon, np.array([110, 35, 50]), np.array([160, 255, 255]))
+            if cv2.countNonZero(purple_mask) < 10:
+                continue
+
+            # 텍스트 우측(tx+15 ~ tx+60, ty-2 ~ ty+18)에 초록색 연결점(현재 연결된 서버)이 있으면 제외
+            gx1, gy1 = max(0, tx + 15), max(0, ty - 2)
+            gx2, gy2 = min(sw, tx + 60), min(sh, ty + 18)
+            if gx2 > gx1 and gy2 > gy1:
+                dot_roi = scr[gy1:gy2, gx1:gx2]
+                hsv_dot = cv2.cvtColor(dot_roi, cv2.COLOR_BGR2HSV)
+                green_mask = cv2.inRange(hsv_dot, np.array([55, 100, 100]), np.array([95, 255, 255]))
+                if cv2.countNonZero(green_mask) >= 6:
+                    continue
+
+            valid_items.append((p_name, tx, ty))
+
+        if not valid_items:
+            print("⚠️ [프로톤VPN 알림] 연결 가능한 보라색(정상) 프로필이 없습니다.")
+            return False
+
+        pick_idx = _VPN_PROFILE_TURN % len(valid_items)
         _VPN_PROFILE_TURN += 1
-        print(f"⚠️ [프로톤VPN 백그라운드 교체 오류]: {e}")
+        target_name, tx, ty = valid_items[pick_idx]
+
+        # 3) 수동 이동과 100% 동일하게 프로필 글자(tx+10)에서 [연결] 버튼(tx+95)까지 10단계로 부드럽게 이동!
+        orig_x, orig_y = win32api.GetCursorPos()
+        start_x = min(sw - 10, tx + 10)
+        end_x = min(sw - 10, tx + 95)
+        hover_y = min(sh - 10, ty + 15)
+
+        win32api.SetCursorPos((start_x, hover_y))
+        time.sleep(0.03)
+        steps = 10
+        for s_i in range(1, steps + 1):
+            cur_x = int(start_x + (end_x - start_x) * (s_i / steps))
+            win32api.SetCursorPos((cur_x, hover_y))
+            win32api.mouse_event(win32con.MOUSEEVENTF_MOVE, 1, 0, 0, 0)
+            time.sleep(0.015)
+
+        # [연결] 버튼이 팝업될 때까지 0.25초 대기 후 클릭
+        time.sleep(0.25)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        time.sleep(0.06)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        time.sleep(0.08)
+
+        # 4) 원래 마우스 위치로 즉시 복귀
+        win32api.SetCursorPos((orig_x, orig_y))
+
+        print(f"⚡ [프로톤VPN 프로필 교체] '{target_name}' ({end_x}, {hover_y}) 수동형 슬라이딩 클릭 완료! (정상목록: {[x[0] for x in valid_items]})")
+        return True
+
+    except Exception as e:
+        print(f"⚠️ [프로톤VPN 교체 오류]: {e}")
         return False
 
 _LAST_VPN_QUEUE_LOG_TIME = 0.0
