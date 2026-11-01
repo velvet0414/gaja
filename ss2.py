@@ -794,19 +794,44 @@ def _get_vpn_worker_public_ip():
 
 _VPN_PROFILE_TURN = 0
 _VPN_LAST_ATTEMPT_TIME = 0.0
+_VPN_LAST_BOT_INPUT_TIME = 0.0
+
+class _HOST_LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+def _is_human_using_host_pc(idle_threshold_sec=5.0):
+    """
+    군주컴에서 사람이 마우스나 키보드를 조작 중인지 판별합니다.
+    (미니1~4 수동 제어 중이거나, 최근 5초 이내에 본컴 마우스/키보드 입력이 있었으면 True 반환)
+    """
+    if globals().get("active_manual_target") is not None:
+        return True
+    try:
+        lii = _HOST_LASTINPUTINFO()
+        lii.cbSize = ctypes.sizeof(_HOST_LASTINPUTINFO)
+        if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
+            elapsed_ms = (win32api.GetTickCount() - lii.dwTime) & 0xFFFFFFFF
+            elapsed_sec = elapsed_ms / 1000.0
+            # 봇 자신이 방금 발생시킨 마우스 이벤트가 아닌 실제 사람의 입력인지 확인
+            if elapsed_sec < idle_threshold_sec and (time.time() - _VPN_LAST_BOT_INPUT_TIME) > (elapsed_sec + 0.5):
+                return True
+    except Exception:
+        pass
+    return False
 
 def _click_proton_vpn_connect_on_host():
     """
-    1) 프로톤VPN 창을 먼저 활성화(포커스)하고,
-    2) 점검중(🔧회색) 및 현재 연결중(초록점) 프로필을 제외한 정상(보라색) 프로필 1개를 골라,
-    3) 수동 조작과 동일하게 마우스를 부드럽게 미끄러뜨려(Glide) [연결] 버튼을 띄운 뒤 클릭하고 원위치합니다.
+    사람이 군주컴을 만지지 않을 때만 작동하며,
+    이동 도중이라도 사람이 마우스를 움직이면 0.01초 만에 즉시 중단하고 제어권을 넘깁니다.
     """
-    global _VPN_PROFILE_TURN, _VPN_LAST_ATTEMPT_TIME
+    global _VPN_PROFILE_TURN, _VPN_LAST_ATTEMPT_TIME, _VPN_LAST_BOT_INPUT_TIME
     now_t = time.time()
 
-    # 수동 제어 중이거나 최근 15초 이내에 시도했다면 마우스 간섭 차단
-    if globals().get("active_manual_target") is not None:
+    # 🛡️ [1차 방어막] 사람이 미니창 수동 제어 중이거나 최근 5초 내 군주컴 마우스/키보드를 만졌다면 즉시 대기!
+    if _is_human_using_host_pc(idle_threshold_sec=5.0):
+        print("🖐️ [프로톤VPN 교체 대기] 현재 군주컴 수동 조작이 감지되어 마우스를 건드리지 않고 대기합니다.")
         return False
+
     if now_t - _VPN_LAST_ATTEMPT_TIME < 15.0:
         return False
     _VPN_LAST_ATTEMPT_TIME = now_t
@@ -849,6 +874,11 @@ for ($i = 1; $i -le 20; $i++) {
             timeout=8.0
         ).decode("utf-8", errors="ignore").strip()
 
+        # 🛡️ [2차 방어막] 파워쉘이 좌표를 읽는 동안 사람이 마우스를 잡았다면 즉시 중단!
+        if _is_human_using_host_pc(idle_threshold_sec=3.0):
+            print("🖐️ [프로톤VPN 교체 중단] 스캔 도중 수동 마우스 조작이 감지되어 클릭을 취소합니다.")
+            return False
+
         if "NO_WINDOW" in raw_out:
             print("⚠️ [프로톤VPN 오류] 프로톤VPN 창이 열려있지 않습니다.")
             return False
@@ -865,22 +895,6 @@ for ($i = 1; $i -le 20; $i++) {
             print("⚠️ [프로톤VPN 알림] 화면에서 kr1~kr20 프로필 목록을 찾지 못했습니다.")
             return False
 
-        # 1) 프로톤VPN 창을 앞으로 활성화하여 마우스 호버(Hover)를 100% 인식하도록 보장
-        vpn_hwnd = None
-        def _find_vpn_hwnd(h, _):
-            nonlocal vpn_hwnd
-            if win32gui.IsWindowVisible(h) and "Proton VPN" in win32gui.GetWindowText(h):
-                vpn_hwnd = h
-        win32gui.EnumWindows(_find_vpn_hwnd, None)
-        if vpn_hwnd:
-            try:
-                ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)
-                win32gui.SetForegroundWindow(vpn_hwnd)
-                time.sleep(0.1)
-            except Exception:
-                pass
-
-        # 2) 화면 캡처로 점검중(회색 스패너 🔧) 및 현재 연결됨(초록점) 프로필 필터링
         with mss.mss() as sct:
             mon = sct.monitors[1]
             scr = cv2.cvtColor(np.array(sct.grab(mon)), cv2.COLOR_BGRA2BGR)
@@ -888,7 +902,6 @@ for ($i = 1; $i -le 20; $i++) {
         sh, sw = scr.shape[:2]
         valid_items = []
         for p_name, tx, ty in items:
-            # 좌측 아이콘 영역(tx-38 ~ tx-2, ty-4 ~ ty+32)에 보라색 채도가 있는지 확인 (회색 스패너 🔧 제외)
             ix1, iy1 = max(0, tx - 38), max(0, ty - 4)
             ix2, iy2 = min(sw, tx - 2), min(sh, ty + 32)
             if ix2 <= ix1 or iy2 <= iy1:
@@ -899,7 +912,6 @@ for ($i = 1; $i -le 20; $i++) {
             if cv2.countNonZero(purple_mask) < 10:
                 continue
 
-            # 텍스트 우측(tx+15 ~ tx+60, ty-2 ~ ty+18)에 초록색 연결점(현재 연결된 서버)이 있으면 제외
             gx1, gy1 = max(0, tx + 15), max(0, ty - 2)
             gx2, gy2 = min(sw, tx + 60), min(sh, ty + 18)
             if gx2 > gx1 and gy2 > gy1:
@@ -919,32 +931,66 @@ for ($i = 1; $i -le 20; $i++) {
         _VPN_PROFILE_TURN += 1
         target_name, tx, ty = valid_items[pick_idx]
 
-        # 3) 수동 이동과 100% 동일하게 프로필 글자(tx+10)에서 [연결] 버튼(tx+95)까지 10단계로 부드럽게 이동!
         orig_x, orig_y = win32api.GetCursorPos()
+
+        vpn_hwnd = None
+        def _find_vpn_hwnd(h, _):
+            nonlocal vpn_hwnd
+            if win32gui.IsWindowVisible(h) and "Proton VPN" in win32gui.GetWindowText(h):
+                vpn_hwnd = h
+        win32gui.EnumWindows(_find_vpn_hwnd, None)
+        if vpn_hwnd:
+            try:
+                _VPN_LAST_BOT_INPUT_TIME = time.time()
+                ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)
+                win32gui.SetForegroundWindow(vpn_hwnd)
+                time.sleep(0.08)
+            except Exception:
+                pass
+
         start_x = min(sw - 10, tx + 10)
         end_x = min(sw - 10, tx + 95)
         hover_y = min(sh - 10, ty + 15)
 
+        _VPN_LAST_BOT_INPUT_TIME = time.time()
         win32api.SetCursorPos((start_x, hover_y))
-        time.sleep(0.03)
+        expected_x, expected_y = start_x, hover_y
+        time.sleep(0.02)
+
+        # 🛡️ [3차 방어막] 슬라이딩 도중 사람이 마우스를 움직이면(좌표 오차 발생 시) 즉시 중단하고 손을 뗌!
         steps = 10
         for s_i in range(1, steps + 1):
+            curr_pos = win32api.GetCursorPos()
+            if globals().get("active_manual_target") is not None or abs(curr_pos[0] - expected_x) > 5 or abs(curr_pos[1] - expected_y) > 5:
+                print("🖐️ [프로톤VPN 이동 즉시 취소] 이동 도중 사람의 마우스 움직임이 감지되어 제어권을 넘깁니다!")
+                return False
+
             cur_x = int(start_x + (end_x - start_x) * (s_i / steps))
+            _VPN_LAST_BOT_INPUT_TIME = time.time()
             win32api.SetCursorPos((cur_x, hover_y))
             win32api.mouse_event(win32con.MOUSEEVENTF_MOVE, 1, 0, 0, 0)
+            expected_x, expected_y = cur_x + 1, hover_y
             time.sleep(0.015)
 
-        # [연결] 버튼이 팝업될 때까지 0.25초 대기 후 클릭
-        time.sleep(0.25)
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-        time.sleep(0.06)
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-        time.sleep(0.08)
+        # [연결] 버튼 팝업 대기(0.22초) 동안에도 사람이 마우스를 움직였는지 최종 확인
+        time.sleep(0.22)
+        curr_pos = win32api.GetCursorPos()
+        if globals().get("active_manual_target") is not None or abs(curr_pos[0] - expected_x) > 8 or abs(curr_pos[1] - expected_y) > 8:
+            print("🖐️ [프로톤VPN 클릭 직전 취소] 사람의 마우스 개입이 감지되어 클릭하지 않고 종료합니다!")
+            return False
 
-        # 4) 원래 마우스 위치로 즉시 복귀
+        _VPN_LAST_BOT_INPUT_TIME = time.time()
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        time.sleep(0.05)
+        _VPN_LAST_BOT_INPUT_TIME = time.time()
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        time.sleep(0.06)
+
+        # 원래 마우스 위치로 즉시 복귀
+        _VPN_LAST_BOT_INPUT_TIME = time.time()
         win32api.SetCursorPos((orig_x, orig_y))
 
-        print(f"⚡ [프로톤VPN 프로필 교체] '{target_name}' ({end_x}, {hover_y}) 수동형 슬라이딩 클릭 완료! (정상목록: {[x[0] for x in valid_items]})")
+        print(f"⚡ [프로톤VPN 프로필 교체] '{target_name}' ({end_x}, {hover_y}) 클릭 완료! (정상목록: {[x[0] for x in valid_items]})")
         return True
 
     except Exception as e:
