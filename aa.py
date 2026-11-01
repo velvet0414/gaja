@@ -676,7 +676,10 @@ def get_next_central_in_order(curr_c_num, pc_key=None):
     return my_num
 
 def _process_ip_lock_command(cmd_line):
-    """31280 포트로 들어온 중앙컴 간 IP 사용권 요청(ACQUIRE / RELEASE)을 최대 3대 동시(시차 입장)로 처리합니다."""
+    """
+    31280 포트로 들어온 중앙컴 간 IP 사용권 요청(ACQUIRE / RELEASE)을 최대 3대 동시로 처리합니다.
+    이미 3슬롯이 찼을 경우 대기열에 묶어두지 않고 즉시 BUSY를 반환하여 다른 중앙컴으로 이동하게 합니다.
+    """
     global _IP_LOCK_HOLDERS, _IP_LOCK_COOLDOWN_UNTIL, _IP_LOCK_QUEUE
     now = time.time()
     parts = cmd_line.strip().split(" ")
@@ -710,14 +713,18 @@ def _process_ip_lock_command(cmd_line):
                 _IP_LOCK_HOLDERS[client_id]["hb"] = now
                 return "GRANTED"
 
-            # 대기열에 등록/갱신
             found_in_q = False
             for idx, (cid, _) in enumerate(_IP_LOCK_QUEUE):
                 if cid == client_id:
                     _IP_LOCK_QUEUE[idx] = (client_id, now)
                     found_in_q = True
                     break
+
             if not found_in_q:
+                # 🚨 이미 3슬롯(사용중 + 시차입장 예약자)이 모두 찼다면 대기열에 넣지 않고 즉시 BUSY 반환! (타 중앙컴 이동 유도)
+                if len(_IP_LOCK_HOLDERS) + len(_IP_LOCK_QUEUE) >= _IP_LOCK_MAX_CONCURRENT:
+                    active_list = ", ".join(list(_IP_LOCK_HOLDERS.keys()) + [cid for cid, _ in _IP_LOCK_QUEUE])
+                    return f"BUSY|3슬롯 모두 사용중[{active_list}]"
                 _IP_LOCK_QUEUE.append((client_id, now))
 
             # 빈 슬롯이 남아있는 경우 (최대 3대)
@@ -735,18 +742,163 @@ def _process_ip_lock_command(cmd_line):
                 else:
                     q_pos = next((i + 1 for i, (cid, _) in enumerate(_IP_LOCK_QUEUE) if cid == client_id), 1)
                     front_id = _IP_LOCK_QUEUE[0][0] if _IP_LOCK_QUEUE else "앞순번"
-                    return f"WAIT|앞순번({front_id}) 시차 입장 대기 중 (내 순번: {q_pos}번)"
+                    return f"COOLDOWN|앞순번({front_id}) 시차 입장 대기 중 (내 순번: {q_pos}번)"
             else:
-                q_pos = next((i + 1 for i, (cid, _) in enumerate(_IP_LOCK_QUEUE) if cid == client_id), 1)
+                _IP_LOCK_QUEUE = [(cid, t) for cid, t in _IP_LOCK_QUEUE if cid != client_id]
                 active_list = ", ".join(_IP_LOCK_HOLDERS.keys())
-                return f"BUSY|3슬롯 모두 사용중[{active_list}] (내 대기순번: {q_pos}번)"
+                return f"BUSY|3슬롯 모두 사용중[{active_list}]"
 
     return "ERROR"
 
+# ------------------------------------------------------------------------------
+# 🐟 [미꾸라지(Mudfish) 다중 중앙컴 동시 분산 & 미니컴별 독립 실패 처리 엔진]
+# ------------------------------------------------------------------------------
+MUDFISH_USERNAME = "velvet0414@gmail.com"                 # 미꾸라지 로그인 아이디
+MUDFISH_PASSWORD = "flcl1030!@"                           # 미꾸라지 비밀번호
+MUDFISH_PROXY_PORT = 18080                                # 미꾸라지 공식 HTTP 프록시 포트 (설치 불필요)
+
+_MUDFISH_NODES_CACHE = []
+_MUDFISH_NODES_CACHE_TIME = 0.0
+_MUDFISH_LOCK = threading.Lock()
+
+def _get_mudfish_state_file(pc_key=None):
+    """미니컴(미니1~4)마다 각자의 미꾸라지 IP와 실패(fail.png) 목록을 독립적으로 관리합니다."""
+    k = str(pc_key or globals().get("TARGET_PC_KEY") or "default").strip()
+    return f"mudfish_state_{k}.json"
+
+def _load_mudfish_shared_state(pc_key=None):
+    """해당 미니컴 전용 미꾸라지 상태(현재 노드 및 해당 미니컴에서 fail.png 뜬 IP 목록)를 불러옵니다."""
+    fpath = _get_mudfish_state_file(pc_key)
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    default_st = {"date": today_str, "active_node": None, "exhausted_ips": [], "rotated_at": 0.0}
+    if not os.path.exists(fpath):
+        return default_st
+    try:
+        with open(fpath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("date") != today_str:
+            return {
+                "date": today_str,
+                "active_node": data.get("active_node"),
+                "exhausted_ips": [],
+                "rotated_at": data.get("rotated_at", 0.0)
+            }
+        return data
+    except Exception:
+        return default_st
+
+def _save_mudfish_shared_state(state_data, pc_key=None):
+    fpath = _get_mudfish_state_file(pc_key)
+    try:
+        with open(fpath, "w", encoding="utf-8") as f:
+            json.dump(state_data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def _fetch_mudfish_kr_nodes_for_my_pc():
+    """
+    미꾸라지 전체 한국(KR) 서버를 가져와 1~13번 중앙컴마다 서로 겹치지 않는
+    전용 서버 순번(Sharding)을 1순위로 배치하여 동시 접속 시 각기 다른 IP를 보장합니다.
+    """
+    global _MUDFISH_NODES_CACHE, _MUDFISH_NODES_CACHE_TIME
+    now_t = time.time()
+    if not _MUDFISH_NODES_CACHE or (now_t - _MUDFISH_NODES_CACHE_TIME >= 600.0):
+        try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            req = urllib.request.Request(
+                "https://mudfish.net/api/staticnodes",
+                headers={"User-Agent": "Mozilla/5.0"}
+            )
+            with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+                raw_list = data.get("staticnodes", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+                kr_nodes = []
+                seen_ips = set()
+                for n in raw_list:
+                    if not isinstance(n, dict):
+                        continue
+                    hostname = str(n.get("hostname", "")).lower()
+                    location = str(n.get("location", ""))
+                    ip = str(n.get("ip", "")).strip()
+                    if ip and ip not in seen_ips and (hostname.startswith("node-kr-") or location.startswith("KR ") or "korea" in location.lower()):
+                        seen_ips.add(ip)
+                        kr_nodes.append({"ip": ip, "name": location or hostname})
+                if kr_nodes:
+                    kr_nodes.sort(key=lambda x: x["ip"])
+                    _MUDFISH_NODES_CACHE = kr_nodes
+                    _MUDFISH_NODES_CACHE_TIME = now_t
+        except Exception as e:
+            print(f"⚠️ [미꾸라지 API] 한국 노드 목록 조회 실패: {e}")
+
+    all_nodes = list(_MUDFISH_NODES_CACHE)
+    if not all_nodes:
+        return []
+
+    try:
+        my_c_idx = max(0, int(get_my_central_num()) - 1)
+    except Exception:
+        my_c_idx = 0
+    total_centrals = len(CENTRAL_ORDER)  # 13대 중앙컴 기준
+
+    # 1순위: 내 중앙컴 전용 순번 노드 (다른 중앙컴과 겹치지 않음)
+    my_primary_nodes = [n for idx, n in enumerate(all_nodes) if (idx % total_centrals) == (my_c_idx % total_centrals)]
+    # 2순위: 내 전용 노드를 다 썼을 때 사용할 나머지 전체 예비 한국 노드
+    my_backup_nodes = [n for idx, n in enumerate(all_nodes) if (idx % total_centrals) != (my_c_idx % total_centrals)]
+    return my_primary_nodes + my_backup_nodes
+
+def _test_mudfish_node_proxy(node_ip):
+    """미꾸라지 한국 노드의 18080 포트가 살아있는지 2초 내에 사전 검증합니다."""
+    try:
+        raw_auth = f"{MUDFISH_USERNAME}:{MUDFISH_PASSWORD}"
+        auth_b64 = base64.b64encode(raw_auth.encode("utf-8")).decode("ascii")
+        s = socket.create_connection((node_ip, MUDFISH_PROXY_PORT), timeout=2.0)
+        s.settimeout(2.5)
+        req = (
+            f"CONNECT store.plaync.com:443 HTTP/1.1\r\n"
+            f"Host: store.plaync.com:443\r\n"
+            f"Proxy-Authorization: Basic {auth_b64}\r\n\r\n"
+        ).encode("utf-8")
+        s.sendall(req)
+        resp = s.recv(1024).decode("utf-8", errors="ignore")
+        s.close()
+        if " 200 " in resp:
+            return True
+        if " 407 " in resp:
+            print("🚨 [미꾸라지 인증 실패] 407 오류! MUDFISH_USERNAME / MUDFISH_PASSWORD를 확인하세요!")
+        return False
+    except Exception:
+        return False
+
+def _get_or_assign_mudfish_node(pc_key):
+    """해당 미니컴에 유효한 미꾸라지 노드가 있으면 그대로 재사용하고, 없을 때만 새로 할당합니다."""
+    with _MUDFISH_LOCK:
+        st_data = _load_mudfish_shared_state(pc_key)
+        active_node = st_data.get("active_node")
+        exhausted = set(st_data.get("exhausted_ips", []))
+        if active_node and active_node.get("ip") and active_node["ip"] not in exhausted:
+            CENTRAL_TAILSCALE_MAP["VPN"] = active_node["ip"]
+            return active_node
+    ok_rot, _ = request_vpn_server_rotate(pc_key, force_rotate=False)
+    if ok_rot:
+        return _load_mudfish_shared_state(pc_key).get("active_node")
+    return None
+
 def request_central_ip_lock(pc_key, target_c_num, action="ACQUIRE"):
-    """내 중앙컴(127.0.0.1:31280) 또는 타 중앙컴(테일스케일IP:31280)에 IP 사용권 요청/반납을 수행합니다."""
+    """내 중앙컴, 타 중앙컴, 또는 미꾸라지VPN(대기열 없이 즉시 승인) 사용권을 처리합니다."""
     my_num = get_my_central_num()
     t_num = str(target_c_num or my_num).strip()
+
+    # 🐟 미꾸라지(VPN) 모드는 대기열 없이 즉시 승인!
+    if t_num == "VPN":
+        if action == "RELEASE":
+            return True, "RELEASED"
+        node = _get_or_assign_mudfish_node(pc_key)
+        if not node:
+            return False, "OFFLINE|미꾸라지 한국 서버 연결 실패"
+        return True, "GRANTED"
+
     host = "127.0.0.1" if t_num == my_num else CENTRAL_TAILSCALE_MAP.get(t_num, "127.0.0.1")
     client_id = f"{my_num}번컴-{pc_key}"
 
@@ -770,35 +922,65 @@ def request_central_ip_lock(pc_key, target_c_num, action="ACQUIRE"):
         return False, "OFFLINE|타 중앙컴 연결 불가"
 
 def release_central_ip_lock_async(pc_key):
-    """인증 종료/중단 시 점유 중이던 중앙컴 IP 사용권을 즉시 반납합니다."""
+    """인증 종료 시 일반 중앙컴 슬롯만 반납하며, 미꾸라지 IP는 해당 미니컴에서 fail.png가 뜰 때까지 계속 유지합니다!"""
     if pc_key not in ai_states:
         return
     st = ai_states[pc_key]
     locked_c = st.pop("certi_locked_central", None)
+    if locked_c == "VPN":
+        return
     if locked_c:
         threading.Thread(target=request_central_ip_lock, args=(pc_key, locked_c, "RELEASE"), daemon=True).start()
 
-def request_vpn_server_rotate(pc_key):
-    """모든 일반 IP 소진 시 군주컴(100.99.95.118:31280)에 프로톤VPN IP 교체를 요청합니다."""
-    my_num = get_my_central_num()
-    vpn_host = CENTRAL_TAILSCALE_MAP.get("VPN", COMMAND_CENTER_IP)
-    client_id = f"{my_num}번컴-{pc_key}"
-    try:
-        s = socket.create_connection((vpn_host, PROXY_DIRECT_EXIT_PORT), timeout=30.0)
-        s.settimeout(30.0)
-        s.sendall(f"VPN_ROTATE {client_id}\r\n\r\n".encode("utf-8"))
-        resp = s.recv(1024).decode("utf-8", errors="ignore").strip()
-        s.close()
-        if resp.startswith("ROTATED"):
-            new_ip = resp.split("|", 1)[1] if "|" in resp else "NEW_IP"
-            return True, new_ip
-        return False, resp
-    except Exception as e:
-        return False, f"OFFLINE|{e}"
+def request_vpn_server_rotate(pc_key, force_rotate=True):
+    """
+    해당 미니컴(pc_key)에서 fail.png 발생 시, 그 미니컴의 상태 파일에만 현재 미꾸라지 IP를 실패 처리하고
+    다음 미꾸라지 한국 서버 IP로 즉시 교체합니다. (다른 미니컴에는 영향 없음)
+    """
+    if not MUDFISH_USERNAME or not MUDFISH_PASSWORD or MUDFISH_PASSWORD == "여기에_미꾸라지_비밀번호_입력":
+        return False, "CONFIG|MUDFISH_PASSWORD에 미꾸라지 비밀번호를 입력해주세요!"
+
+    kr_nodes = _fetch_mudfish_kr_nodes_for_my_pc()
+    if not kr_nodes:
+        return False, "OFFLINE|미꾸라지 한국 서버 목록을 불러오지 못했습니다"
+
+    with _MUDFISH_LOCK:
+        st_data = _load_mudfish_shared_state(pc_key)
+        active_node = st_data.get("active_node")
+        exhausted = list(st_data.get("exhausted_ips", []))
+
+        if force_rotate and active_node and active_node.get("ip"):
+            old_ip = active_node["ip"]
+            if old_ip not in exhausted:
+                exhausted.append(old_ip)
+            active_node = None
+
+        for attempt in range(2):
+            for node in kr_nodes:
+                nip = node["ip"]
+                nname = node["name"]
+                if nip in exhausted:
+                    continue
+                if _test_mudfish_node_proxy(nip):
+                    new_active = {"ip": nip, "name": nname}
+                    st_data["active_node"] = new_active
+                    st_data["exhausted_ips"] = exhausted
+                    st_data["rotated_at"] = time.time()
+                    _save_mudfish_shared_state(st_data, pc_key)
+                    CENTRAL_TAILSCALE_MAP["VPN"] = nip
+                    print(f"🐟 [{get_my_central_num()}번컴-{pc_key} 전용 미꾸라지 장착] {nname} ({nip}:{MUDFISH_PROXY_PORT}) 연결 완료! (전체한국노드:{len(kr_nodes)}개)")
+                    return True, f"{nip} ({nname})"
+
+            # 해당 미니컴이 모든 한국 노드를 한 바퀴 다 돌았다면 기록 초기화 후 재순환
+            exhausted.clear()
+
+    return False, "OFFLINE|응답 가능한 미꾸라지 한국(18080) 노드가 없습니다"
+
+_PROXY_HEALTH_CHECKED = False
 
 def _proxy_health_checker_thread():
     """5초마다 백그라운드에서 31280 포트가 열린 다른 중앙컴을 미리 체크하여 접속 딜레이를 0초로 만듭니다."""
-    global ALIVE_OTHER_PROXIES
+    global ALIVE_OTHER_PROXIES, _PROXY_HEALTH_CHECKED
     while True:
         my_num = get_my_central_num()
         alive_temp = []
@@ -815,6 +997,7 @@ def _proxy_health_checker_thread():
             except Exception:
                 pass
         ALIVE_OTHER_PROXIES = alive_temp
+        _PROXY_HEALTH_CHECKED = True
         time.sleep(5.0)
 
 def _proxy_pipe_sockets(s1, s2):
@@ -840,15 +1023,64 @@ def _handle_proxy_client(client_sock, is_exit_server=False, pc_key=None):
         try: client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except Exception: pass
 
-        # 1) 미니컴 전용 입구(31281~31284)로 들어온 경우 -> 지정된 타 중앙컴(31280) 1곳으로만 일관되게 토스! (세션 IP 쪼개짐 원천 방지)
+        # 1) 미니컴 전용 입구(31281~31284)로 들어온 경우 -> 타 중앙컴(31280) 또는 미꾸라지 한국 서버(18080)로 토스!
         if not is_exit_server:
             now_t = time.time()
             my_num = get_my_central_num()
             target_num = CURRENT_PROXY_TARGET_NUM.get(pc_key) if pc_key else None
-            if not target_num or target_num == my_num or target_num not in CENTRAL_TAILSCALE_MAP:
+            if not target_num or target_num == my_num or (target_num != "VPN" and target_num not in CENTRAL_TAILSCALE_MAP):
                 target_num = get_next_central_in_order(my_num)
                 if pc_key:
                     CURRENT_PROXY_TARGET_NUM[pc_key] = target_num
+
+            # 🐟 [미꾸라지 VPN 다이렉트 라우팅] 미니컴 크롬 요청에 Basic 인증 헤더를 자동 주입하여 18080 포트로 직결!
+            if target_num == "VPN":
+                req_data = b""
+                while b"\r\n\r\n" not in req_data and len(req_data) < 16384:
+                    chunk = client_sock.recv(4096)
+                    if not chunk:
+                        break
+                    req_data += chunk
+                if not req_data:
+                    client_sock.close()
+                    return
+
+                raw_auth = f"{MUDFISH_USERNAME}:{MUDFISH_PASSWORD}"
+                auth_b64 = base64.b64encode(raw_auth.encode("utf-8")).decode("ascii")
+                auth_header = f"Proxy-Authorization: Basic {auth_b64}".encode("ascii")
+                hdr_part, body_part = req_data.split(b"\r\n\r\n", 1)
+                authed_req = hdr_part + b"\r\n" + auth_header + b"\r\n\r\n" + body_part
+
+                mf_node = _get_or_assign_mudfish_node(pc_key)
+                for _try_i in range(2):
+                    if not mf_node:
+                        break
+                    try:
+                        remote_sock = socket.create_connection((mf_node["ip"], MUDFISH_PROXY_PORT), timeout=4.0)
+                        break
+                    except Exception:
+                        remote_sock = None
+                        if _try_i == 0:
+                            ok_r, _ = request_vpn_server_rotate(pc_key, force_rotate=True)
+                            mf_node = _load_mudfish_shared_state(pc_key).get("active_node") if ok_r else None
+
+                if remote_sock is not None and mf_node:
+                    try: remote_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    except Exception: pass
+                    remote_sock.sendall(authed_req)
+
+                    if now_t - _LAST_PROXY_LOG_TIME > 3.0:
+                        print(f"🐟 [미꾸라지 프록시 연결] {pc_key} 크롬 ➔ [{mf_node['name']} ({mf_node['ip']}:18080)] 정상 연결됨!")
+                        _LAST_PROXY_LOG_TIME = now_t
+
+                    client_sock.settimeout(None)
+                    remote_sock.settimeout(None)
+                    threading.Thread(target=_proxy_pipe_sockets, args=(client_sock, remote_sock), daemon=True).start()
+                    _proxy_pipe_sockets(remote_sock, client_sock)
+                else:
+                    try: client_sock.close()
+                    except Exception: pass
+                return
 
             ehost = CENTRAL_TAILSCALE_MAP.get(target_num)
             if ehost:
@@ -2821,7 +3053,8 @@ _BUFF_SAVE_KEYS = ("windwalk", "shield", "holy", "enchant", "blessed", "dex", "d
 _STRIP_SETTING_KEYS = {
     "com_port", "char_name", "m_elf_conf", "m_wiz_conf", "f_knight_conf", "m_knight_conf", "m_prince_conf", "halloween_conf",
     "auth_main_id", "auth_main_pw", "auth_main_email", "auth_main_phone",
-    "auth_delay_start_min", "auth_delay_end_min", "auth_delay_sec"
+    "auth_delay_start_min", "auth_delay_end_min", "auth_delay_sec",
+    "hunt_first_item_cnt"
 }
 
 def _save_buff_times_internal(states_dict):
@@ -3357,7 +3590,7 @@ _GUI_DEFAULT_SCHEMA = {
     "hp_20_action": "텔레포트 (F11)", "hp_danger_pct": "45",
     "abs_return_use": False, "abs_return_pct": "15",
     "pk_drop_pct": "12", "max_combat_time": "15", "return_cond": "은화살부족",
-    "move_sens": "2000", "hunt_first": False, "hunt_first_keep_loot": False, "chain_kill": False,
+    "move_sens": "2000", "hunt_first": False, "hunt_first_keep_loot": False, "hunt_first_item_use": False, "hunt_first_item_cnt": "3", "chain_kill": False,
     "haste_match_rate": "92", "zone_tele_nodes": "120", "oak_thresh": "127",
     "motion_sensitivity": "35", "gb_count_normal": "3", "gb_count_dng": "4",
     "use_gb_detect": False, "gb_exc_user": True,
@@ -6499,21 +6732,23 @@ def ai_commander_worker(target_pc):
                 if state.get("certi_real_buff_elapsed") is not None:
                     state["real_buff_time"] = curr_time - state["certi_real_buff_elapsed"]
 
-                # 🔎 qq/certi/ 폴더 전용 이미지 매칭 헬퍼 함수 (roi_rect 지정 시 해당 영역만 스캔)
+                # 🔎 qq/certi/ 폴더 전용 이미지 매칭 헬퍼 함수 (파일 교체 시 자동 리로드 + roi_rect 스캔)
                 def find_certi_img(target_name, th=0.82, roi_rect=None):
                     path = f"qq/certi/{target_name}" if not target_name.startswith("qq/") else target_name
                     if not os.path.exists(path):
                         return None
-                    if path not in loaded_models:
+                    mtime = os.path.getmtime(path)
+                    cached_m = loaded_models.get(path)
+                    if not cached_m or cached_m.get("mtime") != mtime:
                         try:
                             with open(path, "rb") as f:
                                 np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
                             bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
                             if bgra is not None:
                                 if len(bgra.shape) == 3 and bgra.shape[2] == 4:
-                                    loaded_models[path] = {"color": bgra[:, :, :3], "mask": bgra[:, :, 3]}
+                                    loaded_models[path] = {"color": bgra[:, :, :3], "mask": bgra[:, :, 3], "mtime": mtime}
                                 else:
-                                    loaded_models[path] = {"color": bgra[:, :, :3] if len(bgra.shape) == 3 else bgra, "mask": None}
+                                    loaded_models[path] = {"color": bgra[:, :, :3] if len(bgra.shape) == 3 else bgra, "mask": None, "mtime": mtime}
                             else:
                                 loaded_models[path] = None
                         except Exception:
@@ -6702,8 +6937,10 @@ def ai_commander_worker(target_pc):
                     state["certi_web_step_start"] = curr_time
                 elif curr_time - state.get("certi_web_step_start", curr_time) >= step_limit_sec:
                     pico_queues[key].put({"action": "CLOSE_TAB"})
+                    release_central_ip_lock_async(key)
+                    next_timeout_fsm = "CERTI_WAIT_IP_LOCK"
+
                     if state.get("certi_use_sub", False):
-                        release_central_ip_lock_async(key)
                         my_num = get_my_central_num()
                         prev_c = str(state.get("certi_curr_central") or my_num).strip()
                         if prev_c == "VPN":
@@ -6711,12 +6948,24 @@ def ai_commander_worker(target_pc):
                             if vpn_enter_t > 0.0 and (curr_time - vpn_enter_t >= 21600.0):
                                 next_c = my_num
                                 state["certi_vpn_enter_time"] = 0.0
-                                dprint(key, "⏰ [프로톤VPN 6시간 경과] 6시간이 지나 다시 내 중앙컴(1~13번) 회선부터 인증을 시도합니다!")
+                                state["certi_failed_centrals"] = set()
+                                state["certi_busy_skipped"] = set()
+                                dprint(key, "⏰ [미꾸라지VPN 6시간 경과] 6시간이 지나 다시 내 중앙컴(1~13번) 회선부터 인증을 시도합니다!")
                             else:
                                 next_c = "VPN"
-                                dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 지연 초과! 군주컴 프로톤VPN 회선으로 재시도합니다.")
+                                next_timeout_fsm = "CERTI_REQ_VPN_ROTATE"
+                                dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 지연 초과! 다음 미꾸라지 한국 서버로 IP를 교체하여 재시도합니다.")
                         else:
-                            next_c = get_next_central_in_order(prev_c)
+                            failed_set = state.setdefault("certi_failed_centrals", set())
+                            alive_set = ({c_n for c_n, _ in ALIVE_OTHER_PROXIES} | {my_num}) if _PROXY_HEALTH_CHECKED else set(CENTRAL_ORDER)
+                            next_c = None
+                            curr_idx = CENTRAL_ORDER.index(prev_c) if prev_c in CENTRAL_ORDER else 0
+                            for step in range(1, len(CENTRAL_ORDER) + 1):
+                                cand_c = CENTRAL_ORDER[(curr_idx + step) % len(CENTRAL_ORDER)]
+                                if cand_c in alive_set and cand_c not in failed_set:
+                                    next_c = cand_c
+                                    break
+                            next_c = next_c or get_next_central_in_order(prev_c)
                             dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 지연 초과! [{prev_c}번 ➔ {next_c}번 중앙컴] 회선으로 변경하여 재시도합니다.")
                         state["certi_curr_central"] = next_c
                         if next_c == my_num:
@@ -6730,7 +6979,7 @@ def ai_commander_worker(target_pc):
                     state["certi_web_last_fsm"] = None
                     state["certi_web_step_start"] = curr_time
                     state["certi_last_box"] = None
-                    state["target_fsm"] = "CERTI_WAIT_IP_LOCK"
+                    state["target_fsm"] = next_timeout_fsm
                     state["cooldown"] = curr_time + 1.2
                     continue
 
@@ -7038,6 +7287,8 @@ def ai_commander_worker(target_pc):
                     elif current_fsm == "CERTI_GOTO_DESKTOP":
                         state["certi_account_idx"] = 0     # 무조건 내 계정(auth_main) 사용
                         state["certi_fail_streak"] = 0     # 이번 인증 내 연속 실패 횟수 초기화
+                        state["certi_failed_centrals"] = set()  # 이번 인증에서 내 미니컴이 fail.png 받은 중앙컴 목록
+                        state["certi_busy_skipped"] = set()     # 대기열(BUSY)로 인해 임시 패스한 중앙컴 목록
                         state["certi_last_box"] = None
                         state["certi_done_logged"] = False
 
@@ -7045,13 +7296,16 @@ def ai_commander_worker(target_pc):
                         # 💡 매크로 재시작 시에는 무조건 내 중앙컴(my_num)부터 시작하도록 메모리(state) 값만 참조!
                         saved_c = str(state.get("certi_curr_central") or "").strip()
 
-                        # 💡 군주컴 VPN 사용 중 현실시간 6시간(21600초)이 경과했으면 다시 내 중앙컴(1~13번)으로 복귀!
+                        # 💡 미꾸라지(VPN) 사용 중 현실시간 6시간(21600초)이 경과했으면 다시 내 중앙컴(1~13번)으로 복귀!
                         if saved_c == "VPN":
                             vpn_enter_t = state.get("certi_vpn_enter_time", 0.0)
                             if vpn_enter_t <= 0.0 or (curr_time - vpn_enter_t >= 21600.0):
-                                dprint(key, "⏰ [프로톤VPN 6시간 경과 ➔ 중앙컴 복귀] 군주컴 VPN 사용 6시간이 지나 다시 내 중앙컴(1~13번)부터 순차 인증을 시도합니다!")
+                                dprint(key, "⏰ [미꾸라지VPN 6시간 경과 ➔ 중앙컴 복귀] 미꾸라지 사용 6시간이 지나 다시 내 중앙컴(1~13번)부터 순차 인증을 시도합니다!")
                                 saved_c = my_num
                                 state["certi_vpn_enter_time"] = 0.0
+                            else:
+                                rem_m = max(1, int((21600.0 - (curr_time - vpn_enter_t)) // 60))
+                                dprint(key, f"🐟 [미꾸라지VPN 6시간 유지 중] 남은 유지시간 약 {rem_m}분 ➔ 계속해서 미꾸라지로 인증합니다!")
 
                         if saved_c != "VPN" and saved_c not in CENTRAL_ORDER:
                             saved_c = my_num
@@ -7073,12 +7327,14 @@ def ai_commander_worker(target_pc):
                         state["target_fsm"] = "CERTI_WAIT_IP_LOCK"
                         state["cooldown"] = curr_time + 1.5
 
-                    # 0-0.5단계: 군주컴 프로톤VPN IP 자동 교체 요청 및 완료 대기
+                    # 0-0.5단계: 해당 미니컴 전용 미꾸라지 한국 서버 IP 교체 요청
                     elif current_fsm == "CERTI_REQ_VPN_ROTATE":
-                        ok_vpn, vpn_msg = request_vpn_server_rotate(key)
+                        ok_vpn, vpn_msg = request_vpn_server_rotate(key, force_rotate=True)
                         if ok_vpn:
-                            dprint(key, f"🎉 [군주컴 프로톤VPN 새 IP 개통] 새 공인 IP({vpn_msg}) 적용 완료! 즉시 'sub.png' 인증으로 진입합니다.")
+                            dprint(key, f"🎉 [미꾸라지 새 IP 개통] 새 한국 중계 서버({vpn_msg}) 적용 완료! 즉시 'sub.png' 인증으로 진입합니다.")
                             state["certi_curr_central"] = "VPN"
+                            if state.get("certi_vpn_enter_time", 0.0) <= 0.0:
+                                state["certi_vpn_enter_time"] = curr_time
                             state["certi_use_sub"] = True
                             CURRENT_PROXY_TARGET_NUM[key] = "VPN"
                             state["certi_ip_lock_log_time"] = 0.0
@@ -7086,17 +7342,31 @@ def ai_commander_worker(target_pc):
                             state["cooldown"] = curr_time + 0.5
                         else:
                             reason_txt = vpn_msg.split("|", 1)[1] if "|" in vpn_msg else vpn_msg
-                            dprint(key, f"⏳ [프로톤VPN 교체 대기] {reason_txt} ➔ 3초 후 재요청합니다.")
+                            dprint(key, f"⏳ [미꾸라지 교체 대기] {reason_txt} ➔ 3초 후 재요청합니다.")
                             state["cooldown"] = curr_time + 3.0
 
-                    # 0-1단계: 중앙컴 간 IP 중복 사용 방지 순차 대기열 (앞사람 인증 끝날 때까지 대기)
+                    # 0-1단계: 중앙컴 순회 & 대기열(BUSY) 걸려있을 시 다른 중앙컴으로 즉시 이동
                     elif current_fsm == "CERTI_WAIT_IP_LOCK":
                         my_num = get_my_central_num()
                         target_c = str(state.get("certi_curr_central") or my_num).strip()
+
+                        # 미꾸라지(VPN) 모드 사용 중 6시간이 지났는지 체크
+                        if target_c == "VPN":
+                            vpn_enter_t = state.get("certi_vpn_enter_time", 0.0)
+                            if vpn_enter_t > 0.0 and (curr_time - vpn_enter_t >= 21600.0):
+                                dprint(key, "⏰ [미꾸라지VPN 6시간 만료 ➔ 중앙컴 복귀] 6시간이 경과하여 다시 내 중앙컴(1~13번)부터 순차 인증을 시도합니다!")
+                                target_c = my_num
+                                state["certi_curr_central"] = my_num
+                                state["certi_use_sub"] = False
+                                state["certi_vpn_enter_time"] = 0.0
+                                state["certi_failed_centrals"] = set()
+                                state["certi_busy_skipped"] = set()
+
                         ok, msg = request_central_ip_lock(key, target_c, action="ACQUIRE")
                         if ok:
                             state["certi_locked_central"] = target_c
                             state["certi_lock_hb_time"] = curr_time
+                            state["certi_busy_skipped"] = set()
                             if target_c == my_num:
                                 state["certi_use_sub"] = False
                                 dprint(key, f"🔒 [IP 순차 승인 완료] 본인 중앙컴({my_num}번) IP 사용권 획득! '1.png' 인증을 시작합니다.")
@@ -7104,22 +7374,81 @@ def ai_commander_worker(target_pc):
                                 state["certi_use_sub"] = True
                                 CURRENT_PROXY_TARGET_NUM[key] = target_c
                                 c_ip = CENTRAL_TAILSCALE_MAP.get(target_c, "")
-                                label_c = "군주컴 프로톤VPN" if target_c == "VPN" else f"{target_c}번 중앙컴"
+                                label_c = "미꾸라지VPN" if target_c == "VPN" else f"{target_c}번 중앙컴"
                                 dprint(key, f"🔒 [IP 순차 승인 완료] [{label_c}({c_ip})] 프록시 IP 사용권 획득! 'sub.png' 인증을 시작합니다.")
                             state["target_fsm"] = "CERTI_STEP_1_FIND"
                             state["cooldown"] = curr_time + 0.1
                         else:
-                            if msg.startswith("OFFLINE"):
-                                next_c = my_num if target_c == "VPN" else get_next_central_in_order(target_c)
-                                dprint(key, f"⚠️ [{target_c} 오프라인] 응답이 없어 [{next_c}번 중앙컴]으로 이동합니다.")
-                                state["certi_curr_central"] = next_c
-                                state["cooldown"] = curr_time + 0.2
-                            else:
-                                if curr_time - state.get("certi_ip_lock_log_time", 0.0) >= 5.0:
+                            if target_c == "VPN":
+                                dprint(key, "⚠️ [미꾸라지 응답 지연] 다음 미꾸라지 한국 서버로 즉시 교체합니다.")
+                                state["target_fsm"] = "CERTI_REQ_VPN_ROTATE"
+                                state["cooldown"] = curr_time + 0.5
+                            elif msg.startswith("COOLDOWN"):
+                                # 3슬롯 안에는 들어왔고 동시 접속 패킷 충돌 방지 시차(1~3초)만 대기 중인 상태
+                                if curr_time - state.get("certi_ip_lock_log_time", 0.0) >= 3.0:
                                     reason_txt = msg.split("|", 1)[1] if "|" in msg else msg
-                                    dprint(key, f"⏳ [{target_c} IP 순차 대기] {reason_txt} ➔ 앞선 인증이 끝나면 자동으로 출발합니다.")
+                                    dprint(key, f"⏳ [{target_c}번 중앙컴 시차 입장 대기] {reason_txt}")
                                     state["certi_ip_lock_log_time"] = curr_time
-                                state["cooldown"] = curr_time + 1.0
+                                state["cooldown"] = curr_time + 0.8
+                            else:
+                                # 🚨 해당 중앙컴에 대기열(BUSY: 3슬롯 모두 사용중)이 걸려있거나 오프라인(OFFLINE)이면 기다리지 않고 다른 중앙컴으로 이동!
+                                failed_set = state.setdefault("certi_failed_centrals", set())
+                                busy_set = state.setdefault("certi_busy_skipped", set())
+                                if msg.startswith("OFFLINE"):
+                                    failed_set.add(target_c)
+                                else:
+                                    busy_set.add(target_c)
+
+                                alive_set = ({c_n for c_n, _ in ALIVE_OTHER_PROXIES} | {my_num}) if _PROXY_HEALTH_CHECKED else set(CENTRAL_ORDER)
+
+                                # 만약 켜져 있는 모든 중앙컴이 이미 내 미니컴에서 실패(fail.png/오프라인)했다면 미꾸라지(VPN)로 전환
+                                if alive_set.issubset(failed_set):
+                                    dprint(key, "🐟 [모든 중앙컴 IP 소진 ➔ 미꾸라지VPN 진입] 향후 6시간 동안 미꾸라지 회선으로 인증을 진행합니다!")
+                                    state["certi_curr_central"] = "VPN"
+                                    state["certi_vpn_enter_time"] = curr_time
+                                    state["certi_use_sub"] = True
+                                    CURRENT_PROXY_TARGET_NUM[key] = "VPN"
+                                    state["certi_busy_skipped"] = set()
+                                    state["cooldown"] = curr_time + 0.2
+                                else:
+                                    # 내 미니컴에서 아직 실패하지 않았고 대기열도 없는 다음 중앙컴 탐색
+                                    next_c = None
+                                    curr_idx = CENTRAL_ORDER.index(target_c) if target_c in CENTRAL_ORDER else 0
+                                    total_c = len(CENTRAL_ORDER)
+                                    for step in range(1, total_c + 1):
+                                        cand_c = CENTRAL_ORDER[(curr_idx + step) % total_c]
+                                        if cand_c not in alive_set:
+                                            continue
+                                        if cand_c in failed_set or cand_c in busy_set:
+                                            continue
+                                        next_c = cand_c
+                                        break
+
+                                    if next_c is not None:
+                                        reason_str = "오프라인" if msg.startswith("OFFLINE") else "대기열(3슬롯 사용중)"
+                                        dprint(key, f"⏭️ [{target_c}번 중앙컴 {reason_str}] 기다리지 않고 [{next_c}번 중앙컴]으로 즉시 이동합니다!")
+                                        state["certi_curr_central"] = next_c
+                                        state["certi_use_sub"] = (next_c != my_num)
+                                        if next_c != my_num:
+                                            CURRENT_PROXY_TARGET_NUM[key] = next_c
+                                        state["cooldown"] = curr_time + 0.1
+                                    else:
+                                        # 남은 비실패 중앙컴들이 현재 모두 3슬롯 사용중(BUSY)인 경우 -> busy_set 초기화 후 다음 비실패 중앙컴 재순회
+                                        busy_set.clear()
+                                        for step in range(1, total_c + 1):
+                                            cand_c = CENTRAL_ORDER[(curr_idx + step) % total_c]
+                                            if cand_c in alive_set and cand_c not in failed_set:
+                                                next_c = cand_c
+                                                break
+                                        next_c = next_c or my_num
+                                        if curr_time - state.get("certi_ip_lock_log_time", 0.0) >= 3.0:
+                                            dprint(key, f"⏳ [남은 중앙컴 모두 3슬롯 사용중] 비실패 중앙컴({next_c}번컴) 빈 슬롯을 재탐색합니다.")
+                                            state["certi_ip_lock_log_time"] = curr_time
+                                        state["certi_curr_central"] = next_c
+                                        state["certi_use_sub"] = (next_c != my_num)
+                                        if next_c != my_num:
+                                            CURRENT_PROXY_TARGET_NUM[key] = next_c
+                                        state["cooldown"] = curr_time + 1.0
 
                     # 공통: 마우스 도착 확인 -> 클릭 및 타이핑 실행
                     elif current_fsm == "CERTI_MOVE_VERIFY":
@@ -7180,10 +7509,19 @@ def ai_commander_worker(target_pc):
                                 pico_queues[key].put({"action": "CERTI_CLICK", "double": is_dbl})
 
                                 if t_text is not None:
-                                    state["cursor_pos"] = [tx, ty]
-                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.30, "delay_max": 0.45})
+                                    # 💡 입력창 클릭 직후 커서가 다음 화면의 5.png('비밀번호' 글자)를 가리지 않도록 우측 빈 여백으로 커서만 살짝 치움 (포커스는 입력창에 그대로 유지됨)
+                                    park_tx = int(round(g_val(565, 625)))
+                                    park_ty = int(round(g_val(260, 320)))
+                                    dur_park = apply_human_variance(0.08 + 0.03 * math.log2((math.hypot(park_tx - tx, park_ty - ty) / 20.0) + 1.0))
+                                    deltas_park = generate_human_deltas(park_tx - tx, park_ty - ty, duration=dur_park, behavior="CERTI", key=key)
+                                    if deltas_park:
+                                        pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas_park})
+                                    state["cursor_pos"] = [park_tx, park_ty]
+                                    state["real_cursor_pos"] = [park_tx, park_ty]
+
+                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.25, "delay_max": 0.40})
                                     pico_queues[key].put({"action": "TYPE_STRING", "text": t_text, "clear_first": True, "press_enter": p_enter, "allow_typo": False})
-                                    dprint(key, f"⌨️ [{desc_str}] 클릭 후 입력창 비우기 및 정밀 타이핑{'+엔터' if p_enter else ''} 전송 완료!")
+                                    dprint(key, f"⌨️ [{desc_str}] 클릭 및 커서 치우기 완료 ➔ 정밀 타이핑{'+엔터' if p_enter else ''} 전송 완료!")
                                 else:
                                     dprint(key, f"✅ [{desc_str}] 커서 안착 및 클릭{'(더블)' if is_dbl else ''} 명령 전송 완료! ➔ 다음: {next_fsm_val}")
 
@@ -7231,10 +7569,13 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.2
 
-                    # 3단계: 3.png 매칭되면 원클릭 -> 계정명 입력 후 엔터 -> 5단계(5.png 또는 3단계 직후 캡차 감시)로 이동
+                    # 3단계: 3.png 매칭되면 원클릭 -> 계정명 입력 후 엔터 -> 5단계(5.png 감지 대기)로 이동
                     elif current_fsm == "CERTI_STEP_3_FIND":
                         pos = find_certi_img("3.png", th=0.82)
                         if pos:
+                            state["certi_5_detected_time"] = 0.0
+                            state["certi_5_Wait_sec"] = g_val(0.85, 1.25)
+                            state["certi_5_click_retried"] = False
                             dprint(key, f"🔎 [인증 3단계] '3.png' 발견({pos[0]}, {pos[1]})! 원클릭 ➔ 계정명({curr_acc_id}) 입력 후 엔터!")
                             start_certi_move_and_action(
                                 pos[0], pos[1],
@@ -7247,10 +7588,11 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.2
 
-                    # 5단계: 🚨 캡차 최우선(0순위) 검사 -> 캡차가 없을 때만 5.png(비밀번호 입력) 진행!
+                    # 5단계: 계정명 입력 후 5.png('비밀번호') 이미지가 감지되면 약간의 딜레이(0.85~1.25초) 검증 후 비밀번호 타이핑 시작!
                     elif current_fsm == "CERTI_STEP_5_FIND":
                         captcha_pos_3 = find_any_captcha_img(th=0.75)
                         if captcha_pos_3:
+                            state["certi_5_detected_time"] = 0.0
                             state["captcha_return_fsm"] = "CERTI_STEP_5_FIND"
                             state["captcha_test_round"] = 1
                             state["captcha_is_scrolled_down"] = False
@@ -7265,19 +7607,32 @@ def ai_commander_worker(target_pc):
                                 threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 {key} 캡차 발생",), daemon=True).start()
                                 state["captcha_tts_last_time"] = curr_time
                                 state["target_fsm"] = "CERTI_CAPTCHA_MANUAL_WAIT"
-                            state["cooldown"] = curr_time + 2.0  # 💡 1->2단계: 캡차 확인 후 2초 뒤 화면 촬영/매칭
+                            state["cooldown"] = curr_time + 2.0
                         else:
-                            pos = find_certi_img("5.png", th=0.82)
+                            pos = find_certi_img("5.png", th=0.80)
                             if pos:
-                                dprint(key, "🔎 [인증 5단계] '5.png' 감지 완료! 입력창 포커스 전환 대기(1.0~1.4초) 후 비밀번호 입력 및 엔터를 칩니다.")
-                                pico_queues[key].put({"action": "WAIT", "delay_min": 1.00, "delay_max": 1.40})
-                                pico_queues[key].put({"action": "TYPE_STRING", "text": curr_acc_pw, "clear_first": False, "press_enter": True, "allow_typo": False})
-                                state["target_fsm"] = "CERTI_STEP_7_FIND"
-                                state["cooldown"] = curr_time + 1.2
+                                det_t = state.get("certi_5_detected_time", 0.0)
+                                wait_target = state.get("certi_5_Wait_sec", 1.0)
+                                if det_t == 0.0:
+                                    state["certi_5_detected_time"] = curr_time
+                                    wait_target = g_val(0.85, 1.25)
+                                    state["certi_5_Wait_sec"] = wait_target
+                                    dprint(key, f"🔎 [인증 5단계 - 5.png 감지] '비밀번호'('5.png') 확인({pos[0]}, {pos[1]})! {wait_target:.2f}초 딜레이 후 비밀번호 타이핑을 시작합니다.")
+                                    state["cooldown"] = curr_time + 0.15
+                                elif curr_time - det_t >= wait_target:
+                                    state["certi_5_detected_time"] = 0.0
+                                    state["certi_7_enter_time"] = curr_time
+                                    dprint(key, "⌨️ [인증 5단계 - 비밀번호 타이핑 시작] '5.png' 딜레이 검증 완료! 비밀번호 입력 및 엔터를 전송합니다.")
+                                    pico_queues[key].put({"action": "TYPE_STRING", "text": curr_acc_pw, "clear_first": True, "press_enter": True, "allow_typo": False})
+                                    state["target_fsm"] = "CERTI_STEP_7_FIND"
+                                    state["cooldown"] = curr_time + 1.2
+                                else:
+                                    state["cooldown"] = curr_time + 0.10
                             else:
+                                state["certi_5_detected_time"] = 0.0
                                 state["cooldown"] = curr_time + 0.2
 
-                    # 7단계: 로그인 후 7.png 보이면 커서 옮긴 후 원클릭 (비번 입력 직후 뒤늦게 뜬 캡차도 방어)
+                    # 7단계: 로그인 후 7.png 보이면 커서 옮긴 후 원클릭 (만약 포커스 풀림으로 5.png가 그대로 남아있으면 5.png를 직접 클릭해 재입력!)
                     elif current_fsm == "CERTI_STEP_7_FIND":
                         captcha_pos_7 = find_any_captcha_img(th=0.75)
                         if captcha_pos_7:
@@ -7295,14 +7650,29 @@ def ai_commander_worker(target_pc):
                                 threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 {key} 캡차 발생",), daemon=True).start()
                                 state["captcha_tts_last_time"] = curr_time
                                 state["target_fsm"] = "CERTI_CAPTCHA_MANUAL_WAIT"
-                            state["cooldown"] = curr_time + 2.0  # 💡 1->2단계: 캡차 확인 후 2초 뒤 화면 촬영/매칭
+                            state["cooldown"] = curr_time + 2.0
                         else:
                             pos = find_certi_img("7.png", th=0.82)
                             if pos:
                                 dprint(key, f"🔎 [인증 7단계] 로그인 완료 '7.png' 발견({pos[0]}, {pos[1]})! 이동 후 원클릭합니다.")
                                 start_certi_move_and_action(pos[0], pos[1], next_fsm="CERTI_STEP_8_FIND", double=False, desc="7.png 클릭")
                             else:
-                                state["cooldown"] = curr_time + 0.2
+                                # 💡 비번 타이핑 완료 후 3.5초가 지났는데도 여전히 화면에 5.png('비밀번호' 빈 칸)가 떠 있다면 입력창 포커스가 풀렸던 것이므로 직접 클릭하여 입력!
+                                pos_5_remain = find_certi_img("5.png", th=0.82)
+                                if pos_5_remain and not state.get("certi_5_click_retried", False) and (curr_time - state.get("certi_7_enter_time", curr_time) >= 3.5):
+                                    state["certi_5_click_retried"] = True
+                                    state["certi_7_enter_time"] = curr_time
+                                    dprint(key, f"🔄 [5.png 포커스 복구] 화면에 '5.png'가 아직 남아있어({pos_5_remain[0]}, {pos_5_remain[1]}) 직접 원클릭 후 비밀번호를 다시 타이핑합니다!")
+                                    start_certi_move_and_action(
+                                        pos_5_remain[0], pos_5_remain[1],
+                                        next_fsm="CERTI_STEP_7_FIND",
+                                        double=False,
+                                        type_text=curr_acc_pw,
+                                        press_enter=True,
+                                        desc="5.png 직접 클릭+비밀번호 재입력"
+                                    )
+                                else:
+                                    state["cooldown"] = curr_time + 0.2
 
                     # 8단계: 8.png 감지되면 커서 옮긴 후 원클릭 -> 분기점(CERTI_STEP_8_BRANCH)으로 이동
                     elif current_fsm == "CERTI_STEP_8_FIND":
@@ -7313,13 +7683,13 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.2
 
-                    # 8클릭 후 분기점: fail.png (IP 반납 후 +1 다음 중앙컴 이동) vs 캡차 감지 vs [9.png(메일) or 10.png(전번)]
+                    # 8클릭 후 분기점: fail.png (내 미니컴만 해당 IP 실패 기록 후 다음 중앙컴 이동 / 모두 소진 시 미꾸라지 6시간 유지)
                     elif current_fsm == "CERTI_STEP_8_BRANCH":
                         fail_pos = find_certi_img("fail.png", th=0.82)
                         captcha_pos = find_any_captcha_img(th=0.75)
 
                         if fail_pos:
-                            # 🚨 fail.png 감지 -> 현재 중앙컴 IP 사용권 즉시 반납 후 다음 순번(+1) 중앙컴으로 이동!
+                            # 🚨 fail.png 감지 -> 다른 미니컴은 계속 쓸 수 있도록 슬롯만 정상 반납하고, 내 미니컴 장부에만 실패 기록!
                             release_central_ip_lock_async(key)
                             pico_queues[key].put({"action": "WAIT", "delay_min": 0.2, "delay_max": 0.35})
                             pico_queues[key].put({"action": "CLOSE_TAB"})
@@ -7329,19 +7699,27 @@ def ai_commander_worker(target_pc):
                             if not state.get("certi_use_sub", False):
                                 prev_c = my_num
 
+                            failed_set = state.setdefault("certi_failed_centrals", set())
+                            if prev_c != "VPN":
+                                failed_set.add(prev_c)
+                            state["certi_busy_skipped"] = set()
+
                             streak = state.get("certi_fail_streak", 0) + 1
                             state["certi_fail_streak"] = streak
-                            max_lines = (len(ALIVE_OTHER_PROXIES) + 1) if ALIVE_OTHER_PROXIES else len(CENTRAL_ORDER)
+                            alive_set = ({c_n for c_n, _ in ALIVE_OTHER_PROXIES} | {my_num}) if _PROXY_HEALTH_CHECKED else set(CENTRAL_ORDER)
+                            max_lines = len(alive_set)
 
-                            if streak >= max_lines or prev_c == "VPN":
+                            if prev_c == "VPN" or alive_set.issubset(failed_set) or streak >= max_lines:
                                 vpn_enter_t = state.get("certi_vpn_enter_time", 0.0)
-                                # 만약 VPN 사용 중 6시간이 지난 시점에 fail.png가 떴다면 다시 내 중앙컴(1~13번)부터 순회!
+                                # 만약 미꾸라지(VPN) 사용 중 6시간이 지난 시점에 fail.png가 떴다면 다시 내 중앙컴(1~13번)부터 순회!
                                 if prev_c == "VPN" and vpn_enter_t > 0.0 and (curr_time - vpn_enter_t >= 21600.0):
-                                    dprint(key, "⏰ [프로톤VPN 6시간 만료 ➔ 중앙컴 복귀] 6시간이 경과하여 다시 내 중앙컴(1~13번)부터 인증을 시도합니다!")
+                                    dprint(key, "⏰ [미꾸라지VPN 6시간 만료 ➔ 중앙컴 복귀] 6시간이 경과하여 다시 내 중앙컴(1~13번)부터 인증을 시도합니다!")
                                     state["certi_curr_central"] = my_num
                                     state["certi_use_sub"] = False
                                     state["certi_vpn_enter_time"] = 0.0
                                     state["certi_fail_streak"] = 0
+                                    state["certi_failed_centrals"] = set()
+                                    state["certi_busy_skipped"] = set()
                                     state["certi_web_last_fsm"] = None
                                     state["certi_last_box"] = None
                                     state["certi_ip_lock_log_time"] = 0.0
@@ -7355,21 +7733,29 @@ def ai_commander_worker(target_pc):
                                     state["certi_last_box"] = None
 
                                     if prev_c == "VPN":
-                                        dprint(key, "🌐 [현재 프로톤VPN IP 한도 도달 ➔ 새 VPN IP 교체 요청] 군주컴에 다음 프로톤VPN 프로필로 교체를 요청합니다!")
+                                        dprint(key, "🐟 [현재 미꾸라지 IP 실패 ➔ 다음 미꾸라지 IP 교체] 내 미니컴의 미꾸라지 IP를 다음 한국 서버로 교체합니다!")
                                         state["target_fsm"] = "CERTI_REQ_VPN_ROTATE"
                                     else:
                                         state["certi_vpn_enter_time"] = curr_time
-                                        dprint(key, "🌐 [1~13번 중앙컴 모두 소진 ➔ 군주컴 프로톤VPN 진입] 향후 6시간 동안 군주컴 프로톤VPN 회선으로 인증을 진행합니다!")
+                                        dprint(key, "🐟 [1~13번 중앙컴 모두 소진 ➔ 미꾸라지VPN 진입] 향후 6시간 동안 미꾸라지 한국 서버 회선으로 인증을 진행합니다!")
                                         state["certi_ip_lock_log_time"] = 0.0
                                         state["target_fsm"] = "CERTI_WAIT_IP_LOCK"
                                     state["cooldown"] = curr_time + 1.2
                             else:
-                                next_c = get_next_central_in_order(prev_c)
+                                # 내 미니컴이 아직 실패하지 않은 다음 중앙컴 선택
+                                next_c = None
+                                curr_idx = CENTRAL_ORDER.index(prev_c) if prev_c in CENTRAL_ORDER else 0
+                                for step in range(1, len(CENTRAL_ORDER) + 1):
+                                    cand_c = CENTRAL_ORDER[(curr_idx + step) % len(CENTRAL_ORDER)]
+                                    if cand_c in alive_set and cand_c not in failed_set:
+                                        next_c = cand_c
+                                        break
+                                next_c = next_c or get_next_central_in_order(prev_c)
                                 state["certi_curr_central"] = next_c
 
                                 if next_c == my_num:
                                     state["certi_use_sub"] = False
-                                    dprint(key, f"🔄 [순번 한 바퀴 완료 ➔ 본인IP 복귀] {prev_c}번 중앙컴 한도 초과! 다시 본인({my_num}번 중앙컴) '1.png' 회선 사용권을 요청합니다!")
+                                    dprint(key, f"🔄 [순번 이동 ➔ 본인IP] {prev_c}번 중앙컴 실패! 본인({my_num}번 중앙컴) '1.png' 회선 사용권을 요청합니다!")
                                 else:
                                     state["certi_use_sub"] = True
                                     CURRENT_PROXY_TARGET_NUM[key] = next_c
@@ -20754,11 +21140,7 @@ def ai_commander_worker(target_pc):
                                 ignored_boxes.append(b)
                                 continue
 
-                        if settings.get("hunt_first", False) and mobs and not is_keep_3cell_looting:
-                            if dist_to_b >= 40.0:
-                                b['ignore_reason'] = "HUNT_FIRST(>1cell)"
-                                ignored_boxes.append(b)
-                                continue
+                        b['dist_to_b'] = dist_to_b
 
                         is_pb_arrived_loot = (state.get("party_buff_status") == "ARRIVED") or (state.get("is_active_standby", False) and "팟바람" in str(state.get("standby_reason", "")))
                         if is_pb_arrived_loot and dist_to_b >= 40.0:
@@ -20893,6 +21275,101 @@ def ai_commander_worker(target_pc):
                             b['ignore_reason'] = "OUT_AREA"
                             ignored_boxes.append(b)
 
+                    # 💡 [사냥우선 + 3셀 + 템(N개 이상) ➔ 딱 1개만 줍고 즉시 사냥우선 복귀 판독]
+                    is_item_cnt_mode_on = (
+                        settings.get("hunt_first", False) and
+                        settings.get("hunt_first_keep_loot", False) and
+                        settings.get("hunt_first_item_use", False)
+                    )
+                    item_cnt_threshold = max(1, int(settings.get("hunt_first_item_cnt", 3)))
+                    fsm_now_chk = str(state.get("target_fsm", "IDLE"))
+                    is_fighting_for_override = (
+                        state.get("is_attacking", False) or
+                        state.get("arrow_is_firing", False) or
+                        fsm_now_chk in ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "HEINE_GMOB_VERIFY"]
+                    )
+
+                    # 바닥 템이 기준치 미만으로 내려갔거나, 다음 몹 교전 진입/처치 시 1회 루팅 완료 락 해제
+                    if (
+                        not is_item_cnt_mode_on or
+                        len(item_boxes) < item_cnt_threshold or
+                        not mobs or
+                        is_fighting_for_override or
+                        state.get("last_exp_time", 0) > state.get("item_cnt_one_done_time", 0)
+                    ):
+                        state["item_cnt_one_done"] = False
+
+                    just_finished_one_item_loot = False
+
+                    if is_item_cnt_mode_on:
+                        if state.get("item_cnt_loot_override", False):
+                            if is_fighting_for_override:
+                                state["item_cnt_loot_override"] = False
+                                state["item_cnt_loot_started"] = False
+                            elif state.get("item_cnt_loot_started", False):
+                                picked_one = False
+                                if not item_boxes or not fsm_now_chk.startswith("LOOT"):
+                                    picked_one = True
+                                else:
+                                    best_b_now = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
+                                    curr_d_now = math.hypot(best_b_now['x'] - char_screen_cx, (best_b_now['y'] + 15 - char_screen_cy) / 0.50)
+                                    prev_p = state.get("item_cnt_last_pos")
+                                    jump_d = math.hypot(best_b_now['x'] - prev_p[0], best_b_now['y'] - prev_p[1]) if prev_p else 0.0
+                                    min_d_prev = state.get("item_cnt_min_dist", curr_d_now)
+                                    start_v_cnt = state.get("item_cnt_start_valid", len(item_boxes))
+
+                                    if len(item_boxes) > start_v_cnt and jump_d <= 15.0:
+                                        state["item_cnt_start_valid"] = len(item_boxes)
+                                        start_v_cnt = len(item_boxes)
+
+                                    # 1개 획득 완료 판정: 바닥 유효 템이 N개 미만으로 줄었거나, 목표하던 첫 아이템이 인벤으로 들어간 즉시!
+                                    if (
+                                        len(item_boxes) < item_cnt_threshold or
+                                        len(item_boxes) < start_v_cnt or
+                                        jump_d > 15.0 or
+                                        curr_d_now > min_d_prev + 10.0
+                                    ):
+                                        picked_one = True
+                                    else:
+                                        state["item_cnt_last_pos"] = (best_b_now['x'], best_b_now['y'])
+                                        state["item_cnt_min_dist"] = min(min_d_prev, curr_d_now)
+
+                                if picked_one:
+                                    dprint(key, f"🎯 [1개 루팅 완료 ➔ 사냥우선 복귀] 바닥 템 1개 획득 완료(남은 템:{len(item_boxes)}개)! 즉시 사냥우선으로 복귀합니다!")
+                                    state["item_cnt_loot_override"] = False
+                                    state["item_cnt_loot_started"] = False
+                                    state["item_cnt_one_done"] = True
+                                    state["item_cnt_one_done_time"] = curr_time
+                                    state["loot_chain_expire"] = 0.0
+                                    is_keep_3cell_looting = False
+                                    just_finished_one_item_loot = True
+                            else:
+                                if len(item_boxes) < item_cnt_threshold:
+                                    state["item_cnt_loot_override"] = False
+
+                        if not state.get("item_cnt_loot_override", False) and not state.get("item_cnt_one_done", False) and not is_fighting_for_override:
+                            if len(item_boxes) >= item_cnt_threshold:
+                                state["item_cnt_loot_override"] = True
+                                state["item_cnt_loot_started"] = False
+                                state["item_cnt_start_valid"] = len(item_boxes)
+                                dprint(key, f"💎 [다중 템 우선 루팅 발동] 바닥 유효 템 {len(item_boxes)}개(기준:{item_cnt_threshold}개↑) 감지! 한시적으로 사냥우선을 해제하고 1개 먼저 줍습니다!")
+                    else:
+                        state["item_cnt_loot_override"] = False
+                        state["item_cnt_loot_started"] = False
+                        state["item_cnt_one_done"] = False
+
+                    effective_hunt_first = bool(settings.get("hunt_first", False) and not state.get("item_cnt_loot_override", False))
+
+                    if effective_hunt_first and mobs and not is_keep_3cell_looting:
+                        filtered_item_boxes = []
+                        for b in item_boxes:
+                            if b.get('dist_to_b', 999.0) >= 40.0:
+                                b['ignore_reason'] = "HUNT_FIRST(>1cell)"
+                                ignored_boxes.append(b)
+                            else:
+                                filtered_item_boxes.append(b)
+                        item_boxes = filtered_item_boxes
+
                     if item_boxes or ignored_boxes:
                         state["debug_draw_items"] = item_boxes
                         state["debug_draw_ignored_items"] = ignored_boxes
@@ -20902,9 +21379,13 @@ def ai_commander_worker(target_pc):
                         state["combat_loot_missing_timer"] = 0
 
                         current_fsm_for_loot = str(state.get("target_fsm", ""))
+                        # 교전 중(COMBAT/HOVER_WAIT/SNAP_WAIT)에는 현재 잡던 몹을 끝까지 잡고, 직후 상태(BRAKE_WAIT/TARGET_AIMING/IDLE 등)에서 즉시 발동
+                        loot_entry_fsms = ["IDLE", "PATROL", "TARGET_AIMING", "WAIT_FOR_STOP", "PARTY_WAIT", "SQUAD_WAIT", "PARTY_ACTIVE_STANDBY"]
+                        if state.get("item_cnt_loot_override", False):
+                            loot_entry_fsms = loot_entry_fsms + ["BRAKE_WAIT", "HOVER_RETRY_WAIT"]
 
                         # ✅ 3번 수정: 리스트 맨 끝에 "PARTY_ACTIVE_STANDBY" 추가 (엠탐/대기 상태에서도 템을 향해 출발 허용)
-                        if current_fsm_for_loot in ["IDLE", "PATROL", "TARGET_AIMING", "WAIT_FOR_STOP", "PARTY_WAIT", "SQUAD_WAIT", "PARTY_ACTIVE_STANDBY"] and not state.get("is_pulling", False) and not is_buffing:
+                        if current_fsm_for_loot in loot_entry_fsms and not state.get("is_pulling", False) and not is_buffing:
 
                             best_box_eval = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
                             dist_to_best = math.hypot(best_box_eval['x'] - char_screen_cx, (best_box_eval['y'] + 15 - char_screen_cy) / 0.50)
@@ -20912,19 +21393,30 @@ def ai_commander_worker(target_pc):
                             should_loot_now = True
                             is_pb_arrived_loot_now = (state.get("party_buff_status") == "ARRIVED") or (state.get("is_active_standby", False) and "팟바람" in str(state.get("standby_reason", "")))
 
-                            if is_pb_arrived_loot_now or (settings.get("hunt_first", False) and dist_to_best < 40.0):
+                            if is_pb_arrived_loot_now or (effective_hunt_first and dist_to_best < 40.0):
                                 should_loot_now = False
 
                             if should_loot_now:
                                 dprint(key, "💎 [지연 드랍 낚아채기] 통로 연결 확인 완료! 즉시 다이렉트 3셀 루팅으로 전환합니다!")
                                 clear_movements_only(pico_queues[key])
                                 state["dungeon_global_path"] = []
+                                state["sword_verify_active"] = False
+                                state["special_ack_arrived"] = False
+                                state["hover_start_time"] = 0
 
                                 state["target_fsm"] = "LOOTING_3CELL"
 
                                 loot_limit_sec = 5.0 if state.get("is_mptam_mode", False) else 10.0
                                 state["loot_global_timeout"] = curr_time + loot_limit_sec
                                 state["cooldown"] = curr_time + 0.05
+
+                        if state.get("item_cnt_loot_override", False) and not state.get("item_cnt_loot_started", False) and str(state.get("target_fsm", "")).startswith("LOOT"):
+                            best_b_init_cnt = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
+                            d_init_cnt = math.hypot(best_b_init_cnt['x'] - char_screen_cx, (best_b_init_cnt['y'] + 15 - char_screen_cy) / 0.50)
+                            state["item_cnt_loot_started"] = True
+                            state["item_cnt_last_pos"] = (best_b_init_cnt['x'], best_b_init_cnt['y'])
+                            state["item_cnt_min_dist"] = d_init_cnt
+                            state["item_cnt_start_valid"] = len(item_boxes)
 
                         best_box_eval = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
                         dist_to_best = math.hypot(best_box_eval['x'] - char_screen_cx, (best_box_eval['y'] + 15 - char_screen_cy) / 0.50)
@@ -20986,9 +21478,10 @@ def ai_commander_worker(target_pc):
                             cv2.putText(debug_img, f"{reason}", (rx_b, max(0, ry_b - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (128, 128, 128), 1)
 
                 fsm = state.get("target_fsm", "IDLE")
+                effective_hunt_first = bool(settings.get("hunt_first", False) and not state.get("item_cnt_loot_override", False))
 
-                if str(fsm).startswith("LOOT") and settings.get("hunt_first", False) and mobs:
-                    if fsm not in ["LOOT_SCAN_WAIT", "LOOTING_1CELL", "LOOTING_MOTION_VERIFY"] and not is_keep_3cell_looting:
+                if str(fsm).startswith("LOOT") and effective_hunt_first and mobs:
+                    if (fsm not in ["LOOT_SCAN_WAIT", "LOOTING_1CELL", "LOOTING_MOTION_VERIFY"] and not is_keep_3cell_looting) or just_finished_one_item_loot:
                         dprint(key, "🚨 [사냥 우선 인터럽트] 원거리 루팅(미이동/접근중단) 중 몹 출현 감지! 즉시 템을 포기하고 사냥에 돌입합니다!")
                         clear_movements_only(pico_queues[key])
                         if state.get("sweep_active", False):
@@ -27724,6 +28217,12 @@ def sync_gui_vars():
                 "move_sens": si(v, "move_sens", 2000.0),
                 "hunt_first": v["hunt_first"].get(),
                 "hunt_first_keep_loot": bool(v["hunt_first"].get() and v.get("hunt_first_keep_loot", tk.BooleanVar(value=False)).get()),
+                "hunt_first_item_use": bool(
+                    v["hunt_first"].get() and
+                    v.get("hunt_first_keep_loot", tk.BooleanVar(value=False)).get() and
+                    v.get("hunt_first_item_use", tk.BooleanVar(value=False)).get()
+                ),
+                "hunt_first_item_cnt": max(1, si(v, "hunt_first_item_cnt", 3.0)),
                 "chain_kill": False,
                 "haste_match_rate": 92.0,
                 "zone_tele_nodes": si(v, "zone_tele_nodes", 120.0),
@@ -28349,15 +28848,15 @@ for i, pc in enumerate(MINI_PCS):
     sens_frame = tk.Frame(top_panel_frame, bg=BG_PANEL)
     sens_frame.pack(side="top", fill="x", pady=(0, 4))
 
-    tk.Label(sens_frame, text="🏃 픽셀감도:", bg=BG_PANEL, fg="#B2FF59", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(4, 2))
+    tk.Label(sens_frame, text="🏃 픽셀감도:", bg=BG_PANEL, fg="#B2FF59", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(4, 1))
     tk.Entry(sens_frame, textvariable=vars_dict["move_sens"], width=4, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
 
     chk_hunt_first = tk.Checkbutton(sens_frame, text="사냥우선", variable=vars_dict["hunt_first"], bg=BG_PANEL, fg="#FF9800", activebackground=BG_PANEL, activeforeground="#FF9800", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold"))
-    chk_hunt_first.pack(side="left", padx=(2, 0))
+    chk_hunt_first.pack(side="left", padx=(1, 0))
 
     chk_keep_loot = tk.Checkbutton(
         sens_frame,
-        text="3셀유지",
+        text="3셀",
         variable=vars_dict["hunt_first_keep_loot"],
         bg=BG_PANEL,
         fg="#FFD54F",
@@ -28367,22 +28866,53 @@ for i, pc in enumerate(MINI_PCS):
         selectcolor="#3E3E42",
         font=("맑은 고딕", 8, "bold")
     )
-    chk_keep_loot.pack(side="left", padx=(0, 1))
+    chk_keep_loot.pack(side="left", padx=(0, 0))
 
-    def _update_keep_loot_state(*_args, v_d=vars_dict, chk_w=chk_keep_loot):
+    chk_item_loot = tk.Checkbutton(
+        sens_frame,
+        text="템",
+        variable=vars_dict["hunt_first_item_use"],
+        bg=BG_PANEL,
+        fg="#4FC3F7",
+        activebackground=BG_PANEL,
+        activeforeground="#4FC3F7",
+        disabledforeground="#616161",
+        selectcolor="#3E3E42",
+        font=("맑은 고딕", 8, "bold")
+    )
+    chk_item_loot.pack(side="left", padx=(0, 0))
+
+    ent_item_cnt = tk.Entry(
+        sens_frame,
+        textvariable=vars_dict["hunt_first_item_cnt"],
+        width=2,
+        justify="center",
+        bg="#3E3E42",
+        fg="white",
+        insertbackground="white",
+        disabledbackground="#252526",
+        disabledforeground="#616161"
+    )
+    ent_item_cnt.pack(side="left", padx=(0, 3))
+
+    def _update_keep_loot_state(*_args, v_d=vars_dict, chk_w=chk_keep_loot, chk_item_w=chk_item_loot, ent_item_w=ent_item_cnt):
         if v_d["hunt_first"].get():
             chk_w.config(state="normal")
+            chk_item_w.config(state="normal")
+            ent_item_w.config(state="normal")
         else:
             v_d["hunt_first_keep_loot"].set(False)
             chk_w.config(state="disabled")
+            v_d["hunt_first_item_use"].set(False)
+            chk_item_w.config(state="disabled")
+            ent_item_w.config(state="disabled")
 
     chk_hunt_first.config(command=_update_keep_loot_state)
     vars_dict["hunt_first"].trace_add("write", _update_keep_loot_state)
     _update_keep_loot_state()
 
-    # 💡 체인킬, 헤이감도 UI 삭제 및 Zone 스마트 텔레포트 UI 추가
-    tk.Label(sens_frame, text=" | zone:", bg=BG_PANEL, fg="#E91E63", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(2, 0))
-    tk.Entry(sens_frame, textvariable=vars_dict["zone_tele_nodes"], width=4, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
+    # 💡 체인킬, 헤이감도, zone 라벨 삭제 및 노드밖 텔 UI 배치
+    tk.Entry(sens_frame, textvariable=vars_dict["zone_tele_nodes"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=(2, 1))
     tk.Label(sens_frame, text="노드밖 텔", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=0)
 
     notebook = ttk.Notebook(col_frame)
