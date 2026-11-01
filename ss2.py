@@ -796,17 +796,22 @@ _VPN_PROFILE_TURN = 0
 
 def _click_proton_vpn_connect_on_host():
     """
-    마우스 이동이나 이미지 캡처 없이 프로톤VPN 앱에 저장된 kr1, kr2, kr3... 프로필(또는 KR# 서버)을
-    백그라운드 UIAutomation으로 순차 회전하여 매번 100% 새로운 한국 IP로 연결합니다.
+    프로톤VPN 앱의 kr1 ~ kr20 프로필을 순차 회전하며 연결합니다.
+    - 점검 중(🔧)이거나 이미 연결된 프로필은 자동으로 건너뛰고 다음 정상 프로필에 연결합니다.
+    - '연결 해제(Disconnect)' 버튼은 절대 누르지 않습니다.
     """
     global _VPN_PROFILE_TURN
     try:
         turn_idx = _VPN_PROFILE_TURN
-        _VPN_PROFILE_TURN += 1
+        allow_hover = "1" if globals().get("active_manual_target") is None else "0"
 
         ps_uia_script = f"""
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
 $root = [System.Windows.Automation.AutomationElement]::RootElement
 $win = $null
 $allWins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
@@ -815,95 +820,125 @@ foreach ($w in $allWins) {{
 }}
 if (-not $win) {{ Write-Output "NO_WINDOW"; exit }}
 
-$allEls = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+# 텍스트 요소만 고속 필터링 (10초 타임아웃 원천 방지)
+$textCond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Text
+)
+$textEls = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, $textCond)
 
-# 1순위: 형님이 만든 kr1 ~ kr20 프로필 탐색 후 순서대로 로테이션
-$krProfiles = @()
-for ($i = 1; $i -le 20; $i++) {{
-    $pName = "kr$i"
-    foreach ($el in $allEls) {{
-        if ($el.Current.Name -eq $pName) {{
-            $krProfiles += $el
-            break
-        }}
+$nameMap = @{{}}
+foreach ($el in $textEls) {{
+    $n = $el.Current.Name
+    if ($n -and -not $nameMap.ContainsKey($n)) {{
+        $nameMap[$n] = $el
     }}
 }}
 
-# 만약 kr1~kr20이 없으면 KR# 서버 목록 직접 탐색
-if ($krProfiles.Count -eq 0) {{
-    foreach ($el in $allEls) {{
-        if ($el.Current.Name -like "KR#*") {{
-            $krProfiles += $el
-        }}
+$krProfiles = @()
+for ($i = 1; $i -le 20; $i++) {{
+    $pName = "kr$i"
+    if ($nameMap.ContainsKey($pName)) {{
+        $krProfiles += $nameMap[$pName]
     }}
 }}
 
 if ($krProfiles.Count -eq 0) {{ Write-Output "NO_KR_PROFILES"; exit }}
 
-$idx = {turn_idx} % $krProfiles.Count
-$targetEl = $krProfiles[$idx]
-$targetName = $targetEl.Current.Name
-
-# 💡 화면 아래로 가려진 프로필(kr4~kr13 등)도 자동으로 스크롤을 내려서 활성화!
-$scrollItem = $null
-if ($targetEl.TryGetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern, [ref]$scrollItem)) {{
-    try {{ $scrollItem.ScrollIntoView(); Start-Sleep -Milliseconds 250 }} catch {{}}
-}}
-$ walker_tmp = [System.Windows.Automation.TreeWalker]::ControlViewWalker
-$p_tmp = $walker_tmp.GetParent($targetEl)
-if ($p_tmp -and $p_tmp.TryGetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern, [ref]$scrollItem)) {{
-    try {{ $scrollItem.ScrollIntoView(); Start-Sleep -Milliseconds 250 }} catch {{}}
-}}
-
-# 선택한 프로필 행(Row) 내부 또는 부모 컨테이너의 '연결(Connect)' 버튼 찾아서 백그라운드 실행
 $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
-$parent = $walker.GetParent($targetEl)
-for ($depth = 0; $depth -lt 3; $depth++) {{
-    if (-not $parent) {{ break }}
-    $btns = $parent.FindAll([System.Windows.Automation.TreeScope]::Descendants,
-        (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)))
-    foreach ($b in $btns) {{
-        $bn = $b.Current.Name
-        if ($bn -like "*연결*" -or $bn -like "*Connect*" -or $bn -eq $targetName) {{
-            $invB = $null
-            if ($b.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invB)) {{
-                $invB.Invoke()
-                Write-Output "INVOKED_BTN:$targetName($bn)"
-                exit
+$btnCond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Button
+)
+$savedPos = [System.Windows.Forms.Cursor]::Position
+$total = $krProfiles.Count
+
+# 현재 순번부터 점검중(🔧)이거나 이미 연결된 서버는 건너뛰고 연결 가능한 첫 프로필 실행
+for ($step = 0; $step -lt $total; $step++) {{
+    $idx = ({turn_idx} + $step) % $total
+    $targetEl = $krProfiles[$idx]
+    $targetName = $targetEl.Current.Name
+
+    # 1) 가려진 항목이면 스크롤
+    $scrollItem = $null
+    $pScroll = $targetEl
+    for ($s = 0; $s -lt 3; $s++) {{
+        if (-not $pScroll) {{ break }}
+        if ($pScroll.TryGetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern, [ref]$scrollItem)) {{
+            try {{ $scrollItem.ScrollIntoView(); Start-Sleep -Milliseconds 150 }} catch {{}}
+            break
+        }}
+        $pScroll = $walker.GetParent($pScroll)
+    }}
+
+    # 2) 프로톤VPN은 마우스가 프로필 줄 위에 올라가야 '연결' 버튼이 활성화됨
+    if ({allow_hover} -eq 1) {{
+        try {{
+            $r = $targetEl.Current.BoundingRectangle
+            if ($r.Width -gt 0 -and $r.Height -gt 0 -and -not [double]::IsInfinity($r.Left)) {{
+                $hx = [int]($r.Left + 40)
+                $hy = [int]($r.Top + ($r.Height / 2))
+                [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($hx, $hy)
+                Start-Sleep -Milliseconds 220
+            }}
+        }} catch {{}}
+    }}
+
+    # 3) 해당 프로필 행(높이 95px 이하) 내부에서만 '연결(Connect)' 버튼 탐색 ('연결 해제' 절대 제외!)
+    $parent = $walker.GetParent($targetEl)
+    for ($depth = 0; $depth -lt 3; $depth++) {{
+        if (-not $parent) {{ break }}
+        $pr = $parent.Current.BoundingRectangle
+        if ($pr.Height -gt 95) {{ break }}
+
+        $btns = $parent.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond)
+        foreach ($b in $btns) {{
+            $bn = $b.Current.Name
+            if (-not $bn) {{ continue }}
+            if ($bn -like "*해제*" -or $bn -like "*Disconnect*" -or $bn -like "*Cancel*") {{ continue }}
+            if (($bn -like "*연결*" -or $bn -like "*Connect*") -and $b.Current.IsEnabled) {{
+                $invB = $null
+                if ($b.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invB)) {{
+                    $invB.Invoke()
+                    if ({allow_hover} -eq 1) {{ [System.Windows.Forms.Cursor]::Position = $savedPos }}
+                    Write-Output "INVOKED_BTN:$targetName|$idx"
+                    exit
+                }}
             }}
         }}
+        $parent = $walker.GetParent($parent)
     }}
-    $parent = $walker.GetParent($parent)
 }}
 
-$inv = $null
-if ($targetEl.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$inv)) {{
-    $inv.Invoke()
-    Write-Output "INVOKED:$targetName"
-    exit
-}}
-$sel = $null
-if ($targetEl.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$sel)) {{
-    $sel.Select()
-    Write-Output "SELECTED:$targetName"
-    exit
-}}
-Write-Output "FOUND_BUT_NO_ACTION:$targetName"
+if ({allow_hover} -eq 1) {{ [System.Windows.Forms.Cursor]::Position = $savedPos }}
+Write-Output "NO_AVAILABLE_PROFILE"
 """
-        res_uia = subprocess.check_output(
+        raw_out = subprocess.check_output(
             ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_uia_script],
             creationflags=subprocess.CREATE_NO_WINDOW,
-            timeout=10.0
+            timeout=20.0
         ).decode("utf-8", errors="ignore").strip()
 
-        if res_uia.startswith(("INVOKED", "SELECTED")):
-            print(f"⚡ [프로톤VPN 백그라운드 순차 교체] '{res_uia}' 실행 완료! (순번: #{turn_idx + 1})")
+        lines = [line.strip() for line in raw_out.splitlines() if line.strip()]
+        res_uia = lines[-1] if lines else ""
+
+        if res_uia.startswith("INVOKED_BTN:"):
+            info = res_uia.split(":", 1)[1]
+            if "|" in info:
+                prof_name, used_idx_str = info.split("|", 1)
+                _VPN_PROFILE_TURN = int(used_idx_str) + 1
+            else:
+                prof_name = info
+                _VPN_PROFILE_TURN = turn_idx + 1
+            print(f"⚡ [프로톤VPN 순차 교체 성공] '{prof_name}' 연결 명령 완료! (점검중/연결중 서버 자동 패스)")
             return True
         else:
-            print(f"⚠️ [프로톤VPN 백그라운드 제어 알림] 응답: {res_uia} (프로톤VPN에 kr1, kr2, kr3... 프로필이 만들어져 있는지 확인해주세요)")
+            _VPN_PROFILE_TURN = turn_idx + 1
+            print(f"⚠️ [프로톤VPN 제어 알림] 응답: {res_uia} (프로톤VPN 창의 [프로필] 목록이 화면에 보이도록 켜두세요)")
             return False
 
     except Exception as e:
+        _VPN_PROFILE_TURN += 1
         print(f"⚠️ [프로톤VPN 백그라운드 교체 오류]: {e}")
         return False
 
