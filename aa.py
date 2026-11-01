@@ -30187,6 +30187,78 @@ for i, pc in enumerate(MINI_PCS):
 
         dprint(target_key, "🚀 [수동 인증 & 게임접속 가동] 게임 미실행 상태에서 웹 인증(1.png/sub.png) 후 게임 자동 접속(13.png) 시퀀스를 시작합니다!")
 
+    def start_vpn_test_certi_and_launch(target_key=key):
+        if not picos.get(target_key):
+            print(f"❌ [{target_key}] 피코가 연결되어 있지 않습니다!")
+            return
+
+        global active_manual_target
+        if active_manual_target == target_key:
+            toggle_manual(None)
+
+        # 사냥이 꺼져 있다면 사냥 가동 상태로 전환
+        if not ai_states.get(target_key, {}).get("is_hunt_active", False):
+            toggle_individual_hunt(target_key)
+
+        st = ai_states[target_key]
+        curr_t = time.time()
+
+        # 점유 중이던 기존 중앙컴 IP 슬롯이 있다면 반납
+        release_central_ip_lock_async(target_key)
+
+        # 💡 군주컴 프로톤VPN 6시간 유지 설정 (메모리에만 저장되어 매크로 재시작 시 자동 리셋됨)
+        st["certi_curr_central"] = "VPN"
+        st["certi_vpn_enter_time"] = curr_t
+        st["certi_use_sub"] = True
+        CURRENT_PROXY_TARGET_NUM[target_key] = "VPN"
+
+        st["certi_account_idx"] = 0
+        st["certi_fail_streak"] = 0
+        st["certi_done_logged"] = False
+        st["certi_from_closed_game"] = True
+        st["backup_target_fsm_before_certi"] = "IDLE"
+        st["certi_1_next_desktop_time"] = curr_t + g_val(2.5, 3.5)
+        st["certi_ip_lock_log_time"] = 0.0
+
+        # 💡 군주컴에 프로톤VPN IP 교체를 먼저 요청한 뒤 sub.png 웹인증 ➔ 13.png 게임접속으로 직행!
+        st["target_fsm"] = "CERTI_REQ_VPN_ROTATE"
+        st["backup_target_fsm"] = "CERTI_REQ_VPN_ROTATE"
+        st["cooldown"] = curr_t + 0.5
+
+        st["abort_macro"] = True
+        with pico_queues[target_key].mutex:
+            pico_queues[target_key].queue.clear()
+        clear_movements_only(pico_queues[target_key])
+        pico_queues[target_key].put({"action": "FORCE_RELEASE"})
+        pico_queues[target_key].put({"action": "HOME_MACRO"})
+
+        st["was_manual_in_certi"] = False
+        st["certi_web_last_fsm"] = None
+        st["certi_last_box"] = None
+        st["is_paused"] = False
+        st["is_attacking"] = False
+        st["arrow_is_firing"] = False
+        st["has_fired_arrow"] = False
+        st["arrow_empty_timer"] = 0.0
+        st["is_pulling"] = False
+        st["loot_state"] = "IDLE"
+        st["death_detect_start"] = 0
+
+        # 버프 타이머 동결 및 재접속 후 계열마법(F2>F6)/라이트(F3>F12) 시전 예약
+        st["buff_element_time"] = 0.0
+        st["buff_light_time"] = 0.0
+        st["post_certi_fast_buffs"] = {"element", "light"}
+        freeze_keys = ["windwalk", "shield", "holy", "enchant", "blessed", "dex", "decrease", "extra_f10", "blue_pot"]
+        st["certi_frozen_buffs"] = {
+            bk: max(0.0, st.get(f"buff_{bk}_time", 0.0) - curr_t)
+            for bk in freeze_keys
+        }
+        st["certi_haste_elapsed"] = (curr_t - st["last_haste_time"]) if st.get("last_haste_time", 0.0) > 0.0 else None
+        st["certi_real_buff_elapsed"] = (curr_t - st["real_buff_time"]) if st.get("real_buff_time", 0.0) > 0.0 else None
+        save_buff_times(ai_states)
+
+        dprint(target_key, "🌐 [VPN 테스트 가동] 군주컴 프로톤VPN IP 교체 요청 ➔ 'sub.png' 웹인증 ➔ '13.png' 게임접속을 시작합니다! (향후 6시간 VPN 유지, 매크로 재시작 시 리셋)")
+
     def start_game_launch_from_step13(target_key=key):
         if not picos.get(target_key):
             print(f"❌ [{target_key}] 피코가 연결되어 있지 않습니다!")
@@ -30262,8 +30334,9 @@ for i, pc in enumerate(MINI_PCS):
 
         dprint(target_key, "🎮 [수동인증 완료 ➔ 13.png 접속 가동] 바탕화면에서 '13.png' 단계부터 게임 자동 접속 시퀀스를 시작합니다!")
 
-    tk.Button(auth_launch_frame, text="🚀 웹인증 ➔ 게임접속", font=("맑은 고딕", 8, "bold"), bg="#E65100", fg="white", relief="flat", pady=3, command=lambda k=key: start_manual_certi_and_launch(k)).pack(side="left", fill="x", expand=True, padx=(2, 2))
-    tk.Button(auth_launch_frame, text="🎮 게임접속 (13.png~)", font=("맑은 고딕", 8, "bold"), bg="#2E7D32", fg="white", relief="flat", pady=3, command=lambda k=key: start_game_launch_from_step13(k)).pack(side="left", fill="x", expand=True, padx=(2, 2))
+    tk.Button(auth_launch_frame, text="🚀 웹인증➔접속", font=("맑은 고딕", 8, "bold"), bg="#E65100", fg="white", relief="flat", pady=3, command=lambda k=key: start_manual_certi_and_launch(k)).pack(side="left", fill="x", expand=True, padx=(2, 2))
+    tk.Button(auth_launch_frame, text="🌐 VPN테스트➔접속", font=("맑은 고딕", 8, "bold"), bg="#6A1B9A", fg="white", relief="flat", pady=3, command=lambda k=key: start_vpn_test_certi_and_launch(k)).pack(side="left", fill="x", expand=True, padx=(2, 2))
+    tk.Button(auth_launch_frame, text="🎮 게임접속(13~)", font=("맑은 고딕", 8, "bold"), bg="#2E7D32", fg="white", relief="flat", pady=3, command=lambda k=key: start_game_launch_from_step13(k)).pack(side="left", fill="x", expand=True, padx=(2, 2))
 
     bottom_frame = tk.Frame(col_frame, bg=BG_PANEL)
     bottom_frame.pack(side="bottom", fill="x")
