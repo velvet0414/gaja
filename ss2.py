@@ -796,21 +796,19 @@ _VPN_PROFILE_TURN = 0
 
 def _click_proton_vpn_connect_on_host():
     """
-    프로톤VPN 앱의 kr1 ~ kr20 프로필을 순차 회전하며 연결합니다.
-    - 점검 중(🔧)이거나 이미 연결된 프로필은 자동으로 건너뛰고 다음 정상 프로필에 연결합니다.
-    - '연결 해제(Disconnect)' 버튼은 절대 누르지 않습니다.
+    마우스 커서를 절대 움직이지 않고(100% 백그라운드),
+    프로톤VPN의 kr1 ~ kr20 프로필 중 점검중(🔧)/연결중 서버를 건너뛰어 다음 정상 프로필에 연결합니다.
     """
     global _VPN_PROFILE_TURN
     try:
         turn_idx = _VPN_PROFILE_TURN
-        allow_hover = "1" if globals().get("active_manual_target") is None else "0"
 
         ps_uia_script = f"""
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
+
+$koConnect = [string][char]0xC5F0 + [char]0xACB0
+$koDisconnect = [string][char]0xD574 + [char]0xC81C
 
 $root = [System.Windows.Automation.AutomationElement]::RootElement
 $win = $null
@@ -820,7 +818,6 @@ foreach ($w in $allWins) {{
 }}
 if (-not $win) {{ Write-Output "NO_WINDOW"; exit }}
 
-# 텍스트 요소만 고속 필터링 (10초 타임아웃 원천 방지)
 $textCond = New-Object System.Windows.Automation.PropertyCondition(
     [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
     [System.Windows.Automation.ControlType]::Text
@@ -850,57 +847,36 @@ $btnCond = New-Object System.Windows.Automation.PropertyCondition(
     [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
     [System.Windows.Automation.ControlType]::Button
 )
-$savedPos = [System.Windows.Forms.Cursor]::Position
 $total = $krProfiles.Count
 
-# 현재 순번부터 점검중(🔧)이거나 이미 연결된 서버는 건너뛰고 연결 가능한 첫 프로필 실행
 for ($step = 0; $step -lt $total; $step++) {{
     $idx = ({turn_idx} + $step) % $total
     $targetEl = $krProfiles[$idx]
     $targetName = $targetEl.Current.Name
 
-    # 1) 가려진 항목이면 스크롤
     $scrollItem = $null
     $pScroll = $targetEl
     for ($s = 0; $s -lt 3; $s++) {{
         if (-not $pScroll) {{ break }}
         if ($pScroll.TryGetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern, [ref]$scrollItem)) {{
-            try {{ $scrollItem.ScrollIntoView(); Start-Sleep -Milliseconds 150 }} catch {{}}
+            try {{ $scrollItem.ScrollIntoView(); Start-Sleep -Milliseconds 100 }} catch {{}}
             break
         }}
         $pScroll = $walker.GetParent($pScroll)
     }}
 
-    # 2) 프로톤VPN은 마우스가 프로필 줄 위에 올라가야 '연결' 버튼이 활성화됨
-    if ({allow_hover} -eq 1) {{
-        try {{
-            $r = $targetEl.Current.BoundingRectangle
-            if ($r.Width -gt 0 -and $r.Height -gt 0 -and -not [double]::IsInfinity($r.Left)) {{
-                $hx = [int]($r.Left + 40)
-                $hy = [int]($r.Top + ($r.Height / 2))
-                [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($hx, $hy)
-                Start-Sleep -Milliseconds 220
-            }}
-        }} catch {{}}
-    }}
-
-    # 3) 해당 프로필 행(높이 95px 이하) 내부에서만 '연결(Connect)' 버튼 탐색 ('연결 해제' 절대 제외!)
     $parent = $walker.GetParent($targetEl)
-    for ($depth = 0; $depth -lt 3; $depth++) {{
+    for ($depth = 0; $depth -lt 2; $depth++) {{
         if (-not $parent) {{ break }}
-        $pr = $parent.Current.BoundingRectangle
-        if ($pr.Height -gt 95) {{ break }}
-
         $btns = $parent.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond)
         foreach ($b in $btns) {{
             $bn = $b.Current.Name
             if (-not $bn) {{ continue }}
-            if ($bn -like "*해제*" -or $bn -like "*Disconnect*" -or $bn -like "*Cancel*") {{ continue }}
-            if (($bn -like "*연결*" -or $bn -like "*Connect*") -and $b.Current.IsEnabled) {{
+            if ($bn.Contains($koDisconnect) -or $bn -like "*Disconnect*" -or $bn -like "*Cancel*") {{ continue }}
+            if (($bn.Contains($koConnect) -or $bn -like "*Connect*") -and $b.Current.IsEnabled) {{
                 $invB = $null
                 if ($b.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invB)) {{
                     $invB.Invoke()
-                    if ({allow_hover} -eq 1) {{ [System.Windows.Forms.Cursor]::Position = $savedPos }}
                     Write-Output "INVOKED_BTN:$targetName|$idx"
                     exit
                 }}
@@ -910,13 +886,12 @@ for ($step = 0; $step -lt $total; $step++) {{
     }}
 }}
 
-if ({allow_hover} -eq 1) {{ [System.Windows.Forms.Cursor]::Position = $savedPos }}
 Write-Output "NO_AVAILABLE_PROFILE"
 """
         raw_out = subprocess.check_output(
             ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_uia_script],
             creationflags=subprocess.CREATE_NO_WINDOW,
-            timeout=20.0
+            timeout=15.0
         ).decode("utf-8", errors="ignore").strip()
 
         lines = [line.strip() for line in raw_out.splitlines() if line.strip()]
@@ -930,11 +905,11 @@ Write-Output "NO_AVAILABLE_PROFILE"
             else:
                 prof_name = info
                 _VPN_PROFILE_TURN = turn_idx + 1
-            print(f"⚡ [프로톤VPN 순차 교체 성공] '{prof_name}' 연결 명령 완료! (점검중/연결중 서버 자동 패스)")
+            print(f"⚡ [프로톤VPN 백그라운드 교체 성공] '{prof_name}' 연결 실행 완료!")
             return True
         else:
             _VPN_PROFILE_TURN = turn_idx + 1
-            print(f"⚠️ [프로톤VPN 제어 알림] 응답: {res_uia} (프로톤VPN 창의 [프로필] 목록이 화면에 보이도록 켜두세요)")
+            print(f"⚠️ [프로톤VPN 백그라운드 제어 알림] 응답: {res_uia}")
             return False
 
     except Exception as e:
