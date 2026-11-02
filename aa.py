@@ -1658,9 +1658,9 @@ def local_ipc_broadcaster_thread(my_key):
                 except: my_m_int = 1
                 my_uid = f"{my_c_int}-{my_key}"
 
-                # 💡 오직 인증(CERTI_) 중일 때만 게임 이탈로 간주 (특정시간대 딜레이 CERTI_DELAY_WAIT 포함)
+                # 💡 자동사냥 가동 여부(hunt_active)와 인게임 상태(in_game: 인증 중 제외)를 분리하여 송출
                 now_req_t = time.time()
-                real_hunt_on = st.get("backup_hunt_active", st.get("is_hunt_active", False))
+                real_hunt_on = bool(st.get("backup_hunt_active", st.get("is_hunt_active", False)) and not st.get("is_paused", False))
                 real_fsm_str = str(st.get("backup_target_fsm", raw_fsm)) if raw_fsm == "GHOST_MODE" else raw_fsm
                 is_in_game = bool(real_hunt_on and not real_fsm_str.startswith("CERTI_"))
                 is_in_town_maint = (
@@ -1694,6 +1694,7 @@ def local_ipc_broadcaster_thread(my_key):
                     "party_group": my_party,
                     "invite_group": my_inv_grp,
                     "char_name": current_settings.get(my_key, {}).get("char_name", ""),
+                    "hunt_active": real_hunt_on,
                     "in_game": is_in_game,
                     "in_hunting_ground": is_in_hunting_ground,
                     "is_demoted": bool(now_req_t < st.get("leader_demoted_until", 0.0)),
@@ -22908,7 +22909,8 @@ def ai_commander_worker(target_pc):
                                     for p_uid, p_data in global_invite_states.items():
                                         if str(p_data.get("invite_group", "선택안함")) == my_inv_grp_sb and p_uid != my_uid_sb:
                                             recv_gap = curr_time - p_data.get("recv_time", 0)
-                                            if recv_gap < 60.0:
+                                            # 💡 매크로만 켜져 있고 자동사냥이 꺼진(hunt_active == False) 인원은 집결 대상에서 완전 제외
+                                            if recv_gap < 60.0 and p_data.get("hunt_active", p_data.get("in_game", False)):
                                                 p_in_game = p_data.get("in_game", False)
                                                 p_in_party = p_data.get("in_party", False)
                                                 p_in_hg = p_data.get("in_hunting_ground", True)
@@ -26688,23 +26690,30 @@ def ai_commander_worker(target_pc):
                                         state.get("mptam_extend_95", False) or
                                         (fsm_retreat == "PARTY_ACTIVE_STANDBY" and "팟바람" not in str(state.get("standby_reason", "")))
                                     )
+                                    same_grp_members = []
+                                    with party_lock:
+                                        for p_uid, p_data in global_invite_states.items():
+                                            # 💡 매크로가 켜져 있더라도 자동사냥 모드가 아닌(hunt_active == False) 인원은 파티원 머리수(모수)에서 제외
+                                            if (
+                                                str(p_data.get("invite_group", "선택안함")) == my_inv_grp_pb and
+                                                p_uid != my_uid_pb and
+                                                (curr_time - p_data.get("recv_time", 0.0) <= 60.0) and
+                                                p_data.get("hunt_active", p_data.get("in_game", False))
+                                            ):
+                                                same_grp_members.append(p_data)
+
                                     char_pos_chk = state.get("dungeon_map_pos")
                                     in_my_zone_pb = (not state.get("is_out_of_zone", False)) and (char_pos_chk is not None)
-                                    in_party_pb = bool(state.get("in_ingame_party", False))
+                                    # 💡 다른 파티원이 모두 자동사냥 OFF(len(same_grp_members) == 0)이면 인게임 미파티 상태여도 시전자 혼자 시전 허용!
+                                    in_party_pb = bool(state.get("in_ingame_party", False) or len(same_grp_members) == 0)
                                     buff_mp_req = float(settings.get("buff_mp_pct", 50.0))
                                     mp_ok_pb = (mp >= buff_mp_req)
                                     has_b_node_pb = bool(pc_graph and pc_graph.get("buff_spot_nodes"))
 
                                     if (not is_ui_busy_pb) and (not is_caster_mptam) and in_my_zone_pb and in_party_pb and mp_ok_pb and has_b_node_pb:
-                                        same_grp_members = []
-                                        with party_lock:
-                                            for p_uid, p_data in global_invite_states.items():
-                                                if str(p_data.get("invite_group", "선택안함")) == my_inv_grp_pb and p_uid != my_uid_pb and (curr_time - p_data.get("recv_time", 0.0) <= 60.0):
-                                                    same_grp_members.append(p_data)
-
                                         total_group_cnt = 1 + len(same_grp_members)
-                                        # 과반수 계산: 2인팟->2명, 3인팟->2명, 4인팟->3명, 5인팟->3명, 6인팟->4명 (최소 2명 보장)
-                                        majority_cnt = max(2, (total_group_cnt // 2) + 1)
+                                        # 과반수 계산: 1인(타 파티원 전원 사냥정지)->1명, 2인팟->2명, 3인팟->2명, 4인팟->3명, 5인팟->3명, 6인팟->4명
+                                        majority_cnt = (total_group_cnt // 2) + 1
 
                                         ready_partied_cnt = 1 + sum(
                                             1 for m in same_grp_members
