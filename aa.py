@@ -20144,6 +20144,8 @@ def ai_commander_worker(target_pc):
 
                             pico_queues[key].put({"action": "HOVER", "dx": tx - cur_x, "dy": ty - cur_y})
                             pico_queues[key].put({"action": "SPECIAL_ACK"})
+                            state["special_ack_arrived"] = False
+                            state["sword_verify_active"] = False
                             state["pico_arrived"] = False
                             state["cursor_pos"] = [tx, ty]
                             state["hover_pos"] = (tx, ty)
@@ -20155,12 +20157,14 @@ def ai_commander_worker(target_pc):
                             # 💡 마우스 이동 및 칼 확인 시간 동안 스캔 타이머가 깎이지 않도록 연장
                             state["motion_poke_start_t"] = curr_time
                             state["hover_start_time"] = curr_time + physical_move_time + g_time(0.13, 0.16, key)
+                            state["motion_ack_timeout"] = curr_time + physical_move_time + 1.0
                             state["target_fsm"] = "MOTION_SNAP_CHECK_SWORD"
                             state["cooldown"] = curr_time
 
                 elif state.get("target_fsm") == "MOTION_SNAP_CHECK_SWORD":
 
-                    if state.pop("special_ack_arrived", False):
+                    # 💡 큐 초기화 등으로 SPECIAL_ACK가 소실되더라도 최대 1.0초 뒤에는 무조건 칼 검증으로 넘어가 영구 멈춤 원천 차단!
+                    if state.pop("special_ack_arrived", False) or curr_time > state.get("motion_ack_timeout", state.get("hover_start_time", 0) + 1.0):
                         state["sword_verify_start"] = curr_time
                         state["sword_verify_active"] = True
 
@@ -20947,7 +20951,12 @@ def ai_commander_worker(target_pc):
                         state["current_buff"] = target_buff
                         state["buff_retry_cnt"] = 0
 
-                        state["buff_return_fsm"] = state.get("target_fsm", "IDLE") # 전투 중이면 COMBAT으로 자동 저장됨
+                        # 💡 버프 진입 시 큐를 비우므로, ACK 대기 상태(MOTION_SNAP_CHECK_SWORD 등)였을 경우 IDLE로 복귀시켜 무한 대기 방지
+                        raw_ret_fsm = str(state.get("target_fsm", "IDLE"))
+                        if raw_ret_fsm in ["MOTION_SNAP_CHECK_SWORD", "MOTION_SNAP_SCANNING", "MOTION_SNAP_BRAKE_WAIT", "HOVER_WAIT", "SNAP_WAIT", "HEINE_GMOB_VERIFY", "COMBAT_PARK_VERIFY"]:
+                            state["buff_return_fsm"] = "IDLE"
+                        else:
+                            state["buff_return_fsm"] = raw_ret_fsm # 전투 중이면 COMBAT으로 자동 저장됨
 
                         # 👇👇 전투 중 진입한 경우에만 플래그 ON!
                         if is_combat_buff_ready:
@@ -22701,13 +22710,15 @@ def ai_commander_worker(target_pc):
                                     state["arrow_is_firing"] = False
                                     state["has_fired_arrow"] = False
 
+                                    state["sword_verify_active"] = False
+                                    state["gmob_ack_timeout"] = curr_time + 1.5
                                     state["target_fsm"] = "HEINE_GMOB_VERIFY"
                                     state["switch_target_type"] = switch_type # 💡 갈아탄 타겟의 정체 기억
                                     state["cooldown"] = curr_time + 0.05
                                     action_taken = True
 
                 if not action_taken and state.get("target_fsm") == "HEINE_GMOB_VERIFY":
-                    if state.pop("special_ack_arrived", False):
+                    if state.pop("special_ack_arrived", False) or curr_time > state.get("gmob_ack_timeout", curr_time + 1.5):
                         state["sword_verify_start"] = curr_time
                         state["sword_verify_active"] = True
 
