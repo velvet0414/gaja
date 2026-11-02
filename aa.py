@@ -4738,26 +4738,25 @@ def pico_worker_thread(key):
                 k_tap(KEY_POTION)
 
             elif action == "SHIFT_CLICK_BRAKE":
+                if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                    if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                    continue
 
                 send_keyboard_key(p_serial, p_lock, 129, 1)
-
                 h_sleep(0.04, 0.06)
 
+                if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                    send_keyboard_key(p_serial, p_lock, 129, 0)
+                    if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                    continue
+
                 send_mouse_click(p_serial, p_lock, 1, 1)
-
                 h_sleep(0.07, 0.11)
-
                 send_mouse_click(p_serial, p_lock, 1, 0)
 
-                shift_release_delay = g_val(0.05, 0.60)
-                def async_release_shift(s_serial, s_lock):
-                    time.sleep(shift_release_delay)
-                    if s_serial:
-                        try: send_keyboard_key(s_serial, s_lock, 129, 0)
-                        except: pass
-                threading.Thread(target=async_release_shift, args=(p_serial, p_lock), daemon=True).start()
-
-                h_sleep(0.04, 0.09)
+                h_sleep(0.04, 0.08)
+                send_keyboard_key(p_serial, p_lock, 129, 0)
+                h_sleep(0.03, 0.06)
 
             elif action == "BODY_TO_MIND":
                 if key in ai_states: ai_states[key]["last_body_time"] = time.time()
@@ -5243,15 +5242,21 @@ def pico_worker_thread(key):
                 send_macro_buffer(p_serial, p_lock, generate_human_deltas(dx, dy, behavior="HOVER", key=key), key)
 
             elif action == "SPECIAL_ACK":
+                if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                    if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                    continue
 
                 h_sleep(0.14, 0.15)
-                if key in ai_states:
+                if key in ai_states and not ai_states[key].get("abort_macro", False) and not ai_states[key].get("is_paused") and active_manual_target != key:
                     ai_states[key]["special_ack_arrived"] = True
 
             elif action == "LOOT_ACK":
+                if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                    if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                    continue
 
                 h_sleep(0.14, 0.15)
-                if key in ai_states:
+                if key in ai_states and not ai_states[key].get("abort_macro", False) and not ai_states[key].get("is_paused") and active_manual_target != key:
                     ai_states[key]["loot_ack_arrived"] = True
 
             elif action == "CUSTOM_MOVE":
@@ -5393,7 +5398,15 @@ def pico_worker_thread(key):
                     dprint(key, "🛡️ [하드웨어 방어막] 커서가 단축키 구역에 있습니다! 잘못된 클릭 방지를 위해 취소합니다.")
                     continue
 
+                if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                    if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                    continue
+
                 h_sleep(0.04, 0.05)
+                if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                    if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                    continue
+
                 send_mouse_click(p_serial, p_lock, 1, 1); h_sleep(0.055, 0.075); send_mouse_click(p_serial, p_lock, 1, 0)
 
             elif action == "ATTACK":
@@ -5401,7 +5414,12 @@ def pico_worker_thread(key):
                 is_pulling_shot = cmd.get("is_combat", False)
                 dist = math.hypot(dx, dy)
 
-                if active_manual_target == key: continue
+                if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                    if key in ai_states:
+                        ai_states[key]["cursor_pos"][0] -= dx
+                        ai_states[key]["cursor_pos"][1] -= dy
+                    if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                    continue
 
                 # 🛡️ [정지 커서 보라돌이 판독 헬퍼] 커서가 멈춘 직후 클릭 전 보라돌이 감지 시 즉시 클릭 취소 및 회피 트리거 발동
                 def _abort_if_purple_on_cursor(expected_cx, expected_cy):
@@ -5521,7 +5539,14 @@ def pico_worker_thread(key):
                 if pattern == "A":
                     if dist > 0:
                         send_macro_buffer(p_serial, p_lock, generate_human_deltas(dx, dy, behavior="HOVER", key=key), key)
+                        if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                            if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                            continue
                         h_sleep(0.08, 0.15)
+
+                    if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                        if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                        continue
 
                     # 🔍 커서가 완전히 멈춘 직후(h_sleep 이후) 클릭하기 직전에 보라돌이 검사!
                     exp_x, exp_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
@@ -5535,6 +5560,8 @@ def pico_worker_thread(key):
                         click_cnt = random.choices([1, 2, 3], weights=[10, 60, 30])[0]
 
                     for i in range(click_cnt):
+                        if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                            break
                         send_mouse_click(p_serial, p_lock, 1, 1); h_sleep(0.059, 0.095); send_mouse_click(p_serial, p_lock, 1, 0)
                         if i < click_cnt - 1: h_sleep(0.07, 0.12)
 
@@ -5543,6 +5570,15 @@ def pico_worker_thread(key):
                     mid = len(deltas) // random.randint(2, 3)
                     if mid > 0:
                         send_macro_buffer(p_serial, p_lock, deltas[:mid], key)
+
+                    if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                        if mid > 0 and key in ai_states:
+                            rem_dx = sum(d[0] for d in deltas[mid:])
+                            rem_dy = sum(d[1] for d in deltas[mid:])
+                            ai_states[key]["cursor_pos"][0] -= rem_dx
+                            ai_states[key]["cursor_pos"][1] -= rem_dy
+                        if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                        continue
 
                     exp_x, exp_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
                     mid_x = exp_x - sum(d[0] for d in deltas[mid:]) if mid > 0 else exp_x
@@ -5553,21 +5589,40 @@ def pico_worker_thread(key):
                         if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
                         continue
 
-                    if active_manual_target != key:
+                    if active_manual_target != key and not ai_states[key].get("abort_macro", False):
                         b_clicks = random.choices([1, 2], weights=[60, 40])[0]
                         for i in range(b_clicks):
+                            if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                                break
                             send_mouse_click(p_serial, p_lock, 1, 1); h_sleep(0.059, 0.095); send_mouse_click(p_serial, p_lock, 1, 0)
                             if i < b_clicks - 1: h_sleep(0.07, 0.12)
 
                     if mid > 0:
+                        if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                            rem_dx = sum(d[0] for d in deltas[mid:])
+                            rem_dy = sum(d[1] for d in deltas[mid:])
+                            ai_states[key]["cursor_pos"][0] -= rem_dx
+                            ai_states[key]["cursor_pos"][1] -= rem_dy
+                            if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                            continue
                         send_macro_buffer(p_serial, p_lock, deltas[mid:], key)
+
+                    if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                        if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                        continue
+
                     if active_manual_target != key and (random.random() < 0.75 or is_pulling_shot):
                         h_sleep(0.06, 0.12)
+                        if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                            if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                            continue
                         if _abort_if_purple_on_cursor(exp_x, exp_y):
                             if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
                             continue
                         b_clicks2 = random.choices([1, 2], weights=[60, 40])[0]
                         for i in range(b_clicks2):
+                            if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                                break
                             send_mouse_click(p_serial, p_lock, 1, 1); h_sleep(0.059, 0.095); send_mouse_click(p_serial, p_lock, 1, 0)
                             if i < b_clicks2 - 1: h_sleep(0.07, 0.12)
 
@@ -5575,15 +5630,27 @@ def pico_worker_thread(key):
                     # D패턴은 현재 정지해 있는 위치(이동 전 위치)에서 먼저 클릭하므로 해당 좌표 기준으로 보라돌이 검사
                     exp_x, exp_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
                     start_x, start_y = exp_x - dx, exp_y - dy
+                    if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                        if key in ai_states:
+                            ai_states[key]["cursor_pos"] = [start_x, start_y]
+                        if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                        continue
+
                     if _abort_if_purple_on_cursor(start_x, start_y):
                         if key in ai_states:
                             ai_states[key]["cursor_pos"] = [start_x, start_y]
                         if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
                         continue
 
-                    if active_manual_target != key:
+                    if active_manual_target != key and not ai_states[key].get("abort_macro", False):
                         send_mouse_click(p_serial, p_lock, 1, 1); h_sleep(0.059, 0.095); send_mouse_click(p_serial, p_lock, 1, 0)
                         h_sleep(0.06, 0.12)
+
+                    if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+                        if key in ai_states:
+                            ai_states[key]["cursor_pos"] = [start_x, start_y]
+                        if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
+                        continue
 
                     if random.random() < 0.5:
 
@@ -6273,6 +6340,11 @@ def clear_movements_only(q_obj):
             target_key = k
             break
 
+    if target_key and target_key in ai_states:
+        ai_states[target_key]["abort_macro"] = True
+        ai_states[target_key]["special_ack_arrived"] = False
+        ai_states[target_key]["loot_ack_arrived"] = False
+
     with q_obj.mutex:
         criticals = []
         refund_dx, refund_dy = 0, 0
@@ -6280,7 +6352,7 @@ def clear_movements_only(q_obj):
         for item in q_obj.queue:
             action = item.get("action")
 
-            if action in ["ESCAPE", "TELEPORT", "HEAL", "POTION", "ANTIDOTE", "SWEEP_START", "SWEEP_STOP", "BUFF_COMBO", "BODY_TO_MIND", "HOLD_KEY", "SHIFT_SPACE", "SHIFT_CLICK_BRAKE", "MOUSE_WHEEL", "WAIT", "SPECIAL_ACK", "OPEN_MINIMAP", "HOME_MACRO", "CERTI_CLICK", "TYPE_STRING", "CLOSE_TAB", "OPEN_TASKMGR", "TASKMGR_DEL", "CLOSE_TASKMGR", "PARTY_INVITE_CMD", "PARTY_ACCEPT_CMD"]:
+            if action in ["ESCAPE", "TELEPORT", "HEAL", "POTION", "ANTIDOTE", "SWEEP_START", "SWEEP_STOP", "BUFF_COMBO", "BODY_TO_MIND", "HOLD_KEY", "SHIFT_SPACE", "MOUSE_WHEEL", "WAIT", "OPEN_MINIMAP", "HOME_MACRO", "CERTI_CLICK", "TYPE_STRING", "CLOSE_TAB", "OPEN_TASKMGR", "TASKMGR_DEL", "CLOSE_TASKMGR", "PARTY_INVITE_CMD", "PARTY_ACCEPT_CMD"]:
                 criticals.append(item)
             else:
                 if action in ["HOVER", "ATTACK", "SINGLE_ATTACK"]:
@@ -8811,7 +8883,15 @@ def ai_commander_worker(target_pc):
                 math.hypot(curr_map_pos[0] - prev_frame_map_pos[0], curr_map_pos[1] - prev_frame_map_pos[1]) >= 1.0
             )
 
-            is_pixel_moving_now = (scroll_diff_val > move_sens) or is_minimap_moving_now
+            is_stationary_shooting = (
+                (state.get("has_fired_arrow", False) or state.get("arrow_is_firing", False)) and
+                not state.get("is_pulling", False)
+            )
+            if is_stationary_shooting:
+                is_pixel_moving_now = False
+                state["move_sensor_state"] = "STOPPED"
+            else:
+                is_pixel_moving_now = (scroll_diff_val > move_sens) or is_minimap_moving_now
 
             if "move_sensor_state" not in state:
                 state["move_sensor_state"] = "STOPPED"
@@ -18388,6 +18468,10 @@ def ai_commander_worker(target_pc):
                         state["last_real_kill_time"] = curr_time
 
                         state["abort_macro"] = True
+                        state["move_sensor_state"] = "STOPPED"
+                        state["is_char_moving"] = False
+                        state["is_completely_stopped"] = True
+                        state["last_pixel_move_time"] = 0.0
 
                         state["abandoned_item_map_list"] = []
                         state["abandoned_item_screen_list"] = []
