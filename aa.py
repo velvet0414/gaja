@@ -2409,6 +2409,55 @@ def check_line_of_sight(map_gray, start_point, end_point, margin_steps=3):
 
     return True
 
+def is_1cell_dir_clear_on_map(map_gray, char_map_pos, angle_rad, dng_name=""):
+    """🚀 1셀(8방향) 모션 박스 방향이 미니맵상 벽에 가로막혀 있는지 판독 (1셀 공간은 열려있고 2셀 뒤가 벽인 통로 오판 방지)"""
+    if map_gray is None or char_map_pos is None:
+        return True
+    try:
+        wall_threshold = 45
+
+        h, w = map_gray.shape[:2]
+        x0, y0 = float(char_map_pos[0]), float(char_map_pos[1])
+
+        # 리니지 미니맵 등각(Isometric) 타일 비율(0.65) 적용으로 11시/5시 등 대각선 통로 각도 일치
+        ux = math.cos(angle_rad)
+        uy = math.sin(angle_rad) * 0.65
+        norm = math.hypot(ux, uy)
+        if norm > 0:
+            ux /= norm
+            uy /= norm
+
+        # 대각선 통로 모서리 1px 스침 및 미니맵 매칭 1px 오차 보정용 수직 벡터
+        px, py = -uy, ux
+
+        def is_step_walkable(dist_px):
+            cx = x0 + ux * dist_px
+            cy = y0 + uy * dist_px
+            # 중심선 및 좌우 ±0.75px 폭 중 하나라도 바닥(>= wall_threshold)이면 통로 열림으로 인정
+            for side in (0.0, -0.75, 0.75):
+                ix = int(round(cx + px * side))
+                iy = int(round(cy + py * side))
+                if 0 <= ix < w and 0 <= iy < h:
+                    val = map_gray[iy, ix]
+                    if isinstance(val, (list, tuple)) or getattr(val, 'ndim', 0) > 0:
+                        val = val[0]
+                    if val >= wall_threshold:
+                        return True
+            return False
+
+        # 내 캐릭터 바로 앞(1.8px)부터 정확히 1셀 타일 중심(3.3px)까지만 검사 (그 뒤쪽 2셀 벽은 무시)
+        blocked_steps = 0
+        for d in (1.8, 2.3, 2.8, 3.3):
+            if not is_step_walkable(d):
+                blocked_steps += 1
+                if blocked_steps >= 2:
+                    return False
+            else:
+                blocked_steps = 0
+        return True
+    except Exception:
+        return True
+
 def check_item_line_of_sight(map_gray, start_point, end_point, threshold=1):
     """🚀 아이템 전용 정밀 시야 검사: 몹 시야(check_line_of_sight)와 동일하게 본던 회색 벽(70 미만) 및 대각선 틈새를 칼같이 차단"""
     if map_gray is None: return True
@@ -2570,125 +2619,191 @@ def calculate_astar_path(map_gray, start, goal, step=3):
                 heapq.heappush(open_set, (f_score, nxt))
     return []
 
-def calculate_local_astar_path_for_loot(map_gray, start, goal, step=1, max_radius=42.0, max_nodes=65):
-    """🚀 [근본 개편] 좁은 S자/대각선 통로(폭 2~3px) 완벽 인식! 1픽셀 단위 정밀 통로 연결성 판독기"""
-    if map_gray is None:
+def calculate_local_astar_path_for_loot(map_gray, start, goal, pc_graph=None, max_radius=45.0, max_nodes=10):
+    """🚀 [그래프 A* 10노드(10칸) 우회 루팅 판독기] 1노드 = 인게임 1칸(대각 ~2.5px, 좌우 5px) 기준으로 max_nodes(10칸) 이내만 우회 허용"""
+    if map_gray is None or start is None or goal is None:
         return []
-    h, w = map_gray.shape[:2]
 
-    direct_dist = math.hypot(goal[0] - start[0], goal[1] - start[1])
+    sx, sy = float(start[0]), float(start[1])
+    gx, gy = float(goal[0]), float(goal[1])
+    direct_dist = math.hypot(gx - sx, gy - sy)
     if direct_dist > max_radius:
         return []
 
-    WALL_TH = 50  # 미니맵 통로 바닥 인정 기준 (좁은 길 가장자리 회색 픽셀 포함)
+    # =========================================================================
+    # 1순위: 베이커 그래프(pc_graph) 노드망 기반 정밀 A* 탐색 (1노드 = 인게임 1칸)
+    # =========================================================================
+    if pc_graph and pc_graph.get("nodes") and pc_graph.get("edges"):
+        nodes = {str(k): v for k, v in pc_graph["nodes"].items()}
+        edges = {str(k): [str(n) for n in v] for k, v in pc_graph["edges"].items()}
 
-    def is_walkable(px, py):
-        if not (0 <= px < w and 0 <= py < h):
+        start_node = None
+        min_s_dist = float('inf')
+        goal_node = None
+        min_g_dist = float('inf')
+
+        for nid, ndata in nodes.items():
+            if isinstance(ndata, dict) and (ndata.get("is_portal", False) or ndata.get("is_back_node", False)):
+                continue
+            nx = float(ndata.get("x", 0) if isinstance(ndata, dict) else ndata[0])
+            ny = float(ndata.get("y", 0) if isinstance(ndata, dict) else ndata[1])
+
+            # 내 캐릭터에서 시야가 뚫린 가장 가까운 시작 노드 탐색 (반경 12px 이내)
+            ds = (nx - sx) ** 2 + (ny - sy) ** 2
+            if ds <= 144.0 and ds < min_s_dist:
+                if check_line_of_sight(map_gray, (sx, sy), (nx, ny), margin_steps=1):
+                    min_s_dist = ds
+                    start_node = nid
+
+            # 아이템에서 벽에 막히지 않고 시야가 뚫린 가장 가까운 목표 노드 탐색 (반경 10px 이내, 벽 너머 스냅 원천 차단)
+            dg = (nx - gx) ** 2 + (ny - gy) ** 2
+            if dg <= 100.0 and dg < min_g_dist:
+                if check_item_line_of_sight(map_gray, (nx, ny), (gx, gy), threshold=1):
+                    min_g_dist = dg
+                    goal_node = nid
+
+        if start_node is not None and goal_node is not None:
+            # 시작 노드 진입 칸수 + 목표 노드 잔여 칸수 합산 (대각 ~2.8px = 1칸 기준)
+            extra_cells = int(round(math.sqrt(min_s_dist) / 3.2)) + int(round(math.sqrt(min_g_dist) / 3.2))
+            if extra_cells <= max_nodes:
+                open_set = []
+                heapq.heappush(open_set, (0.0, 0, start_node))
+                came_from = {}
+                g_score = {start_node: 0.0}
+                node_steps = {start_node: extra_cells}
+
+                gn_obj = nodes[goal_node]
+                gn_x = float(gn_obj.get("x", 0) if isinstance(gn_obj, dict) else gn_obj[0])
+                gn_y = float(gn_obj.get("y", 0) if isinstance(gn_obj, dict) else gn_obj[1])
+
+                loop_cnt = 0
+                while open_set and loop_cnt < 500:
+                    loop_cnt += 1
+                    _, curr_steps, current = heapq.heappop(open_set)
+
+                    if curr_steps > max_nodes:
+                        continue
+
+                    if current == goal_node:
+                        path = [(int(round(gx)), int(round(gy)))]
+                        curr_trace = current
+                        while curr_trace in came_from:
+                            cn = nodes[curr_trace]
+                            cx_n = int(round(cn.get("x", 0) if isinstance(cn, dict) else cn[0]))
+                            cy_n = int(round(cn.get("y", 0) if isinstance(cn, dict) else cn[1]))
+                            path.append((cx_n, cy_n))
+                            curr_trace = came_from[curr_trace]
+                        sn_obj = nodes[start_node]
+                        sx_n = int(round(sn_obj.get("x", 0) if isinstance(sn_obj, dict) else sn_obj[0]))
+                        sy_n = int(round(sn_obj.get("y", 0) if isinstance(sn_obj, dict) else sn_obj[1]))
+                        if math.hypot(sx_n - sx, sy_n - sy) > 2.5 or len(path) == 1:
+                            path.append((sx_n, sy_n))
+                        path.reverse()
+                        return path
+
+                    cn = nodes[current]
+                    cx_n = float(cn.get("x", 0) if isinstance(cn, dict) else cn[0])
+                    cy_n = float(cn.get("y", 0) if isinstance(cn, dict) else cn[1])
+
+                    for nxt in edges.get(current, []):
+                        if nxt not in nodes:
+                            continue
+                        nxt_steps = node_steps[current] + 1
+                        if nxt_steps > max_nodes:
+                            continue
+
+                        nn = nodes[nxt]
+                        if isinstance(nn, dict) and (nn.get("is_portal", False) or nn.get("is_back_node", False)):
+                            continue
+                        nx_n = float(nn.get("x", 0) if isinstance(nn, dict) else nn[0])
+                        ny_n = float(nn.get("y", 0) if isinstance(nn, dict) else nn[1])
+
+                        step_dist = math.hypot(nx_n - cx_n, ny_n - cy_n)
+                        tentative_g = g_score[current] + step_dist
+
+                        if nxt not in g_score or tentative_g < g_score[nxt]:
+                            came_from[nxt] = current
+                            g_score[nxt] = tentative_g
+                            node_steps[nxt] = nxt_steps
+                            f_score = tentative_g + math.hypot(gn_x - nx_n, gn_y - ny_n)
+                            heapq.heappush(open_set, (f_score, nxt_steps, nxt))
+            return []
+
+    # =========================================================================
+    # 2순위(백업): 노드가 없는 구간용 인게임 1칸(대각 2.5px / 좌우 5px) 타일 A*
+    # =========================================================================
+    h, w = map_gray.shape[:2]
+    is_bondon = False
+    try:
+        current_dng = current_settings.get(TARGET_PC_KEY, {}).get("dungeon_name", "")
+        if TARGET_PC_KEY in ai_states and ai_states[TARGET_PC_KEY].get("override_dungeon_name"):
+            current_dng = ai_states[TARGET_PC_KEY]["override_dungeon_name"]
+        if "본던" in current_dng or "gludio" in current_dng.lower():
+            is_bondon = True
+    except Exception:
+        pass
+    wall_th = 65 if is_bondon else 50
+
+    def is_pt_walkable(px, py):
+        ix, iy = int(round(px)), int(round(py))
+        if not (0 <= ix < w and 0 <= iy < h):
             return False
-        v = map_gray[py, px]
+        v = map_gray[iy, ix]
         if isinstance(v, (list, tuple)) or getattr(v, 'ndim', 0) > 0:
             v = v[0]
-        return v >= WALL_TH
+        return v >= wall_th
 
-    sx, sy = int(round(start[0])), int(round(start[1]))
-    gx, gy = int(round(goal[0])), int(round(goal[1]))
+    if not is_pt_walkable(gx, gy):
+        return []
 
-    # 1) 내 캐릭터 좌표가 통로 벽면에 살짝 걸쳐 있을 경우 반경 3px 내 가장 가까운 길바닥으로 보정
-    if not is_walkable(sx, sy):
-        found_s = False
-        for r in range(1, 4):
-            for dy in range(-r, r + 1):
-                for dx in range(-r, r + 1):
-                    if is_walkable(sx + dx, sy + dy):
-                        sx, sy = sx + dx, sy + dy
-                        found_s = True
-                        break
-                if found_s:
-                    break
-            if found_s:
-                break
-        if not found_s:
-            return []
+    # 리니지 미니맵 1노드(1칸) 이동 벡터: 대각 (±2.5, ±1.25), 좌우 (±5.0, 0), 상하 (0, ±2.5)
+    cell_dirs = [
+        (2.5, 1.25), (-2.5, 1.25), (2.5, -1.25), (-2.5, -1.25),
+        (5.0, 0.0), (-5.0, 0.0), (0.0, 2.5), (0.0, -2.5)
+    ]
 
-    # 2) 아이템 이름표 박스 오차로 미니맵 벽 위에 찍혔을 경우:
-    #    첫째로 내 캐릭터 방향 쪽으로 최대 3px 당겨보고, 안 되면 반경 3px 내 가장 가까운 길바닥으로 스냅
-    if not is_walkable(gx, gy):
-        found_g = False
-        if direct_dist > 0:
-            ux = (sx - gx) / direct_dist
-            uy = (sy - gy) / direct_dist
-            for pull_d in (1.0, 2.0, 3.0):
-                px = int(round(gx + ux * pull_d))
-                py = int(round(gy + uy * pull_d))
-                if is_walkable(px, py):
-                    gx, gy = px, py
-                    found_g = True
-                    break
-        if not found_g:
-            best_d = float('inf')
-            best_pt = None
-            for dy in range(-3, 4):
-                for dx in range(-3, 4):
-                    nx_p, ny_p = gx + dx, gy + dy
-                    if is_walkable(nx_p, ny_p):
-                        # 내 캐릭터와 더 가까운 쪽의 바닥 픽셀 우선 선택 (벽 건너편 방 스냅 방지)
-                        d_score = (dx * dx + dy * dy) + math.hypot(nx_p - sx, ny_p - sy) * 0.2
-                        if d_score < best_d:
-                            best_d = d_score
-                            best_pt = (nx_p, ny_p)
-            if best_pt:
-                gx, gy = best_pt
-                found_g = True
-        if not found_g:
-            return []
-
-    if (sx, sy) == (gx, gy):
-        return [(gx, gy)]
-
-    # 3) 1픽셀 단위 정밀 A* 탐색 (대각선 이동 시 양옆이 모두 벽이면 벽 모서리 관통 금지)
     open_set = []
-    heapq.heappush(open_set, (0.0, (sx, sy)))
+    start_key = (0, 0)
+    heapq.heappush(open_set, (0.0, 0, start_key))
     came_from = {}
-    g_score = {(sx, sy): 0.0}
-    dirs = [(0, 1), (1, 0), (0, -1), (-1, 0), (1, 1), (-1, -1), (1, -1), (-1, 1)]
+    g_score = {start_key: 0}
+    pos_map = {start_key: (sx, sy)}
 
-    max_path_len = max(12.0, direct_dist * 2.2 + 4.0)
     loop_cnt = 0
-
-    while open_set and loop_cnt < 1200:
+    while open_set and loop_cnt < 300:
         loop_cnt += 1
-        _, current = heapq.heappop(open_set)
-        cx, cy = current
+        _, steps_now, curr_k = heapq.heappop(open_set)
+        cx, cy = pos_map[curr_k]
 
-        if g_score[current] > max_path_len:
-            return []
+        if steps_now > max_nodes:
+            continue
 
-        if math.hypot(cx - gx, cy - gy) <= 1.5:
-            path = [(gx, gy)]
-            while current in came_from:
-                path.append(current)
-                current = came_from[current]
+        if math.hypot(cx - gx, gy - cy) <= 3.5 and check_item_line_of_sight(map_gray, (cx, cy), (gx, gy), threshold=1):
+            path = [(int(round(gx)), int(round(gy)))]
+            trace_k = curr_k
+            while trace_k in came_from:
+                px_t, py_t = pos_map[trace_k]
+                path.append((int(round(px_t)), int(round(py_t))))
+                trace_k = came_from[trace_k]
             path.reverse()
             return path
 
-        for dx, dy in dirs:
+        for idx_d, (dx, dy) in enumerate(cell_dirs):
             nx, ny = cx + dx, cy + dy
-            if not is_walkable(nx, ny):
+            nxt_steps = steps_now + 1
+            if nxt_steps > max_nodes:
                 continue
-            # 대각선 이동 시 양옆 픽셀이 모두 벽이면 대각선 틈새 관통 차단
-            if dx != 0 and dy != 0:
-                if not is_walkable(cx + dx, cy) and not is_walkable(cx, cy + dy):
-                    continue
+            # 1칸 이동할 때 중간 지점과 도착 지점이 모두 벽이 아니어야 이동 가능
+            if not (is_pt_walkable(cx + dx * 0.5, cy + dy * 0.5) and is_pt_walkable(nx, ny)):
+                continue
 
-            cost = 1.414 if (dx != 0 and dy != 0) else 1.0
-            tentative_g = g_score[current] + cost
-            nxt = (nx, ny)
-
-            if nxt not in g_score or tentative_g < g_score[nxt]:
-                came_from[nxt] = current
-                g_score[nxt] = tentative_g
-                f_score = tentative_g + math.hypot(gx - nx, gy - ny)
-                heapq.heappush(open_set, (f_score, nxt))
+            nxt_k = (int(round((nx - sx) * 2.0)), int(round((ny - sy) * 4.0)))
+            if nxt_k not in g_score or nxt_steps < g_score[nxt_k]:
+                came_from[nxt_k] = curr_k
+                g_score[nxt_k] = nxt_steps
+                pos_map[nxt_k] = (nx, ny)
+                rem_nodes_est = math.hypot(gx - nx, gy - ny) / 3.5
+                heapq.heappush(open_set, (nxt_steps + rem_nodes_est, nxt_steps, nxt_k))
 
     return []
 
@@ -16849,6 +16964,8 @@ def ai_commander_worker(target_pc):
 
                     if current_facing_angle is not None:
                         mob_angle_debug = current_facing_angle
+                    elif state.get("combat_target_angle") is not None:
+                        mob_angle_debug = state.get("combat_target_angle")
                     else:
                         hx_c, hy_c = state.get("hover_pos", (char_screen_cx, scan_cy_debug))
                         if math.hypot(hx_c - char_screen_cx, hy_c - scan_cy_debug) > 10:
@@ -16865,6 +16982,7 @@ def ai_commander_worker(target_pc):
                                 min_diff = diff
                                 excluded_idx_debug = i
 
+                gb_hit_dirs_dbg = state.get("gb_active_dirs", set()) if state.get("is_gangbang", False) else set()
                 for i in range(8):
                     angle = i * (math.pi / 4)
                     zx = int(char_screen_cx + math.cos(angle) * 45)
@@ -16873,10 +16991,15 @@ def ai_commander_worker(target_pc):
                     screen_zx1, screen_zy1 = zx - 15, zy - 25
                     screen_zx2, screen_zy2 = zx + 15, zy + 25
 
-                    if i == excluded_idx_debug:
+                    if not is_1cell_dir_clear_on_map(pc_map_gray_los, state.get("dungeon_map_pos"), angle, active_dungeon):
+                        cv2.rectangle(debug_img, (screen_zx1, screen_zy1), (screen_zx2, screen_zy2), (140, 70, 140), 1)
+                        cv2.putText(debug_img, "WALL", (screen_zx1, max(0, screen_zy1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (180, 100, 180), 1)
+                    elif i == excluded_idx_debug:
                         cv2.rectangle(debug_img, (screen_zx1, screen_zy1), (screen_zx2, screen_zy2), (128, 128, 128), 1)
                         cv2.putText(debug_img, "OFF", (screen_zx1, max(0, screen_zy1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128, 128, 128), 1)
-
+                    elif i in gb_hit_dirs_dbg:
+                        cv2.rectangle(debug_img, (screen_zx1, screen_zy1), (screen_zx2, screen_zy2), (0, 0, 255), 2)
+                        cv2.putText(debug_img, "HIT", (screen_zx1, max(0, screen_zy1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 1)
                     else:
                         cv2.rectangle(debug_img, (screen_zx1, screen_zy1), (screen_zx2, screen_zy2), (0, 100, 100), 1)
 
@@ -16956,8 +17079,11 @@ def ai_commander_worker(target_pc):
                 d_name_debug = settings.get("dungeon_name", "")
                 gb_limit_debug = int(settings.get("gangbang_count_dungeon", 4)) if ("본던" in d_name_debug or "본토" in d_name_debug or "개미" in d_name_debug or "사던" in d_name_debug or "silver" in d_name_debug.lower()) else int(settings.get("gangbang_count_normal", 3))
 
-                gb_color = (0, 0, 255) if state.get("is_gangbang", False) else (0, 255, 0)
-                cv2.putText(debug_img, f"GB_MOB: {gb_cnt} / {gb_limit_debug} (Sens: {m_sens})", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.5, gb_color, 2)
+                if state.get("is_gangbang", False):
+                    rem_gb_t = max(0.0, state.get("gb_active_until", 0.0) - curr_time)
+                    cv2.putText(debug_img, f"GB_MOB: {gb_cnt}/{gb_limit_debug} [GANGBANG LOCK {rem_gb_t:.1f}s]", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 0, 255), 2)
+                else:
+                    cv2.putText(debug_img, f"GB_MOB: {gb_cnt} / {gb_limit_debug} (Sens: {m_sens})", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
                 if state.get("target_fsm") in ["HOVER_WAIT", "SNAP_WAIT", "COMBAT"]:
                     hx, hy = int(state.get("hover_pos", (cur_x, cur_y))[0]), int(state.get("hover_pos", (cur_x, cur_y))[1])
@@ -18490,9 +18616,74 @@ def ai_commander_worker(target_pc):
                         
                         dng_name_aim1 = settings.get("dungeon_name", "")
                         is_bondon_aim = "본던" in dng_name_aim1 or "gludio" in dng_name_aim1.lower() or "사던" in dng_name_aim1 or "silver" in dng_name_aim1.lower()
+                        is_gb_kill_now = bool(settings.get("use_gb_detect", False) and (state.get("is_gangbang", False) or curr_time < state.get("gb_active_until", 0.0)))
 
-                        # ================= [ 변경 코드 ] =================
-                        if is_party_mode or is_chain_kill_on or is_bondon_aim:
+                        mob_angle = current_facing_angle if current_facing_angle is not None else state.get("combat_target_angle")
+                        if mob_angle is None:
+                            hx_c, hy_c = state.get("hover_pos", (char_screen_cx, char_screen_cy - 20))
+                            if math.hypot(hx_c - char_screen_cx, hy_c - (char_screen_cy - 20)) > 10:
+                                mob_angle = math.atan2(hy_c - (char_screen_cy - 20), hx_c - char_screen_cx)
+
+                        # ================= [ 다굴 상태 처치 시: 3셀 루팅 차단 + 연속 모션 스캔 직행 ] =================
+                        if is_gb_kill_now:
+                            state["gb_active_until"] = curr_time + 2.5
+                            state["is_gangbang"] = True
+                            state["close_combat_timer"] = curr_time + 1.5
+
+                            dead_dir_idx = -1
+                            if mob_angle is not None:
+                                state["corpse_blind_expire"] = curr_time + 1.2
+                                state["corpse_blind_angle"] = mob_angle
+                                min_diff_gb = float('inf')
+                                for i_dir in range(8):
+                                    a_dir = i_dir * (math.pi / 4)
+                                    d_ang = abs(math.atan2(math.sin(a_dir - mob_angle), math.cos(a_dir - mob_angle)))
+                                    if d_ang < min_diff_gb:
+                                        min_diff_gb = d_ang
+                                        dead_dir_idx = i_dir
+
+                            scan_cy_gb = char_screen_cy - 20
+                            roi_size_gb = 80
+                            x1_g = max(0, char_screen_cx - roi_size_gb)
+                            y1_g = max(0, scan_cy_gb - roi_size_gb)
+                            x2_g = min(w, char_screen_cx + roi_size_gb)
+                            y2_g = min(h, scan_cy_gb + roi_size_gb)
+                            if x2_g > x1_g and y2_g > y1_g:
+                                state["motion_img1"] = cv2.cvtColor(img_bgr[y1_g:y2_g, x1_g:x2_g], cv2.COLOR_BGR2GRAY)
+                                state["motion_roi"] = (x1_g, y1_g, x2_g, y2_g)
+                            else:
+                                state["motion_img1"] = None
+
+                            state["motion_failed_dirs"] = {dead_dir_idx} if dead_dir_idx >= 0 else set()
+                            state["motion_candidates"] = []
+                            state["motion_scan_end"] = curr_time + 1.0
+                            state["gb_post_kill_snap"] = True
+
+                            if str(state.get("target_fsm", "")).startswith("BUFFING"):
+                                if state.get("buff_return_fsm") != "PARTY_BUFF_L_DONE":
+                                    state["buff_return_fsm"] = "MOTION_SNAP_SCANNING"
+                            else:
+                                state["target_fsm"] = "MOTION_SNAP_SCANNING"
+
+                            state["hover_retry_count"] = 0
+                            state["yolo_blind_active"] = False
+                            state["yolo_blind_expire"] = 0
+                            state["is_pulling"] = False
+                            state["is_attacking"] = False
+                            state["has_fired_arrow"] = False
+                            state["arrow_is_firing"] = False
+                            state["arrow_image"] = None
+                            state["is_motion_target"] = False
+                            state["locked_by_blind"] = False
+                            state["current_is_g_mob"] = False
+                            state["combat_target_angle"] = None
+                            state["party_blind_sweep_start"] = 0.0
+                            state["party_blind_sweep_end"] = 0.0
+                            state["cooldown"] = curr_time + 0.04
+
+                            dprint(key, f"🔥 [다굴 연쇄 타겟팅] 몹 처치! 1셀 초과 루팅을 차단하고 시체 방향({dead_dir_idx+1 if dead_dir_idx>=0 else '-'}번) 제외 즉시 모션 스캔으로 직행합니다!")
+
+                        elif is_party_mode or is_chain_kill_on or is_bondon_aim:
 
                             state["corpse_blind_expire"] = 0.0
 
@@ -18522,6 +18713,7 @@ def ai_commander_worker(target_pc):
                             state["is_motion_target"] = False
                             state["locked_by_blind"] = False
                             state["current_is_g_mob"] = False
+                            state["combat_target_angle"] = None
 
                             state["party_blind_sweep_start"] = 0.0
                             state["party_blind_sweep_end"] = 0.0
@@ -18530,12 +18722,6 @@ def ai_commander_worker(target_pc):
 
                             dprint(key, f"💀 [체인킬] 경험치 획득! 딜레이 및 시체마스킹 즉각 삭제 후 재조준(TARGET_AIMING) 돌입!")
                         else:
-
-                            mob_angle = current_facing_angle
-                            if mob_angle is None:
-                                hx_c, hy_c = state.get("hover_pos", (char_screen_cx, char_screen_cy - 20))
-                                if math.hypot(hx_c - char_screen_cx, hy_c - (char_screen_cy - 20)) > 10:
-                                    mob_angle = math.atan2(hy_c - (char_screen_cy - 20), hx_c - char_screen_cx)
 
                             if mob_angle is not None:
                                 state["corpse_blind_expire"] = curr_time + 2.0
@@ -18559,6 +18745,7 @@ def ai_commander_worker(target_pc):
                             state["is_motion_target"] = False
                             state["locked_by_blind"] = False
                             state["current_is_g_mob"] = False
+                            state["combat_target_angle"] = None
 
                             state["party_blind_sweep_start"] = 0.0
                             state["party_blind_sweep_end"] = 0.0
@@ -18588,30 +18775,33 @@ def ai_commander_worker(target_pc):
                             
                             dng_name_f4 = settings.get("dungeon_name", "")
                             is_bondon_f4 = "본던" in dng_name_f4 or "gludio" in dng_name_f4.lower() or "사던" in dng_name_f4 or "silver" in dng_name_f4.lower()
+                            is_gb_f4 = bool(settings.get("use_gb_detect", False) and (state.get("is_gangbang", False) or curr_time < state.get("gb_active_until", 0.0)))
 
-                            if is_party_f4_mode or is_bondon_f4:
+                            if is_party_f4_mode or is_bondon_f4 or is_gb_f4:
                                 state["party_blind_sweep_start"] = curr_time + 0.1
                                 state["party_blind_sweep_end"] = 0.0
-                                dprint(key, "🏹 [파티/본던 루팅] 묻따 줍기 장전! 0.1초 대기 후 F4 1~1.5초간 유지 시전!")
+                                dprint(key, "🏹 [파티/본던/다굴 루팅] 묻따 줍기 장전! 0.1초 대기 후 F4 1~1.5초간 유지 시전!")
                         state["has_fired_arrow"] = True
 
                     if state.get("party_blind_sweep_start", 0) > 0 and curr_time >= state["party_blind_sweep_start"]:
-                        state["party_blind_sweep_start"] = 0.0
-
-                        is_valid_combat_for_f4 = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or str(state.get("target_fsm", "")) == "COMBAT"
-                        if is_valid_combat_for_f4 and pico_queues[key].empty() and not state.get("sweep_active", False):
-                            pico_queues[key].put({"action": "SWEEP_START"})
-                            state["sweep_active"] = True
+                        is_valid_combat_for_f4 = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or str(state.get("target_fsm", "")) in ["COMBAT", "COMBAT_PARK_VERIFY"]
+                        if is_valid_combat_for_f4:
+                            state["party_blind_sweep_start"] = 0.0
+                            if not state.get("sweep_active", False):
+                                pico_queues[key].put({"action": "SWEEP_START"})
+                                state["sweep_active"] = True
                             hold_time = g_val(1.0, 1.5)
                             state["party_blind_sweep_end"] = curr_time + hold_time
-                            dprint(key, f"🧹 [파티 무지성 줍기] 전투 개시! F4를 {hold_time:.2f}초간 꾹 누릅니다.")
+                            dprint(key, f"🧹 [무지성 줍기 가동] 전투 개시! F4를 {hold_time:.2f}초간 꾹 누릅니다.")
+                        else:
+                            state["party_blind_sweep_start"] = 0.0
 
                     elif state.get("party_blind_sweep_end", 0) > 0 and curr_time >= state["party_blind_sweep_end"]:
                         state["party_blind_sweep_end"] = 0.0
                         if state.get("sweep_active", False):
                             pico_queues[key].put({"action": "SWEEP_STOP"})
                             state["sweep_active"] = False
-                            dprint(key, "🧹 [파티 무지성 줍기] 1.5초 유지 시간 종료. F4를 뗍니다.")
+                            dprint(key, "🧹 [무지성 줍기 종료] 1~1.5초 유지 시간 종료. F4를 뗍니다.")
 
                     is_party_mode_active = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
                     first_arrow_timeout = 1.2 if is_party_mode_active else 2.0
@@ -19630,6 +19820,7 @@ def ai_commander_worker(target_pc):
                 state["is_evade_combat"] = False
                 state["combat_enchant_failed"] = False
                 state["is_combat_emergency_buff"] = False
+                state["combat_target_angle"] = None
 
                 state["party_blind_sweep_start"] = 0.0
                 state["party_blind_sweep_end"] = 0.0
@@ -19649,7 +19840,7 @@ def ai_commander_worker(target_pc):
             need_pot_now = settings.get("potion_use") and hp <= settings.get("potion_percent", 60.0)
             is_hp_safe_for_buff = not need_heal_now and not need_pot_now and not is_poisoned
 
-            is_strictly_combat = (state.get("target_fsm") == "COMBAT") or state.get("is_attacking", False) or state.get("arrow_is_firing", False)
+            is_strictly_combat = (state.get("target_fsm") in ["COMBAT", "COMBAT_PARK_VERIFY"]) or state.get("is_attacking", False) or state.get("arrow_is_firing", False)
 
             if is_strictly_combat and settings.get("use_gb_detect", True):
                 if curr_time - state.get("gb_last_scan_time", 0) > 0.3:
@@ -19674,11 +19865,13 @@ def ai_commander_worker(target_pc):
 
                             cv2.rectangle(thresh, (max(0, cx_roi - 18), max(0, cy_roi - 33)), (min(roi_w, cx_roi + 18), min(roi_h, cy_roi + 20)), 0, -1)
 
-                            for ux1_b, uy1_b, ux2_b, uy2_b, _ in state.get("user_blackouts", []):
-                                ux1, uy1 = max(0, int(ux1_b) - 15 - x1), max(0, int(uy1_b) - 25 - y1)
-                                ux2, uy2 = min(roi_w, int(ux2_b) + 15 - x1), min(roi_h, int(uy2_b) + 15 - y1)
-                                if ux2 > ux1 and uy2 > uy1:
-                                    cv2.rectangle(thresh, (ux1, uy1), (ux2, uy2), 0, -1)
+                            # 💡 GUI '유저예외' 체크박스 실제 연동
+                            if settings.get("gb_exc_user", True):
+                                for ux1_b, uy1_b, ux2_b, uy2_b, _ in state.get("user_blackouts", []):
+                                    ux1, uy1 = max(0, int(ux1_b) - 15 - x1), max(0, int(uy1_b) - 25 - y1)
+                                    ux2, uy2 = min(roi_w, int(ux2_b) + 15 - x1), min(roi_h, int(uy2_b) + 15 - y1)
+                                    if ux2 > ux1 and uy2 > uy1:
+                                        cv2.rectangle(thresh, (ux1, uy1), (ux2, uy2), 0, -1)
 
                             thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
@@ -19687,10 +19880,32 @@ def ai_commander_worker(target_pc):
                             is_2cell_dng = ("본던" in d_name or "본토" in d_name or "개미" in d_name or "사던" in d_name or "silver" in d_name.lower())
                             gb_limit = int(settings.get("gangbang_count_dungeon", 4)) if is_2cell_dng else int(settings.get("gangbang_count_normal", 3))
 
-                            active_motion_dirs = 0
+                            # 💡 현재 공격 중인 타겟 방향(OFF 박스)을 계산하여 다굴 마릿수에서 제외
+                            excluded_gb_idx = -1
+                            atk_ang_gb = current_facing_angle if current_facing_angle is not None else state.get("combat_target_angle")
+                            if atk_ang_gb is None:
+                                hx_g, hy_g = state.get("hover_pos", (char_screen_cx, scan_cy))
+                                if math.hypot(hx_g - char_screen_cx, hy_g - scan_cy) > 10:
+                                    atk_ang_gb = math.atan2(hy_g - scan_cy, hx_g - char_screen_cx)
+                            if atk_ang_gb is not None:
+                                min_diff_g = float('inf')
+                                for i_g in range(8):
+                                    ang_g = i_g * (math.pi / 4)
+                                    diff_g = abs(math.atan2(math.sin(ang_g - atk_ang_gb), math.cos(ang_g - atk_ang_gb)))
+                                    if diff_g < min_diff_g:
+                                        min_diff_g = diff_g
+                                        excluded_gb_idx = i_g
 
+                            active_motion_dirs = 0
+                            hit_dirs_now = set()
+
+                            # 💡 모든 사냥터 1셀(45px) 8방향만 통일 감지 + 미니맵상 벽 방향(WALL)은 카운트에서 배제!
                             for i in range(8):
+                                if i == excluded_gb_idx:
+                                    continue
                                 angle = i * (math.pi / 4)
+                                if not is_1cell_dir_clear_on_map(pc_map_gray_los, state.get("dungeon_map_pos"), angle, active_dungeon):
+                                    continue
                                 zx = int(cx_roi + math.cos(angle) * 45)
                                 zy = int(cy_roi + math.sin(angle) * 45 * 0.85)
 
@@ -19700,29 +19915,24 @@ def ai_commander_worker(target_pc):
                                 if rx2 > rx1 and ry2 > ry1:
                                     if cv2.countNonZero(thresh[ry1:ry2, rx1:rx2]) >= motion_thresh:
                                         active_motion_dirs += 1
-
-                            if is_2cell_dng:
-                                for i in range(8):
-                                    angle = i * (math.pi / 4)
-                                    zx = int(cx_roi + math.cos(angle) * 76)
-                                    zy = int(cy_roi + math.sin(angle) * 76 * 0.85)
-
-                                    rx1, ry1 = max(0, zx - 10), max(0, zy - 17)
-                                    rx2, ry2 = min(roi_w, zx + 10), min(roi_h, zy + 17)
-
-                                    if rx2 > rx1 and ry2 > ry1:
-                                        if cv2.countNonZero(thresh[ry1:ry2, rx1:rx2]) >= motion_thresh:
-                                            active_motion_dirs += 1
+                                        hit_dirs_now.add(i)
 
                             state["current_gb_count"] = active_motion_dirs
-                            state["is_gangbang"] = (active_motion_dirs >= gb_limit)
+                            if active_motion_dirs >= gb_limit:
+                                state["gb_active_until"] = curr_time + 2.5
+                                state["gb_active_dirs"] = hit_dirs_now
+                            elif hit_dirs_now and curr_time < state.get("gb_active_until", 0.0):
+                                state["gb_active_dirs"] = hit_dirs_now
+                            state["is_gangbang"] = (active_motion_dirs >= gb_limit) or (curr_time < state.get("gb_active_until", 0.0))
 
                         state["gb_prev_gray"] = curr_gray_gb
                     state["gb_last_scan_time"] = curr_time
             else:
-
-                state["is_gangbang"] = False
-                state["current_gb_count"] = 0
+                # 💡 전투 종료 직후에도 Latch 타이머(gb_active_until) 동안 다굴 판정을 유지하여 3셀 루팅을 차단
+                state["is_gangbang"] = bool(settings.get("use_gb_detect", False) and (curr_time < state.get("gb_active_until", 0.0)))
+                if not state["is_gangbang"]:
+                    state["current_gb_count"] = 0
+                    state["gb_active_dirs"] = set()
                 state["gb_prev_gray"] = None
 
             if mobs:
@@ -19992,27 +20202,45 @@ def ai_commander_worker(target_pc):
                     # 💡 루팅 길막(loot_evade_after_snap) 중이고 '사냥우선'이 꺼져 있을 때는 화면의 다른 YOLO 몹 때문에 모션 감지가 취소되지 않도록 보호!
                     can_abort_snap_for_yolo = bool(mobs) and (not state.get("loot_evade_after_snap", False) or settings.get("hunt_first", False))
                     if can_abort_snap_for_yolo:
+                        was_gb_snap = state.pop("gb_post_kill_snap", False)
                         state.pop("mptam_wall_hit_search", None)
                         state.pop("loot_evade_after_snap", None)
                         state["motion_failed_dirs"] = set()
                         state["motion_candidates"] = []
-                        dprint(key, "👁️ [YOLO 감지] 연속 스캔 중 욜로가 몹을 찾았습니다! 정상 타격 전환!")
-                        state["target_fsm"], state["cooldown"] = "IDLE", curr_time + 0.1
+                        if was_gb_snap:
+                            dprint(key, "👁️ [다굴 중 YOLO 포착] 근접 욜로 타겟 발견! 지체 없이 즉시 재조준(TARGET_AIMING) 사격합니다!")
+                            state["target_fsm"] = "TARGET_AIMING"
+                            state["aiming_start_time"] = curr_time
+                            state["shift_brake_delay"] = 0.0
+                            state["first_attempt"] = False
+                            state["hover_retry_count"] = 0
+                            state["cooldown"] = curr_time
+                        else:
+                            dprint(key, "👁️ [YOLO 감지] 연속 스캔 중 욜로가 몹을 찾았습니다! 정상 타격 전환!")
+                            state["target_fsm"], state["cooldown"] = "IDLE", curr_time + 0.1
                         continue
 
                     x1, y1, x2, y2 = state.get("motion_roi", (0, 0, 0, 0))
                     img1 = state.get("motion_img1")
                     failed_dirs = state.get("motion_failed_dirs", set())
+                    max_poke_limit = 4 if state.get("gb_post_kill_snap", False) else 3
 
                     # 1) 이전 프레임에서 이미 포착해 둔 후보(2순위, 3순위 등)가 남아있다면 스캔 대기 없이 즉시 꺼내서 찌름!
                     cand_queue = [c for c in state.get("motion_candidates", []) if c[0] not in failed_dirs]
                     state["motion_candidates"] = cand_queue
 
-                    # 최대 3곳까지 찔러봤거나, 대기 중인 후보가 없고 스캔 시간이 끝난 경우 종료
-                    if len(failed_dirs) >= 3 or (not cand_queue and curr_time > state.get("motion_scan_end", 0)):
+                    # 최대 횟수까지 찔러봤거나, 대기 중인 후보가 없고 스캔 시간이 끝난 경우 종료
+                    if len(failed_dirs) >= max_poke_limit or (not cand_queue and curr_time > state.get("motion_scan_end", 0)):
                         state["motion_failed_dirs"] = set()
                         state["motion_candidates"] = []
-                        if state.pop("mptam_wall_hit_search", False):
+                        if state.pop("gb_post_kill_snap", False):
+                            dprint(key, "✅ [다굴 연속 스캔 종료] 주변에 남은 다굴 몹 모션이 없습니다. 다굴 상태를 해제하고 사냥/루팅(IDLE)으로 복귀합니다!")
+                            state["is_gangbang"] = False
+                            state["gb_active_until"] = 0.0
+                            state["current_gb_count"] = 0
+                            state["target_fsm"] = "IDLE"
+                            state["cooldown"] = curr_time + 0.05
+                        elif state.pop("mptam_wall_hit_search", False):
                             state.pop("loot_evade_after_snap", None)
                             dprint(key, "🕵️ [엠탐 피격 ➔ 8각 모션 미감지] 픽셀 변화가 없어 8방향 이동 수색(POISON_WALL_SEARCH)으로 토스하여 숨은 몹을 끌어냅니다!")
                             state["target_fsm"] = "POISON_WALL_SEARCH"
@@ -20077,6 +20305,9 @@ def ai_commander_worker(target_pc):
                                 if i in failed_dirs:
                                     continue
                                 angle = i * (math.pi / 4)
+                                if not is_1cell_dir_clear_on_map(pc_map_gray_los, state.get("dungeon_map_pos"), angle, active_dungeon):
+                                    failed_dirs.add(i)
+                                    continue
                                 zx = int(cx_roi + math.cos(angle) * 45)
                                 zy = int(cy_roi + math.sin(angle) * 45 * 0.85)
 
@@ -20179,11 +20410,12 @@ def ai_commander_worker(target_pc):
 
                         if is_sword:
                             state["sword_verify_active"] = False
+                            state.pop("gb_post_kill_snap", None)
                             state.pop("mptam_wall_hit_search", None)
                             state.pop("loot_evade_after_snap", None)
                             state["motion_failed_dirs"] = set()
                             state["motion_candidates"] = []
-                            dprint(key, "🗡️ [모션 스냅 성공] 0.12초 내 칼 아이콘 확인 완료! 숨은 길막 몹 타격 개시!")
+                            dprint(key, "🗡️ [모션 스냅 성공] 0.12초 내 칼 아이콘 확인 완료! 숨은 몹 타격 개시!")
                             dist = math.hypot(char_screen_cx - hx, char_screen_cy - hy)
                             nx, ny = ((char_screen_cx - hx) / dist, (char_screen_cy - hy) / dist) if dist > 0 else (0, 1)
 
@@ -20192,6 +20424,7 @@ def ai_commander_worker(target_pc):
                             state["pico_arrived"] = False
 
                             state["cursor_pos"] = [int(hx + nx * drag_len), int(hy + ny * drag_len)]
+                            state["combat_target_angle"] = math.atan2(hy - (char_screen_cy - 20), hx - char_screen_cx)
 
                             state["cooldown"] = curr_time + 0.05
                             state["is_attacking"] = True
@@ -20224,9 +20457,10 @@ def ai_commander_worker(target_pc):
 
                                 failed_cnt = len(state.get("motion_failed_dirs", set()))
                                 has_more_cands = len(state.get("motion_candidates", [])) > 0
+                                max_poke_limit = 4 if state.get("gb_post_kill_snap", False) else 3
 
-                                if failed_cnt < 3 and (has_more_cands or curr_time < state.get("motion_scan_end", 0)):
-                                    dprint(key, f"⚠️ [오인식 구역 제외] {last_dir+1}번 구역 칼 안 뜸({failed_cnt}/3회)! 제외 후 다음 구역을 즉시 확인합니다.")
+                                if failed_cnt < max_poke_limit and (has_more_cands or curr_time < state.get("motion_scan_end", 0)):
+                                    dprint(key, f"⚠️ [오인식 구역 제외] {last_dir+1}번 구역 칼 안 뜸({failed_cnt}/{max_poke_limit}회)! 제외 후 다음 구역을 즉시 확인합니다.")
 
                                     if not has_more_cands:
                                         x1, y1, x2, y2 = state.get("motion_roi", (0, 0, 0, 0))
@@ -20235,6 +20469,15 @@ def ai_commander_worker(target_pc):
 
                                     state["target_fsm"] = "MOTION_SNAP_SCANNING"
                                     state["cooldown"] = curr_time
+                                elif state.pop("gb_post_kill_snap", False):
+                                    state["motion_failed_dirs"] = set()
+                                    state["motion_candidates"] = []
+                                    dprint(key, "✅ [다굴 연속 스캔 종료] 칼 표시가 뜨는 남은 몹이 없습니다. 다굴 상태를 해제하고 사냥/루팅(IDLE)으로 복귀합니다!")
+                                    state["is_gangbang"] = False
+                                    state["gb_active_until"] = 0.0
+                                    state["current_gb_count"] = 0
+                                    state["target_fsm"] = "IDLE"
+                                    state["cooldown"] = curr_time + 0.05
                                 elif state.pop("mptam_wall_hit_search", False):
                                     state.pop("loot_evade_after_snap", None)
                                     state["motion_failed_dirs"] = set()
@@ -21105,11 +21348,13 @@ def ai_commander_worker(target_pc):
 
                     close_mobs = [m for m in mobs if math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy) <= 150]
                     is_fixed_dealer_loot = settings.get("use_party_fixed", False) and not settings.get("is_puller", False)
+                    is_gb_loot_abort = bool(settings.get("use_gb_detect", False) and (state.get("is_gangbang", False) or curr_time < state.get("gb_active_until", 0.0)))
 
-                    if len(close_mobs) >= 99:
+                    if len(close_mobs) >= 99 or (is_gb_loot_abort and fsm_current.startswith("LOOT") and fsm_current not in ["LOOTING_1CELL", "LOOTING_MOTION_VERIFY"]):
                         if fsm_current.startswith("LOOT"):
-                            dprint(key, "🚨 [루팅 강제 중단] 다굴 교전 중! 아이템 포기하고 생존에 집중합니다.")
-                            if state.get("sweep_active", False):
+                            dprint(key, "🚨 [다굴 3셀 루팅 중단] 다굴 감지! 원거리 루팅 이동을 즉시 중단하고 사냥에 집중합니다.")
+                            clear_movements_only(pico_queues[key])
+                            if state.get("sweep_active", False) and curr_time >= state.get("party_blind_sweep_end", 0.0):
                                 pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
                             state["target_fsm"] = "IDLE"
                             state["yolo_blind_active"] = False
@@ -21342,10 +21587,25 @@ def ai_commander_worker(target_pc):
                                         item_map_x = char_map_pos[0] + item_map_dx
                                         item_map_y = char_map_pos[1] + item_map_dy
 
-                                        # 💡 몹 시야 판정(HIDDEN(WALL))과 동일하게 직선 벽 검사만 수행하며, 스캔 단계에서는 40초 영구 밴(hard_ban)에 절대 넣지 않음!
+                                        # 💡 1차: 직선 시야 검사 ➔ 막혀 있을 경우 2차: 그래프 A* 기준 10노드(인게임 10칸) 이하일 때만 코너 우회 루팅 허용!
                                         if not check_item_line_of_sight(pc_map_gray_los, char_map_pos, (item_map_x, item_map_y), threshold=1):
-                                            is_item_clear = False
-                                            ignore_reason = "WALL_BLOCK"
+                                            can_try_corner_astar = (
+                                                not state.get("is_gangbang", False) and
+                                                curr_time >= state.get("gb_active_until", 0.0) and
+                                                not state.get("is_mptam_mode", False) and
+                                                not is_parked_loot_mode
+                                            )
+                                            astar_detour = calculate_local_astar_path_for_loot(
+                                                pc_map_gray_los, char_map_pos, (item_map_x, item_map_y),
+                                                pc_graph=pc_graph, max_radius=45.0, max_nodes=10
+                                            ) if can_try_corner_astar else []
+
+                                            if astar_detour:
+                                                is_item_clear = True
+                                                item_astar_path = astar_detour
+                                            else:
+                                                is_item_clear = False
+                                                ignore_reason = "WALL_BLOCK"
 
                                     elif minimap_bgr is not None and ("event" in settings.get("dungeon_name", "").lower() or "오땅" in settings.get("dungeon_name", "")):
                                         minimap_gray_item = cv2.cvtColor(minimap_bgr, cv2.COLOR_BGR2GRAY)
@@ -21453,12 +21713,13 @@ def ai_commander_worker(target_pc):
                         state["item_cnt_one_done"] = False
 
                     effective_hunt_first = bool(settings.get("hunt_first", False) and not state.get("item_cnt_loot_override", False))
+                    is_gb_loot_lock = bool(settings.get("use_gb_detect", False) and (state.get("is_gangbang", False) or curr_time < state.get("gb_active_until", 0.0)))
 
-                    if effective_hunt_first and mobs and not is_keep_3cell_looting:
+                    if (effective_hunt_first and mobs and not is_keep_3cell_looting) or is_gb_loot_lock:
                         filtered_item_boxes = []
                         for b in item_boxes:
                             if b.get('dist_to_b', 999.0) >= 40.0:
-                                b['ignore_reason'] = "HUNT_FIRST(>1cell)"
+                                b['ignore_reason'] = "GANGBANG(>1cell)" if is_gb_loot_lock else "HUNT_FIRST(>1cell)"
                                 ignored_boxes.append(b)
                             else:
                                 filtered_item_boxes.append(b)
@@ -21475,7 +21736,7 @@ def ai_commander_worker(target_pc):
                         current_fsm_for_loot = str(state.get("target_fsm", ""))
                         # 교전 중(COMBAT/HOVER_WAIT/SNAP_WAIT)에는 현재 잡던 몹을 끝까지 잡고, 직후 상태(BRAKE_WAIT/TARGET_AIMING/IDLE 등)에서 즉시 발동
                         loot_entry_fsms = ["IDLE", "PATROL", "TARGET_AIMING", "WAIT_FOR_STOP", "PARTY_WAIT", "SQUAD_WAIT", "PARTY_ACTIVE_STANDBY"]
-                        if state.get("item_cnt_loot_override", False):
+                        if state.get("item_cnt_loot_override", False) and not is_gb_loot_lock:
                             loot_entry_fsms = loot_entry_fsms + ["BRAKE_WAIT", "HOVER_RETRY_WAIT"]
 
                         # ✅ 3번 수정: 리스트 맨 끝에 "PARTY_ACTIVE_STANDBY" 추가 (엠탐/대기 상태에서도 템을 향해 출발 허용)
@@ -21487,18 +21748,25 @@ def ai_commander_worker(target_pc):
                             should_loot_now = True
                             is_pb_arrived_loot_now = (state.get("party_buff_status") == "ARRIVED") or (state.get("is_active_standby", False) and "팟바람" in str(state.get("standby_reason", "")))
 
-                            if is_pb_arrived_loot_now or (effective_hunt_first and dist_to_best < 40.0):
+                            if is_pb_arrived_loot_now or ((effective_hunt_first or is_gb_loot_lock) and dist_to_best < 40.0):
                                 should_loot_now = False
 
                             if should_loot_now:
-                                dprint(key, "💎 [지연 드랍 낚아채기] 통로 연결 확인 완료! 즉시 다이렉트 3셀 루팅으로 전환합니다!")
                                 clear_movements_only(pico_queues[key])
                                 state["dungeon_global_path"] = []
                                 state["sword_verify_active"] = False
                                 state["special_ack_arrived"] = False
                                 state["hover_start_time"] = 0
 
-                                state["target_fsm"] = "LOOTING_3CELL"
+                                if best_box_eval.get('astar_path'):
+                                    dprint(key, f"🗺️ [코너 A* 우회 루팅] 10노드 이내 코너 템 포착({len(best_box_eval['astar_path'])}노드)! 우회 접근을 시작합니다!")
+                                    state["loot_target_box"] = best_box_eval
+                                    state["astar_loot_stuck_timer"] = curr_time
+                                    state["astar_loot_click_cd"] = 0
+                                    state["target_fsm"] = "LOOTING_ASTAR_APPROACH"
+                                else:
+                                    dprint(key, "💎 [지연 드랍 낚아채기] 통로 연결 확인 완료! 즉시 다이렉트 3셀 루팅으로 전환합니다!")
+                                    state["target_fsm"] = "LOOTING_3CELL"
 
                                 loot_limit_sec = 5.0 if state.get("is_mptam_mode", False) else 10.0
                                 state["loot_global_timeout"] = curr_time + loot_limit_sec
@@ -21519,7 +21787,7 @@ def ai_commander_worker(target_pc):
 
                         is_combat_now = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or current_fsm_for_loot == "COMBAT"
 
-                        loot_threshold = 110.0 if is_combat_now else 60.0
+                        loot_threshold = 110.0 if (is_combat_now and not is_gb_loot_lock) else 60.0
 
                         is_2cell_braking_eval = current_fsm_for_loot in ["LOOTING_2CELL_BRAKE_WAIT"]
 
@@ -21548,7 +21816,9 @@ def ai_commander_worker(target_pc):
                     else:
 
                         fsm_for_sweep_chk = str(state.get("target_fsm", ""))
-                        if state.get("sweep_active", False) and not fsm_for_sweep_chk.startswith("LOOT"):
+                        # 💡 무지성 F4(party_blind_sweep)가 작동 중인 1~1.5초 동안에는 빈 아이템 박스 판정으로 F4가 중간에 끊기지 않도록 완벽 보호!
+                        is_blind_f4_active = (state.get("party_blind_sweep_start", 0.0) > 0.0) or (curr_time < state.get("party_blind_sweep_end", 0.0))
+                        if state.get("sweep_active", False) and not fsm_for_sweep_chk.startswith("LOOT") and not is_blind_f4_active:
                             if state.get("combat_loot_missing_timer", 0) == 0:
                                 state["combat_loot_missing_timer"] = curr_time
                             elif curr_time - state.get("combat_loot_missing_timer", 0) > 0.8:
@@ -21880,6 +22150,8 @@ def ai_commander_worker(target_pc):
                                             best_tx, best_ty, max_changed = None, None, 8
                                             for i in range(8):
                                                 angle = i * (math.pi / 4)
+                                                if not is_1cell_dir_clear_on_map(pc_map_gray_los, state.get("dungeon_map_pos"), angle, active_dungeon):
+                                                    continue
                                                 zx, zy = int(cx_roi + math.cos(angle) * 45), int(cy_roi + math.sin(angle) * 45 * 0.85)
 
                                                 g_cx, g_cy = x1 + zx, y1 + zy
@@ -22184,8 +22456,8 @@ def ai_commander_worker(target_pc):
 
                             state["target_fsm"] = "LOOTING_3CELL_WAIT_MOVE"
                             state["loot_move_timeout"] = curr_time + 0.6
-                            state["loot_spam_cd"] = curr_time + g_val(0.07, 0.09)
-                            state["cooldown"] = curr_time + 0.05
+                            state["loot_spam_cd"] = curr_time + g_val(0.06, 0.08)
+                            state["cooldown"] = curr_time + 0.02
                         else:
                             state["cooldown"] = curr_time + 0.02
 
@@ -22195,8 +22467,8 @@ def ai_commander_worker(target_pc):
                             clear_movements_only(pico_queues[key])
                             state["target_fsm"] = "LOOTING_3CELL_APPROACH"
                             state["loot_missing_timer"] = 0
-                            state["cooldown"] = curr_time + 0.05
-                        elif state.get("is_char_moving", False) and (curr_time - state.get("loot_click_time", 0) >= 0.12):
+                            state["cooldown"] = curr_time + 0.03
+                        elif state.get("is_char_moving", False) and (curr_time - state.get("loot_click_time", 0) >= 0.06):
                             dprint(key, "🛑 [3셀 루팅] 캐릭터 발걸음 감지! 스팸 클릭 멈추고 줍기(F4) 켜고 전진!")
                             clear_movements_only(pico_queues[key])
 
@@ -22215,7 +22487,7 @@ def ai_commander_worker(target_pc):
                             state["loot_last_box_cnt"] = len(item_boxes)
 
                             state["loot_stuck_timer"] = curr_time
-                            state["cooldown"] = curr_time + 0.1
+                            state["cooldown"] = curr_time + 0.03
                         else:
                             best_box = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
                             curr_wait_dist = math.hypot(best_box['x'] - char_screen_cx, (best_box['y'] + 15 - char_screen_cy) / 0.50)
@@ -22229,11 +22501,11 @@ def ai_commander_worker(target_pc):
                                 state["loot_chain_expire"] = curr_time + 0.6
                                 state["loot_global_timeout"] = curr_time + (5.0 if state.get("is_mptam_mode", False) else 10.0)
                                 state["target_fsm"] = "LOOTING_3CELL"
-                                state["cooldown"] = curr_time + 0.03
+                                state["cooldown"] = curr_time + 0.02
                             elif curr_time <= state.get("loot_move_timeout", 0):
                                 if curr_time >= state.get("loot_spam_cd", 0):
                                     pico_queues[key].put({"action": "SINGLE_ATTACK"})
-                                    state["loot_spam_cd"] = curr_time + g_val(0.15, 0.18)
+                                    state["loot_spam_cd"] = curr_time + g_val(0.08, 0.11)
                                 state["cooldown"] = curr_time + 0.02
                             else:
                                 dprint(key, "🚧 [3셀 출발 타임아웃] 제자리 길막 감지! 1차 조치: 모션 스냅으로 숨은 길막 몹부터 색출합니다!")
@@ -22256,33 +22528,45 @@ def ai_commander_worker(target_pc):
                                 state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.10)
 
                     elif fsm == "LOOTING_ASTAR_APPROACH":
-                        best_box = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy)) if item_boxes else None
                         char_map_pos = state.get("dungeon_map_pos")
+                        saved_box = state.get("loot_target_box")
+                        all_visible_boxes = item_boxes + [b for b in ignored_boxes if b.get("ignore_reason") == "WALL_BLOCK"]
+                        best_box = min(all_visible_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy)) if all_visible_boxes else None
 
-                        if not best_box or not char_map_pos:
+                        if not char_map_pos or (not best_box and not saved_box):
                             state["target_fsm"] = "IDLE"
                             state["cooldown"] = curr_time + 0.1
                             continue
 
-                        state["loot_target_box"] = best_box
-                        item_map_x = char_map_pos[0] + (best_box['x'] - char_screen_cx) * DUNGEON_SCALE_X
-                        item_map_y = char_map_pos[1] + (best_box['y'] + 15 - char_screen_cy) * DUNGEON_SCALE_Y
+                        # 이미 생성된 A* 웨이포인트(l_path)를 유지하여 매 프레임 첫 노드로 리셋되는 현상 방지
+                        l_path = saved_box.get('astar_path', []) if saved_box else []
+                        if not l_path and best_box and best_box.get('astar_path'):
+                            l_path = list(best_box['astar_path'])
 
-                        if check_item_line_of_sight(pc_map_gray_los, char_map_pos, (item_map_x, item_map_y), threshold=1):
-                            dprint(key, "💎 [A* 우회 성공] 코너 돌파! 시야 확보됨! 다이렉트 1/3셀 줍기로 바톤 터치!")
+                        active_box = best_box if best_box else saved_box
+                        active_box['astar_path'] = l_path
+                        state["loot_target_box"] = active_box
 
-                            state["target_fsm"] = "LOOT_SCAN_WAIT"
-                            state["loot_wait_start"] = curr_time - 1.0
-                            state["cooldown"] = curr_time + 0.05
+                        if best_box:
+                            item_map_x = char_map_pos[0] + (best_box['x'] - char_screen_cx) * DUNGEON_SCALE_X
+                            item_map_y = char_map_pos[1] + (best_box['y'] + 15 - char_screen_cy) * DUNGEON_SCALE_Y
+                        elif l_path:
+                            item_map_x, item_map_y = l_path[-1]
+                        else:
+                            state["target_fsm"] = "IDLE"
+                            state["cooldown"] = curr_time + 0.1
+                            continue
+
+                        if best_box and check_item_line_of_sight(pc_map_gray_los, char_map_pos, (item_map_x, item_map_y), threshold=1):
+                            dprint(key, "💎 [A* 우회 성공] 코너 돌파! 직선 시야 확보됨! 즉시 다이렉트 3셀 루팅으로 전환합니다!")
+                            state["target_fsm"] = "LOOTING_3CELL"
+                            state["cooldown"] = curr_time + 0.02
                             continue
 
                         if not state.get("is_char_moving", False):
                             if curr_time - state.get("astar_loot_stuck_timer", curr_time) > 1.0:
                                 dprint(key, "🚨 [A* 길막 돌파] 1.0초간 이동 불가! 벽 너머 아이템으로 간주하여 블랙리스트(Ban)에 등록합니다!")
-                                
-                                ban_mx = char_map_pos[0] + (best_box['x'] - char_screen_cx) * DUNGEON_SCALE_X
-                                ban_my = char_map_pos[1] + (best_box['y'] + 15 - char_screen_cy) * DUNGEON_SCALE_Y
-                                state.setdefault("hard_ban_item_map_list", []).append((ban_mx, ban_my, curr_time, "STUCK_WALL"))
+                                state.setdefault("hard_ban_item_map_list", []).append((item_map_x, item_map_y, curr_time, "STUCK_WALL"))
 
                                 clear_movements_only(pico_queues[key])
                                 state["target_fsm"] = "MOTION_SNAP_BRAKE_WAIT"
@@ -22293,20 +22577,19 @@ def ai_commander_worker(target_pc):
                         else:
                             state["astar_loot_stuck_timer"] = curr_time
 
-                        l_path = best_box.get('astar_path', [])
+                        while l_path and math.hypot(char_map_pos[0] - l_path[0][0], char_map_pos[1] - l_path[0][1]) <= 3.5:
+                            l_path.pop(0)
+
                         if not l_path:
-                            state.setdefault("hard_ban_item_map_list", []).append((item_map_x, item_map_y))
-                            state["target_fsm"] = "IDLE"
-                            state["cooldown"] = curr_time + 0.1
+                            if best_box:
+                                state["target_fsm"] = "LOOTING_3CELL"
+                            else:
+                                state.setdefault("hard_ban_item_map_list", []).append((item_map_x, item_map_y, curr_time, "ASTAR_END"))
+                                state["target_fsm"] = "IDLE"
+                            state["cooldown"] = curr_time + 0.05
                             continue
 
                         tx_map, ty_map = l_path[0]
-                        if math.hypot(char_map_pos[0] - tx_map, char_map_pos[1] - ty_map) <= 3.0:
-                            l_path.pop(0)
-                            if not l_path:
-                                state["cooldown"] = curr_time + 0.05
-                                continue
-                            tx_map, ty_map = l_path[0]
 
                         scr_dx = (tx_map - char_map_pos[0]) / DUNGEON_SCALE_X
                         scr_dy = (ty_map - char_map_pos[1]) / DUNGEON_SCALE_Y
@@ -22741,6 +23024,8 @@ def ai_commander_worker(target_pc):
                             pico_queues[key].put({"action": "DRAG_ATTACK", "drag_dx": int(nx * drag_len), "drag_dy": int(ny * drag_len), "check_arrow": (role == "ARCHER")})
                             state["pico_arrived"] = False
 
+                            state["hover_pos"] = (cur_x, cur_y)
+                            state["combat_target_angle"] = math.atan2(cur_y - (char_screen_cy - 20), cur_x - char_screen_cx)
                             state["cursor_pos"] = [int(cur_x + nx * drag_len), int(cur_y + ny * drag_len)]
 
                             state["is_attacking"] = True
@@ -22819,6 +23104,8 @@ def ai_commander_worker(target_pc):
                                         best_tx, best_ty, max_changed = None, None, 8
                                         for i in range(8):
                                             angle = i * (math.pi / 4)
+                                            if not is_1cell_dir_clear_on_map(pc_map_gray_los, state.get("dungeon_map_pos"), angle, active_dungeon):
+                                                continue
                                             zx, zy = int(char_screen_cx - x1 + math.cos(angle) * 45), int(scan_cy - y1 + math.sin(angle) * 45 * 0.85)
                                             rx1, ry1 = max(0, zx - 15), max(0, zy - 25)
                                             rx2, ry2 = min(x2-x1, zx + 15), min(y2-y1, zy + 25)
@@ -23231,6 +23518,7 @@ def ai_commander_worker(target_pc):
                             pico_queues[key].put({"action": "DRAG_ATTACK", "drag_dx": int(nx * drag_len), "drag_dy": int(ny * drag_len), "check_arrow": (role == "ARCHER")})
                             state["pico_arrived"] = False
 
+                            state["combat_target_angle"] = math.atan2(hy - (char_screen_cy - 20), hx - char_screen_cx)
                             state["cursor_pos"] = [int(hx + nx * drag_len), int(hy + ny * drag_len)]
 
                             state["is_pulling"] = True if state.get("next_attack_type") == "PULL" else False
@@ -23326,7 +23614,7 @@ def ai_commander_worker(target_pc):
                             action_taken = True
                             continue
 
-                        atk_angle = current_facing_angle if current_facing_angle is not None else state.get("dungeon_angle", 0.0)
+                        atk_angle = current_facing_angle if current_facing_angle is not None else state.get("combat_target_angle", state.get("dungeon_angle", 0.0))
                         mob_angle_deg = (math.degrees(atk_angle) + 360) % 360.0
                         best_snap_angle = min(LINEAGE_ANGLES.values(), key=lambda k: min(abs(k - mob_angle_deg), 360 - abs(k - mob_angle_deg)))
                         snap_rad = math.radians(best_snap_angle)
@@ -23786,6 +24074,8 @@ def ai_commander_worker(target_pc):
                                 best_tx, best_ty, max_changed = None, None, 8
                                 for i in range(8):
                                     angle = i * (math.pi / 4)
+                                    if not is_1cell_dir_clear_on_map(pc_map_gray_los, state.get("dungeon_map_pos"), angle, active_dungeon):
+                                        continue
                                     zx, zy = int(cx_roi + math.cos(angle) * 45), int(cy_roi + math.sin(angle) * 45 * 0.85)
 
                                     g_cx, g_cy = x1 + zx, y1 + zy
@@ -24139,7 +24429,9 @@ def ai_commander_worker(target_pc):
                             time_since_last_body = curr_time - state.get("last_body_time", 0)
                             time_since_last_heal = curr_time - state.get("last_heal_time", 0)
 
-                            if time_since_last_body < 1.3 or time_since_last_heal < 1.3:
+                            if time_since_last_body < 2.3:
+                                stuck_wait = 2.3
+                            elif time_since_last_heal < 1.3:
                                 stuck_wait = 1.3
                             elif len(state.get("dungeon_global_path", [])) > 0:
                                 stuck_wait = 1.2
