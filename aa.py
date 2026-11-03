@@ -3292,6 +3292,7 @@ img_sword, img_sword_mask = _load_img_and_mask("qq/sword.png")
 img_circle, img_circle_mask = _load_img_and_mask("qq/circle.png")
 img_inven, img_inven_mask = _load_img_and_mask("qq/inven.png")
 img_spell, img_spell_mask = _load_img_and_mask("qq/spell.png")
+img_close, img_close_mask = _load_img_and_mask("qq/close.png")
 img_death, img_death_mask = _load_img_and_mask("qq/death.png")
 img_on, img_on_mask = _load_img_and_mask("qq/on.png")
 img_haste, img_haste_mask = _load_img_and_mask("haste.png")
@@ -16785,6 +16786,9 @@ def ai_commander_worker(target_pc):
                 cv2.rectangle(debug_img, (max(0, w-180), 0), (w, min(h, 180)), (255, 0, 255), 1)
                 cv2.putText(debug_img, "DEATH_SCAN", (max(0, w-175), 55), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1)
 
+                cv2.rectangle(debug_img, (215, 0), (300, 50), (0, 165, 255), 1)
+                cv2.putText(debug_img, "CLOSE_SCAN", (217, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 165, 255), 1)
+
                 dng_name_debug_haste = settings.get("dungeon_name", "")
                 is_oak_event_dbg = "오땅" in dng_name_debug_haste or "event" in dng_name_debug_haste.lower()
                 is_sudeon_dbg = "수던" in dng_name_debug_haste or "heine" in dng_name_debug_haste.lower()
@@ -17279,14 +17283,38 @@ def ai_commander_worker(target_pc):
                     state["danger_mp_low_ticks"] = 0
 
                 fsm_ui_watch = str(state.get("target_fsm", ""))
-                if not fsm_ui_watch.startswith("INV_CLEAN") and not fsm_ui_watch.startswith("HK_HEAL_") and curr_time > state.get("inv_close_grace_time", 0):
+                if not fsm_ui_watch.startswith(("INV_CLEAN", "HK_HEAL_", "WEAPON_REPAIR", "TOWN_MAINT", "CHAT_RECOVER")) and curr_time > state.get("inv_close_grace_time", 0):
                     if curr_time > state.get("next_inv_watchdog_time", 0):
-                        state["next_inv_watchdog_time"] = curr_time + 3.0
+                        state["next_inv_watchdog_time"] = curr_time + 1.5
 
                         ui_is_open = False
                         action_to_take = None
 
-                        if img_inven is not None and w >= 200 and h >= 450:
+                        # 1) 화면 최상단 Close 버튼 영역(X:215~300, Y:0~50)에서 qq/close.png 최우선 감지
+                        img_c = globals().get("img_close")
+                        img_c_m = globals().get("img_close_mask")
+                        if img_c is None and os.path.exists("qq/close.png"):
+                            img_c, img_c_m = _load_img_and_mask("qq/close.png")
+                            globals()["img_close"] = img_c
+                            globals()["img_close_mask"] = img_c_m
+
+                        if img_c is not None and w >= 300 and h >= 50:
+                            close_roi = img_bgr[0:50, 215:300]
+                            if close_roi.shape[0] >= img_c.shape[0] and close_roi.shape[1] >= img_c.shape[1]:
+                                try:
+                                    if img_c_m is not None:
+                                        res_close = cv2.matchTemplate(close_roi, img_c, cv2.TM_CCORR_NORMED, mask=cv2.merge([img_c_m]*3))
+                                    else:
+                                        res_close = cv2.matchTemplate(close_roi, img_c, cv2.TM_CCOEFF_NORMED)
+                                    _, max_val_close, _, _ = cv2.minMaxLoc(res_close)
+                                    if max_val_close >= 0.80:
+                                        ui_is_open = True
+                                        action_to_take = f"상태/메뉴창(close.png {max_val_close*100:.0f}%)"
+                                except Exception:
+                                    pass
+
+                        # 2) 우측 인벤토리(inven.png) 및 마법창(spell.png) 감지
+                        if not ui_is_open and img_inven is not None and w >= 200 and h >= 450:
                             inv_check_roi = img_bgr[0:450, w-200:w]
                             try:
                                 if img_inven_mask is not None: res_inv = cv2.matchTemplate(inv_check_roi, img_inven, cv2.TM_CCORR_NORMED, mask=img_inven_mask)
@@ -17312,22 +17340,39 @@ def ai_commander_worker(target_pc):
                                 except Exception: pass
 
                         if ui_is_open:
-                            dprint(key, f"🚨 [UI 씹힘 감지] 사냥 중 {action_to_take} 열림! ESC 연타로 모두 닫고 미니맵을 복구합니다.")
+                            dprint(key, f"🚨 [UI 열림 감지] 사냥 중 {action_to_take} 열림 확인! 즉시 ESC 4회 입력 후 미니맵을 다시 켜고 사냥을 재개합니다.")
+
+                            # 진행 중이던 잘못된 클릭/이동 큐 즉시 중단 및 사냥 상태 리셋
+                            state["abort_macro"] = True
+                            with pico_queues[key].mutex:
+                                pico_queues[key].queue.clear()
+                            clear_movements_only(pico_queues[key])
+                            if state.get("sweep_active", False):
+                                pico_queues[key].put({"action": "SWEEP_STOP"})
+                                state["sweep_active"] = False
+
+                            state["is_attacking"] = False
+                            state["arrow_is_firing"] = False
+                            state["has_fired_arrow"] = False
+                            state["is_pulling"] = False
+                            state["loot_state"] = "IDLE"
+                            if fsm_ui_watch not in ["PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY", "PARTY_WAIT", "PARTY_BUFF_L_DONE"]:
+                                state["target_fsm"] = "IDLE"
 
                             def _emergency_esc_close(k=key):
                                 try:
                                     ps, pl = picos.get(k), pico_locks.get(k)
                                     if ps and pl:
-
-                                        esc_cnt = random.randint(4, 5)
-                                        for _ in range(esc_cnt):
+                                        # 1) ESC 키 정확히 4번 누르기
+                                        for _ in range(4):
                                             send_keyboard_key(ps, pl, 177, 1, is_manual=True)
                                             time.sleep(g_val(0.04, 0.08))
                                             send_keyboard_key(ps, pl, 177, 0, is_manual=True)
-                                            time.sleep(g_val(0.1, 0.15))
+                                            time.sleep(g_val(0.10, 0.14))
 
-                                        time.sleep(g_val(0.4, 0.6))
+                                        time.sleep(g_val(0.35, 0.50))
 
+                                        # 2) 미니맵 다시 켜기 (Ctrl + M)
                                         send_keyboard_key(ps, pl, 128, 1, is_manual=True)
                                         time.sleep(g_val(0.05, 0.08))
                                         send_keyboard_key(ps, pl, 109, 1, is_manual=True)
@@ -17335,6 +17380,12 @@ def ai_commander_worker(target_pc):
                                         send_keyboard_key(ps, pl, 109, 0, is_manual=True)
                                         time.sleep(g_val(0.05, 0.08))
                                         send_keyboard_key(ps, pl, 128, 0, is_manual=True)
+
+                                        # 3) F1 단축키 탭 복구
+                                        time.sleep(g_val(0.15, 0.22))
+                                        send_keyboard_key(ps, pl, KEY_F1, 1, is_manual=True)
+                                        time.sleep(g_val(0.05, 0.08))
+                                        send_keyboard_key(ps, pl, KEY_F1, 0, is_manual=True)
                                 except: pass
 
                             threading.Thread(target=_emergency_esc_close, daemon=True).start()
@@ -17350,8 +17401,8 @@ def ai_commander_worker(target_pc):
                                 dprint(key, f"📢 [워치독 경고] 최근 1분 내 3회 이상 {action_to_take} 닫힘 실패! 음성 출력!")
                                 state["inv_watchdog_history"] = []
 
-                            state["inv_close_grace_time"] = curr_time + 3.0
-                            state["cooldown"] = max(state.get("cooldown", 0), curr_time + 2.5)
+                            state["inv_close_grace_time"] = curr_time + 2.5
+                            state["cooldown"] = max(state.get("cooldown", 0), curr_time + 1.6)
                             continue
 
                 weight_status = check_weight_status(img_bgr)
