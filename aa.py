@@ -18585,10 +18585,13 @@ def ai_commander_worker(target_pc):
 
                     exp_did_change = check_exp_changed(key, img_bgr)
 
-                    # 💡 파티원이 몹을 잡아 경험치가 오를 때 루팅/길막 모션 감지(MOTION_SNAP_*)가 강제 취소되지 않도록 분리
+                    # 💡 파티원이 몹을 잡아 경험치가 오를 때 루팅/길막 모션 감지(MOTION_SNAP_*) 및 버프/팟바람 시전(BUFFING_*)이 강제 취소되지 않도록 분리
                     active_combat_fsms = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_LOCKED", "TARGET_AIMING", "WAIT_FOR_STOP", "COMBAT_PARK_VERIFY", "BRAKE_WAIT", "HOVER_RETRY_WAIT"]
 
-                    is_fighting_for_exp = state.get("target_fsm") in active_combat_fsms or state.get("is_attacking", False) or state.get("arrow_is_firing", False)
+                    is_fighting_for_exp = (
+                        (state.get("target_fsm") in active_combat_fsms or state.get("is_attacking", False) or state.get("arrow_is_firing", False)) and
+                        not str(state.get("target_fsm", "")).startswith("BUFFING")
+                    )
 
                     if is_fighting_for_exp and exp_did_change and not state.get("current_is_m_elf", False):
                         state["last_exp_time"] = curr_time
@@ -21361,11 +21364,20 @@ def ai_commander_worker(target_pc):
                             state["cooldown"] = curr_time
                         raw_item_boxes = []
 
-                    elif fsm_current in ["PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV"]:
+                    elif fsm_current in ["PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV"] or state.get("party_buff_status") == "MOVING":
                         raw_item_boxes = []
                         if state.get("sweep_active", False):
                             pico_queues[key].put({"action": "SWEEP_STOP"})
                             state["sweep_active"] = False
+                        if fsm_current.startswith("LOOT"):
+                            clear_movements_only(pico_queues[key])
+                            state["target_fsm"] = "PARTY_RETREAT_NAV"
+
+                    elif state.get("party_buff_status") == "ARRIVED" and fsm_current.startswith("LOOT") and fsm_current not in ["LOOTING_1CELL", "LOOTING_MOTION_VERIFY"]:
+                        # 💡 집결지 도착 대기 중에는 발밑 F4 줍기만 허용하고, 밖으로 걸어 나가는 2~3셀 이동 루팅은 즉시 차단!
+                        clear_movements_only(pico_queues[key])
+                        state["target_fsm"] = "PARTY_ACTIVE_STANDBY"
+                        raw_item_boxes = find_item_boxes(img_bgr)
 
                     # 👇 2.0을 0.1로 수정 완료 (경험치 획득 0.1초 후 바로 아이템 스캔 가동)
                     elif is_fixed_dealer_loot and (curr_time - state.get("last_exp_time", 0) <= 0.1):
@@ -23180,15 +23192,47 @@ def ai_commander_worker(target_pc):
                         state["cooldown"] = curr_time + 0.05
                     action_taken = True
 
+                # 💡 [전투/회피 중 실시간 버프존 도착 판정] 교전(action_taken) 중이어도 버프존 7px 이내에 들어오면 즉시 ARRIVED(120px 자위 사냥 + 1셀 루팅 대기)로 전환!
+                fsm_pb_rt = str(state.get("target_fsm", ""))
+                if (state.get("req_party_buff", False) or state.get("party_buff_status") == "MOVING") and not fsm_pb_rt.startswith(("BUFFING", "TOWN_MAINT", "DEATH", "CERTI_")) and fsm_pb_rt not in ["PARTY_BUFF_L_DONE", "EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"]:
+                    b_node_rt = state.get("designated_base_node") or (str(pc_graph["buff_spot_nodes"][0]) if pc_graph and pc_graph.get("buff_spot_nodes") else None)
+                    my_pos_rt = state.get("dungeon_map_pos")
+                    if b_node_rt and my_pos_rt and pc_graph and pc_graph.get("nodes"):
+                        bn_d_rt = pc_graph["nodes"].get(str(b_node_rt))
+                        if bn_d_rt:
+                            bx_rt = bn_d_rt.get("x", 0) if isinstance(bn_d_rt, dict) else bn_d_rt[0]
+                            by_rt = bn_d_rt.get("y", 0) if isinstance(bn_d_rt, dict) else bn_d_rt[1]
+                            dist_b_rt = math.hypot(my_pos_rt[0] - bx_rt, my_pos_rt[1] - by_rt)
+                            los_b_rt = check_line_of_sight(pc_map_gray_los, my_pos_rt, (bx_rt, by_rt), margin_steps=1) if pc_map_gray_los is not None else True
+                            if dist_b_rt <= 7.0 and los_b_rt:
+                                if state.get("party_buff_status") != "ARRIVED" or not state.get("is_active_standby", False):
+                                    state["party_buff_status"] = "ARRIVED"
+                                    state["is_active_standby"] = True
+                                    state["standby_reason"] = "팟바람 시전 집합" if state.get("req_party_buff", False) else "팟바람 수령 집합"
+                                    state["dungeon_global_path"] = []
+                                    if state.get("req_party_buff", False) and state.get("pb_wait_start", 0.0) == 0.0:
+                                        state["pb_wait_start"] = curr_time
+
                 is_pb_standby_active = (
-                    state.get("is_active_standby", False) and
-                    "팟바람" in str(state.get("standby_reason", "")) and
-                    not str(state.get("target_fsm", "")).startswith("BUFFING") and
+                    (
+                        (state.get("is_active_standby", False) and "팟바람" in str(state.get("standby_reason", ""))) or
+                        (state.get("req_party_buff", False) and state.get("party_buff_status") == "ARRIVED") or
+                        (not state.get("req_party_buff", False) and state.get("party_buff_status") == "ARRIVED")
+                    ) and
+                    not str(state.get("target_fsm", "")).startswith(("BUFFING", "TOWN_MAINT", "DEATH", "CERTI_")) and
                     state.get("target_fsm") not in ["PARTY_BUFF_L_DONE", "PARTY_RETREAT_NAV", "EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"]
                 )
                 if (not action_taken and state.get("target_fsm") == "PARTY_ACTIVE_STANDBY") or is_pb_standby_active:
-                    if curr_time >= state.get("cooldown", 0):
+                    # 💡 대기 중에는 120px 전투와 1셀 루팅을 허용하되, 전원 도착 검사는 전투 쿨타임을 무시하고 매 프레임 즉시 체크!
+                    if is_pb_standby_active or curr_time >= state.get("cooldown", 0):
                         standby_reason = state.get("standby_reason", "")
+                        if state.get("req_party_buff", False) and standby_reason not in ["리더 팟바람 선진입", "팟바람 시전 집합"]:
+                            standby_reason = "팟바람 시전 집합"
+                            state["standby_reason"] = standby_reason
+                        elif not state.get("req_party_buff", False) and state.get("party_buff_status") == "ARRIVED" and "팟바람" not in str(standby_reason):
+                            standby_reason = "팟바람 수령 집합"
+                            state["standby_reason"] = standby_reason
+
                         is_reason_resolved = False
                         my_inv_grp_sb = str(settings.get("invite_group", "선택안함"))
                         my_c_num_sb = str(get_my_central_num())
@@ -23221,15 +23265,17 @@ def ai_commander_worker(target_pc):
                                                     any_member_excluded = True
                                                 else:
                                                     expected_count += 1
-                                                    if p_status == "ARRIVED":
+                                                    p_mpos = p_data.get("map_pos")
+                                                    # 💡 파티원이 교전 중이어서 p_status 전환이 늦더라도 물리적 좌표가 시전자 9.5px 이내면 즉시 도착 인정!
+                                                    is_physically_here = bool(my_pos_sb and p_mpos and math.hypot(p_mpos[0] - my_pos_sb[0], p_mpos[1] - my_pos_sb[1]) <= 9.5)
+                                                    if p_status == "ARRIVED" or is_physically_here:
                                                         p_los_ok = True
-                                                        p_mpos = p_data.get("map_pos")
                                                         if pc_map_gray_los is not None and my_pos_sb and p_mpos:
                                                             p_los_ok = check_line_of_sight(pc_map_gray_los, my_pos_sb, p_mpos, margin_steps=1)
                                                         if p_los_ok:
                                                             ready_count += 1
 
-                                is_call_settled = (curr_time - state.get("party_buff_req_time", curr_time) >= 1.5)
+                                is_call_settled = (curr_time - state.get("party_buff_req_time", curr_time) >= 1.0)
                                 is_timeout = (curr_time - state.get("pb_wait_start", curr_time) > 30.0)
                                 if (is_call_settled and ready_count >= expected_count) or is_timeout:
                                     if mp < 15.0:
@@ -23248,7 +23294,7 @@ def ai_commander_worker(target_pc):
                                             any_member_excluded = True
                                             dprint(key, f"⏰ [팟바람 30초 타임아웃] 30초 경과! 미도착 인원을 불참 처리하고 현재 모인 인원({ready_count + 1}명)으로 시전합니다!")
                                         else:
-                                            dprint(key, f"👥 [팟바람 집결 완료] 참여 가능 인원 전원({ready_count + 1}명) 7px+시야 안착! 팟바람을 시전합니다!")
+                                            dprint(key, f"👥 [팟바람 최우선 시전] 전원 집결 확인({ready_count + 1}명)! 진행 중이던 전투/루팅을 즉시 멈추고 팟바람을 먼저 시전합니다!")
 
                                         state["abort_macro"] = True
                                         with pico_queues[key].mutex: pico_queues[key].queue.clear()
@@ -23267,13 +23313,20 @@ def ai_commander_worker(target_pc):
                                         state["is_attacking"] = False
                                         state["arrow_is_firing"] = False
                                         state["has_fired_arrow"] = False
+                                        state["is_pulling"] = False
+                                        state["loot_state"] = "IDLE"
+                                        state["sword_verify_active"] = False
+                                        state["special_ack_arrived"] = False
+                                        state["hover_start_time"] = 0
+                                        state["buff_aborted"] = False
+                                        state["is_combat_emergency_buff"] = True
                                         state["buff_start_mp"] = mp
                                         state["current_buff"] = {"name": "element", "page": 2, "key": 199, "double": False, "dur": 1200.0}
                                         state["buff_retry_cnt"] = 0
 
                                         state["buff_return_fsm"] = "PARTY_BUFF_L_DONE"
                                         state["target_fsm"] = "BUFFING_START_PAGE"
-                                        state["cooldown"] = curr_time + 0.1
+                                        state["cooldown"] = curr_time + 0.05
                                         action_taken = True
                                     continue
 
@@ -23608,11 +23661,10 @@ def ai_commander_worker(target_pc):
                         state["pre_target_data"] = None
 
                         if settings.get("use_party_hunt", False):
-
                             state["cooldown"] = curr_time + 0.1
                             state["humanize_cd"] = curr_time + 1.0
                             action_taken = True
-                            continue
+                    if not action_taken and curr_time >= state.get("humanize_cd", 0):
 
                         atk_angle = current_facing_angle if current_facing_angle is not None else state.get("combat_target_angle", state.get("dungeon_angle", 0.0))
                         mob_angle_deg = (math.degrees(atk_angle) + 360) % 360.0
