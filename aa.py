@@ -18669,7 +18669,7 @@ def ai_commander_worker(target_pc):
                     exp_did_change = check_exp_changed(key, img_bgr)
 
                     # 💡 파티원이 몹을 잡아 경험치가 오를 때 루팅/길막 모션 감지(MOTION_SNAP_*) 및 버프/팟바람 시전(BUFFING_*)이 강제 취소되지 않도록 분리
-                    active_combat_fsms = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_LOCKED", "TARGET_AIMING", "WAIT_FOR_STOP", "COMBAT_PARK_VERIFY", "BRAKE_WAIT", "HOVER_RETRY_WAIT"]
+                    active_combat_fsms = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_LOCKED", "TARGET_AIMING", "WAIT_FOR_STOP", "COMBAT_PARK_VERIFY", "BRAKE_WAIT", "HOVER_RETRY_WAIT", "HEINE_GMOB_VERIFY"]
 
                     is_fighting_for_exp = (
                         (state.get("target_fsm") in active_combat_fsms or state.get("is_attacking", False) or state.get("arrow_is_firing", False)) and
@@ -20472,9 +20472,10 @@ def ai_commander_worker(target_pc):
                 elif state.get("target_fsm") == "MOTION_SNAP_CHECK_SWORD":
 
                     # 💡 큐 초기화 등으로 SPECIAL_ACK가 소실되더라도 최대 1.0초 뒤에는 무조건 칼 검증으로 넘어가 영구 멈춤 원천 차단!
-                    if state.pop("special_ack_arrived", False) or curr_time > state.get("motion_ack_timeout", state.get("hover_start_time", 0) + 1.0):
-                        state["sword_verify_start"] = curr_time
-                        state["sword_verify_active"] = True
+                    if not state.get("sword_verify_active", False):
+                        if state.pop("special_ack_arrived", False) or curr_time > state.get("motion_ack_timeout", state.get("hover_start_time", 0) + 1.0):
+                            state["sword_verify_start"] = curr_time
+                            state["sword_verify_active"] = True
 
                     if state.get("sword_verify_active", False):
                         real_cursor = find_cursor_pos(img_bgr, last_pos=(cur_x, cur_y), check_circle=True, allow_full_scan=False)
@@ -23072,9 +23073,10 @@ def ai_commander_worker(target_pc):
                                     action_taken = True
 
                 if not action_taken and state.get("target_fsm") == "HEINE_GMOB_VERIFY":
-                    if state.pop("special_ack_arrived", False) or curr_time > state.get("gmob_ack_timeout", curr_time + 1.5):
-                        state["sword_verify_start"] = curr_time
-                        state["sword_verify_active"] = True
+                    if not state.get("sword_verify_active", False):
+                        if state.pop("special_ack_arrived", False) or curr_time > state.get("gmob_ack_timeout", curr_time + 1.5):
+                            state["sword_verify_start"] = curr_time
+                            state["sword_verify_active"] = True
 
                     if state.get("sword_verify_active", False):
                         real_cursor = find_cursor_pos(img_bgr, last_pos=(cur_x, cur_y), check_circle=True, allow_full_scan=False)
