@@ -2458,6 +2458,35 @@ def is_1cell_dir_clear_on_map(map_gray, char_map_pos, angle_rad, dng_name=""):
     except Exception:
         return True
 
+def is_1cell_dir_user_blocked(state, dir_idx, curr_time=None):
+    """🚀 [정밀 1칸 유저 제외] 캐릭터 몸통 중심(400, 225)과 유저 YOLO 박스 정중앙을 비교하여 유저가 실제로 서 있는 '딱 1칸(dir_idx)'만 제외"""
+    if not state:
+        return False
+    if curr_time is None:
+        curr_time = time.time()
+
+    char_cx, scan_cy = 400.0, 225.0
+    target_idx = int(dir_idx) % 8
+
+    for ux1_b, uy1_b, ux2_b, uy2_b, exp_t in state.get("user_blackouts", []):
+        if curr_time >= exp_t:
+            continue
+        # 8각 셀 중심(scan_cy=225)과 동일한 기준인 유저 YOLO 박스의 '정중앙(몸통)' 좌표 산출
+        u_cx = (ux1_b + ux2_b) * 0.5
+        u_cy = (uy1_b + uy2_b) * 0.5
+
+        dx = u_cx - char_cx
+        dy = (u_cy - scan_cy) / 0.85
+        iso_dist = math.hypot(dx, dy)
+
+        # 실제 1칸(중심 45px) 범위(20px ~ 68px) 안에 있는 유저만 가장 가까운 45도 방향 '딱 1곳'에 배정
+        if 20.0 <= iso_dist <= 68.0:
+            u_angle = math.atan2(dy, dx)
+            u_dir_idx = int(round(u_angle / (math.pi / 4))) % 8
+            if u_dir_idx == target_idx:
+                return True
+    return False
+
 def check_item_line_of_sight(map_gray, start_point, end_point, threshold=1):
     """🚀 아이템 전용 정밀 시야 검사: 몹 시야(check_line_of_sight)와 동일하게 본던 회색 벽(70 미만) 및 대각선 틈새를 칼같이 차단"""
     if map_gray is None: return True
@@ -16998,6 +17027,9 @@ def ai_commander_worker(target_pc):
                     if not is_1cell_dir_clear_on_map(pc_map_gray_los, state.get("dungeon_map_pos"), angle, active_dungeon):
                         cv2.rectangle(debug_img, (screen_zx1, screen_zy1), (screen_zx2, screen_zy2), (140, 70, 140), 1)
                         cv2.putText(debug_img, "WALL", (screen_zx1, max(0, screen_zy1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (180, 100, 180), 1)
+                    elif is_1cell_dir_user_blocked(state, i, curr_time):
+                        cv2.rectangle(debug_img, (screen_zx1, screen_zy1), (screen_zx2, screen_zy2), (0, 140, 255), 1)
+                        cv2.putText(debug_img, "USER", (screen_zx1, max(0, screen_zy1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 140, 255), 1)
                     elif i == excluded_idx_debug:
                         cv2.rectangle(debug_img, (screen_zx1, screen_zy1), (screen_zx2, screen_zy2), (128, 128, 128), 1)
                         cv2.putText(debug_img, "OFF", (screen_zx1, max(0, screen_zy1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128, 128, 128), 1)
@@ -19456,15 +19488,17 @@ def ai_commander_worker(target_pc):
                             else:
                                 state["yolo_blind_active"] = False
 
-                        user_blackouts = [bz for bz in state.get("user_blackouts", []) if curr_time < bz[4]]
-                        for u in temp_users:
-                            user_blackouts.append((u.x1, u.y1, u.x2, u.y2, curr_time + 0.3))
-                            
+                        # 💡 유저가 걸어다닐 때 이전 프레임 잔상이 옆 칸까지 중복 차단하지 않도록 현재 프레임 유저 좌표로 즉시 갱신 (깜빡임 방어 0.35초 유지)
+                        if temp_users:
+                            user_blackouts = [(u.x1, u.y1, u.x2, u.y2, curr_time + 0.35) for u in temp_users]
+                        else:
+                            user_blackouts = [bz for bz in state.get("user_blackouts", []) if curr_time < bz[4]]
+
                         # 👉 [추가] 보라돌이 블랙아웃 병합 (YOLO 감지부)
                         for pb in state.get("purple_blackouts", []):
                             if curr_time < pb[4]:
                                 user_blackouts.append(pb)
-                                
+
                         state["user_blackouts"] = user_blackouts
 
                         mobs = temp_mobs
@@ -19919,14 +19953,6 @@ def ai_commander_worker(target_pc):
 
                             cv2.rectangle(thresh, (max(0, cx_roi - 18), max(0, cy_roi - 33)), (min(roi_w, cx_roi + 18), min(roi_h, cy_roi + 20)), 0, -1)
 
-                            # 💡 GUI '유저예외' 체크박스 실제 연동
-                            if settings.get("gb_exc_user", True):
-                                for ux1_b, uy1_b, ux2_b, uy2_b, _ in state.get("user_blackouts", []):
-                                    ux1, uy1 = max(0, int(ux1_b) - 15 - x1), max(0, int(uy1_b) - 25 - y1)
-                                    ux2, uy2 = min(roi_w, int(ux2_b) + 15 - x1), min(roi_h, int(uy2_b) + 15 - y1)
-                                    if ux2 > ux1 and uy2 > uy1:
-                                        cv2.rectangle(thresh, (ux1, uy1), (ux2, uy2), 0, -1)
-
                             thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
                             motion_thresh = settings.get("motion_sensitivity", 35)
@@ -19953,9 +19979,11 @@ def ai_commander_worker(target_pc):
                             active_motion_dirs = 0
                             hit_dirs_now = set()
 
-                            # 💡 모든 사냥터 1셀(45px) 8방향만 통일 감지 + 미니맵상 벽 방향(WALL)은 카운트에서 배제!
+                            # 💡 모든 사냥터 1셀(45px) 8방향만 통일 감지 + 벽(WALL) 방향 및 유저가 서 있는 딱 1칸(i)만 카운트에서 배제!
                             for i in range(8):
                                 if i == excluded_gb_idx:
+                                    continue
+                                if settings.get("gb_exc_user", True) and is_1cell_dir_user_blocked(state, i, curr_time):
                                     continue
                                 angle = i * (math.pi / 4)
                                 if not is_1cell_dir_clear_on_map(pc_map_gray_los, state.get("dungeon_map_pos"), angle, active_dungeon):
@@ -20343,20 +20371,15 @@ def ai_commander_worker(target_pc):
                             mx2_self, my2_self = min(roi_w, cx_roi + mw), min(roi_h, cy_roi + mh_down)
                             cv2.rectangle(thresh, (mx1_self, my1_self), (mx2_self, my2_self), 0, -1)
 
-                            for ux1_b, uy1_b, ux2_b, uy2_b, _ in state.get("user_blackouts", []):
-                                ux1 = max(0, int(ux1_b) - 15 - x1)
-                                uy1 = max(0, int(uy1_b) - 25 - y1)
-                                ux2 = min(roi_w, int(ux2_b) + 15 - x1)
-                                uy2 = min(roi_h, int(uy2_b) + 15 - y1)
-                                if ux2 > ux1 and uy2 > uy1:
-                                    cv2.rectangle(thresh, (ux1, uy1), (ux2, uy2), 0, -1)
-
                             kernel = np.ones((3, 3), np.uint8)
                             thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
 
                             detected_list = []
                             for i in range(8):
                                 if i in failed_dirs:
+                                    continue
+                                if is_1cell_dir_user_blocked(state, i, curr_time):
+                                    failed_dirs.add(i)
                                     continue
                                 angle = i * (math.pi / 4)
                                 if not is_1cell_dir_clear_on_map(pc_map_gray_los, state.get("dungeon_map_pos"), angle, active_dungeon):
@@ -22190,14 +22213,6 @@ def ai_commander_worker(target_pc):
 
                                             cv2.rectangle(thresh, (max(0, cx_roi - mw), max(0, cy_roi - mh_up)), (min(x2-x1, cx_roi + mw), min(y2-y1, cy_roi + mh_down)), 0, -1)
 
-                                            for ux1_b, uy1_b, ux2_b, uy2_b, _ in state.get("user_blackouts", []):
-                                                ux1_loc = max(0, int(ux1_b) - 15 - x1)
-                                                uy1_loc = max(0, int(uy1_b) - 25 - y1)
-                                                ux2_loc = min(x2 - x1, int(ux2_b) + 15 - x1)
-                                                uy2_loc = min(y2 - y1, int(uy2_b) + 15 - y1)
-                                                if ux2_loc > ux1_loc and uy2_loc > uy1_loc:
-                                                    cv2.rectangle(thresh, (ux1_loc, uy1_loc), (ux2_loc, uy2_loc), 0, -1)
-
                                             if curr_time < state.get("corpse_blind_expire", 0):
                                                 c_angle = state.get("corpse_blind_angle", 0.0)
                                                 dead_zx = int(cx_roi + math.cos(c_angle) * 45)
@@ -22212,21 +22227,14 @@ def ai_commander_worker(target_pc):
 
                                             best_tx, best_ty, max_changed = None, None, 8
                                             for i in range(8):
+                                                if is_1cell_dir_user_blocked(state, i, curr_time):
+                                                    continue
                                                 angle = i * (math.pi / 4)
                                                 if not is_1cell_dir_clear_on_map(pc_map_gray_los, state.get("dungeon_map_pos"), angle, active_dungeon):
                                                     continue
                                                 zx, zy = int(cx_roi + math.cos(angle) * 45), int(cy_roi + math.sin(angle) * 45 * 0.85)
 
                                                 g_cx, g_cy = x1 + zx, y1 + zy
-                                                is_user_blocked = False
-                                                for ux1_b, uy1_b, ux2_b, uy2_b, _ in state.get("user_blackouts", []):
-                                                    u_cx = (ux1_b + ux2_b) / 2
-                                                    u_foot_y = uy1_b + (uy2_b - uy1_b) * 0.85 + 10
-                                                    if math.hypot(u_cx - g_cx, u_foot_y - g_cy) <= 50:
-                                                        is_user_blocked = True
-                                                        break
-                                                if is_user_blocked:
-                                                    continue
 
                                                 rx1, ry1 = max(0, zx - 15), max(0, zy - 25)
                                                 rx2, ry2 = min(x2-x1, zx + 15), min(y2-y1, zy + 25)
@@ -23154,18 +23162,12 @@ def ai_commander_worker(target_pc):
 
                                         cv2.rectangle(thresh, (max(0, char_screen_cx-x1-18), max(0, scan_cy-y1-33)), (min(x2-x1, char_screen_cx-x1+18), min(y2-y1, scan_cy-y1+20)), 0, -1)
 
-                                        for ux1_b, uy1_b, ux2_b, uy2_b, _ in state.get("user_blackouts", []):
-                                            ux1_loc = max(0, int(ux1_b) - 15 - x1)
-                                            uy1_loc = max(0, int(uy1_b) - 25 - y1)
-                                            ux2_loc = min(x2 - x1, int(ux2_b) + 15 - x1)
-                                            uy2_loc = min(y2 - y1, int(uy2_b) + 15 - y1)
-                                            if ux2_loc > ux1_loc and uy2_loc > uy1_loc:
-                                                cv2.rectangle(thresh, (ux1_loc, uy1_loc), (ux2_loc, uy2_loc), 0, -1)
-
                                         thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
                                         best_tx, best_ty, max_changed = None, None, 8
                                         for i in range(8):
+                                            if is_1cell_dir_user_blocked(state, i, curr_time):
+                                                continue
                                             angle = i * (math.pi / 4)
                                             if not is_1cell_dir_clear_on_map(pc_map_gray_los, state.get("dungeon_map_pos"), angle, active_dungeon):
                                                 continue
@@ -24152,14 +24154,6 @@ def ai_commander_worker(target_pc):
 
                                 cv2.rectangle(thresh, (max(0, cx_roi - mw), max(0, cy_roi - mh_up)), (min(x2-x1, cx_roi + mw), min(y2-y1, cy_roi + mh_down)), 0, -1)
 
-                                for ux1_b, uy1_b, ux2_b, uy2_b, _ in state.get("user_blackouts", []):
-                                    ux1_loc = max(0, int(ux1_b) - 15 - x1)
-                                    uy1_loc = max(0, int(uy1_b) - 25 - y1)
-                                    ux2_loc = min(x2 - x1, int(ux2_b) + 15 - x1)
-                                    uy2_loc = min(y2 - y1, int(uy2_b) + 15 - y1)
-                                    if ux2_loc > ux1_loc and uy2_loc > uy1_loc:
-                                        cv2.rectangle(thresh, (ux1_loc, uy1_loc), (ux2_loc, uy2_loc), 0, -1)
-
                                 if curr_time < state.get("corpse_blind_expire", 0):
                                     c_angle = state.get("corpse_blind_angle", 0.0)
                                     dead_zx = int(cx_roi + math.cos(c_angle) * 45)
@@ -24176,20 +24170,14 @@ def ai_commander_worker(target_pc):
 
                                 best_tx, best_ty, max_changed = None, None, 8
                                 for i in range(8):
+                                    if is_1cell_dir_user_blocked(state, i, curr_time):
+                                        continue
                                     angle = i * (math.pi / 4)
                                     if not is_1cell_dir_clear_on_map(pc_map_gray_los, state.get("dungeon_map_pos"), angle, active_dungeon):
                                         continue
                                     zx, zy = int(cx_roi + math.cos(angle) * 45), int(cy_roi + math.sin(angle) * 45 * 0.85)
 
                                     g_cx, g_cy = x1 + zx, y1 + zy
-                                    is_user_blocked = False
-                                    for ux1_b, uy1_b, ux2_b, uy2_b, _ in state.get("user_blackouts", []):
-                                        u_cx = (ux1_b + ux2_b) / 2
-                                        u_foot_y = uy1_b + (uy2_b - uy1_b) * 0.85 + 10
-                                        if math.hypot(u_cx - g_cx, u_foot_y - g_cy) <= 50:
-                                            is_user_blocked = True
-                                            break
-                                    if is_user_blocked: continue
 
                                     rx1, ry1 = max(0, zx - 15), max(0, zy - 25)
                                     rx2, ry2 = min(x2-x1, zx + 15), min(y2-y1, zy + 25)
