@@ -1543,6 +1543,12 @@ def local_ipc_listener_thread(my_key):
                         _GUI_TASK_QUEUE.put((apply_received_config_sync, (my_key, msg)))
                     continue
 
+                # 🔄 [0-1순위: 동일 중앙컴 내 땜빵 모드 바통터치 시 기존 미니창 자동 본케 복귀]
+                if msg.get("msg_type") == "SUB_MODE_HANDOVER":
+                    if msg.get("sender_key") != my_key and globals().get("IS_SUB_CHAR_MODE", False):
+                        _GUI_TASK_QUEUE.put((switch_profile_mode, (False, True)))
+                    continue
+
                 sender_key = msg.get("pc_key")
                 sender_c_num = str(msg.get("central_num", get_my_central_num()))
                 my_c_num = str(get_my_central_num())
@@ -3180,15 +3186,28 @@ if not TARGET_PC_KEY:
 
 BUFF_SAVE_FILE = f"buff_times_{TARGET_PC_KEY}.json"
 SETTINGS_SAVE_FILE = f"settings_{TARGET_PC_KEY}.json"
+SUB_BUFF_SAVE_FILE = "buff_times_땜빵.json"
+SUB_SETTINGS_SAVE_FILE = "settings_땜빵.json"
+IS_SUB_CHAR_MODE = False
+_HW_FIXED_KEYS = {"com_port", "pico_hwid", "certi_curr_central"}
+
 file_io_lock = threading.Lock()
 buff_io_lock = threading.Lock()
 settings_io_lock = threading.Lock()
 
-def load_buff_times():
-    if os.path.exists(BUFF_SAVE_FILE):
+def load_buff_times(is_sub=None):
+    use_sub = IS_SUB_CHAR_MODE if is_sub is None else bool(is_sub)
+    target_f = SUB_BUFF_SAVE_FILE if use_sub else BUFF_SAVE_FILE
+    if os.path.exists(target_f):
         try:
-            with open(BUFF_SAVE_FILE, "r") as f: return json.load(f)
-        except: pass
+            with open(target_f, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if use_sub:
+                sub_b = raw.get("SHARED_SUB", raw.get(TARGET_PC_KEY, {}))
+                return {TARGET_PC_KEY: sub_b}
+            return raw
+        except:
+            pass
     return {}
 
 def save_buff_times(states_dict):
@@ -3205,19 +3224,47 @@ _STRIP_SETTING_KEYS = {
 def _save_buff_times_internal(states_dict):
     try:
         curr_t = time.time()
-        data = {
-            k: {bk: max(0.0, st.get(f"buff_{bk}_time", 0) - curr_t) for bk in _BUFF_SAVE_KEYS}
-            for k, st in states_dict.items()
-        }
-        with open(BUFF_SAVE_FILE, "w") as f: json.dump(data, f)
-    except: pass
+        if IS_SUB_CHAR_MODE:
+            st = states_dict.get(TARGET_PC_KEY, {})
+            sub_b = {bk: max(0.0, st.get(f"buff_{bk}_time", 0) - curr_t) for bk in _BUFF_SAVE_KEYS}
+            sub_b["_haste_elapsed"] = (curr_t - st["last_haste_time"]) if st.get("last_haste_time", 0.0) > 0.0 else None
+            sub_b["_real_buff_elapsed"] = (curr_t - st["real_buff_time"]) if st.get("real_buff_time", 0.0) > 0.0 else None
+            data = {"SHARED_SUB": sub_b, TARGET_PC_KEY: sub_b}
+            with open(SUB_BUFF_SAVE_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        else:
+            data = {
+                k: {bk: max(0.0, st.get(f"buff_{bk}_time", 0) - curr_t) for bk in _BUFF_SAVE_KEYS}
+                for k, st in states_dict.items()
+            }
+            with open(BUFF_SAVE_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+    except:
+        pass
+
+def _read_json_safe(fpath):
+    if os.path.exists(fpath):
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
 
 def load_settings():
-    if os.path.exists(SETTINGS_SAVE_FILE):
-        try:
-            with open(SETTINGS_SAVE_FILE, "r", encoding="utf-8") as f: return json.load(f)
-        except: pass
-    return {}
+    global IS_SUB_CHAR_MODE
+    base_data = _read_json_safe(SETTINGS_SAVE_FILE)
+    IS_SUB_CHAR_MODE = bool(base_data.get("GLOBAL", {}).get("is_sub_char_mode", False))
+    if IS_SUB_CHAR_MODE:
+        sub_raw = _read_json_safe(SUB_SETTINGS_SAVE_FILE)
+        sub_pc_data = sub_raw.get("SHARED_SUB", sub_raw.get(TARGET_PC_KEY, {}))
+        if sub_pc_data:
+            merged_pc = dict(base_data.get(TARGET_PC_KEY, {}))
+            for k_name, k_val in sub_pc_data.items():
+                if k_name not in _HW_FIXED_KEYS:
+                    merged_pc[k_name] = k_val
+            base_data[TARGET_PC_KEY] = merged_pc
+    return base_data
 
 def save_settings():
     global _NEED_SAVE_SETTINGS
@@ -3229,7 +3276,9 @@ def save_settings():
 
 def _save_settings_internal():
     try:
-        data = {}
+        base_file_data = _read_json_safe(SETTINGS_SAVE_FILE)
+        curr_pc_dict = {}
+
         for k, v in gui_vars.items():
             st = ai_states.get(k, {})
             pc_data = {}
@@ -3247,20 +3296,47 @@ def _save_settings_internal():
                 "fatigue_mult": st.get("fatigue_mult", 1.0),
                 "next_fatigue_target": st.get("next_fatigue_target", 0.0)
             })
-            data[k] = pc_data
+            curr_pc_dict[k] = pc_data
 
-        data["GLOBAL"] = {
+        global_block = {
             "base_x": entry_base_x.get(), "base_y": entry_base_y.get(),
             "pc_num": pc_num_var.get(),
             "gui_x": entry_gui_x.get(), "gui_y": entry_gui_y.get(),
             "gui_w": root.winfo_width() if root.winfo_width() > 100 else 420,
             "gui_h": root.winfo_height() if root.winfo_height() > 100 else 700,
             "debug_mode": DEBUG_MODE,
-            "frame_delay": GLOBAL_FRAME_DELAY
+            "frame_delay": GLOBAL_FRAME_DELAY,
+            "is_sub_char_mode": IS_SUB_CHAR_MODE
         }
-        with open(SETTINGS_SAVE_FILE, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=4)
-        dprint("SYSTEM", "💾 모든 설정 및 피로도 상태 영구 저장 완료")
-    except: pass
+
+        if IS_SUB_CHAR_MODE:
+            # 1) 땜빵 모드일 때: 하드웨어 고유키(COM포트/피코지문)를 제외한 모든 탭 설정을 중앙컴 공용 settings_땜빵.json에 저장!
+            sub_char_only = {
+                k_name: k_val for k_name, k_val in curr_pc_dict.get(TARGET_PC_KEY, {}).items()
+                if k_name not in _HW_FIXED_KEYS
+            }
+            sub_save_payload = {"SHARED_SUB": sub_char_only}
+            with open(SUB_SETTINGS_SAVE_FILE, "w", encoding="utf-8") as f:
+                json.dump(sub_save_payload, f, ensure_ascii=False, indent=4)
+
+            # 2) 본케 파일(settings_미니X.json)에는 본케 캐릭터 설정은 그대로 보존하고, 하드웨어 포트와 GLOBAL(창 위치/현재 모드)만 갱신!
+            preserved_main_pc = dict(base_file_data.get(TARGET_PC_KEY, {}))
+            for hw_k in _HW_FIXED_KEYS:
+                if hw_k in curr_pc_dict.get(TARGET_PC_KEY, {}):
+                    preserved_main_pc[hw_k] = curr_pc_dict[TARGET_PC_KEY][hw_k]
+            base_file_data[TARGET_PC_KEY] = preserved_main_pc
+            base_file_data["GLOBAL"] = global_block
+            with open(SETTINGS_SAVE_FILE, "w", encoding="utf-8") as f:
+                json.dump(base_file_data, f, ensure_ascii=False, indent=4)
+            dprint("SYSTEM", "💾 [🔄땜빵 공용 프로필] 설정 영구 저장 완료 (본케 설정 보존됨)")
+        else:
+            # 본케 모드일 때: 기존과 동일하게 settings_미니X.json에 전체 저장
+            curr_pc_dict["GLOBAL"] = global_block
+            with open(SETTINGS_SAVE_FILE, "w", encoding="utf-8") as f:
+                json.dump(curr_pc_dict, f, ensure_ascii=False, indent=4)
+            dprint("SYSTEM", "💾 [👤본케 전용 프로필] 모든 설정 및 피로도 상태 영구 저장 완료")
+    except:
+        pass
 
 ARROW_ROI_X1, ARROW_ROI_X2 = 755, 795
 ARROW_ROI_Y1, ARROW_ROI_Y2 = 540, 565
@@ -21674,7 +21750,7 @@ def ai_commander_worker(target_pc):
                                         item_map_x = char_map_pos[0] + item_map_dx
                                         item_map_y = char_map_pos[1] + item_map_dy
 
-                                        # 💡 1차: 직선 시야 검사 ➔ 막혀 있을 경우 2차: 그래프 A* 기준 10노드(인게임 10칸) 이하일 때만 코너 우회 루팅 허용!
+                                        # 💡 1차: 직선 시야 검사 ➔ 막혀 있을 경우 2차: 그래프 A* 기준 본던4층은 6노드, 그 외는 10노드 이하일 때만 코너 우회 루팅 허용!
                                         if not check_item_line_of_sight(pc_map_gray_los, char_map_pos, (item_map_x, item_map_y), threshold=1):
                                             can_try_corner_astar = (
                                                 not state.get("is_gangbang", False) and
@@ -21682,9 +21758,11 @@ def ai_commander_worker(target_pc):
                                                 not state.get("is_mptam_mode", False) and
                                                 not is_parked_loot_mode
                                             )
+                                            is_bondon_4f_loot = ("본던 4" in active_dungeon or "gludio4" in active_dungeon.lower())
+                                            loot_max_nodes = 6 if is_bondon_4f_loot else 10
                                             astar_detour = calculate_local_astar_path_for_loot(
                                                 pc_map_gray_los, char_map_pos, (item_map_x, item_map_y),
-                                                pc_graph=pc_graph, max_radius=45.0, max_nodes=10
+                                                pc_graph=pc_graph, max_radius=45.0, max_nodes=loot_max_nodes
                                             ) if can_try_corner_astar else []
 
                                             if astar_detour:
@@ -28745,7 +28823,9 @@ def sync_gui_vars():
 
             if k in ai_states and k in btn_dict:
                 fatigue = ai_states[k].get("fatigue_mult", 1.0)
-                btn_dict[k].config(text=f" 📺 [{k}] 제어 패널 (피로도: x{fatigue:.3f}) ")
+                mode_tag = "🔄[땜빵 공용]" if IS_SUB_CHAR_MODE else "👤[본케 전용]"
+                mode_fg = "#FF80AB" if IS_SUB_CHAR_MODE else "#4FC3F7"
+                btn_dict[k].config(text=f" 📺 [{k}] {mode_tag} (피로도: x{fatigue:.3f}) ", fg=mode_fg)
 
     global _NEED_SAVE_SETTINGS, _CACHED_GUI_POS
     try:
@@ -28925,8 +29005,13 @@ def toggle_individual_hunt(key):
 
     btn = hunt_btn_dict.get(key)
     if btn:
-        if state["is_hunt_active"]: btn.config(text=f"▶ {key} 사냥 가동 중", bg="#4CAF50", fg="white")
-        else: btn.config(text=f"⏸ {key} 사냥 정지됨", bg="#455A64", fg="white")
+        if state["is_hunt_active"]:
+            if globals().get("IS_SUB_CHAR_MODE", False):
+                btn.config(text=f"▶ {key} [땜빵] 사냥 가동 중", bg="#E91E63", fg="white")
+            else:
+                btn.config(text=f"▶ {key} 사냥 가동 중", bg="#4CAF50", fg="white")
+        else:
+            btn.config(text=f"⏸ {key} 사냥 정지됨", bg="#455A64", fg="white")
 
 def arrange_windows():
     global CAPTURE_ROIS, BASE_X, BASE_Y
@@ -29148,6 +29233,108 @@ def reset_all_fatigue():
 
 btn_reset_fatigue = tk.Button(btn_frame, text="🔄피로", font=("맑은 고딕", 8, "bold"), bg="#E65100", fg="white", relief="flat", command=reset_all_fatigue)
 btn_reset_fatigue.pack(side="left", padx=1, ipadx=2, ipady=1)
+
+def switch_profile_mode(target_sub_mode=None, from_remote=False):
+    global IS_SUB_CHAR_MODE
+    new_mode = (not IS_SUB_CHAR_MODE) if target_sub_mode is None else bool(target_sub_mode)
+    if new_mode == IS_SUB_CHAR_MODE and target_sub_mode is not None:
+        return
+
+    # 1) 사냥 중이면 안전하게 사냥 정지 후 전환
+    if ai_states.get(TARGET_PC_KEY, {}).get("is_hunt_active", False):
+        toggle_individual_hunt(TARGET_PC_KEY)
+
+    # 2) 전환 직전 현재 모드의 설정 및 버프 쿨타임을 안전하게 저장 (원격 바통터치로 꺼질 때는 버프 덮어쓰기 생략)
+    if not from_remote:
+        _save_settings_internal()
+        save_buff_times(ai_states)
+
+    IS_SUB_CHAR_MODE = new_mode
+
+    # 3) 목표 프로필 파일(settings_땜빵.json 또는 settings_미니X.json) 로드
+    if IS_SUB_CHAR_MODE:
+        sub_raw = _read_json_safe(SUB_SETTINGS_SAVE_FILE)
+        prof_data = sub_raw.get("SHARED_SUB", sub_raw.get(TARGET_PC_KEY, {}))
+        # 만약 해당 중앙컴에서 처음 땜빵 모드를 켰다면 현재 화면의 값을 초기값으로 사용하여 파일 즉시 생성
+        if not prof_data:
+            _save_settings_internal()
+            sub_raw = _read_json_safe(SUB_SETTINGS_SAVE_FILE)
+            prof_data = sub_raw.get("SHARED_SUB", {})
+
+        # 같은 중앙컴의 다른 미니창이 땜빵 모드에 머물러 있다면 자동으로 본케 모드로 원복하도록 신호 전송!
+        if not from_remote:
+            try:
+                sock_ho = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                ho_bytes = json.dumps({"msg_type": "SUB_MODE_HANDOVER", "sender_key": TARGET_PC_KEY}).encode("utf-8")
+                for k_p, port_p in LOCAL_IPC_PORTS.items():
+                    if k_p != TARGET_PC_KEY:
+                        sock_ho.sendto(ho_bytes, ("127.0.0.1", port_p))
+                sock_ho.close()
+            except:
+                pass
+    else:
+        base_raw = _read_json_safe(SETTINGS_SAVE_FILE)
+        prof_data = base_raw.get(TARGET_PC_KEY, {})
+
+    # 4) 하드웨어 포트(com_port)를 제외한 모든 탭(메인/파티/보조/인증) GUI 변수 즉시 교체
+    v_dict = gui_vars.get(TARGET_PC_KEY, {})
+    for var_k, def_val in _GUI_DEFAULT_SCHEMA.items():
+        if var_k in v_dict and var_k in prof_data:
+            try:
+                if isinstance(def_val, bool):
+                    v_dict[var_k].set(bool(prof_data[var_k]))
+                else:
+                    v_dict[var_k].set(str(prof_data[var_k]))
+            except:
+                pass
+    if "party_mode" in v_dict and "party_mode" in prof_data:
+        try:
+            v_dict["party_mode"].set(str(prof_data["party_mode"]))
+        except:
+            pass
+
+    # 5) 해당 프로필의 버프 쿨타임 및 헤이스트 타이머 복원 + 파티/맵 상태 초기화
+    curr_t = time.time()
+    loaded_b = load_buff_times(is_sub=IS_SUB_CHAR_MODE).get(TARGET_PC_KEY, {})
+    st = ai_states.get(TARGET_PC_KEY, {})
+    if st:
+        for bk, (r_min, r_max) in _BUFF_INIT_RANGES.items():
+            rem_v = loaded_b.get(bk, 0.0)
+            st[f"buff_{bk}_time"] = (curr_t + rem_v) if rem_v > 0 else (curr_t + g_val(r_min, r_max))
+        if IS_SUB_CHAR_MODE:
+            if loaded_b.get("_haste_elapsed") is not None:
+                st["last_haste_time"] = max(0.0, curr_t - float(loaded_b["_haste_elapsed"]))
+            if loaded_b.get("_real_buff_elapsed") is not None:
+                st["real_buff_time"] = max(0.0, curr_t - float(loaded_b["_real_buff_elapsed"]))
+        st["dungeon_map_pos"] = None
+        st["dungeon_last_map_pos"] = None
+        st["dungeon_global_path"] = []
+        st["in_ingame_party"] = False
+        st["is_invite_leader"] = False
+        st["party_order"] = []
+        st["need_party_invite_req"] = True
+
+    # 6) 상단 버튼 색상/텍스트 갱신 및 파일 저장
+    if IS_SUB_CHAR_MODE:
+        btn_profile_mode.config(text="🔄땜빵", bg="#D81B60")
+        dprint(TARGET_PC_KEY, "🔄 [프로필 스왑 완료] 중앙컴 공용 [땜빵 모드]가 장착되었습니다! (메인/파티/보조/인증 탭 + 버프시간 연동)")
+    else:
+        btn_profile_mode.config(text="👤본케", bg="#1565C0")
+        dprint(TARGET_PC_KEY, f"👤 [프로필 스왑 완료] [{TARGET_PC_KEY} 본케 전용 모드]로 복귀했습니다!")
+
+    sync_gui_vars()
+    _save_settings_internal()
+
+btn_profile_mode = tk.Button(
+    btn_frame,
+    text="🔄땜빵" if IS_SUB_CHAR_MODE else "👤본케",
+    font=("맑은 고딕", 8, "bold"),
+    bg="#D81B60" if IS_SUB_CHAR_MODE else "#1565C0",
+    fg="white",
+    relief="flat",
+    command=lambda: switch_profile_mode()
+)
+btn_profile_mode.pack(side="left", padx=1, ipadx=3, ipady=1)
 
 tk.Label(btn_frame, text=" | 🌑감도:", bg="#2D2D30", fg="#FFEB3B", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=(2, 0))
 
