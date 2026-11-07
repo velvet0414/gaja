@@ -1369,15 +1369,60 @@ def popup_sync_dng_menu(event, dng_var):
 _LAST_APPLIED_SYNC_ID = ""
 
 def apply_received_config_sync(my_key, msg):
-    """수신된 동기화 패킷을 메인 GUI 스레드에서 안전하게 반영하고 즉시 파일에 영구 저장합니다."""
+    """수신된 동기화 패킷을 본케/땜빵 모드별로 철저히 분리하여 반영하고 영구 저장합니다."""
     try:
         if my_key not in gui_vars:
             return
         v_dict = gui_vars[my_key]
 
+        sender_is_sub = bool(msg.get("is_sub_mode", False))
+        my_is_sub = bool(globals().get("IS_SUB_CHAR_MODE", False))
+        group_name = msg.get("group", "UNKNOWN")
+        settings_data = msg.get("settings_data", {})
+        sender_uid = msg.get("sender_uid", "알수없음")
+        target_filter = str(msg.get("target_dng_filter", "모든사냥터")).strip()
+        mode_label = "🔄땜빵" if sender_is_sub else "👤본케"
+
+        # 🔀 [모드 불일치 시 백그라운드 분리 저장] 현재 켜진 화면(본케/땜빵)은 절대 건드리지 않고, 뒤에서 해당 모드 파일만 갱신!
+        if sender_is_sub != my_is_sub:
+            if sender_is_sub:
+                # 1) 상대방이 [땜빵] 동기화를 쐈는데 내 창이 [본케] 모드인 경우 -> 미니1 대표로 settings_땜빵.json만 백그라운드 갱신
+                if my_key == "미니1" and os.path.exists(SUB_SETTINGS_SAVE_FILE):
+                    sub_raw = _read_json_safe(SUB_SETTINGS_SAVE_FILE)
+                    sub_pc = sub_raw.get("SHARED_SUB", {})
+                    if sub_pc and bool(sub_pc.get("use_config_sync", True)):
+                        is_p_sub = bool(sub_pc.get("use_party_hunt", False) or sub_pc.get("use_party_fixed", False))
+                        sub_dng = str(sub_pc.get("party_dungeon_name" if is_p_sub else "dungeon_name", "")).strip()
+                        if check_sync_dng_filter(target_filter, sub_dng):
+                            for k_name, val in settings_data.items():
+                                if k_name not in _HW_FIXED_KEYS:
+                                    sub_pc[k_name] = val
+                            sub_raw["SHARED_SUB"] = sub_pc
+                            with settings_io_lock:
+                                with open(SUB_SETTINGS_SAVE_FILE, "w", encoding="utf-8") as f:
+                                    json.dump(sub_raw, f, ensure_ascii=False, indent=4)
+                            dprint(my_key, f"📡 [땜빵 백그라운드 동기화] 현재 본케 화면은 유지하고 '{SUB_SETTINGS_SAVE_FILE}'에 [{group_name}] 설정을 저장했습니다!")
+            else:
+                # 2) 상대방이 [본케] 동기화를 쐈는데 내 창이 [땜빵] 모드인 경우 -> 내 본케 파일(settings_미니X.json)만 백그라운드 갱신
+                base_raw = _read_json_safe(SETTINGS_SAVE_FILE)
+                main_pc = base_raw.get(my_key, {})
+                if main_pc and bool(main_pc.get("use_config_sync", True)):
+                    is_p_main = bool(main_pc.get("use_party_hunt", False) or main_pc.get("use_party_fixed", False))
+                    main_dng = str(main_pc.get("party_dungeon_name" if is_p_main else "dungeon_name", "")).strip()
+                    if check_sync_dng_filter(target_filter, main_dng):
+                        for k_name, val in settings_data.items():
+                            if k_name not in _HW_FIXED_KEYS:
+                                main_pc[k_name] = val
+                        base_raw[my_key] = main_pc
+                        with settings_io_lock:
+                            with open(SETTINGS_SAVE_FILE, "w", encoding="utf-8") as f:
+                                json.dump(base_raw, f, ensure_ascii=False, indent=4)
+                        dprint(my_key, f"📡 [본케 백그라운드 동기화] 현재 땜빵 사냥은 유지하고 본케 파일('{SETTINGS_SAVE_FILE}')에 [{group_name}] 설정을 저장했습니다!")
+            return
+
         # 🛡️ 1) [동기화 사용] 체크박스가 해제되어 있으면 동기화 패킷 무시!
         if "use_config_sync" in v_dict and not v_dict["use_config_sync"].get():
-            dprint(my_key, f"🛡️ [동기화 수신 거부] '동기화' 체크가 해제되어 있어 [{msg.get('sender_uid')}]의 동기화를 무시합니다.")
+            dprint(my_key, f"🛡️ [{mode_label} 동기화 수신 거부] '동기화' 체크가 해제되어 있어 [{sender_uid}]의 동기화를 무시합니다.")
             return
 
         # 🎯 2) 내 현재 활성 GUI 사냥터 확인 (파티모드 ON이면 파티탭 사냥터, OFF이면 메인탭 사냥터)
@@ -1386,16 +1431,11 @@ def apply_received_config_sync(my_key, msg):
             v_dict.get("use_party_fixed", tk.BooleanVar(value=False)).get()
         )
         my_gui_dng = v_dict["party_dungeon_name"].get().strip() if is_party_on else v_dict["dungeon_name"].get().strip()
-        target_filter = str(msg.get("target_dng_filter", "모든사냥터")).strip()
 
         if not check_sync_dng_filter(target_filter, my_gui_dng):
             tab_src = "파티탭" if is_party_on else "메인탭"
-            dprint(my_key, f"⏭️ [동기화 사냥터 불일치] 요청 대상('{target_filter}') != 내 {tab_src} 사냥터('{my_gui_dng}') ➔ 동기화를 패스합니다.")
+            dprint(my_key, f"⏭️ [{mode_label} 동기화 사냥터 불일치] 요청 대상('{target_filter}') != 내 {tab_src} 사냥터('{my_gui_dng}') ➔ 동기화를 패스합니다.")
             return
-
-        group_name = msg.get("group", "UNKNOWN")
-        settings_data = msg.get("settings_data", {})
-        sender_uid = msg.get("sender_uid", "알수없음")
 
         applied_cnt = 0
         for k_name, val in settings_data.items():
@@ -1409,7 +1449,7 @@ def apply_received_config_sync(my_key, msg):
         if applied_cnt > 0:
             sync_gui_vars()
             save_settings()
-            dprint(my_key, f"📡 [광역 동기화 적용] [{sender_uid}]로부터 [{group_name}] 설정({applied_cnt}개 항목)을 수신하여 즉시 반영했습니다!")
+            dprint(my_key, f"📡 [{mode_label} 광역 동기화 적용] [{sender_uid}]로부터 [{group_name}] 설정({applied_cnt}개 항목)을 수신하여 즉시 반영했습니다!")
 
             if my_key in ai_states:
                 st = ai_states[my_key]
@@ -1473,11 +1513,13 @@ def broadcast_config_sync(sender_key, group_name, btn_widget=None):
     sync_id = f"{time.time():.4f}_{random.randint(1000, 9999)}"
 
     target_filter = v_dict.get("sync_target_dng", tk.StringVar(value="모든사냥터")).get().strip() or "모든사냥터"
+    curr_sub_mode = bool(globals().get("IS_SUB_CHAR_MODE", False))
 
     payload = {
         "msg_type": "CONFIG_SYNC",
         "sync_id": sync_id,
         "group": group_name,
+        "is_sub_mode": curr_sub_mode,
         "target_dng_filter": target_filter,
         "sender_uid": sender_uid,
         "pc_key": sender_key,
@@ -17818,9 +17860,9 @@ def ai_commander_worker(target_pc):
                                 state["cooldown"] = curr_time + 0.05
                                 continue
 
-                            # 처음 열었을 때(OPEN) 또는 위로 스크롤 중(SCROLL_UP) 빈칸이 4개 초과면 위로 스크롤
+                            # 처음 열었을 때(OPEN) 또는 위로 스크롤 중(SCROLL_UP) 빈칸이 4개 초과면 위로 스크롤 (단, 픽셀 변화가 6회 연속 없으면 최상단 도달로 확정!)
                             if empty_count > 4:
-                                if state.get("inv_up_scrolls", 0) >= 60:
+                                if state.get("inv_up_stuck_cnt", 0) >= 6 or state.get("inv_up_scrolls", 0) >= 60:
                                     dprint(key, f"🎒 [상단 도달] 스크롤 60회 도달! {curr_tier}순위({curr_tier}{curr_tier}) 스캔 시작!")
                                     state["target_fsm"] = "INV_CLEAN_SCAN"
                                     state["cooldown"] = curr_time + 0.05
