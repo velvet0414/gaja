@@ -30229,13 +30229,19 @@ for i, pc in enumerate(MINI_PCS):
                                     buy_cycle_success = True
                                     break
 
-                                if bought_this_trip >= 15:
-                                    print("   ⚠️ [1회 방문 최대 구매 도달] 연속 15회 구매 완료. 창고로 이동합니다.")
+                                if bought_this_trip >= 6:
+                                    print("   ⚠️ [1회 방문 최대 구매 도달] 연속 6회 구매 완료. 창고로 이동합니다.")
                                     buy_cycle_success = True
                                     break
 
                                 buy_idx += 1
                                 print(f"\n   🛒 [무게 감지 연속 구매 {buy_idx}회차] (현재 누적: {total_bought:,} / {target_total_arrows:,}발)")
+
+                                # 구매 직전 무게 게이지 픽셀 스냅샷 저장 (100% 무게 초과로 인한 미구매 판독용)
+                                scr_before_buy = get_screen()
+                                w_gray_before = None
+                                if scr_before_buy is not None:
+                                    w_gray_before = cv2.cvtColor(scr_before_buy[WEIGHT_ROI_Y1:WEIGHT_ROI_Y2, WEIGHT_ROI_X1:WEIGHT_ROI_X2], cv2.COLOR_BGR2GRAY)
 
                                 step_ok = False
                                 for npc_try in range(2):
@@ -30278,9 +30284,26 @@ for i, pc in enumerate(MINI_PCS):
                                         buy_cycle_success = True
                                     break
 
+                                time.sleep(g_val(0.45, 0.65))
+
+                                # 구매 후 무게 게이지 픽셀이 실제로 변했는지 검증
+                                scr_after_buy = get_screen()
+                                is_weight_unchanged = False
+                                if w_gray_before is not None and scr_after_buy is not None:
+                                    w_gray_after = cv2.cvtColor(scr_after_buy[WEIGHT_ROI_Y1:WEIGHT_ROI_Y2, WEIGHT_ROI_X1:WEIGHT_ROI_X2], cv2.COLOR_BGR2GRAY)
+                                    diff_w = cv2.absdiff(w_gray_before, w_gray_after)
+                                    _, thresh_w = cv2.threshold(diff_w, 20, 255, cv2.THRESH_BINARY)
+                                    if cv2.countNonZero(thresh_w) < 5 and check_weight_status(scr_after_buy) < 2:
+                                        is_weight_unchanged = True
+
+                                if is_weight_unchanged:
+                                    print("   ⚖️ [무게 한도 도달 감지] 5,000발 추가 시 100% 초과로 구매되지 않았습니다! 수량을 더하지 않고 즉시 창고로 이동합니다.")
+                                    send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.03); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
+                                    buy_cycle_success = True
+                                    break
+
                                 bought_this_trip += 1
                                 total_bought += ARROW_PER_BUY
-                                time.sleep(g_val(0.45, 0.65))
 
                                 w_status = check_weight_status(get_screen())
                                 w_label = "빨강(82%↑)" if w_status == 2 else ("주황(50%↑)" if w_status == 1 else "정상(50%↓)")
