@@ -9846,9 +9846,14 @@ def ai_commander_worker(target_pc):
                     if need_floor_scan:
                         is_ant = "개미굴" in active_dungeon
                         is_giran = "기란" in active_dungeon or "기던" in active_dungeon
+                        gui_tgt_check = settings.get("dungeon_name", "")
 
-                        # 💡 [수정] 사냥 시작 시 최초 1회만 전 층 스캔 작동 (사냥 도중 타 층 오인식 원천 차단)
-                        if is_ant or is_giran or is_bondon:
+                        # 💡 본던은 6층 목표(5to6 경유)일 때만, 사던은 4층 목표(3to4 경유)일 때만 층간 스캔을 허용하고,
+                        # 본던 2~5층 및 사던 2~3층 사냥 시에는 타 층 스캔을 원천 차단하여 2층/6층 오인식을 100% 방지합니다!
+                        allow_bondon_scan = is_bondon_only and ("6-" in gui_tgt_check or "6층" in gui_tgt_check)
+                        allow_sadeon_scan = is_sadeon and ("4-" in gui_tgt_check or "4층" in gui_tgt_check)
+
+                        if is_ant or is_giran or allow_bondon_scan or allow_sadeon_scan:
                             if True:
                                 state["last_floor_detect_time"] = curr_time
                                 
@@ -9856,21 +9861,10 @@ def ai_commander_worker(target_pc):
                                     candidates = [k for k in DUNGEON_ASSETS.keys() if "개미굴" in k]
                                 elif is_giran:
                                     candidates = [k for k in DUNGEON_ASSETS.keys() if "기란" in k or "기던" in k]
-                                elif is_sadeon:
-                                    gui_tgt_check = settings.get("dungeon_name", "")
-                                    # 💡 사던 4층(4-x) 목표일 때만 '사던 3to4'(silver3to4map.png)를 최우선 스캔 후보로 배치합니다.
-                                    if "4-" in gui_tgt_check or "4층" in gui_tgt_check:
-                                        candidates = ["사던 3to4"] + [k for k in DUNGEON_ASSETS.keys() if ("사던" in k or "silver" in k.lower()) and k not in ["사던 3to4", "사던 3층"]]
-                                    else:
-                                        candidates = [k for k in DUNGEON_ASSETS.keys() if ("사던" in k or "silver" in k.lower()) and k != "사던 3to4"]
+                                elif allow_sadeon_scan:
+                                    candidates = ["사던 3to4", gui_tgt_check]
                                 else:
-                                    gui_tgt_check = settings.get("dungeon_name", "")
-                                    # 💡 [버그 픽스 1] GUI 사냥터 목표가 6층(6-x)일 때만 '5to6' 맵을 스캔 후보 최우선으로 넣습니다!
-                                    # 5층이나 그 외 층 사냥 시에는 5to6 맵을 리스트에서 배제하여 억지 매칭을 방어합니다.
-                                    if "6-" in gui_tgt_check or "6층" in gui_tgt_check:
-                                        candidates = ["본던 5to6"] + [k for k in DUNGEON_ASSETS.keys() if ("본던" in k or "gludio" in k.lower()) and k != "본던 5to6"]
-                                    else:
-                                        candidates = [k for k in DUNGEON_ASSETS.keys() if ("본던" in k or "gludio" in k.lower()) and k != "본던 5to6"]
+                                    candidates = ["본던 5to6", gui_tgt_check]
 
                                 try:
                                     best_f_name = None
