@@ -1298,7 +1298,7 @@ CONFIG_SYNC_GROUPS = {
         "buff_set", "combat_buff",
         "use_dec_weight", "use_cc_buff", "buff_mp_pct",
         "use_extra_f10", "extra_f10_dur",
-        "use_body", "body_pct", "body_stop_pct",
+        "use_body", "body_pct", "body_stop_pct", "use_mptam_pot",
         "use_mptam", "mptam_start_pct", "mptam_stop_pct", "is_wiz_mptam", "use_mptam_hit", "mptam_hit_pct",
         "use_blue_pot", "use_blue_pot_combat", "blue_mp_pct", "blue_cd_min"
     ],
@@ -3846,7 +3846,7 @@ _GUI_DEFAULT_SCHEMA = {
     "poison_type": "해독제", "poison_delay": "8",
     "buff_set": "3셋트 (실드, 웨폰, 아머, 계열)", "combat_buff": False,
     "use_dec_weight": True, "use_windwalk": False,
-    "use_body": True, "body_pct": "80", "body_stop_pct": "85",
+    "use_body": True, "body_pct": "80", "body_stop_pct": "85", "use_mptam_pot": False,
     "use_mptam": True, "mptam_start_pct": "30", "mptam_stop_pct": "60", "is_wiz_mptam": False, "use_mptam_hit": True, "mptam_hit_pct": "4",
     "use_extra_f10": False, "extra_f10_dur": "10분",
     "use_blue_pot": False, "use_blue_pot_combat": False, "blue_mp_pct": "15", "blue_cd_min": "20",
@@ -18631,8 +18631,11 @@ def ai_commander_worker(target_pc):
                     if not survival_action_taken:
                         heal_mp_limit = settings.get("heal_mp_percent", 30.0)
                         
-                        # 👇👇 [위즈 무거운 엠탐 생존 제어 + 물약 고갈 안전장치] 👇👇
-                        is_wiz_heavy = settings.get("is_wiz_mptam", False) and state.get("is_mptam_mode", False) and locals().get("is_heavy", False)
+                        # 👇👇 [엠탐물약(무게/위즈 무관 상시) & 위즈 무거운 엠탐 생존 제어 + 물약 고갈 안전장치] 👇👇
+                        is_wiz_heavy = state.get("is_mptam_mode", False) and (
+                            settings.get("use_mptam_pot", False) or
+                            (settings.get("is_wiz_mptam", False) and locals().get("is_heavy", False))
+                        )
                         is_potion_empty = False
                         
                         if is_wiz_heavy:
@@ -28809,6 +28812,7 @@ def sync_gui_vars():
                 "use_body": v["use_body"].get(),
                 "body_percent": sf(v, "body_pct", 50.0),
                 "body_stop_percent": sf(v, "body_stop_pct", 90.0),
+                "use_mptam_pot": v["use_mptam_pot"].get() if "use_mptam_pot" in v else False,
                 "use_extra_f10": v["use_extra_f10"].get(),
                 "extra_f10_dur": v["extra_f10_dur"].get(),
                 "use_blue_pot": v["use_blue_pot"].get(),
@@ -29922,6 +29926,8 @@ for i, pc in enumerate(MINI_PCS):
     tk.Label(body_frame, text="% 시전, ", bg=BG_PANEL, fg=FG_TEXT).pack(side="left")
     tk.Entry(body_frame, textvariable=vars_dict["body_stop_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
     tk.Label(body_frame, text="% 까지", bg=BG_PANEL, fg=FG_TEXT).pack(side="left")
+    tk.Label(body_frame, text="|", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left", padx=(4, 1))
+    tk.Checkbutton(body_frame, text="엠탐물약", variable=vars_dict["use_mptam_pot"], bg=BG_PANEL, fg="#FFB300", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=1)
 
     mptam_frame = tk.Frame(tab1, bg=BG_PANEL)
     mptam_frame.pack(side="top", fill="x", padx=2, pady=2)
