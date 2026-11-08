@@ -9719,27 +9719,45 @@ def ai_commander_worker(target_pc):
                                 state["leader_combat_wait_log_t"] = curr_time
                                 dprint(key, "⏳ [파장 사격 중 초대 보류] 현재 몹 타격 중이므로 처치 직후 즉시 파티 초대를 진행합니다.")
                         else:
-                            # 🧪 파장이 독에 걸려 있는지 즉시 픽셀 검사 ➔ 독 상태면 GUI 딜레이 무시하고 해독부터 실행!
+                            # 🧪 파장이 독에 걸려 있는지 즉시 픽셀 검사 ➔ 독 상태면 GUI 딜레이 무시하고 해독(최대 5회 재타건 검증)부터 실행!
                             _, _, raw_poison_leader, _ = get_hp_mp_percent(img_bgr, w, h, HP_Y_START, HP_Y_END)
-                            if state.get("is_poisoned", False) or raw_poison_leader:
+                            if (state.get("is_poisoned", False) or raw_poison_leader) and not state.get("antidote_giveup_until_clear", False):
                                 if curr_time > state.get("antidote_cd", 0):
-                                    poison_type = settings.get("poison_type", "해독제")
-                                    if state.get("sweep_active", False):
-                                        pico_queues[key].put({"action": "SWEEP_STOP"})
-                                        state["sweep_active"] = False
-                                    if state.get("body_held", False):
-                                        if picos.get(key) and pico_locks.get(key):
-                                            send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
-                                        state["body_held"] = False
-                                    is_spell = (poison_type != "해독제")
-                                    dprint(key, f"💊 [파장 초대 전 즉시 해독] 파장 독 감염 확인! GUI 대기시간을 무시하고 즉시 해독({poison_type}) 후 초대를 진행합니다.")
-                                    pico_queues[key].put({"action": "ANTIDOTE", "is_spell": is_spell})
-                                    state["antidote_cd"] = curr_time + 1.5
-                                    state.setdefault("poison_history", []).clear()
-                                    state["is_poisoned"] = False
-                                    state["poison_timer"] = 0
-                                    state["cooldown"] = max(state.get("cooldown", 0), curr_time + 1.2)
-                                continue
+                                    if state.get("antidote_verifying", False) and state.get("antidote_fail_count", 0) >= 5:
+                                        dprint(key, "⚠️ [파장 해독 5회 재타건 초과] 독이 풀리지 않아 추가 해독을 중단하고 파티 초대를 진행합니다.")
+                                        state["antidote_verifying"] = False
+                                        state["antidote_fail_count"] = 0
+                                        state["antidote_clear_cnt"] = 0
+                                        state.setdefault("poison_history", []).clear()
+                                        state["is_poisoned"] = False
+                                        state["poison_timer"] = 0
+                                        state["antidote_giveup_until_clear"] = True
+                                        state["antidote_giveup_clear_cnt"] = 0
+                                    else:
+                                        poison_type = settings.get("poison_type", "해독제")
+                                        if state.get("sweep_active", False):
+                                            pico_queues[key].put({"action": "SWEEP_STOP"})
+                                            state["sweep_active"] = False
+                                        if state.get("body_held", False):
+                                            if picos.get(key) and pico_locks.get(key):
+                                                send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                                            state["body_held"] = False
+                                        is_spell = (poison_type != "해독제")
+                                        if state.get("antidote_verifying", False):
+                                            state["antidote_fail_count"] = state.get("antidote_fail_count", 0) + 1
+                                            dprint(key, f"🔄 [파장 초대 전 해독 재타건 ({state['antidote_fail_count']}/5회)] 독 미해제 확인! 즉시 {poison_type}(F10)을(를) 재타건합니다.")
+                                        else:
+                                            state["antidote_verifying"] = True
+                                            state["antidote_fail_count"] = 0
+                                            dprint(key, f"💊 [파장 초대 전 즉시 해독] 파장 독 감염 확인! GUI 대기시간을 무시하고 즉시 해독({poison_type}) 후 초대를 진행합니다.")
+                                        state["antidote_clear_cnt"] = 0
+                                        state["is_poisoned"] = True
+                                        pico_queues[key].put({"action": "ANTIDOTE", "is_spell": is_spell})
+                                        state["antidote_cd"] = curr_time + g_time(1.0, 1.25, key)
+                                        state["cooldown"] = max(state.get("cooldown", 0), curr_time + 1.1)
+                                        continue
+                                else:
+                                    continue
 
                             requesters.sort(key=lambda m: (m.get("group_join_time", curr_time), m.get("uid", "")))
                             target_m = requesters[0]
@@ -10513,6 +10531,11 @@ def ai_commander_worker(target_pc):
                 state["poison_history"] = []
                 state["is_poisoned"] = False
                 state["poison_timer"] = 0
+                state["antidote_verifying"] = False
+                state["antidote_fail_count"] = 0
+                state["antidote_clear_cnt"] = 0
+                state["antidote_giveup_until_clear"] = False
+                state["antidote_giveup_clear_cnt"] = 0
 
                 state["hp_danger_cd"] = curr_time + 1.5
                 state["abs_return_cd"] = curr_time + 1.5
@@ -11377,23 +11400,62 @@ def ai_commander_worker(target_pc):
             state["poison_history"] = [p for p in state["poison_history"] if curr_time - p[0] <= 2.0]
 
             is_poisoned = state.get("is_poisoned", False)
-            total_p_frames = len(state["poison_history"])
-            true_p_frames = sum(1 for p in state["poison_history"] if p[1])
 
-            if curr_time < state.get("post_certi_poison_fast_until", 0.0):
-                # 💡 인증 후 재접속 직후에는 1.5초 누적 대기를 생략하고 초록색 피통 감지 즉시 독 상태로 판정!
-                is_poisoned = bool(raw_poison)
-            elif total_p_frames > 0:
-                history_span = state["poison_history"][-1][0] - state["poison_history"][0][0]
+            # 1) 5회 재타건 실패로 해독 포기 락이 걸린 경우: 독이 자연 소멸(3프레임 연속 초록색 없음)될 때까지 재감지 차단
+            if state.get("antidote_giveup_until_clear", False):
+                if is_dragon_1st_ok:
+                    if not raw_poison:
+                        state["antidote_giveup_clear_cnt"] = state.get("antidote_giveup_clear_cnt", 0) + 1
+                        if state["antidote_giveup_clear_cnt"] >= 3:
+                            state["antidote_giveup_until_clear"] = False
+                            state["antidote_giveup_clear_cnt"] = 0
+                            dprint(key, "✅ [독 자연 소멸 확인] 피통 색상이 정상 복구되어 해독 타건 제한을 해제합니다.")
+                    else:
+                        state["antidote_giveup_clear_cnt"] = 0
+                state["poison_history"].clear()
+                is_poisoned = False
 
-                if history_span >= 1.5:
-                    ratio = true_p_frames / total_p_frames
-
-                    if ratio > 0.5:
+            # 2) F10 타건 후 실제 해독 여부를 검증 중인 경우: 초록색 피통이 3프레임 연속 사라지면 즉시 해독 완료 확정!
+            elif state.get("antidote_verifying", False):
+                if is_dragon_1st_ok:
+                    if not raw_poison:
+                        state["antidote_clear_cnt"] = state.get("antidote_clear_cnt", 0) + 1
+                        if state["antidote_clear_cnt"] >= 3:
+                            retry_used = state.get("antidote_fail_count", 0)
+                            dprint(key, f"✅ [해독 완료 확인] 피통 초록색 독 소멸 확인 완료! (재타건: {retry_used}/5회)")
+                            state["antidote_verifying"] = False
+                            state["antidote_fail_count"] = 0
+                            state["antidote_clear_cnt"] = 0
+                            state["poison_history"].clear()
+                            state["poison_timer"] = 0
+                            is_poisoned = False
+                        else:
+                            is_poisoned = True
+                    else:
+                        state["antidote_clear_cnt"] = 0
                         is_poisoned = True
+                else:
+                    is_poisoned = True
 
-                    elif ratio < 0.2:
-                        is_poisoned = False
+            # 3) 평상시 독 감지 누적 판독
+            else:
+                total_p_frames = len(state["poison_history"])
+                true_p_frames = sum(1 for p in state["poison_history"] if p[1])
+
+                if curr_time < state.get("post_certi_poison_fast_until", 0.0):
+                    # 💡 인증 후 재접속 직후에는 1.5초 누적 대기를 생략하고 초록색 피통 감지 즉시 독 상태로 판정!
+                    is_poisoned = bool(raw_poison)
+                elif total_p_frames > 0:
+                    history_span = state["poison_history"][-1][0] - state["poison_history"][0][0]
+
+                    if history_span >= 1.5:
+                        ratio = true_p_frames / total_p_frames
+
+                        if ratio > 0.5:
+                            is_poisoned = True
+
+                        elif ratio < 0.2:
+                            is_poisoned = False
 
             state["is_poisoned"] = is_poisoned
             state["is_panic"] = True if (hp <= 30.0 or (is_poisoned and hp <= 50.0)) else False
@@ -15606,36 +15668,49 @@ def ai_commander_worker(target_pc):
 
                     if curr_time >= state.get("cooldown", 0):
 
-                        # 👇👇 [여기서부터 새로 추가할 독 해제 로직] 👇👇
+                        # 👇👇 [여기서부터 새로 추가할 독 해제 로직 (사후 검증 및 최대 5회 재타건 연동)] 👇👇
                         if state.get("is_poisoned", False) and not state.get("town_thread_running", False):
                             if curr_time > state.get("antidote_cd", 0):
-                                dprint(key, f"🚨 [마을 비상 해독] 정비({fsm_town}) 도중 독 감지! 하던 작업을 잠시 멈추고 해독부터 실시합니다!")
-                                
-                                is_party_psn = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
-                                poison_type = settings.get("party_poison_type", "해독제") if is_party_psn else settings.get("poison_type", "해독제")
-                                
-                                # 혹시 열려있을지 모르는 UI(창고, 인벤 등)를 닫고 F1 탭으로 강제 전환
-                                pico_queues[key].put({"action": "HOLD_KEY", "keycode": 177, "duration": g_val(0.08, 0.15)}) # ESC 키
-                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.1, "delay_max": 0.15})
-                                pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
-                                pico_queues[key].put({"action": "WAIT", "delay_min": 0.1, "delay_max": 0.15})
-                                
-                                if poison_type == "해독제":
-                                    pico_queues[key].put({"action": "ANTIDOTE", "is_spell": False})
+                                if state.get("antidote_verifying", False) and state.get("antidote_fail_count", 0) >= 5:
+                                    dprint(key, f"⚠️ [마을 해독 5회 재타건 초과] 독이 풀리지 않아 해독을 중단하고 정비({fsm_town})를 속행합니다!")
+                                    state["antidote_verifying"] = False
+                                    state["antidote_fail_count"] = 0
+                                    state["antidote_clear_cnt"] = 0
+                                    state["poison_history"].clear()
+                                    state["is_poisoned"] = False
+                                    state["poison_timer"] = 0
+                                    state["antidote_giveup_until_clear"] = True
+                                    state["antidote_giveup_clear_cnt"] = 0
                                 else:
-                                    pico_queues[key].put({"action": "ANTIDOTE", "is_spell": True})
-                                
-                                # 해독 모션이 완전히 끝날 때까지 2.0초간 쿨타임(대기) 부여
-                                state["antidote_cd"] = curr_time + 1.5
-                                state["cooldown"] = curr_time + 2.0
-                                
-                                # 독 이력을 지워 즉시 is_poisoned 가 False로 풀리게 만듦
-                                state["poison_history"].clear()
-                                state["is_poisoned"] = False
-                                state["poison_timer"] = 0
+                                    is_party_psn = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
+                                    poison_type = settings.get("party_poison_type", "해독제") if is_party_psn else settings.get("poison_type", "해독제")
+
+                                    if state.get("antidote_verifying", False):
+                                        state["antidote_fail_count"] = state.get("antidote_fail_count", 0) + 1
+                                        dprint(key, f"🔄 [마을 해독 재타건 ({state['antidote_fail_count']}/5회)] 독 미해제 확인! 즉시 {poison_type}(F10)을(를) 재타건합니다!")
+                                    else:
+                                        state["antidote_verifying"] = True
+                                        state["antidote_fail_count"] = 0
+                                        dprint(key, f"🚨 [마을 비상 해독] 정비({fsm_town}) 도중 독 감지! 하던 작업을 잠시 멈추고 해독부터 실시합니다!")
+
+                                    state["antidote_clear_cnt"] = 0
+                                    # 혹시 열려있을지 모르는 UI(창고, 인벤 등)를 닫고 F1 탭으로 강제 전환
+                                    pico_queues[key].put({"action": "HOLD_KEY", "keycode": 177, "duration": g_val(0.08, 0.15)}) # ESC 키
+                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.1, "delay_max": 0.15})
+                                    pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
+                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.1, "delay_max": 0.15})
+
+                                    if poison_type == "해독제":
+                                        pico_queues[key].put({"action": "ANTIDOTE", "is_spell": False})
+                                    else:
+                                        pico_queues[key].put({"action": "ANTIDOTE", "is_spell": True})
+
+                                    state["antidote_cd"] = curr_time + g_time(1.3, 1.6, key)
+                                    state["cooldown"] = curr_time + 1.4
+                                    continue
                             else:
                                 state["cooldown"] = curr_time + 0.1
-                            continue # 💡 핵심: IDLE로 바꾸지 않고 continue로 튕겨내어 원래 정비 상태(fsm_town)를 100% 보존!
+                                continue # 💡 핵심: IDLE로 바꾸지 않고 continue로 튕겨내어 원래 정비 상태(fsm_town)를 100% 보존!
                         # 👆👆 [독 해제 로직 완료] 👆👆
 
                         if fsm_town == "TOWN_MAINT_NORMAL_RETURN":
@@ -17712,28 +17787,45 @@ def ai_commander_worker(target_pc):
 
                             if state.get("is_poisoned", False):
                                 if curr_time > state.get("antidote_cd", 0):
-                                    dprint(key, "🚨 [이중 방어막] 인벤 열기 직전 독 감지! GUI 딜레이 시간을 무시하고 즉시 해독부터 진행합니다.")
-                                    
-                                    is_party_psn = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
-                                    poison_type = settings.get("party_poison_type", "해독제") if is_party_psn else settings.get("poison_type", "해독제")
-                                    
-                                    pico_queues[key].put({"action": "HOLD_KEY", "keycode": 177, "duration": g_val(0.05, 0.10)})
-                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.05, "delay_max": 0.10})
-                                    pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.05, 0.10)})
-                                    pico_queues[key].put({"action": "WAIT", "delay_min": 0.05, "delay_max": 0.10})
-                                    
-                                    if poison_type == "해독제":
-                                        pico_queues[key].put({"action": "ANTIDOTE", "is_spell": False})
+                                    if state.get("antidote_verifying", False) and state.get("antidote_fail_count", 0) >= 5:
+                                        dprint(key, "⚠️ [인벤 열기 전 해독 5회 초과] 독이 풀리지 않아 해독을 중단하고 인벤 정리를 진행합니다.")
+                                        state["antidote_verifying"] = False
+                                        state["antidote_fail_count"] = 0
+                                        state["antidote_clear_cnt"] = 0
+                                        state["poison_history"].clear()
+                                        state["is_poisoned"] = False
+                                        state["poison_timer"] = 0
+                                        state["antidote_giveup_until_clear"] = True
+                                        state["antidote_giveup_clear_cnt"] = 0
                                     else:
-                                        pico_queues[key].put({"action": "ANTIDOTE", "is_spell": True})
-                                    
-                                    state["antidote_cd"] = curr_time + 1.5
-                                    state["poison_history"].clear()
-                                    state["is_poisoned"] = False
-                                    state["poison_timer"] = 0
-                                
-                                state["cooldown"] = curr_time + 0.1
-                                continue
+                                        is_party_psn = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
+                                        poison_type = settings.get("party_poison_type", "해독제") if is_party_psn else settings.get("poison_type", "해독제")
+
+                                        if state.get("antidote_verifying", False):
+                                            state["antidote_fail_count"] = state.get("antidote_fail_count", 0) + 1
+                                            dprint(key, f"🔄 [인벤 열기 전 해독 재타건 ({state['antidote_fail_count']}/5회)] 독 미해제 확인! 즉시 {poison_type}(F10)을(를) 재타건합니다.")
+                                        else:
+                                            state["antidote_verifying"] = True
+                                            state["antidote_fail_count"] = 0
+                                            dprint(key, "🚨 [이중 방어막] 인벤 열기 직전 독 감지! GUI 딜레이 시간을 무시하고 즉시 해독부터 진행합니다.")
+
+                                        state["antidote_clear_cnt"] = 0
+                                        pico_queues[key].put({"action": "HOLD_KEY", "keycode": 177, "duration": g_val(0.05, 0.10)})
+                                        pico_queues[key].put({"action": "WAIT", "delay_min": 0.05, "delay_max": 0.10})
+                                        pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.05, 0.10)})
+                                        pico_queues[key].put({"action": "WAIT", "delay_min": 0.05, "delay_max": 0.10})
+
+                                        if poison_type == "해독제":
+                                            pico_queues[key].put({"action": "ANTIDOTE", "is_spell": False})
+                                        else:
+                                            pico_queues[key].put({"action": "ANTIDOTE", "is_spell": True})
+
+                                        state["antidote_cd"] = curr_time + g_time(1.1, 1.35, key)
+                                        state["cooldown"] = curr_time + 0.2
+                                        continue
+                                else:
+                                    state["cooldown"] = curr_time + 0.1
+                                    continue
 
                             if state.get("body_held", False):
                                 if picos.get(key) and pico_locks.get(key): 
@@ -18586,7 +18678,7 @@ def ai_commander_worker(target_pc):
                                 state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.3)
 
                     if is_poisoned:
-                        if state.get("poison_timer", 0) == 0:
+                        if not state.get("antidote_verifying", False) and state.get("poison_timer", 0) == 0:
                             if curr_time < state.get("post_certi_poison_fast_until", 0.0):
                                 state["poison_timer"] = curr_time - 0.01
                                 dprint(key, "🚨 [인증 복귀 즉시 해독] 재접속 직후 독 감염 상태 확인! GUI 딜레이를 무시하고 즉시 해독합니다!")
@@ -18599,34 +18691,73 @@ def ai_commander_worker(target_pc):
                                 state["poison_timer"] = curr_time + g_time(adjusted_delay, adjusted_delay + 1.2, key)
                                 dprint(key, f"🧪 [독 확정] 2초 누적 검증 완료! 환불 적용하여 약 {adjusted_delay:.1f}초 뒤 해독합니다.")
 
-                        if curr_time > state["poison_timer"] and curr_time > state.get("antidote_cd", 0):
-
+                        if curr_time > state.get("poison_timer", 0) and curr_time > state.get("antidote_cd", 0):
                             poison_type = settings.get("poison_type", "해독제")
 
-                            if state.get("sweep_active", False):
-                                pico_queues[key].put({"action": "SWEEP_STOP"})
-                                state["sweep_active"] = False
+                            # 1) 이미 1차 해독을 눌렀는데도 독이 안 풀려 재타건 단계인 경우 (최대 5회)
+                            if state.get("antidote_verifying", False):
+                                fail_cnt = state.get("antidote_fail_count", 0)
+                                if fail_cnt >= 5:
+                                    dprint(key, "⚠️ [해독 5회 재타건 종료] 최대 5회 재타건 후에도 독이 풀리지 않아 추가 타건을 중단합니다.")
+                                    state["antidote_verifying"] = False
+                                    state["antidote_fail_count"] = 0
+                                    state["antidote_clear_cnt"] = 0
+                                    state["poison_history"].clear()
+                                    state["is_poisoned"] = False
+                                    state["poison_timer"] = 0
+                                    state["antidote_giveup_until_clear"] = True
+                                    state["antidote_giveup_clear_cnt"] = 0
+                                else:
+                                    if state.get("sweep_active", False):
+                                        pico_queues[key].put({"action": "SWEEP_STOP"})
+                                        state["sweep_active"] = False
+                                        state["cooldown"] = max(state.get("cooldown", 0), curr_time + g_val(0.25, 0.35))
+                                        continue
+                                    if state.get("body_held", False):
+                                        if picos.get(key) and pico_locks.get(key):
+                                            send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                                        state["body_held"] = False
 
-                                state["cooldown"] = max(state.get("cooldown", 0), curr_time + g_val(0.25, 0.35))
-                                continue
+                                    fail_cnt += 1
+                                    state["antidote_fail_count"] = fail_cnt
+                                    state["antidote_clear_cnt"] = 0
+                                    is_spell = (poison_type != "해독제")
+                                    dprint(key, f"🔄 [해독 미해제 ➔ 재타건 ({fail_cnt}/5회)] 피통에 독이 남아있어 딜레이 없이 즉시 {poison_type}(F10)을(를) 재타건합니다!")
+                                    pico_queues[key].put({"action": "ANTIDOTE", "is_spell": is_spell})
+                                    state["antidote_cd"] = curr_time + g_time(1.0, 1.25, key)
+                                    state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.2)
+                                    survival_action_taken = True
 
-                            if poison_type == "해독제":
-                                dprint(key, "💊 [해독] GUI '해독제' 설정. 아이템(싱글탭)으로 해독합니다.")
-                                pico_queues[key].put({"action": "ANTIDOTE", "is_spell": False})
+                            # 2) 최초 1차 해독 타건
                             else:
-                                dprint(key, "💊 [해독] GUI '큐어포이즌' 설정. 마법(더블탭)으로 해독합니다.")
-                                pico_queues[key].put({"action": "ANTIDOTE", "is_spell": True})
+                                if state.get("sweep_active", False):
+                                    pico_queues[key].put({"action": "SWEEP_STOP"})
+                                    state["sweep_active"] = False
+                                    state["cooldown"] = max(state.get("cooldown", 0), curr_time + g_val(0.25, 0.35))
+                                    continue
+                                if state.get("body_held", False):
+                                    if picos.get(key) and pico_locks.get(key):
+                                        send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                                    state["body_held"] = False
 
-                            state["antidote_cd"] = curr_time + 1.5
-                            state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.2)
-                            survival_action_taken = True
+                                if poison_type == "해독제":
+                                    dprint(key, "💊 [해독 1차 시도] GUI '해독제' 설정. 아이템(싱글탭) 해독 후 해제 여부를 검증합니다.")
+                                    pico_queues[key].put({"action": "ANTIDOTE", "is_spell": False})
+                                else:
+                                    dprint(key, "💊 [해독 1차 시도] GUI '큐어포이즌' 설정. 마법(더블탭) 해독 후 해제 여부를 검증합니다.")
+                                    pico_queues[key].put({"action": "ANTIDOTE", "is_spell": True})
 
-                            state["poison_history"].clear()
-                            state["is_poisoned"] = False
-                            state["poison_timer"] = 0
+                                state["antidote_verifying"] = True
+                                state["antidote_fail_count"] = 0
+                                state["antidote_clear_cnt"] = 0
+                                state["antidote_cd"] = curr_time + g_time(1.0, 1.25, key)
+                                state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.2)
+                                survival_action_taken = True
                     else:
                         state["poison_timer"] = 0
+                        state["antidote_verifying"] = False
                         state["antidote_fail_count"] = 0
+                        state["antidote_clear_cnt"] = 0
 
                     if not survival_action_taken:
                         heal_mp_limit = settings.get("heal_mp_percent", 30.0)
@@ -18817,6 +18948,7 @@ def ai_commander_worker(target_pc):
                         
                         dng_name_aim1 = settings.get("dungeon_name", "")
                         is_bondon_aim = "본던" in dng_name_aim1 or "gludio" in dng_name_aim1.lower() or "사던" in dng_name_aim1 or "silver" in dng_name_aim1.lower()
+                        has_pk_target_on_kill = any(getattr(m, "is_m_elf", False) for m in mobs)
                         is_gb_kill_now = bool(settings.get("use_gb_detect", False) and (state.get("is_gangbang", False) or curr_time < state.get("gb_active_until", 0.0)))
 
                         mob_angle = current_facing_angle if current_facing_angle is not None else state.get("combat_target_angle")
@@ -18825,8 +18957,8 @@ def ai_commander_worker(target_pc):
                             if math.hypot(hx_c - char_screen_cx, hy_c - (char_screen_cy - 20)) > 10:
                                 mob_angle = math.atan2(hy_c - (char_screen_cy - 20), hx_c - char_screen_cx)
 
-                        # ================= [ 다굴 상태 처치 시: 3셀 루팅 차단 + 연속 모션 스캔 직행 ] =================
-                        if is_gb_kill_now:
+                        # ================= [ 다굴 상태 처치 시: 적대 PK가 없을 때만 연속 모션 스캔 직행 ] =================
+                        if is_gb_kill_now and not has_pk_target_on_kill:
                             state["gb_active_until"] = curr_time + 2.5
                             state["is_gangbang"] = True
                             state["close_combat_timer"] = curr_time + 1.5
@@ -19574,8 +19706,18 @@ def ai_commander_worker(target_pc):
                             # 👆👆 -------------------------------------------------------------
 
                             for m in temp_mobs:
-
-                                if is_yolo_free and not is_close_combat:
+                                # 💡 적대 PK 타겟(is_m_elf)은 다굴 근접 시야 축소(is_close_combat)를 무시하고 최우선 인식!
+                                if getattr(m, "is_m_elf", False) and yolo_radius > 0:
+                                    if m.foot_y > int(h * 0.68):
+                                        continue
+                                    if is_any_party:
+                                        dx = m.x - char_screen_cx
+                                        dy = m.foot_y - char_screen_cy
+                                        if (dx**2) / (FIXED_ELLIPSE_RX**2) + (dy**2) / (FIXED_ELLIPSE_RY**2) <= 1.0:
+                                            reachable_mobs.append(m)
+                                    else:
+                                        reachable_mobs.append(m)
+                                elif is_yolo_free and not is_close_combat:
                                     dx = m.x - char_screen_cx
                                     dy = m.foot_y - char_screen_cy
 
@@ -20358,12 +20500,27 @@ def ai_commander_worker(target_pc):
                         state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
 
                 elif state.get("target_fsm") == "MOTION_SNAP_BRAKE_WAIT":
+                    if any(getattr(m, "is_m_elf", False) for m in mobs):
+                        dprint(key, "⚔️ [PK 최우선 인터럽트] 모션 제동 대기 중 적대 PK 타겟 포착! 모션 감지를 취소하고 즉시 PK 타겟을 조준합니다!")
+                        state.pop("gb_post_kill_snap", None)
+                        state.pop("mptam_wall_hit_search", None)
+                        state.pop("loot_evade_after_snap", None)
+                        state.pop("brake_max_wait", None)
+                        state["motion_failed_dirs"] = set()
+                        state["motion_candidates"] = []
+                        state["is_motion_target"] = False
+                        state["target_fsm"] = "TARGET_AIMING"
+                        state["aiming_start_time"] = curr_time
+                        state["shift_brake_delay"] = 0.0
+                        state["first_attempt"] = False
+                        state["hover_retry_count"] = 0
+                        state["cooldown"] = curr_time
+                        continue
 
                     if state.get("pico_arrived", False) and not state.get("hw_busy", False) and pico_queues[key].empty():
                         state["pico_arrived"] = False
                         state["brake_end_time"] = min(state.get("brake_end_time", curr_time), curr_time + g_val(0.05, 0.10))
 
-                    max_wait_t = state.get("brake_max_wait") or (state.get("brake_end_time", curr_time) + 0.5)
                     max_wait_t = state.get("brake_max_wait") or (state.get("brake_end_time", curr_time) + 0.5)
                     is_char_stopped_now = state.get("is_completely_stopped", False) or (curr_time >= max_wait_t)
 
@@ -20395,17 +20552,18 @@ def ai_commander_worker(target_pc):
                         state["cooldown"] = curr_time
 
                 elif state.get("target_fsm") == "MOTION_SNAP_SCANNING":
-
-                    # 💡 루팅 길막(loot_evade_after_snap) 중이고 '사냥우선'이 꺼져 있을 때는 화면의 다른 YOLO 몹 때문에 모션 감지가 취소되지 않도록 보호!
-                    can_abort_snap_for_yolo = bool(mobs) and (not state.get("loot_evade_after_snap", False) or settings.get("hunt_first", False))
+                    has_pk_in_snap = any(getattr(m, "is_m_elf", False) for m in mobs)
+                    # 💡 적대 PK(has_pk_in_snap)가 뜨면 루팅 길막 여부를 불문하고 즉시 모션 스캔을 중단하고 PK 타겟으로 직행!
+                    can_abort_snap_for_yolo = has_pk_in_snap or (bool(mobs) and (not state.get("loot_evade_after_snap", False) or settings.get("hunt_first", False)))
                     if can_abort_snap_for_yolo:
                         was_gb_snap = state.pop("gb_post_kill_snap", False)
                         state.pop("mptam_wall_hit_search", None)
                         state.pop("loot_evade_after_snap", None)
                         state["motion_failed_dirs"] = set()
                         state["motion_candidates"] = []
-                        if was_gb_snap:
-                            dprint(key, "👁️ [다굴 중 YOLO 포착] 근접 욜로 타겟 발견! 지체 없이 즉시 재조준(TARGET_AIMING) 사격합니다!")
+                        state["is_motion_target"] = False
+                        if has_pk_in_snap or was_gb_snap:
+                            dprint(key, "⚔️ [다굴/모션 중 PK·YOLO 포착] 최우선 타겟 발견! 모션 스캔을 중단하고 즉시 재조준(TARGET_AIMING) 사격합니다!")
                             state["target_fsm"] = "TARGET_AIMING"
                             state["aiming_start_time"] = curr_time
                             state["shift_brake_delay"] = 0.0
@@ -20585,6 +20743,25 @@ def ai_commander_worker(target_pc):
                             state["cooldown"] = curr_time
 
                 elif state.get("target_fsm") == "MOTION_SNAP_CHECK_SWORD":
+                    if any(getattr(m, "is_m_elf", False) for m in mobs):
+                        dprint(key, "⚔️ [PK 최우선 인터럽트] 모션 칼 확인 중 적대 PK 타겟 포착! 즉시 모션 타겟을 버리고 PK 조준으로 전환합니다!")
+                        clear_movements_only(pico_queues[key])
+                        state["sword_verify_active"] = False
+                        state["special_ack_arrived"] = False
+                        state.pop("gb_post_kill_snap", None)
+                        state.pop("mptam_wall_hit_search", None)
+                        state.pop("loot_evade_after_snap", None)
+                        state["motion_failed_dirs"] = set()
+                        state["motion_candidates"] = []
+                        state["is_motion_target"] = False
+                        state["hover_start_time"] = 0
+                        state["target_fsm"] = "TARGET_AIMING"
+                        state["aiming_start_time"] = curr_time
+                        state["shift_brake_delay"] = 0.0
+                        state["first_attempt"] = False
+                        state["hover_retry_count"] = 0
+                        state["cooldown"] = curr_time + 0.05
+                        continue
 
                     # 💡 큐 초기화 등으로 SPECIAL_ACK가 소실되더라도 최대 1.0초 뒤에는 무조건 칼 검증으로 넘어가 영구 멈춤 원천 차단!
                     if not state.get("sword_verify_active", False):
@@ -22277,6 +22454,22 @@ def ai_commander_worker(target_pc):
                                     state["user_blackouts"] = user_blackouts
                                     dprint(key, "⚔️ [다굴 방어 투트랙] 템 줍는 중 다굴 방어 스캔 개시! 0.5초간 70px 근접 타겟팅만 수행합니다.")
 
+                                # 💡 1셀 루팅 중이라도 적대 PK 타겟이 포착되면 모션 스캔보다 우선하여 즉시 정식 PK 조준(Ctrl 더블탭 포함)으로 전환!
+                                if any(getattr(m, "is_m_elf", False) for m in mobs):
+                                    dprint(key, "⚔️ [1셀 루팅 중 PK 포착] 적대 PK 타겟 발견! 루팅 모션 스캔을 중단하고 즉시 PK 타겟을 조준합니다!")
+                                    clear_movements_only(pico_queues[key])
+                                    if state.get("sweep_active", False):
+                                        pico_queues[key].put({"action": "SWEEP_STOP"})
+                                        state["sweep_active"] = False
+                                    state["is_motion_target"] = False
+                                    state["shift_brake_delay"] = 0.0
+                                    state["first_attempt"] = False
+                                    state["hover_retry_count"] = 0
+                                    state["target_fsm"] = "TARGET_AIMING"
+                                    state["aiming_start_time"] = curr_time
+                                    state["cooldown"] = curr_time + 0.02
+                                    continue
+
                                 is_close_combat = curr_time < state.get("close_combat_timer", 0)
                                 next_tx, next_ty = None, None
 
@@ -23153,7 +23346,7 @@ def ai_commander_worker(target_pc):
                                             dprint(key, "⚔️ [남요정 PK 스위칭] Ctrl 더블탭으로 PK 모드(용머리 빨간색)를 먼저 켭니다!")
                                             pico_queues[key].put({"action": "PVP_OFF"})
                                             pico_queues[key].put({"action": "WAIT", "delay_min": 0.12, "delay_max": 0.18})
-                                            state["pvp_on_cmd_cd"] = curr_time + 1.5
+                                            state["pvp_on_cmd_cd"] = curr_time + 0.5
                                             state["pvp_off_cd"] = curr_time + 3.0
                                     else:
                                         state["next_is_m_elf"] = False
@@ -24254,8 +24447,9 @@ def ai_commander_worker(target_pc):
                 is_fighting = is_fighting_archer if role == "ARCHER" else is_fighting_melee
 
                 allow_aiming = state.get("target_fsm") in ["TARGET_AIMING", "HOVER_RETRY_WAIT", "IDLE", "PARTY_WAIT", "PARTY_BUFF_L_WAIT", "PARTY_BUFF_M_WAIT", "PARTY_ACTIVE_STANDBY", "SQUAD_WAIT"]
+                has_pk_mob_for_aim = any(getattr(m, "is_m_elf", False) for m in mobs)
 
-                if not action_taken and allow_aiming and not is_fighting and curr_time < state.get("close_combat_timer", 0) and curr_time >= state.get("cooldown", 0):
+                if not action_taken and allow_aiming and not is_fighting and not has_pk_mob_for_aim and curr_time < state.get("close_combat_timer", 0) and curr_time >= state.get("cooldown", 0):
                     if state.get("full_prev_gray") is not None:
                         prev_gray = state.get("full_prev_gray")
                         if prev_gray.shape == curr_gray.shape:
@@ -24377,6 +24571,7 @@ def ai_commander_worker(target_pc):
                         return base_score
 
                     best_mob = min(mobs, key=get_mob_score)
+                    state["is_motion_target"] = getattr(best_mob, "is_motion", False)
                     state["next_is_g_mob"] = getattr(best_mob, "is_g_mob", False)
                     state["next_is_normal"] = getattr(best_mob, "is_normal", True)
                     state["next_is_avoid"] = getattr(best_mob, "is_avoid", False) # 💡 예약 상태 추가
@@ -24454,7 +24649,7 @@ def ai_commander_worker(target_pc):
                         dprint(key, "⚔️ [남요정 PK 조준] Ctrl 더블탭으로 PK 모드(용머리 빨간색)를 먼저 활성화합니다!")
                         pico_queues[key].put({"action": "PVP_OFF"})
                         pico_queues[key].put({"action": "WAIT", "delay_min": 0.12, "delay_max": 0.18})
-                        state["pvp_on_cmd_cd"] = curr_time + 1.5
+                        state["pvp_on_cmd_cd"] = curr_time + 0.5
                         state["pvp_off_cd"] = curr_time + 3.0
                         pvp_prep_delay = 0.45
 
