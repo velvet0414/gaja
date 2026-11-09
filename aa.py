@@ -6177,7 +6177,11 @@ def find_item_boxes(img_bgr):
     cursor_raw = cv2.inRange(roi, CURSOR_RAW_MIN, CURSOR_RAW_MAX)
     cursor_core = cv2.erode(cursor_raw, ITEM_KERNEL_ERODE, iterations=1)
     cursor_mask = cv2.dilate(cursor_core, ITEM_KERNEL_DILATE, iterations=1)
+
+    # 💡 커서 가로폭(약 20px 이하)보다 긴 35px 이상의 순수 아이템 박스 가로줄은 커서가 위에 올라가도 끊어지지 않게 보존!
+    long_box_lines = cv2.morphologyEx(frame_mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (35, 1)))
     frame_mask = cv2.bitwise_and(frame_mask, cv2.bitwise_not(cursor_mask))
+    frame_mask = cv2.bitwise_or(frame_mask, long_box_lines)
 
     # 💡 1) 커서/몹 가림으로 끊어진 테두리를 이어주는 30px 좌우 팽창은 원본 그대로 100% 유지!
     horiz_lines = cv2.morphologyEx(frame_mask, cv2.MORPH_OPEN, ITEM_KERNEL_HORIZ)
@@ -6260,6 +6264,28 @@ def find_item_boxes(img_bgr):
             })
 
     return boxes
+
+def calc_loot_norm_dist(bx, by, char_cx=400, char_cy=245):
+    """
+    리니지 마름모 타일 및 가로형 아이템 박스 특성을 반영한 방향별 정규화 거리 계산기.
+    - 3시/9시 수평 각도(slope <= 0.18): 실제 55px을 정규화 20.0px(1셀)로 환산
+    - 대각선/수직 각도(slope >= 0.40): 실제 23px을 정규화 20.0px(1셀)로 환산
+    - 중간 각도(0.18 ~ 0.40): 55px ~ 23px 선형 보간
+    반환값이 20.0 미만이면 모든 방향에서 정확히 1셀 이내입니다.
+    """
+    dx = abs(float(bx - char_cx))
+    dy = abs(float((by + 15) - char_cy))
+    raw_dist = math.hypot(dx, dy)
+    if raw_dist <= 0.0:
+        return 0.0
+    slope = dy / max(dx, 1.0)
+    if slope <= 0.18:
+        one_cell_px = 55.0
+    elif slope >= 0.40:
+        one_cell_px = 23.0
+    else:
+        one_cell_px = 55.0 - (32.0 * ((slope - 0.18) / 0.22))
+    return raw_dist * (20.0 / one_cell_px)
 
 def check_attack_cursor(img_bgr, cx, cy, check_maintain=False, pc_key=None, **kwargs):
 
@@ -9719,9 +9745,30 @@ def ai_commander_worker(target_pc):
                                 state["leader_combat_wait_log_t"] = curr_time
                                 dprint(key, "⏳ [파장 사격 중 초대 보류] 현재 몹 타격 중이므로 처치 직후 즉시 파티 초대를 진행합니다.")
                         else:
-                            # 🧪 파장이 독에 걸려 있는지 즉시 픽셀 검사 ➔ 독 상태면 GUI 딜레이 무시하고 해독(최대 5회 재타건 검증)부터 실행!
+                            # 🧪 파장이 독에 걸려 있는지 실시간 픽셀(raw_poison_leader) 직접 검사!
                             _, _, raw_poison_leader, _ = get_hp_mp_percent(img_bgr, w, h, HP_Y_START, HP_Y_END)
-                            if (state.get("is_poisoned", False) or raw_poison_leader) and not state.get("antidote_giveup_until_clear", False):
+                            need_cure_before_invite = False
+
+                            if not state.get("antidote_giveup_until_clear", False):
+                                if raw_poison_leader:
+                                    need_cure_before_invite = True
+                                    state["antidote_clear_cnt"] = 0
+                                elif state.get("antidote_verifying", False) or state.get("is_poisoned", False):
+                                    # 💡 실시간 피통에서 초록색 독 픽셀이 사라졌다면 즉시 해독 완료 처리하여 5회 헛타건 원천 차단!
+                                    state["antidote_clear_cnt"] = state.get("antidote_clear_cnt", 0) + 1
+                                    if state["antidote_clear_cnt"] >= 2:
+                                        dprint(key, f"✅ [파장 초대 전 해독 완료] 피통 독 소멸 확인(재타건:{state.get('antidote_fail_count', 0)}/5회)! 즉시 파티 초대를 발송합니다.")
+                                        state["antidote_verifying"] = False
+                                        state["antidote_fail_count"] = 0
+                                        state["antidote_clear_cnt"] = 0
+                                        state.setdefault("poison_history", []).clear()
+                                        state["is_poisoned"] = False
+                                        state["poison_timer"] = 0
+                                        state["leader_invite_cure_lock"] = 0.0
+                                    else:
+                                        need_cure_before_invite = True
+
+                            if need_cure_before_invite:
                                 if curr_time > state.get("antidote_cd", 0):
                                     if state.get("antidote_verifying", False) and state.get("antidote_fail_count", 0) >= 5:
                                         dprint(key, "⚠️ [파장 해독 5회 재타건 초과] 독이 풀리지 않아 추가 해독을 중단하고 파티 초대를 진행합니다.")
@@ -9733,8 +9780,11 @@ def ai_commander_worker(target_pc):
                                         state["poison_timer"] = 0
                                         state["antidote_giveup_until_clear"] = True
                                         state["antidote_giveup_clear_cnt"] = 0
+                                        state["leader_invite_cure_lock"] = 0.0
+                                        need_cure_before_invite = False
                                     else:
                                         poison_type = settings.get("poison_type", "해독제")
+                                        clear_movements_only(pico_queues[key])
                                         if state.get("sweep_active", False):
                                             pico_queues[key].put({"action": "SWEEP_STOP"})
                                             state["sweep_active"] = False
@@ -9754,53 +9804,57 @@ def ai_commander_worker(target_pc):
                                         state["is_poisoned"] = True
                                         pico_queues[key].put({"action": "ANTIDOTE", "is_spell": is_spell})
                                         state["antidote_cd"] = curr_time + g_time(1.0, 1.25, key)
-                                        state["cooldown"] = max(state.get("cooldown", 0), curr_time + 1.1)
-                                        continue
+                                        state["cooldown"] = max(state.get("cooldown", 0), curr_time + 1.15)
+                                        state["leader_invite_cure_lock"] = curr_time + 1.25
                                 else:
-                                    continue
+                                    # 💡 continue로 루프를 끊지 않고 하단 생존/디버그 뷰까지 정상 통과시킴 (디버그 화면 멈춤 원천 해결!)
+                                    state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.1)
+                                    state["leader_invite_cure_lock"] = max(state.get("leader_invite_cure_lock", 0.0), curr_time + 0.2)
 
-                            requesters.sort(key=lambda m: (m.get("group_join_time", curr_time), m.get("uid", "")))
-                            target_m = requesters[0]
-                            t_uid = target_m["uid"]
-                            t_char_name = str(target_m["char_name"]).strip()
-                            t_eng_name = kor_to_eng_typo(t_char_name)
-                            is_yungta_now = check_chat_template_match(img_bgr, "yungta.png", th=0.80)
+                            if not need_cure_before_invite:
+                                state["leader_invite_cure_lock"] = 0.0
+                                requesters.sort(key=lambda m: (m.get("group_join_time", curr_time), m.get("uid", "")))
+                                target_m = requesters[0]
+                                t_uid = target_m["uid"]
+                                t_char_name = str(target_m["char_name"]).strip()
+                                t_eng_name = kor_to_eng_typo(t_char_name)
+                                is_yungta_now = check_chat_template_match(img_bgr, "yungta.png", th=0.80)
 
-                            # 💥 큐 폭파 및 진행 중인 모든 공격/이동/줍기 즉시 정지 후 초대 명령 단독 실행!
-                            state["abort_macro"] = True
-                            with pico_queues[key].mutex:
-                                pico_queues[key].queue.clear()
-                            pico_queues[key].put({"action": "FORCE_RELEASE"})
-                            if state.get("sweep_active", False):
-                                pico_queues[key].put({"action": "SWEEP_STOP"})
-                                state["sweep_active"] = False
-                            if state.get("body_held", False):
-                                if picos.get(key) and pico_locks.get(key):
-                                    send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
-                                state["body_held"] = False
+                                # 💥 큐 폭파 및 진행 중인 모든 공격/이동/줍기 즉시 정지 후 초대 명령 단독 실행!
+                                state["abort_macro"] = True
+                                with pico_queues[key].mutex:
+                                    pico_queues[key].queue.clear()
+                                pico_queues[key].put({"action": "FORCE_RELEASE"})
+                                if state.get("sweep_active", False):
+                                    pico_queues[key].put({"action": "SWEEP_STOP"})
+                                    state["sweep_active"] = False
+                                if state.get("body_held", False):
+                                    if picos.get(key) and pico_locks.get(key):
+                                        send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                                    state["body_held"] = False
 
-                            state["is_attacking"] = False
-                            state["arrow_is_firing"] = False
-                            state["has_fired_arrow"] = False
-                            state["is_pulling"] = False
-                            state["target_fsm"] = "IDLE"
+                                state["is_attacking"] = False
+                                state["arrow_is_firing"] = False
+                                state["has_fired_arrow"] = False
+                                state["is_pulling"] = False
+                                state["target_fsm"] = "IDLE"
 
-                            state["is_chat_typing"] = True
-                            state["chat_typing_timeout"] = curr_time + 6.0
+                                state["is_chat_typing"] = True
+                                state["chat_typing_timeout"] = curr_time + 6.0
 
-                            pico_queues[key].put({
-                                "action": "PARTY_INVITE_CMD",
-                                "target_uid": t_uid,
-                                "eng_name": t_eng_name,
-                                "raw_name": t_char_name,
-                                "need_han_eng": is_yungta_now
-                            })
-                            inv_time_map[t_uid] = curr_time
-                            state["party_invite_global_cd"] = curr_time + 3.5
-                            state["party_accept_grace_until"] = curr_time + 5.0
-                            state["cooldown"] = curr_time + 2.5
-                            dprint(key, f"📨 [파티원 요청 수신 ➔ 초대 실행] 비사격/독없음 확인! {t_uid}('{t_char_name}' ➔ 영타:'{t_eng_name}') 초대 명령 전송! (영타감지:{is_yungta_now})")
-                            continue
+                                pico_queues[key].put({
+                                    "action": "PARTY_INVITE_CMD",
+                                    "target_uid": t_uid,
+                                    "eng_name": t_eng_name,
+                                    "raw_name": t_char_name,
+                                    "need_han_eng": is_yungta_now
+                                })
+                                inv_time_map[t_uid] = curr_time
+                                state["party_invite_global_cd"] = curr_time + 3.5
+                                state["party_accept_grace_until"] = curr_time + 5.0
+                                state["cooldown"] = curr_time + 2.5
+                                dprint(key, f"📨 [파티원 요청 수신 ➔ 초대 실행] 비사격/독없음 확인! {t_uid}('{t_char_name}' ➔ 영타:'{t_eng_name}') 초대 명령 전송! (영타감지:{is_yungta_now})")
+                                continue
 
                 # 5) [파티원 역할]: 파장이 실제로 나에게 초대를 보냈다는 신호(pending_leader_invite_sig)가 있을 때만 party.png 매칭 및 'y + 엔터' 수락! (과거 채팅 잔상 오수락 원천 차단)
                 if (
@@ -17208,8 +17262,8 @@ def ai_commander_worker(target_pc):
                     zx = int(char_screen_cx + math.cos(angle) * 45)
                     zy = int(scan_cy_debug + math.sin(angle) * 45 * 0.85)
 
-                    screen_zx1, screen_zy1 = zx - 15, zy - 25
-                    screen_zx2, screen_zy2 = zx + 15, zy + 25
+                    screen_zx1, screen_zy1 = zx - 14, zy - 18
+                    screen_zx2, screen_zy2 = zx + 14, zy + 18
 
                     if not is_1cell_dir_clear_on_map(pc_map_gray_los, state.get("dungeon_map_pos"), angle, active_dungeon):
                         cv2.rectangle(debug_img, (screen_zx1, screen_zy1), (screen_zx2, screen_zy2), (140, 70, 140), 1)
@@ -19827,7 +19881,7 @@ def ai_commander_worker(target_pc):
                         angle = i * (math.pi / 4)
                         zx = int(char_screen_cx + math.cos(angle) * 45)
                         zy = int(scan_cy_yolo + math.sin(angle) * 45 * 0.85)
-                        cv2.rectangle(debug_img, (zx - 15, zy - 25), (zx + 15, zy + 25), (0, 0, 255), 1)
+                        cv2.rectangle(debug_img, (zx - 14, zy - 18), (zx + 14, zy + 18), (0, 0, 255), 1)
 
                 for u in current_users:
                     cv2.rectangle(debug_img, (u.x1, u.y1), (u.x2, u.y2), (0, 165, 255), 2)
@@ -20233,28 +20287,87 @@ def ai_commander_worker(target_pc):
                                         min_diff_g = diff_g
                                         excluded_gb_idx = i_g
 
-                            active_motion_dirs = 0
-                            hit_dirs_now = set()
+                            # 1) 한 몹의 팔다리/몸통이 미세하게 끊어지지 않도록 살짝 이어준 뒤 덩어리 번호표(Labels) 부여
+                            bridged = cv2.dilate(thresh, np.ones((5, 5), np.uint8), iterations=1)
+                            num_labels, labels_im = cv2.connectedComponents(bridged)
 
-                            # 💡 모든 사냥터 1셀(45px) 8방향만 통일 감지 + 벽(WALL) 방향 및 유저가 서 있는 딱 1칸(i)만 카운트에서 배제!
+                            # 2) [가변 크기 동적 마스킹] 고정 크기 대신 현재 공격 중인 방향(excluded_gb_idx)의 중심부에 걸친 모션 덩어리(Label) 전체를 추적 삭제!
+                            if excluded_gb_idx != -1:
+                                ex_ang = excluded_gb_idx * (math.pi / 4)
+                                ex_zx = int(cx_roi + math.cos(ex_ang) * 45)
+                                ex_zy = int(cy_roi + math.sin(ex_ang) * 45 * 0.85)
+                                ex_r1, ex_c1 = max(0, ex_zy - 14), max(0, ex_zx - 12)
+                                ex_r2, ex_c2 = min(roi_h, ex_zy + 14), min(roi_w, ex_zx + 12)
+                                if ex_r2 > ex_r1 and ex_c2 > ex_c1:
+                                    atk_labels = set(np.unique(labels_im[ex_r1:ex_r2, ex_c1:ex_c2])) - {0}
+                                    for a_lbl in atk_labels:
+                                        # 단, 공격 타겟 덩어리가 화면 전체(80px 이상)로 퍼진 경우는 다른 몹과 붙은 것이므로 해당 칸 코어만 지움
+                                        lbl_mask = (labels_im == a_lbl)
+                                        ys_l, xs_l = np.where(lbl_mask)
+                                        if len(xs_l) > 0 and (xs_l.max() - xs_l.min() <= 75) and (ys_l.max() - ys_l.min() <= 75):
+                                            thresh[lbl_mask] = 0
+                                    cv2.rectangle(thresh, (ex_c1, ex_r1), (ex_c2, ex_r2), 0, -1)
+
+                            # 3) 8방향 각 셀의 중심 좌표, 모션 점수, 대표 덩어리 번호(dominant_label) 추출
+                            dir_centers = {}
+                            dir_scores = {}
+                            dir_dom_label = {}
+
                             for i in range(8):
+                                angle = i * (math.pi / 4)
+                                zx = int(cx_roi + math.cos(angle) * 45)
+                                zy = int(cy_roi + math.sin(angle) * 45 * 0.85)
+                                dir_centers[i] = (zx, zy)
+
                                 if i == excluded_gb_idx:
                                     continue
                                 if settings.get("gb_exc_user", True) and is_1cell_dir_user_blocked(state, i, curr_time):
                                     continue
-                                angle = i * (math.pi / 4)
                                 if not is_1cell_dir_clear_on_map(pc_map_gray_los, state.get("dungeon_map_pos"), angle, active_dungeon):
                                     continue
-                                zx = int(cx_roi + math.cos(angle) * 45)
-                                zy = int(cy_roi + math.sin(angle) * 45 * 0.85)
 
-                                rx1, ry1 = max(0, zx - 15), max(0, zy - 25)
-                                rx2, ry2 = min(roi_w, zx + 15), min(roi_h, zy + 25)
+                                rx1, ry1 = max(0, zx - 14), max(0, zy - 18)
+                                rx2, ry2 = min(roi_w, zx + 14), min(roi_h, zy + 18)
 
                                 if rx2 > rx1 and ry2 > ry1:
-                                    if cv2.countNonZero(thresh[ry1:ry2, rx1:rx2]) >= motion_thresh:
-                                        active_motion_dirs += 1
-                                        hit_dirs_now.add(i)
+                                    sub_t = thresh[ry1:ry2, rx1:rx2]
+                                    cnt_px = cv2.countNonZero(sub_t)
+                                    if cnt_px >= motion_thresh:
+                                        dir_scores[i] = cnt_px
+                                        sub_lbls = labels_im[ry1:ry2, rx1:rx2][sub_t > 0]
+                                        if len(sub_lbls) > 0:
+                                            vals, counts = np.unique(sub_lbls, return_counts=True)
+                                            dir_dom_label[i] = int(vals[np.argmax(counts)])
+
+                            # 4) [경계 단절 감지 NMS] 인접한 방향(±1)이라도 ① 덩어리 번호가 다르거나 ② 경계선(Midpoint) 픽셀이 골짜기처럼 끊겨 있으면 별개의 몹으로 인정!
+                            hit_dirs_now = set()
+                            for d_idx, d_score in sorted(dir_scores.items(), key=lambda x: x[1], reverse=True):
+                                is_bleed_from_neighbor = False
+                                for kept in hit_dirs_now:
+                                    if (d_idx - kept) % 8 in (1, 7):
+                                        same_blob = (dir_dom_label.get(d_idx, -1) == dir_dom_label.get(kept, -2)) and (dir_dom_label.get(d_idx, 0) > 0)
+                                        # 두 셀 정중앙 경계(Bridge)의 10x14 창 내부 모션 픽셀 측정
+                                        mx = int((dir_centers[d_idx][0] + dir_centers[kept][0]) * 0.5)
+                                        my = int((dir_centers[d_idx][1] + dir_centers[kept][1]) * 0.5)
+                                        bx1, by1 = max(0, mx - 5), max(0, my - 7)
+                                        bx2, by2 = min(roi_w, mx + 5), min(roi_h, my + 7)
+                                        bridge_px = cv2.countNonZero(thresh[by1:by2, bx1:bx2]) if (bx2 > bx1 and by2 > by1) else 0
+                                        avg_core_px = 0.5 * (d_score + dir_scores[kept])
+
+                                        # 경계 단절 조건: 서로 다른 덩어리이거나, 양쪽 코어가 모두 강한데 중간 경계선 밀도가 35% 미만으로 끊어져 있을 때만 진짜 2마리로 인정
+                                        is_boundary_disconnected = (not same_blob) or (
+                                            d_score >= dir_scores[kept] * 0.65 and
+                                            d_score >= motion_thresh * 1.5 and
+                                            bridge_px < avg_core_px * 0.35
+                                        )
+                                        if not is_boundary_disconnected:
+                                            is_bleed_from_neighbor = True
+                                            break
+
+                                if not is_bleed_from_neighbor:
+                                    hit_dirs_now.add(d_idx)
+
+                            active_motion_dirs = len(hit_dirs_now)
 
                             state["current_gb_count"] = active_motion_dirs
                             if active_motion_dirs >= gb_limit:
@@ -20647,37 +20760,69 @@ def ai_commander_worker(target_pc):
                             kernel = np.ones((3, 3), np.uint8)
                             thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
 
-                            detected_list = []
+                            bridged_snap = cv2.dilate(thresh, np.ones((5, 5), np.uint8), iterations=1)
+                            _, labels_snap = cv2.connectedComponents(bridged_snap)
+
+                            raw_detected_list = []
+                            snap_centers = {}
+                            snap_dom_label = {}
+
                             for i in range(8):
+                                angle = i * (math.pi / 4)
+                                zx = int(cx_roi + math.cos(angle) * 45)
+                                zy = int(cy_roi + math.sin(angle) * 45 * 0.85)
+                                snap_centers[i] = (zx, zy)
+
                                 if i in failed_dirs:
                                     continue
                                 if is_1cell_dir_user_blocked(state, i, curr_time):
                                     failed_dirs.add(i)
                                     continue
-                                angle = i * (math.pi / 4)
                                 if not is_1cell_dir_clear_on_map(pc_map_gray_los, state.get("dungeon_map_pos"), angle, active_dungeon):
                                     failed_dirs.add(i)
                                     continue
-                                zx = int(cx_roi + math.cos(angle) * 45)
-                                zy = int(cy_roi + math.sin(angle) * 45 * 0.85)
 
-                                zx1, zy1 = zx - 15, zy - 25
-                                zx2, zy2 = zx + 15, zy + 25
-
+                                rx1, ry1 = max(0, zx - 14), max(0, zy - 18)
+                                rx2, ry2 = min(roi_w, zx + 14), min(roi_h, zy + 18)
                                 g_cx, g_cy = x1 + zx, y1 + zy
-
-                                rx1, ry1 = max(0, zx1), max(0, zy1)
-                                rx2, ry2 = min(roi_w, zx2), min(roi_h, zy2)
 
                                 if rx2 > rx1 and ry2 > ry1:
                                     zone_roi = thresh[ry1:ry2, rx1:rx2]
                                     changed = cv2.countNonZero(zone_roi)
                                     if changed > 8:
-                                        detected_list.append((changed, i, g_cx, g_cy))
+                                        raw_detected_list.append((changed, i, g_cx, g_cy))
+                                        sub_lbls = labels_snap[ry1:ry2, rx1:rx2][zone_roi > 0]
+                                        if len(sub_lbls) > 0:
+                                            vals, counts = np.unique(sub_lbls, return_counts=True)
+                                            snap_dom_label[i] = int(vals[np.argmax(counts)])
 
-                            if detected_list:
-                                # 변화량이 큰 순서대로 정렬하여 1등은 지금 찌르고, 2~3등은 후보 큐에 보관!
-                                detected_list.sort(key=lambda item: item[0], reverse=True)
+                            if raw_detected_list:
+                                raw_detected_list.sort(key=lambda item: item[0], reverse=True)
+                                detected_list = []
+                                for cand_item in raw_detected_list:
+                                    c_score, c_dir, _, _ = cand_item
+                                    is_same_mob_bleed = False
+                                    for kept_score, kept_dir, _, _ in detected_list:
+                                        if (c_dir - kept_dir) % 8 in (1, 7):
+                                            same_blob = (snap_dom_label.get(c_dir, -1) == snap_dom_label.get(kept_dir, -2)) and (snap_dom_label.get(c_dir, 0) > 0)
+                                            mx = int((snap_centers[c_dir][0] + snap_centers[kept_dir][0]) * 0.5)
+                                            my = int((snap_centers[c_dir][1] + snap_centers[kept_dir][1]) * 0.5)
+                                            bx1, by1 = max(0, mx - 5), max(0, my - 7)
+                                            bx2, by2 = min(roi_w, mx + 5), min(roi_h, my + 7)
+                                            bridge_px = cv2.countNonZero(thresh[by1:by2, bx1:bx2]) if (bx2 > bx1 and by2 > by1) else 0
+                                            avg_core_px = 0.5 * (c_score + kept_score)
+
+                                            is_disconnected = (not same_blob) or (
+                                                c_score >= kept_score * 0.65 and
+                                                c_score >= 25 and
+                                                bridge_px < avg_core_px * 0.35
+                                            )
+                                            if not is_disconnected:
+                                                is_same_mob_bleed = True
+                                                break
+                                    if not is_same_mob_bleed:
+                                        detected_list.append(cand_item)
+
                                 max_changed, best_dir_idx, best_tx, best_ty = detected_list[0]
                                 state["motion_candidates"] = [(d_i, d_x, d_y, d_c) for d_c, d_i, d_x, d_y in detected_list[1:3]]
                                 dprint(key, f"🎯 [움직임 포착] 8각 센서 {best_dir_idx+1}번 구역({max_changed}px, 추가후보:{len(state['motion_candidates'])}곳)! 락온 시도!")
@@ -20882,7 +21027,7 @@ def ai_commander_worker(target_pc):
                     else:
                         state["cooldown"] = curr_time + 0.05
 
-            if mobs and state.get("is_hunt_active", False) and not state.get("is_paused", False) and not is_fighting:
+            if mobs and state.get("is_hunt_active", False) and not state.get("is_paused", False) and not is_fighting and curr_time >= state.get("leader_invite_cure_lock", 0.0):
                 if state.get("target_fsm") in ["IDLE", "PATROL", "PARTY_WAIT", "PARTY_ACTIVE_STANDBY"]:
 
                     was_walking = state.get("is_char_moving", False) or state.get("is_pulling", False)
@@ -21801,19 +21946,19 @@ def ai_commander_worker(target_pc):
                     is_keep_3cell_looting = False
                     fsm_loot_chk = str(state.get("target_fsm", "IDLE"))
                     if settings.get("hunt_first", False) and settings.get("hunt_first_keep_loot", False):
-                        if curr_time < state.get("loot_chain_expire", 0.0) and fsm_loot_chk in ["LOOTING_3CELL", "LOOTING_3CELL_ACK_WAIT", "LOOTING_3CELL_WAIT_MOVE"]:
+                        if fsm_loot_chk in ["LOOTING_3CELL", "LOOTING_3CELL_ACK_WAIT", "LOOTING_3CELL_WAIT_MOVE"]:
                             is_keep_3cell_looting = True
                         elif fsm_loot_chk in ["LOOTING_3CELL_APPROACH", "LOOTING_3CELL_WAIT_MOVE"] and state.get("is_char_moving", False):
                             if fsm_loot_chk == "LOOTING_3CELL_WAIT_MOVE":
                                 # 클릭 직후 이번 프레임에 막 발을 떼기 시작한 상태
                                 is_keep_3cell_looting = True
                             elif raw_item_boxes:
-                                best_raw_b = min(raw_item_boxes, key=lambda rb: math.hypot(rb['x'] - char_screen_cx, rb['y'] - char_screen_cy))
-                                curr_raw_dist = math.hypot(best_raw_b['x'] - char_screen_cx, (best_raw_b['y'] + 15 - char_screen_cy) / 0.50)
+                                best_raw_b = min(raw_item_boxes, key=lambda rb: calc_loot_norm_dist(rb['x'], rb['y'], char_screen_cx, char_screen_cy))
+                                curr_raw_dist = calc_loot_norm_dist(best_raw_b['x'], best_raw_b['y'], char_screen_cx, char_screen_cy)
                                 prev_start_dist = state.get("loot_start_dist", 9999.0)
                                 # 거리가 줄어들고 있거나 최근 0.45초 이내에 거리가 좁혀진 상태일 때만 접근 유지 인정
-                                is_dist_closing = (curr_raw_dist < prev_start_dist - 2.0) or (
-                                    curr_raw_dist <= prev_start_dist + 4.0 and (curr_time - state.get("loot_stuck_timer", curr_time) <= 0.45)
+                                is_dist_closing = (curr_raw_dist < prev_start_dist - 1.0) or (
+                                    curr_raw_dist <= prev_start_dist + 3.0 and (curr_time - state.get("loot_stuck_timer", curr_time) <= 0.45)
                                 )
                                 if is_dist_closing:
                                     is_keep_3cell_looting = True
@@ -21822,6 +21967,23 @@ def ai_commander_worker(target_pc):
                                 if state.get("loot_missing_timer", 0) == 0 or (curr_time - state.get("loot_missing_timer", 0) <= state.get("loot_missing_delay", 0.25)):
                                     if curr_time - state.get("loot_stuck_timer", curr_time) <= 0.45:
                                         is_keep_3cell_looting = True
+
+                    # 💡 [엠탐 루팅 반경 동적 계산] 기본 130px / 파티모드에서 MP 50% 이상(YOLO 시야 풀개방 상태)일 때는 160px로 확장!
+                    is_party_mp_50_over = False
+                    if settings.get("use_party_hunt", False):
+                        partner_mp_loot = 100.0
+                        my_team_loot = settings.get("party_group", "선택안함")
+                        if my_team_loot != "선택안함":
+                            with party_lock:
+                                for p_k, p_d in local_party_states.items():
+                                    if p_d.get("party_group") == my_team_loot and p_d.get("dungeon_name") == active_dungeon and p_k != key:
+                                        if curr_time - p_d.get("recv_time", 0) < 3.0:
+                                            partner_mp_loot = p_d.get("mp", 100.0)
+                                        break
+                        if min(mp, partner_mp_loot) >= 50.0:
+                            is_party_mp_50_over = True
+
+                    mptam_loot_limit = 160.0 if is_party_mp_50_over else 130.0
 
                     for b in raw_item_boxes:
                         ix, iy = b['x'], b['y']
@@ -21845,7 +22007,8 @@ def ai_commander_worker(target_pc):
                             ignored_boxes.append(b)
                             continue
 
-                        dist_to_b = math.hypot(ix - char_screen_cx, (iy + 15 - char_screen_cy) / 0.50)
+                        dist_to_b = calc_loot_norm_dist(ix, iy, char_screen_cx, char_screen_cy)
+                        raw_px_dist = math.hypot(ix - char_screen_cx, iy + 15 - char_screen_cy)
 
                         if is_party_moving_loot:
                             # 💡 YOLO 몹 감지 반경(FIXED_ELLIPSE_RX=340, FIXED_ELLIPSE_RY=240)과 100% 동일하게 동기화
@@ -21861,8 +22024,8 @@ def ai_commander_worker(target_pc):
                         b['dist_to_b'] = dist_to_b
 
                         is_pb_arrived_loot = (state.get("party_buff_status") == "ARRIVED") or (state.get("is_active_standby", False) and "팟바람" in str(state.get("standby_reason", "")))
-                        if is_pb_arrived_loot and dist_to_b >= 40.0:
-                            b['ignore_reason'] = "PB_1CELL_ONLY(>40px)"
+                        if is_pb_arrived_loot and dist_to_b >= 20.0:
+                            b['ignore_reason'] = "PB_1CELL_ONLY(>20px)"
                             ignored_boxes.append(b)
                             continue
 
@@ -21871,11 +22034,17 @@ def ai_commander_worker(target_pc):
 
                         is_bondon_or_sadeon_loot = ("본던" in active_dungeon or "gludio" in active_dungeon.lower() or "사던" in active_dungeon or "silver" in active_dungeon.lower())
                         if is_parked_loot_mode and not state.get("helping_who") and not state.get("help_requester", False):
-                            parked_dist_limit = 120.0 if is_bondon_or_sadeon_loot else 40.0
-                            if dist_to_b >= parked_dist_limit:
-                                b['ignore_reason'] = f"PARKED_LIMIT(>{int(parked_dist_limit)}px)"
-                                ignored_boxes.append(b)
-                                continue
+                            if is_bondon_or_sadeon_loot or state.get("is_mptam_mode", False):
+                                parked_dist_limit = mptam_loot_limit
+                                if raw_px_dist > parked_dist_limit:
+                                    b['ignore_reason'] = f"PARKED_LIMIT(>{int(parked_dist_limit)}px)"
+                                    ignored_boxes.append(b)
+                                    continue
+                            else:
+                                if dist_to_b >= 20.0:
+                                    b['ignore_reason'] = "PARKED_LIMIT(>20px)"
+                                    ignored_boxes.append(b)
+                                    continue
 
                             active_base_loot = state.get("designated_base_node") if settings.get("use_party_hunt", False) else (state.get("claimed_base_node") or state.get("current_target_node"))
                             if not active_base_loot and pc_graph and pc_graph.get("buff_spot_nodes"):
@@ -21915,10 +22084,9 @@ def ai_commander_worker(target_pc):
                                 b['ignore_reason'] = "IN_BUFF_ZONE"
                                 ignored_boxes.append(b)
 
-                            # ✅ 1번 수정: 엠탐 거리(120px 등) 초과 시에만 걸러내고, 이내일 때는 정상 줍기로 통과시킴
-                            elif state.get("is_mptam_mode", False) and math.hypot(ix - char_screen_cx, iy + 15 - char_screen_cy) > (120.0 if is_bondon_or_sadeon_loot else (60.0 if settings.get("use_party_hunt", False) else 120.0)):
-                                mptam_dist_limit = 120.0 if is_bondon_or_sadeon_loot else (60.0 if settings.get("use_party_hunt", False) else 120.0)
-                                b['ignore_reason'] = f"MPTAM_FAR(>{int(mptam_dist_limit)}px)"
+                            # ✅ 1번 수정: 엠탐 거리(기본 130px / 파티 MP 50% 이상 시 160px) 초과 시 회색박스(ignored_boxes)로 걸러내고, 이내의 초록박스만 통과!
+                            elif state.get("is_mptam_mode", False) and raw_px_dist > mptam_loot_limit:
+                                b['ignore_reason'] = f"MPTAM_FAR(>{int(mptam_loot_limit)}px)"
                                 ignored_boxes.append(b)
 
                             elif state.get("is_out_of_zone", False) and math.hypot(ix - char_screen_cx, iy + 15 - char_screen_cy) > 100.0:
@@ -22046,8 +22214,8 @@ def ai_commander_worker(target_pc):
                                 if not item_boxes or not fsm_now_chk.startswith("LOOT"):
                                     picked_one = True
                                 else:
-                                    best_b_now = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
-                                    curr_d_now = math.hypot(best_b_now['x'] - char_screen_cx, (best_b_now['y'] + 15 - char_screen_cy) / 0.50)
+                                    best_b_now = min(item_boxes, key=lambda b: b.get('dist_to_b', calc_loot_norm_dist(b['x'], b['y'], char_screen_cx, char_screen_cy)))
+                                    curr_d_now = best_b_now.get('dist_to_b', calc_loot_norm_dist(best_b_now['x'], best_b_now['y'], char_screen_cx, char_screen_cy))
                                     prev_p = state.get("item_cnt_last_pos")
                                     jump_d = math.hypot(best_b_now['x'] - prev_p[0], best_b_now['y'] - prev_p[1]) if prev_p else 0.0
                                     min_d_prev = state.get("item_cnt_min_dist", curr_d_now)
@@ -22062,7 +22230,7 @@ def ai_commander_worker(target_pc):
                                         len(item_boxes) < item_cnt_threshold or
                                         len(item_boxes) < start_v_cnt or
                                         jump_d > 15.0 or
-                                        curr_d_now > min_d_prev + 10.0
+                                        curr_d_now > min_d_prev + 6.0
                                     ):
                                         picked_one = True
                                     else:
@@ -22099,7 +22267,7 @@ def ai_commander_worker(target_pc):
                     if (effective_hunt_first and mobs and not is_keep_3cell_looting) or is_gb_loot_lock:
                         filtered_item_boxes = []
                         for b in item_boxes:
-                            if b.get('dist_to_b', 999.0) >= 40.0:
+                            if b.get('dist_to_b', 999.0) >= 20.0:
                                 b['ignore_reason'] = "GANGBANG(>1cell)" if is_gb_loot_lock else "HUNT_FIRST(>1cell)"
                                 ignored_boxes.append(b)
                             else:
@@ -22123,13 +22291,13 @@ def ai_commander_worker(target_pc):
                         # ✅ 3번 수정: 리스트 맨 끝에 "PARTY_ACTIVE_STANDBY" 추가 (엠탐/대기 상태에서도 템을 향해 출발 허용)
                         if current_fsm_for_loot in loot_entry_fsms and not state.get("is_pulling", False) and not is_buffing:
 
-                            best_box_eval = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
-                            dist_to_best = math.hypot(best_box_eval['x'] - char_screen_cx, (best_box_eval['y'] + 15 - char_screen_cy) / 0.50)
+                            best_box_eval = min(item_boxes, key=lambda b: b.get('dist_to_b', calc_loot_norm_dist(b['x'], b['y'], char_screen_cx, char_screen_cy)))
+                            dist_to_best = best_box_eval.get('dist_to_b', calc_loot_norm_dist(best_box_eval['x'], best_box_eval['y'], char_screen_cx, char_screen_cy))
 
                             should_loot_now = True
                             is_pb_arrived_loot_now = (state.get("party_buff_status") == "ARRIVED") or (state.get("is_active_standby", False) and "팟바람" in str(state.get("standby_reason", "")))
 
-                            if is_pb_arrived_loot_now or ((effective_hunt_first or is_gb_loot_lock) and dist_to_best < 40.0):
+                            if is_pb_arrived_loot_now or ((effective_hunt_first or is_gb_loot_lock) and dist_to_best < 20.0):
                                 should_loot_now = False
 
                             if should_loot_now:
@@ -22154,21 +22322,21 @@ def ai_commander_worker(target_pc):
                                 state["cooldown"] = curr_time + 0.05
 
                         if state.get("item_cnt_loot_override", False) and not state.get("item_cnt_loot_started", False) and str(state.get("target_fsm", "")).startswith("LOOT"):
-                            best_b_init_cnt = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
-                            d_init_cnt = math.hypot(best_b_init_cnt['x'] - char_screen_cx, (best_b_init_cnt['y'] + 15 - char_screen_cy) / 0.50)
+                            best_b_init_cnt = min(item_boxes, key=lambda b: b.get('dist_to_b', calc_loot_norm_dist(b['x'], b['y'], char_screen_cx, char_screen_cy)))
+                            d_init_cnt = best_b_init_cnt.get('dist_to_b', calc_loot_norm_dist(best_b_init_cnt['x'], best_b_init_cnt['y'], char_screen_cx, char_screen_cy))
                             state["item_cnt_loot_started"] = True
                             state["item_cnt_last_pos"] = (best_b_init_cnt['x'], best_b_init_cnt['y'])
                             state["item_cnt_min_dist"] = d_init_cnt
                             state["item_cnt_start_valid"] = len(item_boxes)
 
-                        best_box_eval = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
-                        dist_to_best = math.hypot(best_box_eval['x'] - char_screen_cx, (best_box_eval['y'] + 15 - char_screen_cy) / 0.50)
+                        best_box_eval = min(item_boxes, key=lambda b: b.get('dist_to_b', calc_loot_norm_dist(b['x'], b['y'], char_screen_cx, char_screen_cy)))
+                        dist_to_best = best_box_eval.get('dist_to_b', calc_loot_norm_dist(best_box_eval['x'], best_box_eval['y'], char_screen_cx, char_screen_cy))
 
                         current_fsm_for_loot = str(state.get("target_fsm", ""))
 
                         is_combat_now = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or current_fsm_for_loot == "COMBAT"
 
-                        loot_threshold = 110.0 if (is_combat_now and not is_gb_loot_lock) else 60.0
+                        loot_threshold = 40.0 if (is_combat_now and not is_gb_loot_lock) else 20.0
 
                         is_2cell_braking_eval = current_fsm_for_loot in ["LOOTING_2CELL_BRAKE_WAIT"]
 
@@ -22179,7 +22347,7 @@ def ai_commander_worker(target_pc):
                                 state["sweep_active"] = True
                                 state["loot_f4_pulse_time"] = curr_time + 1.0
 
-                                if is_combat_now and dist_to_best > 60.0:
+                                if is_combat_now and dist_to_best > 20.0:
                                     dprint(key, f"⚔️ [전투 줍기] 찐 타격 중 2칸 내 템 포착! 공격과 동시에 줍기(F4) 발동!")
                                 else:
                                     dprint(key, f"👑 [절대 1셀 줍기] 1칸 내 템 포착! 1초 주기 줍기(F4) 누름 갱신!")
@@ -22262,7 +22430,7 @@ def ai_commander_worker(target_pc):
 
                     if item_boxes:
 
-                        if fsm not in ["LOOTING_2CELL_BRAKE_WAIT", "LOOT_SCAN_WAIT"]:
+                        if fsm not in ["LOOTING_2CELL_BRAKE_WAIT", "LOOT_SCAN_WAIT", "LOOTING_3CELL", "LOOTING_3CELL_ACK_WAIT"]:
 
                             if curr_time > state.get("loot_f4_pulse_time", 0):
                                 pico_queues[key].put({"action": "SWEEP_START"})
@@ -22288,11 +22456,8 @@ def ai_commander_worker(target_pc):
                     if fsm == "LOOT_SCAN_WAIT":
                         if item_boxes or (curr_time - state.get("loot_wait_start", 0) > 0.3):
                             if item_boxes:
-                                best_box = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
-
-                                dx_box = best_box['x'] - char_screen_cx
-                                dy_box = (best_box['y'] + 15 - char_screen_cy) / 0.50
-                                true_pixel_dist = math.hypot(dx_box, dy_box)
+                                best_box = min(item_boxes, key=lambda b: b.get('dist_to_b', calc_loot_norm_dist(b['x'], b['y'], char_screen_cx, char_screen_cy)))
+                                true_pixel_dist = best_box.get('dist_to_b', calc_loot_norm_dist(best_box['x'], best_box['y'], char_screen_cx, char_screen_cy))
 
                                 state["loot_target_box"] = best_box
                                 state["loot_missing_timer"] = 0
@@ -22324,7 +22489,7 @@ def ai_commander_worker(target_pc):
                                         state["astar_loot_click_cd"] = 0
                                         state["cooldown"] = curr_time + 0.05
 
-                                elif true_pixel_dist < 54:
+                                elif true_pixel_dist < 20.0:
                                     dprint(key, "💎 [상황 1] 1셀 내 드랍. 제자리 F4 획득 + 주변 모션 사냥 동시 개시!")
                                     state["target_fsm"] = "LOOTING_1CELL"
 
@@ -22333,7 +22498,7 @@ def ai_commander_worker(target_pc):
                                     loot_limit_1cell = 3.0 if (is_fixed_dealer_loot or is_party_wait_loot) else 10.0
                                     state["loot_pick_timeout"] = curr_time + loot_limit_1cell
                                     state["loot_motion_scan_timer"] = 0
-                                elif true_pixel_dist < 113:
+                                elif true_pixel_dist < 42.0:
 
                                     if settings.get("use_party_hunt", False):
                                         dprint(key, "🤝 [파티 루팅] 파티 모드 가동 중(방향 인식 불가). 2셀 주차를 스킵하고 3셀(다이렉트 조준)로 강제 전환합니다!")
@@ -22405,12 +22570,10 @@ def ai_commander_worker(target_pc):
                         else:
                             state["loot_missing_timer"] = 0
 
-                            best_box = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
-                            dx_box = best_box['x'] - char_screen_cx
-                            dy_box = (best_box['y'] + 15 - char_screen_cy) / 0.50
-                            current_dist = math.hypot(dx_box, dy_box)
+                            best_box = min(item_boxes, key=lambda b: b.get('dist_to_b', calc_loot_norm_dist(b['x'], b['y'], char_screen_cx, char_screen_cy)))
+                            current_dist = best_box.get('dist_to_b', calc_loot_norm_dist(best_box['x'], best_box['y'], char_screen_cx, char_screen_cy))
 
-                            if current_dist >= 54.0:
+                            if current_dist >= 20.0:
                                 dprint(key, f"📦 [다중 드랍 연속 줍기] 발밑 템 획득 완료! 남은 템이 {current_dist:.1f}px 밖에 있습니다. 직접 조준하여 마저 줍습니다!")
                                 state["has_tried_2cell_brake"] = True
                                 state["target_fsm"] = "LOOT_SCAN_WAIT"
@@ -22718,13 +22881,11 @@ def ai_commander_worker(target_pc):
                                 state["cooldown"] = curr_time + 0.1
                             else:
 
-                                best_box = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
-                                dx_box = best_box['x'] - char_screen_cx
-                                dy_box = (best_box['y'] + 15 - char_screen_cy) / 0.50
-                                current_dist = math.hypot(dx_box, dy_box)
+                                best_box = min(item_boxes, key=lambda b: b.get('dist_to_b', calc_loot_norm_dist(b['x'], b['y'], char_screen_cx, char_screen_cy)))
+                                current_dist = best_box.get('dist_to_b', calc_loot_norm_dist(best_box['x'], best_box['y'], char_screen_cx, char_screen_cy))
 
-                                if current_dist < 40:
-                                    dprint(key, f"💎 [2셀 루팅 팩트체크] 1칸 전진 제동 완료! (남은 거리: {current_dist:.1f}px) 1셀 획득(F4) 구역으로 합류!")
+                                if current_dist < 20.0:
+                                    dprint(key, f"💎 [2셀 루팅 팩트체크] 1칸 전진 제동 완료! (정규화 거리: {current_dist:.1f}px) 1셀 획득(F4) 구역으로 합류!")
                                     state["target_fsm"] = "LOOTING_1CELL"
                                     is_fixed_dealer_loot = settings.get("use_party_fixed", False) and not settings.get("is_puller", False)
                                     is_party_wait_loot = settings.get("use_party_hunt", False) and (state.get("target_fsm") in ["PARTY_WAIT", "PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY"] or state.get("is_mptam_mode", False))
@@ -22761,11 +22922,11 @@ def ai_commander_worker(target_pc):
                             clear_movements_only(pico_queues[key])
 
                         else:
-                            best_box = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
+                            best_box = min(item_boxes, key=lambda b: b.get('dist_to_b', calc_loot_norm_dist(b['x'], b['y'], char_screen_cx, char_screen_cy)))
                             tx = int(max(10, min(740, best_box['x'])))
                             ty = int(max(5, min(int(h * 0.68), best_box['y'] + 15)))
                             state["loot_aimed_box_cnt"] = len(item_boxes)
-                            state["loot_aimed_dist"] = math.hypot(best_box['x'] - char_screen_cx, (best_box['y'] + 15 - char_screen_cy) / 0.50)
+                            state["loot_aimed_dist"] = best_box.get('dist_to_b', calc_loot_norm_dist(best_box['x'], best_box['y'], char_screen_cx, char_screen_cy))
 
                             pico_queues[key].put({"action": "HOVER", "dx": tx - cur_x, "dy": ty - cur_y})
 
@@ -22795,12 +22956,12 @@ def ai_commander_worker(target_pc):
                                 state["cooldown"] = curr_time + 0.05
                                 continue
 
-                            best_b_init = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
-                            init_dist = math.hypot(best_b_init['x'] - char_screen_cx, (best_b_init['y'] + 15 - char_screen_cy) / 0.50)
+                            best_b_init = min(item_boxes, key=lambda b: b.get('dist_to_b', calc_loot_norm_dist(b['x'], b['y'], char_screen_cx, char_screen_cy)))
+                            init_dist = best_b_init.get('dist_to_b', calc_loot_norm_dist(best_b_init['x'], best_b_init['y'], char_screen_cx, char_screen_cy))
                             aimed_cnt = state.get("loot_aimed_box_cnt", len(item_boxes))
                             aimed_dist = state.get("loot_aimed_dist", init_dist)
 
-                            if len(item_boxes) < aimed_cnt and init_dist > aimed_dist + 10.0:
+                            if len(item_boxes) < aimed_cnt and init_dist > aimed_dist + 6.0:
                                 dprint(key, "📦 [3셀 조준 중 타겟 변경] 첫 아이템이 선제 획득되어 남은 다음 아이템으로 즉시 재조준합니다!")
                                 state["loot_chain_expire"] = curr_time + 0.6
                                 state["target_fsm"] = "LOOTING_3CELL"
@@ -22850,7 +23011,13 @@ def ai_commander_worker(target_pc):
                             state["target_fsm"] = "LOOTING_3CELL_APPROACH"
                             state["loot_missing_timer"] = 0
                             state["cooldown"] = curr_time + 0.03
-                        elif state.get("is_char_moving", False) and (curr_time - state.get("loot_click_time", 0) >= 0.06):
+                        elif (curr_time - state.get("loot_click_time", 0) < 0.16) or state.get("hw_busy", False):
+                            # 💡 피코가 마우스를 누르기 전(0.05초 미만)의 이전 이동 잔상만 지우고, 0.05~0.16초 사이의 실제 첫 발걸음 감지는 그대로 보존!
+                            if curr_time - state.get("loot_click_time", 0) < 0.05:
+                                state["move_sensor_state"] = "STOPPED"
+                                state["is_char_moving"] = False
+                            state["cooldown"] = curr_time + 0.02
+                        elif state.get("is_char_moving", False):
                             dprint(key, "🛑 [3셀 루팅] 캐릭터 발걸음 감지! 스팸 클릭 멈추고 줍기(F4) 켜고 전진!")
                             clear_movements_only(pico_queues[key])
 
@@ -22859,10 +23026,8 @@ def ai_commander_worker(target_pc):
 
                             state["target_fsm"] = "LOOTING_3CELL_APPROACH"
 
-                            best_box = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
-                            dx_box = best_box['x'] - char_screen_cx
-                            dy_box = (best_box['y'] + 15 - char_screen_cy) / 0.50
-                            init_move_dist = math.hypot(dx_box, dy_box)
+                            best_box = min(item_boxes, key=lambda b: b.get('dist_to_b', calc_loot_norm_dist(b['x'], b['y'], char_screen_cx, char_screen_cy)))
+                            init_move_dist = best_box.get('dist_to_b', calc_loot_norm_dist(best_box['x'], best_box['y'], char_screen_cx, char_screen_cy))
                             state["loot_start_dist"] = init_move_dist
                             state["loot_min_dist"] = min(state.get("loot_min_dist", init_move_dist), init_move_dist)
                             state["loot_last_box_pos"] = (best_box['x'], best_box['y'])
@@ -22871,11 +23036,11 @@ def ai_commander_worker(target_pc):
                             state["loot_stuck_timer"] = curr_time
                             state["cooldown"] = curr_time + 0.03
                         else:
-                            best_box = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
-                            curr_wait_dist = math.hypot(best_box['x'] - char_screen_cx, (best_box['y'] + 15 - char_screen_cy) / 0.50)
+                            best_box = min(item_boxes, key=lambda b: b.get('dist_to_b', calc_loot_norm_dist(b['x'], b['y'], char_screen_cx, char_screen_cy)))
+                            curr_wait_dist = best_box.get('dist_to_b', calc_loot_norm_dist(best_box['x'], best_box['y'], char_screen_cx, char_screen_cy))
                             prev_wait_cnt = state.get("loot_last_box_cnt", len(item_boxes))
 
-                            if (len(item_boxes) < prev_wait_cnt or curr_wait_dist > state.get("loot_start_dist", 9999.0) + 12.0) and not state.get("loot_reclick_tried", False):
+                            if (len(item_boxes) < prev_wait_cnt or curr_wait_dist > state.get("loot_start_dist", 9999.0) + 6.0) and not state.get("loot_reclick_tried", False):
                                 dprint(key, "📦 [3셀 출발 전 연속 루팅] 첫 아이템 획득 완료! 빈 땅 클릭을 멈추고 남은 다음 아이템으로 즉시 재조준합니다!")
                                 clear_movements_only(pico_queues[key])
                                 state["loot_is_reclick"] = True
@@ -22910,6 +23075,13 @@ def ai_commander_worker(target_pc):
                                 state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.10)
 
                     elif fsm == "LOOTING_ASTAR_APPROACH":
+                        # 💡 엠탐 중일 때는 회색박스(WALL_BLOCK 등) 우회 추적을 즉시 중단하고, 초록박스(item_boxes)가 있을 때만 루팅 시도!
+                        if state.get("is_mptam_mode", False):
+                            clear_movements_only(pico_queues[key])
+                            state["target_fsm"] = "LOOTING_3CELL" if item_boxes else "IDLE"
+                            state["cooldown"] = curr_time + 0.05
+                            continue
+
                         char_map_pos = state.get("dungeon_map_pos")
                         saved_box = state.get("loot_target_box")
                         all_visible_boxes = item_boxes + [b for b in ignored_boxes if b.get("ignore_reason") == "WALL_BLOCK"]
@@ -23010,10 +23182,8 @@ def ai_commander_worker(target_pc):
                         else:
                             state["loot_missing_timer"] = 0
 
-                            best_box = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
-                            dx_box = best_box['x'] - char_screen_cx
-                            dy_box = (best_box['y'] + 15 - char_screen_cy) / 0.50
-                            current_dist = math.hypot(dx_box, dy_box)
+                            best_box = min(item_boxes, key=lambda b: b.get('dist_to_b', calc_loot_norm_dist(b['x'], b['y'], char_screen_cx, char_screen_cy)))
+                            current_dist = best_box.get('dist_to_b', calc_loot_norm_dist(best_box['x'], best_box['y'], char_screen_cx, char_screen_cy))
 
                             prev_box_pos = state.get("loot_last_box_pos")
                             prev_box_cnt = state.get("loot_last_box_cnt", len(item_boxes))
@@ -23024,15 +23194,15 @@ def ai_commander_worker(target_pc):
                             # 💡 파티원이 다른 템을 주워 박스가 줄었더라도 내 목표 템(best_box) 위치가 실제로 바뀐 경우(>15px)에만 타겟 변경으로 인정!
                             is_next_item_switched = (
                                 (len(item_boxes) < prev_box_cnt and target_jump_dist > 15.0) or
-                                (current_dist > min_dist_so_far + 12.0 and target_jump_dist > 15.0) or
-                                (not state.get("is_char_moving", False) and min_dist_so_far < 54.0 and current_dist >= 40.0)
+                                (current_dist > min_dist_so_far + 6.0 and target_jump_dist > 15.0) or
+                                (not state.get("is_char_moving", False) and min_dist_so_far < 22.0 and current_dist >= 20.0)
                             )
 
                             state["loot_last_box_pos"] = (best_box['x'], best_box['y'])
                             state["loot_last_box_cnt"] = len(item_boxes)
 
-                            if current_dist < 40:
-                                dprint(key, f"🎯 [3셀 접근] 1셀 이내(거리: {current_dist:.1f}px) 접근 성공! 정밀 1셀 줍기 상태로 전환합니다.")
+                            if current_dist < 20.0:
+                                dprint(key, f"🎯 [3셀 접근] 1셀 이내(정규화 거리: {current_dist:.1f}px) 접근 성공! 정밀 1셀 줍기 상태로 전환합니다.")
                                 state["target_fsm"] = "LOOTING_1CELL"
                                 is_fixed_dealer_loot = settings.get("use_party_fixed", False) and not settings.get("is_puller", False)
                                 is_party_wait_loot = settings.get("use_party_hunt", False) and (state.get("target_fsm") in ["PARTY_WAIT", "PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY"] or state.get("is_mptam_mode", False))
@@ -23041,7 +23211,7 @@ def ai_commander_worker(target_pc):
                                 state["loot_motion_scan_timer"] = curr_time + 0.5
                                 state["cooldown"] = curr_time + 0.05
                             elif is_next_item_switched and not state.get("loot_reclick_tried", False):
-                                dprint(key, f"📦 [3셀 연속 루팅] 다음 아이템(거리: {current_dist:.1f}px) 포착! 모션 감지 대신 즉시 클릭하러 재조준합니다!")
+                                dprint(key, f"📦 [3셀 연속 루팅] 다음 아이템(정규화 거리: {current_dist:.1f}px) 포착! 모션 감지 대신 즉시 클릭하러 재조준합니다!")
                                 state["loot_is_reclick"] = True
                                 state["loot_reclick_tried"] = True
                                 state["loot_chain_expire"] = curr_time + 0.6
@@ -23051,7 +23221,7 @@ def ai_commander_worker(target_pc):
                                 state["loot_stuck_timer"] = curr_time
                                 state["target_fsm"] = "LOOTING_3CELL"
                                 state["cooldown"] = curr_time + 0.05
-                            elif current_dist < state.get("loot_start_dist", 9999.0) - 2.0:
+                            elif current_dist < state.get("loot_start_dist", 9999.0) - 1.0:
                                 state["loot_start_dist"] = current_dist
                                 state["loot_stuck_timer"] = curr_time
                                 if len(item_boxes) < prev_box_cnt:
@@ -23091,7 +23261,7 @@ def ai_commander_worker(target_pc):
                             is_aborted = True
 
                         if not is_aborted:
-                            best_box = state.get("evade_target_box", min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy)) if item_boxes else None)
+                            best_box = state.get("evade_target_box", min(item_boxes, key=lambda b: b.get('dist_to_b', calc_loot_norm_dist(b['x'], b['y'], char_screen_cx, char_screen_cy))) if item_boxes else None)
                             if not best_box:
                                 state["target_fsm"] = "IDLE"
                                 state["cooldown"] = curr_time + 0.1
@@ -23199,7 +23369,7 @@ def ai_commander_worker(target_pc):
                                 clear_movements_only(pico_queues[key])
 
                                 cur_x, cur_y = state["cursor_pos"]
-                                best_box = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy))
+                                best_box = min(item_boxes, key=lambda b: b.get('dist_to_b', calc_loot_norm_dist(b['x'], b['y'], char_screen_cx, char_screen_cy)))
                                 tx = int(max(10, min(740, best_box['x'])))
                                 ty = int(max(5, min(int(h * 0.68), best_box['y'] + 15)))
 
@@ -23233,7 +23403,7 @@ def ai_commander_worker(target_pc):
                                         pico_queues[key].put({"action": "SWEEP_STOP"})
                                         state["sweep_active"] = False
 
-                                    ban_box = state.get("evade_target_box") or (min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy)) if item_boxes else None)
+                                    ban_box = state.get("evade_target_box") or (min(item_boxes, key=lambda b: b.get('dist_to_b', calc_loot_norm_dist(b['x'], b['y'], char_screen_cx, char_screen_cy))) if item_boxes else None)
                                     if ban_box and state.get("dungeon_map_pos"):
                                         ban_mx = state["dungeon_map_pos"][0] + (ban_box['x'] - char_screen_cx) * DUNGEON_SCALE_X
                                         ban_my = state["dungeon_map_pos"][1] + (ban_box['y'] + 15 - char_screen_cy) * DUNGEON_SCALE_Y
@@ -23276,10 +23446,10 @@ def ai_commander_worker(target_pc):
                             pico_queues[key].put({"action": "SWEEP_START"})
                             state["sweep_active"] = True
 
-                            best_box = min(item_boxes, key=lambda b: math.hypot(b['x'] - char_screen_cx, b['y'] - char_screen_cy)) if item_boxes else None
+                            best_box = min(item_boxes, key=lambda b: b.get('dist_to_b', calc_loot_norm_dist(b['x'], b['y'], char_screen_cx, char_screen_cy))) if item_boxes else None
                             state["target_fsm"] = "LOOTING_3CELL_APPROACH"
                             if best_box:
-                                state["loot_start_dist"] = math.hypot(cur_x - char_screen_cx, (best_box['y'] + 15 - char_screen_cy) / 0.50)
+                                state["loot_start_dist"] = best_box.get('dist_to_b', calc_loot_norm_dist(best_box['x'], best_box['y'], char_screen_cx, char_screen_cy))
                             state["loot_stuck_timer"] = curr_time
                             state["cooldown"] = curr_time + 0.05
                             dprint(key, f"🎯 [우회 성공 동기화] 템 위로 마우스 안착 및 클릭 완료! 줍기 켜고 전진합니다.")
