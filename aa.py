@@ -3780,6 +3780,9 @@ load_all_templates()
 WEIGHT_ROI_X1, WEIGHT_ROI_X2 = 22, 63
 WEIGHT_ROI_Y1, WEIGHT_ROI_Y2 = 535, 549
 
+LAWFUL_ROI_X1, LAWFUL_ROI_X2 = 65, 145
+LAWFUL_ROI_Y1, LAWFUL_ROI_Y2 = 548, 582
+
 def check_weight_status(img_bgr):
     """무게 게이지 상태를 0(정상), 1(주황/노랑 무거움), 2(완전빨강 전투불능) 3단계로 정밀 판독"""
     if img_bgr is None: return 0
@@ -3800,6 +3803,77 @@ def check_weight_status(img_bgr):
         return 0
     except:
         return 0
+
+def check_lawful_32767(img_bgr):
+    """좌측 하단 Lawful 수치 영역(X:65~145, Y:548~582)에서 qq/32767.png를 매칭하여 만라(32767) 여부를 판독"""
+    if img_bgr is None:
+        return True
+    try:
+        path = "qq/32767.png" if os.path.exists("qq/32767.png") else ("32767.png" if os.path.exists("32767.png") else None)
+        if not path:
+            return True
+
+        mtime = os.path.getmtime(path)
+        cache_key = f"lawful_32767_tmpl_{path}"
+        cached = loaded_models.get(cache_key)
+        if not cached or cached.get("mtime") != mtime:
+            with open(path, "rb") as f:
+                np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
+            bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
+            if bgra is None:
+                return True
+            if len(bgra.shape) == 3 and bgra.shape[2] == 4:
+                color_img = bgra[:, :, :3]
+                mask_img = bgra[:, :, 3]
+            else:
+                color_img = bgra[:, :, :3] if len(bgra.shape) == 3 else cv2.cvtColor(bgra, cv2.COLOR_GRAY2BGR)
+                mask_img = None
+            gray_img = cv2.cvtColor(color_img, cv2.COLOR_BGR2GRAY)
+            loaded_models[cache_key] = {"color": color_img, "gray": gray_img, "mask": mask_img, "mtime": mtime}
+            cached = loaded_models[cache_key]
+
+        tmpl_gray = cached["gray"]
+        tmpl_mask = cached["mask"]
+        th, tw = tmpl_gray.shape[:2]
+
+        h, w = img_bgr.shape[:2]
+        rx1, ry1 = max(0, LAWFUL_ROI_X1), max(0, LAWFUL_ROI_Y1)
+        rx2, ry2 = min(w, LAWFUL_ROI_X2), min(h, LAWFUL_ROI_Y2)
+        if rx2 - rx1 < tw or ry2 - ry1 < th:
+            return True
+
+        roi_gray = cv2.cvtColor(img_bgr[ry1:ry2, rx1:rx2], cv2.COLOR_BGR2GRAY)
+        if tmpl_mask is not None:
+            res = cv2.matchTemplate(roi_gray, tmpl_gray, cv2.TM_CCORR_NORMED, mask=tmpl_mask)
+        else:
+            res = cv2.matchTemplate(roi_gray, tmpl_gray, cv2.TM_CCOEFF_NORMED)
+
+        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        if np.isnan(max_val) or np.isinf(max_val) or max_val < 0.88:
+            return False
+
+        # 5자리 숫자 중 단 1자리만 바뀌어도(예: 22767, 32766) 즉시 잡아내도록 5등분 슬라이스 검증
+        mx, my = max_loc
+        matched_patch = roi_gray[my:my + th, mx:mx + tw]
+        if matched_patch.shape != tmpl_gray.shape:
+            return False
+
+        if tmpl_mask is None and tw >= 15:
+            for s_idx in range(5):
+                sx1 = int(round(s_idx * tw / 5.0))
+                sx2 = int(round((s_idx + 1) * tw / 5.0))
+                if sx2 - sx1 >= 3:
+                    sub_p = matched_patch[:, sx1:sx2]
+                    sub_t = tmpl_gray[:, sx1:sx2]
+                    if float(np.std(sub_p)) < 5.0 or float(np.std(sub_t)) < 5.0:
+                        continue
+                    sub_res = cv2.matchTemplate(sub_p, sub_t, cv2.TM_CCOEFF_NORMED)
+                    if float(sub_res[0, 0]) < 0.80:
+                        return False
+
+        return True
+    except Exception:
+        return True
 
 ALL_MINI_PCS = [
     {"key": "미니1", "title": "프로젝터 - 소스: 미니1", "com_port": "COM3"},
@@ -4844,6 +4918,153 @@ def safe_sleep_interrupt(q, key, duration):
         time.sleep(0.02)
     return True
 
+def trigger_pvp_ctrl_double_tap_async(key, want_pvp_on=False):
+    """마우스 이동 큐(pico_queues)를 멈추지 않고 별도 스레드에서 가우스 난수로 Ctrl 더블탭을 병렬 전송"""
+    st = ai_states.get(key)
+    p_serial = picos.get(key)
+    p_lock = pico_locks.get(key)
+    q = pico_queues.get(key)
+    if not st or not p_serial or not p_lock:
+        return False
+    if st.get("pvp_ctrl_thread_busy", False):
+        return False
+
+    now_call = time.time()
+    # 동일 방향(켜기->켜기 또는 끄기->끄기) 중복 호출 시 캡처보드 반영 시간(약 1.1초) 동안 절대 재발사 금지
+    if st.get("pvp_last_toggle_want") == want_pvp_on and now_call < st.get("pvp_toggle_settle_until", 0.0):
+        return False
+    # 반대 방향 전환이라도 직전 토글 완료 후 최소 0.35초는 경과해야 입력 씹힘이 없음
+    if now_call < st.get("pvp_any_toggle_cd", 0.0):
+        return False
+
+    scr_init = latest_frames.get(key)
+    if scr_init is not None and check_pvp_mode(scr_init) == want_pvp_on:
+        return False
+
+    st["pvp_ctrl_thread_busy"] = True
+    st["pvp_last_toggle_want"] = want_pvp_on
+    st["pvp_toggle_settle_until"] = now_call + 1.5
+    if want_pvp_on:
+        st["pvp_on_cmd_cd"] = now_call + 1.5
+    else:
+        st["pvp_off_retry_cd"] = now_call + 1.5
+        st["pvp_off_cd"] = st["pvp_off_retry_cd"]
+
+    def _ctrl_sleep(min_s, max_s):
+        end_t = time.perf_counter() + g_time(min_s, max_s, key)
+        while True:
+            rem = end_t - time.perf_counter()
+            if rem <= 0 or active_manual_target == key:
+                break
+            if rem > 0.002:
+                time.sleep(0.001)
+            else:
+                time.sleep(0)
+
+    def _is_ctrl_unsafe():
+        cur_fsm = str(st.get("target_fsm", ""))
+        if active_manual_target == key or not st.get("is_hunt_active", False) or st.get("is_paused", False):
+            return True
+        if st.get("is_chat_typing", False) or st.get("death_detect_start", 0) > 0:
+            return True
+        if cur_fsm.startswith(("CERTI_", "DEATH", "INV_CLEAN", "HK_HEAL_", "TOWN_MAINT", "WEAPON_REPAIR", "CHAT_RECOVER", "BUFFING", "F1_INIT")):
+            return True
+        if cur_fsm in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"]:
+            return True
+        return False
+
+    def _worker():
+        try:
+            # 큐 대기 또는 현재 실행 중인 FORCE_RELEASE / SHIFT_CLICK_BRAKE가 끝날 때까지 대기해 Shift+Ctrl 씹힘 원천 방지
+            if q is not None:
+                wait_start = time.perf_counter()
+                had_blocking_hw = False
+                blocking_actions = ("FORCE_RELEASE", "SHIFT_CLICK_BRAKE")
+                while time.perf_counter() - wait_start < 0.40:
+                    with q.mutex:
+                        has_q_blk = any(item.get("action") in blocking_actions for item in q.queue)
+                    is_cur_blk = st.get("hw_current_action") in blocking_actions
+                    if not has_q_blk and not is_cur_blk:
+                        break
+                    had_blocking_hw = True
+                    time.sleep(0.003)
+                if had_blocking_hw:
+                    _ctrl_sleep(0.015, 0.025)
+                    now_ext = time.time()
+                    if want_pvp_on and st.get("pvp_wait_deadline", 0) > now_ext - 0.5:
+                        st["pvp_wait_deadline"] = max(st.get("pvp_wait_deadline", 0), now_ext + g_val(0.38, 0.46))
+                    elif (not want_pvp_on) and st.get("pvp_off_wait_deadline", 0) > now_ext - 0.5:
+                        st["pvp_off_wait_deadline"] = max(st.get("pvp_off_wait_deadline", 0), now_ext + g_val(0.36, 0.45))
+
+            if _is_ctrl_unsafe():
+                return
+
+            scr_now = latest_frames.get(key)
+            if scr_now is not None:
+                if check_pvp_mode(scr_now) == want_pvp_on:
+                    return
+
+            if not want_pvp_on and (st.get("current_is_m_elf", False) or st.get("next_is_m_elf", False)):
+                return
+
+            released_hold = False
+            if st.get("sweep_active", False):
+                send_keyboard_key(p_serial, p_lock, KEY_F4, 0, is_manual=True)
+                st["sweep_active"] = False
+                released_hold = True
+            if st.get("body_held", False):
+                send_keyboard_key(p_serial, p_lock, KEY_F7, 0, is_manual=True)
+                st["body_held"] = False
+                released_hold = True
+            if not st.get("hw_busy", False):
+                send_keyboard_key(p_serial, p_lock, 129, 0, is_manual=True)
+            if released_hold:
+                _ctrl_sleep(0.025, 0.040)
+
+            if _is_ctrl_unsafe():
+                return
+
+            # 첫 Ctrl 누르기 직전 최신 프레임 재확인 (이미 목표 상태면 타건 중단)
+            scr_pre = latest_frames.get(key)
+            if scr_pre is not None and check_pvp_mode(scr_pre) == want_pvp_on:
+                return
+
+            send_keyboard_key(p_serial, p_lock, 128, 1)
+            _ctrl_sleep(0.062, 0.080)
+            send_keyboard_key(p_serial, p_lock, 128, 0)
+
+            if _is_ctrl_unsafe():
+                return
+
+            _ctrl_sleep(0.105, 0.150)
+
+            if _is_ctrl_unsafe():
+                return
+
+            send_keyboard_key(p_serial, p_lock, 128, 1)
+            _ctrl_sleep(0.064, 0.082)
+            send_keyboard_key(p_serial, p_lock, 128, 0)
+
+            finish_t = time.time()
+            st["pvp_any_toggle_cd"] = finish_t + g_val(0.35, 0.45)
+            st["pvp_toggle_settle_until"] = finish_t + g_val(1.10, 1.35)
+            if want_pvp_on:
+                st["pvp_on_cmd_cd"] = finish_t + g_val(1.05, 1.30)
+            else:
+                st["pvp_off_retry_cd"] = finish_t + g_val(1.15, 1.40)
+                st["pvp_off_cd"] = st["pvp_off_retry_cd"]
+        except Exception as e:
+            dprint(key, f"⚠️ [병렬 Ctrl 더블탭 예외] {e}")
+        finally:
+            try:
+                send_keyboard_key(p_serial, p_lock, 128, 0, is_manual=True)
+            except Exception:
+                pass
+            st["pvp_ctrl_thread_busy"] = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return True
+
 def pico_worker_thread(key):
 
     q, p_lock = pico_queues[key], pico_locks[key]
@@ -4879,6 +5100,8 @@ def pico_worker_thread(key):
 
     while True:
         try:
+            if key in ai_states and q.empty():
+                ai_states[key]["hw_current_action"] = None
             cmd = q.get(timeout=0.1)
 
             p_serial = picos.get(key)
@@ -4886,6 +5109,7 @@ def pico_worker_thread(key):
             if key in ai_states:
                 ai_states[key]["abort_macro"] = False
                 ai_states[key]["hw_busy"] = True
+                ai_states[key]["hw_current_action"] = cmd.get("action")
 
             if active_manual_target == key or not p_serial:
                 if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
@@ -5949,10 +6173,12 @@ def pico_worker_thread(key):
 
             if key in ai_states and q.empty():
                 ai_states[key]["hw_busy"] = False
+                ai_states[key]["hw_current_action"] = None
 
         except queue.Empty:
             if key in ai_states:
                 ai_states[key]["hw_busy"] = False
+                ai_states[key]["hw_current_action"] = None
         except Exception as e:
             # 🚨 [수정됨] 하드웨어 스레드가 어떤 에러에도 절대 죽지 않는 불사조 방어막 전개!
             import traceback
@@ -5960,6 +6186,7 @@ def pico_worker_thread(key):
             traceback.print_exc()
             if key in ai_states:
                 ai_states[key]["hw_busy"] = False
+                ai_states[key]["hw_current_action"] = None
             time.sleep(0.01)
 
 for pc in MINI_PCS: threading.Thread(target=pico_worker_thread, args=(pc["key"],), daemon=True).start()
@@ -16413,37 +16640,76 @@ def ai_commander_worker(target_pc):
 
                     continue
 
-                if is_pvp_mode:
-                    state["pvp_on_cmd_cd"] = 0.0
+                # 캡처보드 지연 중 중복 토글(켜졌다 꺼졌다 무한반복) 방지를 위해 쿨타임 강제 0.0 초기화 제거
+                any_pk_opt_on = (
+                    settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False) or
+                    settings.get("use_f_knight_pk", False) or settings.get("use_m_knight_pk", False) or
+                    settings.get("use_m_prince_pk", False) or settings.get("use_halloween_pk", False)
+                )
+                if any_pk_opt_on and is_dragon_1st_ok:
+                    if curr_time >= state.get("next_lawful_check", 0.0):
+                        state["next_lawful_check"] = curr_time + 1.0
+                        is_max_lawful_now = check_lawful_32767(img_bgr)
+                        was_max_lawful = state.get("is_lawful_max", True)
+                        state["is_lawful_max"] = is_max_lawful_now
+                        if not is_max_lawful_now and was_max_lawful:
+                            dprint(key, "🚨 [라우풀 하락 감지] 32767 미매칭! 카오 방지를 위해 만라(32767) 회복 전까지 PK를 차단하고 사냥만 진행합니다.")
+                        elif is_max_lawful_now and not was_max_lawful:
+                            dprint(key, "✨ [만라(32767) 회복 완료] 라우풀 32767 확인! 적대 PK 기능을 다시 활성화합니다.")
+                elif not any_pk_opt_on:
+                    state["is_lawful_max"] = True
 
-                is_m_elf_pk_active = (settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False) or settings.get("use_f_knight_pk", False) or settings.get("use_m_knight_pk", False) or settings.get("use_m_prince_pk", False) or settings.get("use_halloween_pk", False)) and (
+                if not state.get("is_lawful_max", True):
+                    state["has_clear_pk_mob"] = False
+                    if mobs:
+                        mobs = [m for m in mobs if not getattr(m, "is_m_elf", False)]
+                    if state.get("cached_mobs"):
+                        state["cached_mobs"] = [m for m in state["cached_mobs"] if not getattr(m, "is_m_elf", False)]
+                    if (
+                        state.get("current_is_m_elf", False) or
+                        state.get("next_is_m_elf", False) or
+                        (str(state.get("target_fsm", "")) == "HEINE_GMOB_VERIFY" and state.get("switch_target_type") == "MELF")
+                    ):
+                        dprint(key, "🛑 [라우풀 보호 발동] 라우풀이 32767 미만으로 떨어져 PK 공격을 즉시 취소하고 일반 사냥으로 복귀합니다!")
+                        state["abort_macro"] = True
+                        clear_movements_only(pico_queues[key])
+                        state["is_attacking"] = False
+                        state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
+                        state["sword_verify_active"] = False; state["special_ack_arrived"] = False
+                        state["current_is_m_elf"] = False; state["next_is_m_elf"] = False
+                        state["pvp_on_protect_until"] = 0.0
+                        state.pop("switch_target_type", None)
+                        if not str(state.get("target_fsm", "")).startswith("BUFFING"):
+                            state["target_fsm"] = "IDLE"
+                        state["cooldown"] = curr_time + g_time(0.05, 0.10, key)
+
+                has_pk_mob_now = state.get("has_clear_pk_mob", any(getattr(m, "is_m_elf", False) for m in mobs))
+                is_m_elf_pk_active = state.get("is_lawful_max", True) and any_pk_opt_on and (
                     state.get("current_is_m_elf", False) or
                     state.get("next_is_m_elf", False) or
                     (str(state.get("target_fsm", "")) == "HEINE_GMOB_VERIFY" and state.get("switch_target_type") == "MELF") or
-                    any(getattr(m, "is_m_elf", False) for m in mobs)
+                    has_pk_mob_now
                 )
 
-                if is_pvp_mode and not is_m_elf_pk_active and curr_time > state.get("pvp_off_cd", 0):
+                fsm_pvp_chk = str(state.get("target_fsm", ""))
+                is_ui_busy_for_pvp_off = (
+                    fsm_pvp_chk.startswith(("INV_CLEAN", "HK_HEAL_", "WEAPON_REPAIR", "BUFFING", "F1_INIT", "CHAT_RECOVER")) or
+                    fsm_pvp_chk in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] or
+                    state.get("pvp_ctrl_thread_busy", False)
+                )
 
+                if is_pvp_mode and not is_m_elf_pk_active and not is_ui_busy_for_pvp_off and curr_time > state.get("pvp_off_retry_cd", 0) and curr_time > state.get("pvp_on_protect_until", 0):
                     if state.get("perc_pvp", 0) == 0:
-                        delay = g_val(0.15, 0.30)
+                        delay = g_val(0.08, 0.16)
                         state["perc_pvp"] = curr_time + delay
-                        dprint(key, f"🚨 [용머리 감지] PvP 모드 활성화 인지! {delay:.2f}초 뒤 해제 시도!")
+                        dprint(key, f"🚨 [용머리 감지] PK 종료 인지! {delay:.2f}초 뒤 사냥 흐름 유지하며 병렬 해제 시도!")
                     elif curr_time >= state["perc_pvp"]:
-                        dprint(key, "🚨 [경고] PvP 모드(용머리) 켜짐 감지! Ctrl 더블탭으로 강제 해제합니다.")
-                        with pico_queues[key].mutex:
-                            pico_queues[key].queue.clear()
-                        if state.get("target_fsm", "").startswith("INV_CLEAN"):
-                            state["target_fsm"] = "IDLE"
-                        if state.get("sweep_active", False):
-                            pico_queues[key].put({"action": "SWEEP_STOP"})
-                            state["sweep_active"] = False
-                        pico_queues[key].put({"action": "PVP_OFF"})
-                        state["pvp_off_cd"] = curr_time + 3.0
-                        state["cooldown"] = curr_time + 0.5
+                        if trigger_pvp_ctrl_double_tap_async(key, want_pvp_on=False):
+                            dprint(key, "⚡ [논블로킹 용머리 해제] 큐 초기화 없이 병렬 Ctrl 더블탭으로 PvP 모드를 해제합니다.")
+                            state["pvp_off_retry_cd"] = curr_time + g_val(1.15, 1.45)
+                            state["pvp_off_cd"] = state["pvp_off_retry_cd"]
                         state["perc_pvp"] = 0.0
-                    continue
-                else:
+                elif not is_pvp_mode or is_m_elf_pk_active:
                     state["perc_pvp"] = 0.0
 
                 # 👇👇 [파티모드 보라돌이 칼 거두기(즉각 캔슬) 로직] 👇👇
@@ -17040,6 +17306,11 @@ def ai_commander_worker(target_pc):
 
                 cv2.rectangle(debug_img, (WEIGHT_ROI_X1, WEIGHT_ROI_Y1), (WEIGHT_ROI_X2, WEIGHT_ROI_Y2), (0, 165, 255), 2)
                 cv2.putText(debug_img, "WT", (WEIGHT_ROI_X1, max(0, WEIGHT_ROI_Y1 - 2)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
+
+                lawful_ok_dbg = state.get("is_lawful_max", True)
+                lawful_col_dbg = (0, 255, 0) if lawful_ok_dbg else (0, 0, 255)
+                cv2.rectangle(debug_img, (LAWFUL_ROI_X1, LAWFUL_ROI_Y1), (LAWFUL_ROI_X2, LAWFUL_ROI_Y2), lawful_col_dbg, 1)
+                cv2.putText(debug_img, "32767" if lawful_ok_dbg else "PK_LOCK", (LAWFUL_ROI_X1, max(0, LAWFUL_ROI_Y1 - 2)), cv2.FONT_HERSHEY_SIMPLEX, 0.35, lawful_col_dbg, 1)
 
                 # 👇 [형님 지시사항 적용] 디버그 화면 시각화 좌표 확장 동기화 완료!
                 trash_x1, trash_y1 = 607, 15  # 45 -> 15 로 상향
@@ -19211,8 +19482,31 @@ def ai_commander_worker(target_pc):
                     is_party_mode_active = settings.get("use_party_hunt", False) or settings.get("use_party_fixed", False)
                     first_arrow_timeout = 1.2 if is_party_mode_active else 2.0
 
+                    is_pk_target_lost_1s = (
+                        state.get("current_is_m_elf", False) and
+                        not state.get("yolo_blind_active", False) and
+                        not state.get("portal_blind_mode", False) and
+                        (curr_time - state.get("last_pk_target_seen", curr_time) >= state.get("pk_lost_limit", 1.0))
+                    )
+
                     # ================= [ 변경 코드 ] =================
-                    if not state.get("has_fired_arrow", False):
+                    if is_pk_target_lost_1s:
+                        dprint(key, "💨 [PK 타겟 소실] 적대 PK 대상이 1초간 화면에서 사라졌습니다! 즉시 공격을 취소하고 사냥으로 복귀합니다.")
+                        state["abort_macro"] = True
+                        clear_movements_only(pico_queues[key])
+                        if str(state.get("target_fsm", "")).startswith("BUFFING"):
+                            state["buff_return_fsm"] = "IDLE"
+                        else:
+                            state["target_fsm"] = "IDLE"
+                        state["cooldown"] = curr_time + g_time(0.05, 0.10, key)
+                        state["is_attacking"] = False
+                        state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
+                        state["sword_verify_active"] = False; state["special_ack_arrived"] = False
+                        state["current_is_g_mob"] = False; state["current_is_avoid"] = False
+                        state["current_is_m_elf"] = False; state["next_is_m_elf"] = False
+                        state["is_evade_combat"] = False
+                        state["pvp_on_protect_until"] = 0.0
+                    elif not state.get("has_fired_arrow", False):
                         if combat_dur > first_arrow_timeout:
                             dprint(key, f"⚠️ [사격 지연] {first_arrow_timeout}초 경과! 화살 발사 확인 안됨. 헛방으로 간주하고 타겟 포기!")
                             state["cooldown"] = curr_time + 0.1
@@ -19227,6 +19521,7 @@ def ai_commander_worker(target_pc):
                             state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
                             state["current_is_m_elf"] = False; state["next_is_m_elf"] = False
                             state["is_evade_combat"] = False
+                            state["pvp_on_protect_until"] = 0.0
                     else:
                         time_since_arrow = curr_time - state.get("last_arrow_change_time", curr_time)
 
@@ -19248,6 +19543,7 @@ def ai_commander_worker(target_pc):
                                 state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
                                 state["current_is_m_elf"] = False; state["next_is_m_elf"] = False
                                 state["is_evade_combat"] = False
+                                state["pvp_on_protect_until"] = 0.0
                         else:
                             if time_since_arrow > 2.0 and time_since_spell > 2.0:
                                 reason_str = "마법 사용 후 사격 지연" if time_since_spell <= 3.0 else "빠른 사격 중단"
@@ -19264,65 +19560,68 @@ def ai_commander_worker(target_pc):
                                 state["has_fired_arrow"] = False; state["arrow_is_firing"] = False; state["arrow_image"] = None
                                 state["current_is_m_elf"] = False; state["next_is_m_elf"] = False
                                 state["is_evade_combat"] = False
+                                state["pvp_on_protect_until"] = 0.0
 
-                    max_combat_time = float(settings.get("max_combat_time", 15.0))
+                    if state.get("is_attacking", False) or state.get("target_fsm") == "COMBAT":
+                        max_combat_time = float(settings.get("max_combat_time", 15.0))
 
-                    if role != "DUNGEON" and max_combat_time == 15.0:
-                        max_combat_time = 62.0
+                        if role != "DUNGEON" and max_combat_time == 15.0:
+                            max_combat_time = 62.0
 
-                    force_timeout = False
-                    dng_combat_name = settings.get("dungeon_name", "")
+                        force_timeout = False
+                        dng_combat_name = settings.get("dungeon_name", "")
 
-                    if state.get("current_is_m_elf", False):
-                        max_combat_time = 10.0
-                    elif state.get("is_evade_combat", False):
-                        # 💡 회피 기동 중 칼 표시로 진입한 교전은 GUI 설정과 무관하게 최대 5초로 강제 제한!
-                        max_combat_time = 5.0
-                    elif "event" in dng_combat_name or "오땅" in dng_combat_name:
-                        if "오땅" in dng_combat_name:
-
-                            max_combat_time = 8.0
-                        else:
-                            max_combat_time = 40.0
-
-                        if combat_dur > 15.0 and not state.get("combat_took_damage", False):
-                            force_timeout = True
-                            
-                    elif "본던" in dng_combat_name or "gludio" in dng_combat_name.lower() or "사던" in dng_combat_name or "silver" in dng_combat_name.lower():
-                        if state.get("current_is_normal", True):
+                        if state.get("current_is_m_elf", False):
+                            max_combat_time = 10.0
+                        elif state.get("is_evade_combat", False):
+                            # 💡 회피 기동 중 칼 표시로 진입한 교전은 GUI 설정과 무관하게 최대 5초로 강제 제한!
                             max_combat_time = 5.0
+                        elif "event" in dng_combat_name or "오땅" in dng_combat_name:
+                            if "오땅" in dng_combat_name:
 
-                    # ================= [ 변경 코드 ] =================
-                    if combat_dur > max_combat_time or force_timeout:
-                        was_m_elf_combat = state.get("current_is_m_elf", False)
-                        was_evade_combat = state.get("is_evade_combat", False)
-                        if was_m_elf_combat:
-                            dprint(key, f"⚔️ [남요정 PK 제한시간 종료] {max_combat_time}초 경과! 공격을 멈추고 IDLE로 복귀합니다.")
-                        elif was_evade_combat:
-                            dprint(key, f"⏱️ [회피 중 교전 5초 제한 종료] {max_combat_time}초 경과! (벽 너머 오감지 방어) 공격을 멈추고 다음 행동에서 재감지합니다.")
-                        elif force_timeout:
-                            dprint(key, "🧱 [이벤트 던전 벽몹 감지] 15초간 1대도 안 맞음! 벽 몹(또는 갇힘)으로 간주하고 타겟 포기!")
-                        else:
-                            dprint(key, f"🚨 [전투 타임아웃] 전투 지연({max_combat_time}초 초과). 벽치기/오류 판단. 타겟 포기!")
+                                max_combat_time = 8.0
+                            else:
+                                max_combat_time = 40.0
 
-                        clear_movements_only(pico_queues[key])
-                        
-                        # 👇 [변경] 남요정 PK 10초 종료 또는 회피 기동 교전 5초 종료 시 바로 IDLE 복귀
-                        if str(state.get("target_fsm", "")).startswith("BUFFING"):
-                            state["buff_return_fsm"] = "IDLE" if (was_m_elf_combat or was_evade_combat) else "BRAKE_WAIT"
-                        else:
-                            state["target_fsm"] = "IDLE" if (was_m_elf_combat or was_evade_combat) else "BRAKE_WAIT"
+                            if combat_dur > 15.0 and not state.get("combat_took_damage", False):
+                                force_timeout = True
+                                
+                        elif "본던" in dng_combat_name or "gludio" in dng_combat_name.lower() or "사던" in dng_combat_name or "silver" in dng_combat_name.lower():
+                            if state.get("current_is_normal", True):
+                                max_combat_time = 5.0
+
+                        # ================= [ 변경 코드 ] =================
+                        if combat_dur > max_combat_time or force_timeout:
+                            was_m_elf_combat = state.get("current_is_m_elf", False)
+                            was_evade_combat = state.get("is_evade_combat", False)
+                            if was_m_elf_combat:
+                                dprint(key, f"⚔️ [남요정 PK 제한시간 종료] {max_combat_time}초 경과! 공격을 멈추고 IDLE로 복귀합니다.")
+                            elif was_evade_combat:
+                                dprint(key, f"⏱️ [회피 중 교전 5초 제한 종료] {max_combat_time}초 경과! (벽 너머 오감지 방어) 공격을 멈추고 다음 행동에서 재감지합니다.")
+                            elif force_timeout:
+                                dprint(key, "🧱 [이벤트 던전 벽몹 감지] 15초간 1대도 안 맞음! 벽 몹(또는 갇힘)으로 간주하고 타겟 포기!")
+                            else:
+                                dprint(key, f"🚨 [전투 타임아웃] 전투 지연({max_combat_time}초 초과). 벽치기/오류 판단. 타겟 포기!")
+
+                            clear_movements_only(pico_queues[key])
                             
-                        state["brake_end_time"] = curr_time + 0.15
-                        state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
-                        state["is_attacking"] = False
-                        state["has_fired_arrow"] = False
-                        state["arrow_is_firing"] = False
-                        state["arrow_image"] = None
-                        state["current_is_g_mob"] = False
-                        state["current_is_m_elf"] = False
-                        state["next_is_m_elf"] = False
-                        state["is_evade_combat"] = False
+                            # 👇 [변경] 남요정 PK 10초 종료 또는 회피 기동 교전 5초 종료 시 바로 IDLE 복귀
+                            if str(state.get("target_fsm", "")).startswith("BUFFING"):
+                                state["buff_return_fsm"] = "IDLE" if (was_m_elf_combat or was_evade_combat) else "BRAKE_WAIT"
+                            else:
+                                state["target_fsm"] = "IDLE" if (was_m_elf_combat or was_evade_combat) else "BRAKE_WAIT"
+                                
+                            state["brake_end_time"] = curr_time + 0.15
+                            state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
+                            state["is_attacking"] = False
+                            state["has_fired_arrow"] = False
+                            state["arrow_is_firing"] = False
+                            state["arrow_image"] = None
+                            state["current_is_g_mob"] = False
+                            state["current_is_m_elf"] = False
+                            state["next_is_m_elf"] = False
+                            state["is_evade_combat"] = False
+                            state["pvp_on_protect_until"] = 0.0
 
                 active_fsms_for_aim = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_LOCKED", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD"]
                 is_fighting_now = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or state.get("target_fsm") in active_fsms_for_aim
@@ -19558,12 +19857,13 @@ def ai_commander_worker(target_pc):
 
                         dng_yolo_check = settings.get("dungeon_name", "")
                         is_bondon_yolo = "본던" in dng_yolo_check or "gludio" in dng_yolo_check.lower() or "사던" in dng_yolo_check or "silver" in dng_yolo_check.lower()
-                        use_m_elf_pk = settings.get("use_m_elf_pk", False)
-                        use_m_wiz_pk = settings.get("use_m_wiz_pk", False)
-                        use_f_knight_pk = settings.get("use_f_knight_pk", False)
-                        use_m_knight_pk = settings.get("use_m_knight_pk", False)
-                        use_m_prince_pk = settings.get("use_m_prince_pk", False)
-                        use_halloween_pk = settings.get("use_halloween_pk", False)
+                        allow_pk_lawful = state.get("is_lawful_max", True)
+                        use_m_elf_pk = allow_pk_lawful and settings.get("use_m_elf_pk", False)
+                        use_m_wiz_pk = allow_pk_lawful and settings.get("use_m_wiz_pk", False)
+                        use_f_knight_pk = allow_pk_lawful and settings.get("use_f_knight_pk", False)
+                        use_m_knight_pk = allow_pk_lawful and settings.get("use_m_knight_pk", False)
+                        use_m_prince_pk = allow_pk_lawful and settings.get("use_m_prince_pk", False)
+                        use_halloween_pk = allow_pk_lawful and settings.get("use_halloween_pk", False)
 
                         for box in results[0].boxes:
                             cls_id = int(box.cls[0]); conf_val = float(box.conf[0])
@@ -20410,6 +20710,34 @@ def ai_commander_worker(target_pc):
                     state["current_gb_count"] = 0
                     state["gb_active_dirs"] = set()
                 state["gb_prev_gray"] = None
+
+            pk_mobs_now = [m for m in mobs if getattr(m, "is_m_elf", False)]
+            state["has_clear_pk_mob"] = bool(pk_mobs_now)
+            if pk_mobs_now:
+                state["last_pk_target_seen"] = curr_time
+                if run_yolo:
+                    best_pk_tr = min(pk_mobs_now, key=lambda p: (p.x - char_screen_cx)**2 + (p.foot_y - char_screen_cy)**2)
+                    prev_pk_pos = state.get("pk_track_pos")
+                    prev_pk_t = state.get("pk_track_time", 0.0)
+                    pk_vx, pk_vy = 0.0, 0.0
+                    if prev_pk_pos and (0.02 < curr_time - prev_pk_t < 0.45):
+                        dt_pk = curr_time - prev_pk_t
+                        dx_pk = best_pk_tr.x - prev_pk_pos[0]
+                        dy_pk = best_pk_tr.y - prev_pk_pos[1]
+                        dist_pk_mv = math.hypot(dx_pk, dy_pk)
+                        if dist_pk_mv < 55.0:
+                            raw_pvx, raw_pvy = (dx_pk / dt_pk, dy_pk / dt_pk) if dist_pk_mv > 1.5 else (0.0, 0.0)
+                            pk_vx = raw_pvx * 0.60 + state.get("pk_vx", 0.0) * 0.40
+                            pk_vy = raw_pvy * 0.60 + state.get("pk_vy", 0.0) * 0.40
+                            p_spd = math.hypot(pk_vx, pk_vy)
+                            if p_spd > 200.0:
+                                pk_vx, pk_vy = (pk_vx / p_spd) * 200.0, (pk_vy / p_spd) * 200.0
+                    state["pk_vx"], state["pk_vy"] = pk_vx, pk_vy
+                    state["pk_track_pos"] = (best_pk_tr.x, best_pk_tr.y)
+                    state["pk_track_time"] = curr_time
+            elif run_yolo:
+                state["pk_vx"], state["pk_vy"] = 0.0, 0.0
+                state["pk_track_pos"] = None
 
             if mobs:
                 state["last_combat_mob_seen"] = curr_time
@@ -23506,8 +23834,8 @@ def ai_commander_worker(target_pc):
                                 best_switch_target = None
                                 switch_type = ""
 
-                                # 💡 0순위(최우선): 남요정/남법사/여기사/남기사/남군주/할로윈 포착 시 최우선 스위칭
-                                if settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False) or settings.get("use_f_knight_pk", False) or settings.get("use_m_knight_pk", False) or settings.get("use_m_prince_pk", False) or settings.get("use_halloween_pk", False):
+                                # 💡 0순위(최우선): 만라(32767) 상태일 때만 적대 PK 타겟으로 스위칭 허용
+                                if state.get("is_lawful_max", True) and (settings.get("use_m_elf_pk", False) or settings.get("use_m_wiz_pk", False) or settings.get("use_f_knight_pk", False) or settings.get("use_m_knight_pk", False) or settings.get("use_m_prince_pk", False) or settings.get("use_halloween_pk", False)):
                                     m_elf_nearby = [m for m in mobs if getattr(m, 'is_m_elf', False)]
                                     if m_elf_nearby:
                                         best_switch_target = min(m_elf_nearby, key=lambda m: math.hypot(m.x - char_screen_cx, m.foot_y - char_screen_cy))
@@ -23538,26 +23866,36 @@ def ai_commander_worker(target_pc):
                                         pico_queues[key].put({"action": "SWEEP_STOP"})
                                         state["sweep_active"] = False
 
+                                    raw_sw_tx = best_g.x + random.gauss(0, 3)
+                                    raw_sw_ty = (best_g.y if role == "ARCHER" else (best_g.y - 10)) + random.gauss(0, 3)
+                                    dist_sw = math.hypot(raw_sw_tx - cur_x, raw_sw_ty - cur_y)
+                                    ideal_sw = (0.048 + 0.032 * math.log2(1.0 + dist_sw / 30.0)) if role == "ARCHER" else (0.040 + 0.024 * math.log2(1.0 + dist_sw / 30.0))
+                                    sw_fitts = apply_human_variance(ideal_sw)
+                                    state["pvp_wait_retried"] = False
+
                                     if switch_type == "MELF":
                                         state["next_is_m_elf"] = True
+                                        state["pvp_on_protect_until"] = curr_time + g_val(1.2, 1.5)
+                                        state["pvp_wait_deadline"] = curr_time + sw_fitts + g_val(0.45, 0.55)
                                         if not is_pvp_mode and curr_time > state.get("pvp_on_cmd_cd", 0):
-                                            dprint(key, "⚔️ [남요정 PK 스위칭] Ctrl 더블탭으로 PK 모드(용머리 빨간색)를 먼저 켭니다!")
-                                            pico_queues[key].put({"action": "PVP_OFF"})
-                                            pico_queues[key].put({"action": "WAIT", "delay_min": 0.12, "delay_max": 0.18})
-                                            state["pvp_on_cmd_cd"] = curr_time + 0.5
-                                            state["pvp_off_cd"] = curr_time + 3.0
+                                            if trigger_pvp_ctrl_double_tap_async(key, want_pvp_on=True):
+                                                dprint(key, "⚔️ [PK 병렬 스위칭] 마우스 이동과 동시에 병렬 Ctrl 더블탭으로 용머리를 켭니다!")
+                                        if curr_time - state.get("pk_track_time", 0.0) < 0.45:
+                                            lead_sw_x = max(-14.0, min(14.0, state.get("pk_vx", 0.0) * sw_fitts))
+                                            lead_sw_y = max(-12.0, min(12.0, state.get("pk_vy", 0.0) * sw_fitts))
+                                        else:
+                                            lead_sw_x, lead_sw_y = 0.0, 0.0
                                     else:
                                         state["next_is_m_elf"] = False
+                                        state["pvp_on_protect_until"] = 0.0
+                                        lead_sw_x, lead_sw_y = 0.0, 0.0
+                                        if is_pvp_mode:
+                                            state["pvp_off_wait_deadline"] = curr_time + sw_fitts + g_val(0.45, 0.55)
+                                            if curr_time > state.get("pvp_off_retry_cd", 0):
+                                                trigger_pvp_ctrl_double_tap_async(key, want_pvp_on=False)
 
-                                    if role == "ARCHER":
-                                        tx = best_g.x + int(random.gauss(0, 3))
-                                        ty = best_g.y + int(random.gauss(0, 3))
-                                    else:
-                                        tx = best_g.x + int(random.gauss(0, 3))
-                                        ty = best_g.y - 10 + int(random.gauss(0, 3))
-
-                                    tx = int(max(10, min(740, tx)))
-                                    ty = int(max(5, min(int(h * 0.68), ty)))
+                                    tx = int(max(10, min(740, raw_sw_tx + lead_sw_x)))
+                                    ty = int(max(5, min(int(h * 0.68), raw_sw_ty + lead_sw_y)))
 
                                     if tx < 165 and ty < 150:
                                         if (165 - tx) < (150 - ty): tx = 165
@@ -23592,52 +23930,73 @@ def ai_commander_worker(target_pc):
                             cur_x, cur_y = real_cursor[0], real_cursor[1]
                             state["cursor_pos"] = [cur_x, cur_y]
 
-                        is_sword = check_attack_cursor(img_bgr, cur_x, cur_y, pc_key=key)
-
-                        if is_sword:
+                        is_melf_sw = (state.get("switch_target_type") == "MELF")
+                        if is_melf_sw and not is_pvp_mode and (state.get("pvp_ctrl_thread_busy", False) or curr_time < state.get("pvp_wait_deadline", 0)):
+                            state["sword_verify_start"] = curr_time
+                            state["cooldown"] = curr_time + g_time(0.015, 0.025, key)
+                        elif (not is_melf_sw) and is_pvp_mode and (state.get("pvp_ctrl_thread_busy", False) or curr_time < state.get("pvp_off_wait_deadline", 0)):
+                            state["sword_verify_start"] = curr_time
+                            state["cooldown"] = curr_time + g_time(0.015, 0.025, key)
+                        elif (not is_melf_sw) and is_pvp_mode:
                             state["sword_verify_active"] = False
-                            dprint(key, f"🎯 [{state.get('switch_target_type', 'GMOB')} 타격 확정] 칼표시 확인 완료! 새로운 타겟으로 전환합니다.")
-
-                            dist = math.hypot(char_screen_cx - cur_x, char_screen_cy - cur_y)
-                            nx, ny = ((char_screen_cx - cur_x) / dist, (char_screen_cy - cur_y) / dist) if dist > 0 else (0, 1)
-
-                            drag_len = int(max(g_val(70, 90), dist * g_val(0.45, 0.70)))
-                            pico_queues[key].put({"action": "DRAG_ATTACK", "drag_dx": int(nx * drag_len), "drag_dy": int(ny * drag_len), "check_arrow": (role == "ARCHER")})
-                            state["pico_arrived"] = False
-
-                            state["hover_pos"] = (cur_x, cur_y)
-                            state["combat_target_angle"] = math.atan2(cur_y - (char_screen_cy - 20), cur_x - char_screen_cx)
-                            state["cursor_pos"] = [int(cur_x + nx * drag_len), int(cur_y + ny * drag_len)]
-
-                            state["is_attacking"] = True
-                            state["attack_cmd_time"] = curr_time
-                            state["has_fired_arrow"] = False
-
-                            state["is_motion_target"] = False
-                            state["is_evade_combat"] = False
-                            # 💡 갈아탄 몹의 속성으로 전투 상태 완벽 업데이트
-                            sw_type = state.pop("switch_target_type", "")
-                            state["current_is_m_elf"] = (sw_type == "MELF")
-                            state["current_is_avoid"] = (sw_type == "AVOID")
-                            state["current_is_g_mob"] = (sw_type == "GMOB")
-                            state["current_is_normal"] = False
                             state["next_is_m_elf"] = False
-
-                            state["humanize_cd"] = 0
-                            state["park_push_dist"] = g_val(110, 130)
-
-                            state["target_fsm"] = "COMBAT"
-                            state["cooldown"] = curr_time + 0.05
+                            state["pvp_on_protect_until"] = 0.0
+                            state.pop("switch_target_type", None)
+                            dprint(key, "🛡️ [오타격 방어] 용머리 해제 반영 대기 중! 보라돌이 방지를 위해 일반 타겟 공격을 잠시 보류합니다.")
+                            state["target_fsm"] = "IDLE"
+                            state["cooldown"] = curr_time + g_time(0.12, 0.18, key)
                         else:
-                            if curr_time - state.get("sword_verify_start", curr_time) <= 0.12:
-                                state["cooldown"] = curr_time
-                            else:
+                            is_sword = check_attack_cursor(img_bgr, cur_x, cur_y, pc_key=key)
+
+                            if is_sword:
                                 state["sword_verify_active"] = False
+                                dprint(key, f"🎯 [{state.get('switch_target_type', 'GMOB')} 타격 확정] 칼표시 확인 완료! 새로운 타겟으로 전환합니다.")
+
+                                dist = math.hypot(char_screen_cx - cur_x, char_screen_cy - cur_y)
+                                nx, ny = ((char_screen_cx - cur_x) / dist, (char_screen_cy - cur_y) / dist) if dist > 0 else (0, 1)
+
+                                drag_len = int(max(g_val(70, 90), dist * g_val(0.45, 0.70)))
+                                pico_queues[key].put({"action": "DRAG_ATTACK", "drag_dx": int(nx * drag_len), "drag_dy": int(ny * drag_len), "check_arrow": (role == "ARCHER")})
+                                state["pico_arrived"] = False
+
+                                state["hover_pos"] = (cur_x, cur_y)
+                                state["combat_target_angle"] = math.atan2(cur_y - (char_screen_cy - 20), cur_x - char_screen_cx)
+                                state["cursor_pos"] = [int(cur_x + nx * drag_len), int(cur_y + ny * drag_len)]
+
+                                state["is_attacking"] = True
+                                state["attack_cmd_time"] = curr_time
+                                state["has_fired_arrow"] = False
+
+                                state["is_motion_target"] = False
+                                state["is_evade_combat"] = False
+                                # 💡 갈아탄 몹의 속성으로 전투 상태 완벽 업데이트
+                                sw_type = state.pop("switch_target_type", "")
+                                state["current_is_m_elf"] = (sw_type == "MELF")
+                                state["current_is_avoid"] = (sw_type == "AVOID")
+                                state["current_is_g_mob"] = (sw_type == "GMOB")
+                                state["current_is_normal"] = False
                                 state["next_is_m_elf"] = False
-                                dprint(key, "⚠️ [스위칭 실패] 칼이 안 뜸. 락온 실패로 제동(BRAKE_WAIT) 전환.")
-                                state["target_fsm"] = "BRAKE_WAIT"
-                                state["brake_end_time"] = curr_time + 0.15
-                                state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
+                                state["pvp_on_protect_until"] = 0.0
+                                if state["current_is_m_elf"]:
+                                    state["last_pk_target_seen"] = curr_time if state.get("has_clear_pk_mob", True) else max(state.get("last_pk_target_seen", curr_time), curr_time - 0.25)
+                                    state["pk_lost_limit"] = g_val(0.98, 1.05)
+
+                                state["humanize_cd"] = 0
+                                state["park_push_dist"] = g_val(110, 130)
+
+                                state["target_fsm"] = "COMBAT"
+                                state["cooldown"] = curr_time + 0.05
+                            else:
+                                if curr_time - state.get("sword_verify_start", curr_time) <= 0.12:
+                                    state["cooldown"] = curr_time
+                                else:
+                                    state["sword_verify_active"] = False
+                                    state["next_is_m_elf"] = False
+                                    state["pvp_on_protect_until"] = 0.0
+                                    dprint(key, "⚠️ [스위칭 실패] 칼이 안 뜸. 락온 실패로 제동(BRAKE_WAIT) 전환.")
+                                    state["target_fsm"] = "BRAKE_WAIT"
+                                    state["brake_end_time"] = curr_time + 0.15
+                                    state["cooldown"] = max(state.get("cooldown", 0), curr_time + 0.15)
                     else:
                         state["cooldown"] = curr_time + 0.05
                     action_taken = True
@@ -24102,6 +24461,8 @@ def ai_commander_worker(target_pc):
                         state["sword_verify_active"] = False
                         state["special_ack_arrived"] = False
                         state["hover_start_time"] = 0
+                        state["next_is_m_elf"] = False
+                        state["pvp_on_protect_until"] = 0.0
                         clear_movements_only(pico_queues[key])
                         state["cooldown"] = curr_time + 0.1
                         action_taken = True
@@ -24121,9 +24482,45 @@ def ai_commander_worker(target_pc):
                             state["cursor_pos"] = [cur_x, cur_y]
 
                         hx, hy = cur_x, cur_y
-                        is_sword = check_attack_cursor(img_bgr, hx, hy, pc_key=key)
+                        want_pvp_hover = state.get("next_is_m_elf", False)
 
-                        if is_sword:
+                        if want_pvp_hover and not is_pvp_mode and curr_time < state.get("pvp_wait_deadline", 0):
+                            if not state.get("pvp_ctrl_thread_busy", False) and curr_time > state.get("pvp_on_cmd_cd", 0):
+                                if trigger_pvp_ctrl_double_tap_async(key, want_pvp_on=True):
+                                    state["pvp_on_cmd_cd"] = curr_time + g_val(0.42, 0.52)
+                                    if not state.get("pvp_wait_retried", False):
+                                        state["pvp_wait_retried"] = True
+                                        state["pvp_wait_deadline"] = max(state.get("pvp_wait_deadline", 0), curr_time + g_val(0.38, 0.46))
+                            state["sword_verify_start"] = curr_time
+                            state["hover_start_time"] = max(state.get("hover_start_time", 0), curr_time + 0.5)
+                            state["cooldown"] = curr_time + g_time(0.015, 0.025, key)
+                            action_taken = True
+                        elif (not want_pvp_hover) and is_pvp_mode and curr_time < state.get("pvp_off_wait_deadline", 0):
+                            if not state.get("pvp_ctrl_thread_busy", False) and curr_time > state.get("pvp_off_retry_cd", 0):
+                                if trigger_pvp_ctrl_double_tap_async(key, want_pvp_on=False):
+                                    state["pvp_off_retry_cd"] = curr_time + g_val(0.45, 0.55)
+                                    state["pvp_off_cd"] = state["pvp_off_retry_cd"]
+                                    if not state.get("pvp_wait_retried", False):
+                                        state["pvp_wait_retried"] = True
+                                        state["pvp_off_wait_deadline"] = max(state.get("pvp_off_wait_deadline", 0), curr_time + g_val(0.36, 0.45))
+                            state["sword_verify_start"] = curr_time
+                            state["hover_start_time"] = max(state.get("hover_start_time", 0), curr_time + 0.5)
+                            state["cooldown"] = curr_time + g_time(0.015, 0.025, key)
+                            action_taken = True
+                        elif (not want_pvp_hover) and is_pvp_mode:
+                            state["sword_verify_active"] = False
+                            state["hover_start_time"] = 0
+                            state["next_is_m_elf"] = False
+                            state["pvp_on_protect_until"] = 0.0
+                            if not state.get("pvp_ctrl_thread_busy", False):
+                                if trigger_pvp_ctrl_double_tap_async(key, want_pvp_on=False):
+                                    state["pvp_off_retry_cd"] = curr_time + g_val(0.45, 0.58)
+                                    state["pvp_off_cd"] = state["pvp_off_retry_cd"]
+                            dprint(key, "🛡️ [오타격 방어] 일반 몹 조준 중 용머리 미해제 감지! 보라돌이 방지를 위해 공격을 보류하고 용머리를 다시 끕니다.")
+                            state["target_fsm"] = "IDLE"
+                            state["cooldown"] = curr_time + g_time(0.12, 0.18, key)
+                            action_taken = True
+                        elif check_attack_cursor(img_bgr, hx, hy, pc_key=key):
 
                             state["sword_verify_active"] = False
 
@@ -24158,6 +24555,10 @@ def ai_commander_worker(target_pc):
                             state["current_is_avoid"] = state.get("next_is_avoid", False) # 💡 전투 속성 반영
                             state["current_is_m_elf"] = state.get("next_is_m_elf", False)
                             state["next_is_m_elf"] = False
+                            state["pvp_on_protect_until"] = 0.0
+                            if state["current_is_m_elf"]:
+                                state["last_pk_target_seen"] = curr_time if state.get("has_clear_pk_mob", True) else max(state.get("last_pk_target_seen", curr_time), curr_time - 0.25)
+                                state["pk_lost_limit"] = g_val(0.98, 1.05)
                         else:
 
                             if curr_time - state.get("sword_verify_start", curr_time) <= 0.12:
@@ -24166,6 +24567,8 @@ def ai_commander_worker(target_pc):
                             else:
 
                                 state["sword_verify_active"] = False
+                                state["next_is_m_elf"] = False
+                                state["pvp_on_protect_until"] = 0.0
 
                                 # [주석 처리] 타겟팅 실패 시 무기 손상 검사 및 수리 로직 비활성화
                                 # if check_broken_weapon(img_bgr, cur_x, cur_y):
@@ -24812,9 +25215,15 @@ def ai_commander_worker(target_pc):
 
                     fitts_time = apply_human_variance(ideal_fitts)
 
-                    # 💡 커서 비행 시간 동안 몹이 이동할 리드 오프셋(최대 ±22px 허용, 기존 박스 내부 클램핑 족쇄 해제!)
-                    lead_dx = max(-22.0, min(22.0, vx * fitts_time))
-                    lead_dy = max(-18.0, min(18.0, vy * fitts_time))
+                    # 💡 PK 대상은 수동 지그재그 헛방 방지를 위해 ±14/12px로 제한, 일반 몹은 기존 ±22/18px 유지
+                    if state.get("next_is_m_elf", False):
+                        use_vx = state.get("pk_vx", vx) if (curr_time - state.get("pk_track_time", 0.0) < 0.45) else vx
+                        use_vy = state.get("pk_vy", vy) if (curr_time - state.get("pk_track_time", 0.0) < 0.45) else vy
+                        lead_dx = max(-14.0, min(14.0, use_vx * fitts_time))
+                        lead_dy = max(-12.0, min(12.0, use_vy * fitts_time))
+                    else:
+                        lead_dx = max(-22.0, min(22.0, vx * fitts_time))
+                        lead_dy = max(-18.0, min(18.0, vy * fitts_time))
                     final_tx = raw_tx + lead_dx
                     final_ty = raw_ty + lead_dy
 
@@ -24847,13 +25256,19 @@ def ai_commander_worker(target_pc):
                                     else: ty = 130
 
                     pvp_prep_delay = 0.0
-                    if state.get("next_is_m_elf", False) and not is_pvp_mode and curr_time > state.get("pvp_on_cmd_cd", 0):
-                        dprint(key, "⚔️ [남요정 PK 조준] Ctrl 더블탭으로 PK 모드(용머리 빨간색)를 먼저 활성화합니다!")
-                        pico_queues[key].put({"action": "PVP_OFF"})
-                        pico_queues[key].put({"action": "WAIT", "delay_min": 0.12, "delay_max": 0.18})
-                        state["pvp_on_cmd_cd"] = curr_time + 0.5
-                        state["pvp_off_cd"] = curr_time + 3.0
-                        pvp_prep_delay = 0.45
+                    state["pvp_wait_retried"] = False
+                    if state.get("next_is_m_elf", False):
+                        state["pvp_on_protect_until"] = curr_time + g_val(1.2, 1.5)
+                        state["pvp_wait_deadline"] = curr_time + fitts_time + g_val(0.45, 0.55)
+                        if not is_pvp_mode and curr_time > state.get("pvp_on_cmd_cd", 0):
+                            if trigger_pvp_ctrl_double_tap_async(key, want_pvp_on=True):
+                                dprint(key, "⚔️ [PK 병렬 조준] 마우스 이동과 동시에 병렬 Ctrl 더블탭으로 용머리를 켭니다!")
+                    else:
+                        state["pvp_on_protect_until"] = 0.0
+                        if is_pvp_mode:
+                            state["pvp_off_wait_deadline"] = curr_time + fitts_time + g_val(0.45, 0.55)
+                            if curr_time > state.get("pvp_off_retry_cd", 0):
+                                trigger_pvp_ctrl_double_tap_async(key, want_pvp_on=False)
 
                     pico_queues[key].put({"action": "HOVER", "dx": tx - cur_x, "dy": ty - cur_y})
                     pico_queues[key].put({"action": "SPECIAL_ACK"})
