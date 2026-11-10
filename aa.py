@@ -5007,7 +5007,7 @@ def pico_worker_thread(key):
                     continue
 
                 send_keyboard_key(p_serial, p_lock, 129, 1)
-                h_sleep(0.04, 0.06)
+                h_sleep(0.025, 0.040)
 
                 if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
                     send_keyboard_key(p_serial, p_lock, 129, 0)
@@ -5015,12 +5015,12 @@ def pico_worker_thread(key):
                     continue
 
                 send_mouse_click(p_serial, p_lock, 1, 1)
-                h_sleep(0.07, 0.11)
+                h_sleep(0.045, 0.065)
                 send_mouse_click(p_serial, p_lock, 1, 0)
 
-                h_sleep(0.04, 0.08)
+                h_sleep(0.020, 0.035)
                 send_keyboard_key(p_serial, p_lock, 129, 0)
-                h_sleep(0.03, 0.06)
+                h_sleep(0.015, 0.025)
 
             elif action == "BODY_TO_MIND":
                 if key in ai_states: ai_states[key]["last_body_time"] = time.time()
@@ -9207,7 +9207,7 @@ def ai_commander_worker(target_pc):
                 if state.get("map_updated_flag", False) and idle_time > 0.1:
                     state["move_sensor_state"] = "STOPPED"
 
-                elif idle_time > 0.4:
+                elif idle_time > 0.18:
                     state["move_sensor_state"] = "STOPPED"
 
             state["is_char_moving"] = (state["move_sensor_state"] == "MOVING")
@@ -19071,8 +19071,20 @@ def ai_commander_worker(target_pc):
                             dprint(key, f"🔥 [다굴 연쇄 타겟팅] 몹 처치! 1셀 초과 루팅을 차단하고 시체 방향({dead_dir_idx+1 if dead_dir_idx>=0 else '-'}번) 제외 즉시 모션 스캔으로 직행합니다!")
 
                         elif is_party_mode or is_chain_kill_on or is_bondon_aim:
+                            # 💡 1) 죽은 시체가 재조준(is_retry) 가산점(-100만점)을 받지 못하도록 이전 몹 좌표/속도를 즉시 초기화!
+                            dead_pos_now = state.get("last_mob_pos") or state.get("hover_pos")
+                            if dead_pos_now:
+                                state["dead_corpse_pos"] = (dead_pos_now[0], dead_pos_now[1], curr_time + 0.65)
+                            state["last_mob_pos"] = None
+                            state["last_mob_time"] = 0.0
+                            state["mob_vx"], state["mob_vy"] = 0.0, 0.0
 
-                            state["corpse_blind_expire"] = 0.0
+                            # 💡 2) 쓰러지는 시체 애니메이션(0.65초)에 마우스를 다시 던지지 않도록 단기 시체 마스킹 유지!
+                            if mob_angle is not None:
+                                state["corpse_blind_expire"] = curr_time + 0.65
+                                state["corpse_blind_angle"] = mob_angle
+                            else:
+                                state["corpse_blind_expire"] = 0.0
 
                             # 👇 [변경] 버프 시전 중이면 목적지만 변경 (단, 팟바람 완료 복귀는 절대 보존)
                             if str(state.get("target_fsm", "")).startswith("BUFFING"):
@@ -19105,10 +19117,16 @@ def ai_commander_worker(target_pc):
                             state["party_blind_sweep_start"] = 0.0
                             state["party_blind_sweep_end"] = 0.0
 
-                            state["cooldown"] = curr_time + 0.05
+                            state["cooldown"] = curr_time + 0.04
 
-                            dprint(key, f"💀 [체인킬] 경험치 획득! 딜레이 및 시체마스킹 즉각 삭제 후 재조준(TARGET_AIMING) 돌입!")
+                            dprint(key, f"💀 [체인킬] 경험치 획득! 죽은 시체(0.65초) 마스킹 후 살아있는 다음 몹으로 즉시 재조준(TARGET_AIMING) 돌입!")
                         else:
+                            dead_pos_now = state.get("last_mob_pos") or state.get("hover_pos")
+                            if dead_pos_now:
+                                state["dead_corpse_pos"] = (dead_pos_now[0], dead_pos_now[1], curr_time + 1.2)
+                            state["last_mob_pos"] = None
+                            state["last_mob_time"] = 0.0
+                            state["mob_vx"], state["mob_vy"] = 0.0, 0.0
 
                             if mob_angle is not None:
                                 state["corpse_blind_expire"] = curr_time + 2.0
@@ -19501,6 +19519,12 @@ def ai_commander_worker(target_pc):
 
                             if dead_x2 > dead_x1 and dead_y2 > dead_y1:
                                 cv2.rectangle(yolo_img, (dead_x1, dead_y1), (dead_x2, dead_y2), (0, 0, 0), -1)
+
+                        # 💡 원거리/근접 막론 방금 죽은 몹 좌표(dead_corpse_pos)의 쓰러지는 시체 잔상을 0.65초간 마스킹하여 헛손질 원천 차단!
+                        dc_info = state.get("dead_corpse_pos")
+                        if dc_info and curr_time < dc_info[2]:
+                            dc_x, dc_y = int(dc_info[0]), int(dc_info[1])
+                            cv2.rectangle(yolo_img, (max(0, dc_x - 24), max(0, dc_y - 28)), (min(w, dc_x + 24), min(h, dc_y + 24)), (0, 0, 0), -1)
 
                         # 👇👇 [추가] 파티모드용 보라돌이 블랙아웃 처리 (YOLO 눈 가리기) 👇👇
                         active_purples = [pb for pb in state.get("purple_blackouts", []) if curr_time < pb[4]]
@@ -21036,19 +21060,24 @@ def ai_commander_worker(target_pc):
                     state["dungeon_global_path"] = []
                     clear_movements_only(pico_queues[key])
 
+                    best_m = min(mobs, key=lambda p: (p.x - char_screen_cx)**2 + (p.foot_y - char_screen_cy)**2)
+                    state["last_mob_pos"] = (best_m.x, best_m.y)
+                    state["last_mob_time"] = curr_time
+                    state["mob_vx"], state["mob_vy"] = 0.0, 0.0
+
                     if was_walking:
-                        dprint(key, "🏃 [이동 중 몹 발견] 무빙 감지(WALKING)! 큐 폭파 및 Shift+Click 급제동 시도!")
+                        dprint(key, "🏃 [이동 중 몹 발견] 무빙 감지(WALKING)! 급제동(0.13초) 직후 최신 프레임 좌표로 1차 저격합니다!")
                         pico_queues[key].put({"action": "SHIFT_CLICK_BRAKE"})
                         state["pico_arrived"] = False
-                        state["shift_brake_delay"] = g_val(0.04, 0.12)
+                        state["shift_brake_delay"] = 0.0
                         state["first_attempt"] = True
+                        # 💡 브레이크가 물리적으로 실행되는 0.14초 동안 대기한 뒤, 캐릭터가 멈춘 직후의 최신 YOLO 좌표로 HOVER를 계산해 던짐!
+                        state["cooldown"] = curr_time + 0.14
                     else:
                         dprint(key, "⚡ [정지 상태 몹 출현] 정지 팩트(STOPPED) 확인. 제동 생략, 즉각 1차 타겟팅 시도!")
                         state["shift_brake_delay"] = 0.0
                         state["first_attempt"] = False
-
-                    best_m = min(mobs, key=lambda p: (p.x - char_screen_cx)**2 + (p.foot_y - char_screen_cy)**2)
-                    state["last_mob_pos"] = (best_m.x, best_m.y)
+                        state["cooldown"] = curr_time
 
                     state["target_fsm"] = "TARGET_AIMING"
                     state["aiming_start_time"] = curr_time
@@ -21058,7 +21087,6 @@ def ai_commander_worker(target_pc):
                     else:
                         state["aiming_limit"] = g_val(1.5, 2.1)
                     state["hover_retry_count"] = 0
-                    state["cooldown"] = curr_time
 
             if state.get("target_fsm") == "BRAKE_WAIT":
 
@@ -24709,7 +24737,8 @@ def ai_commander_worker(target_pc):
                         state["shift_brake_delay"] = 0.0
 
                     last_pos, last_time = state.get("last_mob_pos"), state.get("last_mob_time", 0)
-                    is_retry = state.get("target_fsm") in ["HOVER_RETRY_WAIT", "TARGET_AIMING"]
+                    # 💡 진짜 조준 실패 후 재시도(HOVER_RETRY_WAIT 또는 retry_count > 0)일 때만 이전 타겟 유지 가산점 부여!
+                    is_retry = (state.get("target_fsm") == "HOVER_RETRY_WAIT") or (state.get("hover_retry_count", 0) > 0)
 
                     def get_mob_score(p):
                         if role == "ARCHER":
@@ -24765,12 +24794,13 @@ def ai_commander_worker(target_pc):
                         if dt > 0.01:
                             raw_dx, raw_dy = best_mob.x - last_pos[0], best_mob.y - last_pos[1]
                             dist_moved = math.hypot(raw_dx, raw_dy)
-                            if dist_moved < 25:
+                            # 💡 브레이크 직후 또는 이동 중인 몹(45px 이내 이동)의 실제 이동 속도 벡터 추출
+                            if dist_moved < 45:
                                 if dist_moved > 1.5: curr_vx, curr_vy = raw_dx / dt, raw_dy / dt
                                 else: curr_vx, curr_vy = 0.0, 0.0
-                                vx, vy = (curr_vx * 0.4) + (old_vx * 0.6), (curr_vy * 0.4) + (old_vy * 0.6)
+                                vx, vy = (curr_vx * 0.55) + (old_vx * 0.45), (curr_vy * 0.55) + (old_vy * 0.45)
                                 speed = math.hypot(vx, vy)
-                                if speed > 200.0: vx, vy = (vx / speed) * 200.0, (vy / speed) * 200.0
+                                if speed > 220.0: vx, vy = (vx / speed) * 220.0, (vy / speed) * 220.0
 
                     state["mob_vx"], state["mob_vy"] = vx, vy
                     state["last_mob_pos"], state["last_mob_time"] = (best_mob.x, best_mob.y), curr_time
@@ -24782,9 +24812,11 @@ def ai_commander_worker(target_pc):
 
                     fitts_time = apply_human_variance(ideal_fitts)
 
-                    predicted_tx, predicted_ty = raw_tx + (vx * fitts_time), raw_ty + (vy * fitts_time)
-                    final_tx = max(best_mob.x1 + 8, min(best_mob.x2 - 8, predicted_tx))
-                    final_ty = max(best_mob.y1 + 8, min(best_mob.y2 - 8, predicted_ty))
+                    # 💡 커서 비행 시간 동안 몹이 이동할 리드 오프셋(최대 ±22px 허용, 기존 박스 내부 클램핑 족쇄 해제!)
+                    lead_dx = max(-22.0, min(22.0, vx * fitts_time))
+                    lead_dy = max(-18.0, min(18.0, vy * fitts_time))
+                    final_tx = raw_tx + lead_dx
+                    final_ty = raw_ty + lead_dy
 
                     tx = int(max(10, min(740, final_tx)))
                     ty = int(max(5, min(int(h * 0.68), final_ty)))
