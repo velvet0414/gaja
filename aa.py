@@ -28060,6 +28060,7 @@ def ai_commander_worker(target_pc):
                     if raw_is_inviter:
                         other_calling_Now = False
                         higher_rank_ready = False
+                        buff_mp_req_chk = float(settings.get("buff_mp_pct", 50.0))
                         with party_lock:
                             for p_uid, p_data in global_invite_states.items():
                                 if str(p_data.get("invite_group", "선택안함")) == my_inv_grp_pb and p_uid != my_uid_pb and (curr_time - p_data.get("recv_time", 0.0) <= 3.5):
@@ -28068,7 +28069,7 @@ def ai_commander_worker(target_pc):
                                         p_calling = bool(p_data.get("req_party_buff", False) and p_data.get("in_game", False) and str(p_data.get("party_state", "")) not in ["TOWN", "MAINT", "SURVIVAL"])
                                         p_done = bool(p_data.get("party_buff_done", False))
                                         p_elem_rem = float(p_data.get("elem_rem", 0.0))
-                                        if p_data.get("in_game", False) and p_data.get("in_party", False) and p_elem_rem > max_other_elem_rem:
+                                        if p_data.get("in_game", False) and p_elem_rem > max_other_elem_rem:
                                             max_other_elem_rem = p_elem_rem
                                         if p_done and (curr_time - state.get("last_pb_done_sync_t", 0.0) > 10.0):
                                             state["last_pb_done_sync_t"] = curr_time
@@ -28081,12 +28082,12 @@ def ai_commander_worker(target_pc):
                                             p_data.get("in_game", False) and p_data.get("in_party", False) and
                                             p_data.get("in_hunting_ground", False) and (not p_data.get("is_out_of_zone", False)) and
                                             (not p_data.get("is_mptam", False)) and
+                                            (float(p_data.get("mp", 100.0)) >= buff_mp_req_chk) and
                                             str(p_data.get("party_state", "")) not in ["TOWN", "MAINT", "SURVIVAL", "MPTAM"]
                                         )
                                         if p_calling or p_done:
                                             if (not state.get("req_party_buff", False)) or (p_rank < my_rank_pb):
                                                 other_calling_Now = True
-                                                break
                                         elif p_ready and (p_rank < my_rank_pb):
                                             higher_rank_ready = True
 
@@ -28099,6 +28100,41 @@ def ai_commander_worker(target_pc):
                                 if state.get("standby_reason") in ["리더 팟바람 선진입", "팟바람 시전 집합"]:
                                     state["standby_reason"] = "팟바람 수령 집합"
                             is_leader = False
+
+                        # 💡 후순위(is_leader == False) 팟바람 캐릭터도 인증/사망 복귀(0초) 시 제자리 단독 시전 및 쿨타임 동기화 수행
+                        if not is_leader and not other_calling_Now and state.get("party_buff_status", "IDLE") == "IDLE" and max_other_elem_rem > 60.0:
+                            b_set_sub = settings.get("buff_set", "선택안함")
+                            if "3셋트" in b_set_sub or "4셋트" in b_set_sub:
+                                elem_t_sub = state.get("buff_element_time", 0.0)
+                                is_sub_zero = (elem_t_sub == 0.0)
+                                is_sub_expired = (elem_t_sub > 0.0) and ((curr_time > elem_t_sub) or state.get("missed_party_buff", False))
+                                if is_sub_zero:
+                                    is_ui_busy_sub = fsm_retreat.startswith(("INV_CLEAN", "HK_HEAL", "WEAPON_REPAIR", "BUFFING", "F1_INIT", "CHAT_RECOVER", "TOWN_MAINT", "DEATH", "CERTI_")) or state.get("town_thread_running", False)
+                                    is_sub_mptam = state.get("is_mptam_mode", False) or state.get("pending_mptam", False) or state.get("mptam_standby_guard", False)
+                                    in_zone_sub = (not state.get("is_out_of_zone", False)) and (state.get("dungeon_map_pos") is not None)
+                                    if (not is_ui_busy_sub) and (not is_sub_mptam) and in_zone_sub and (mp >= buff_mp_req_chk) and (not mobs) and (not is_looting) and fsm_retreat in ["IDLE", "PARTY_WAIT", "SQUAD_WAIT", "PARTY_ACTIVE_STANDBY"]:
+                                        dprint(key, f"🪄 [후순위 복귀 단독 계열시전] 파티 팟바람 쿨타임({max_other_elem_rem/60:.1f}분 남음) 유지 중! 전체 소집 없이 내 캐릭터만 제자리 계열마법을 시전합니다.")
+                                        with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                                        if state.get("sweep_active", False):
+                                            pico_queues[key].put({"action": "SWEEP_STOP"}); state["sweep_active"] = False
+                                        if state.get("body_held", False):
+                                            if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                                            state["body_held"] = False
+                                        state["missed_party_buff"] = False
+                                        state["post_certi_need_pb"] = False
+                                        state["buff_start_mp"] = mp
+                                        state["current_buff"] = {"name": "element", "page": 2, "key": KEY_F6, "double": False, "dur": max_other_elem_rem}
+                                        state["buff_retry_cnt"] = 0
+                                        state["buff_return_fsm"] = "PARTY_WAIT" if settings.get("use_party_fixed", False) else "IDLE"
+                                        state["target_fsm"] = "BUFFING_START_PAGE"
+                                        state["cooldown"] = curr_time + 0.1
+                                        action_taken = True
+                                elif is_sub_expired:
+                                    state["buff_element_time"] = curr_time + max_other_elem_rem
+                                    state["missed_party_buff"] = False
+                                    state["post_certi_need_pb"] = False
+                                    save_buff_times(ai_states)
+                                    dprint(key, f"🔄 [후순위 팟바람 쿨타임 동기화] 상위 시전자의 남은 쿨타임({max_other_elem_rem/60:.1f}분)과 동기화 완료!")
 
                     # 1) 대표 시전자(활성 팟바람 캐릭터 1명) 로직
                     if is_leader:
