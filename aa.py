@@ -12236,8 +12236,8 @@ def ai_commander_worker(target_pc):
 
                             h_scr, w_scr = screen.shape[:2]
                             if item_only:
-                                rx1, ry1 = 15, 32
-                                rx2, ry2 = min(85, w_scr), min(355, h_scr)
+                                rx1, ry1 = 0, 20
+                                rx2, ry2 = min(255, w_scr), min(358, h_scr)
                             elif ui_only:
                                 rx1, ry1 = 0, 0
                                 rx2, ry2 = min(290, w_scr), min(400, h_scr)
@@ -12281,8 +12281,8 @@ def ai_commander_worker(target_pc):
 
                             h_scr, w_scr = screen.shape[:2]
                             if item_only:
-                                rx1, ry1 = 15, 32
-                                rx2, ry2 = min(85, w_scr), min(355, h_scr)
+                                rx1, ry1 = 0, 20
+                                rx2, ry2 = min(255, w_scr), min(358, h_scr)
                             elif ui_only:
                                 rx1, ry1 = 0, 0
                                 rx2, ry2 = min(290, w_scr), min(400, h_scr)
