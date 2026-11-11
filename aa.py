@@ -2776,6 +2776,8 @@ def calculate_local_astar_path_for_loot(map_gray, start, goal, pc_graph=None, ma
                         if math.hypot(sx_n - sx, sy_n - sy) > 2.5 or len(path) == 1:
                             path.append((sx_n, sy_n))
                         path.reverse()
+                        while len(path) > 2 and check_line_of_sight(map_gray, (sx, sy), path[1], margin_steps=1):
+                            path.pop(0)
                         return path
 
                     cn = nodes[current]
@@ -19550,12 +19552,12 @@ def ai_commander_worker(target_pc):
                         state.get("current_is_m_elf", False) and
                         not state.get("yolo_blind_active", False) and
                         not state.get("portal_blind_mode", False) and
-                        (curr_time - state.get("last_pk_target_seen", curr_time) >= state.get("pk_lost_limit", 1.0))
+                        (curr_time - state.get("last_pk_target_seen", curr_time) >= state.get("pk_lost_limit", 2.0))
                     )
 
                     # ================= [ 변경 코드 ] =================
                     if is_pk_target_lost_1s:
-                        dprint(key, "💨 [PK 타겟 소실] 적대 PK 대상이 1초간 화면에서 사라졌습니다! 즉시 공격을 취소하고 사냥으로 복귀합니다.")
+                        dprint(key, "💨 [PK 타겟 소실] 적대 PK 대상이 2초간 화면에서 사라졌습니다! 즉시 공격을 취소하고 사냥으로 복귀합니다.")
                         state["abort_macro"] = True
                         clear_movements_only(pico_queues[key])
                         if str(state.get("target_fsm", "")).startswith("BUFFING"):
@@ -20385,6 +20387,31 @@ def ai_commander_worker(target_pc):
                                 cv2.putText(debug_img, "HIDDEN(WALL)", (m.x1, max(0, m.y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (128, 128, 128), 1)
 
                 mobs = valid_mobs
+
+                if run_yolo:
+                    prev_y_mobs = state.get("prev_yolo_mobs", [])
+                    prev_y_time = state.get("prev_yolo_time", 0.0)
+                    dt_y = curr_time - prev_y_time
+                    is_char_still = state.get("is_completely_stopped", False)
+                    new_y_mobs = []
+                    for m in mobs:
+                        mvx, mvy = 0.0, 0.0
+                        if is_char_still and prev_y_mobs and (0.03 <= dt_y <= 0.35):
+                            closest_pm = min(prev_y_mobs, key=lambda pm: math.hypot(m.x - pm[0], m.y - pm[1]))
+                            dist_pm = math.hypot(m.x - closest_pm[0], m.y - closest_pm[1])
+                            if dist_pm <= 38.0:
+                                if dist_pm >= 1.5:
+                                    raw_mvx = (m.x - closest_pm[0]) / dt_y
+                                    raw_mvy = (m.y - closest_pm[1]) / dt_y
+                                    mvx = (raw_mvx * 0.65 + closest_pm[2] * 0.35) if (closest_pm[2] != 0.0 or closest_pm[3] != 0.0) else raw_mvx
+                                    mvy = (raw_mvy * 0.65 + closest_pm[3] * 0.35) if (closest_pm[2] != 0.0 or closest_pm[3] != 0.0) else raw_mvy
+                                    m_spd = math.hypot(mvx, mvy)
+                                    if m_spd > 200.0:
+                                        mvx, mvy = (mvx / m_spd) * 200.0, (mvy / m_spd) * 200.0
+                        m.vx, m.vy = mvx, mvy
+                        new_y_mobs.append((m.x, m.y, mvx, mvy))
+                    state["prev_yolo_mobs"] = new_y_mobs
+                    state["prev_yolo_time"] = curr_time
 
                 if state.get("partner_combat_assist", False):
 
@@ -21453,9 +21480,10 @@ def ai_commander_worker(target_pc):
                     clear_movements_only(pico_queues[key])
 
                     best_m = min(mobs, key=lambda p: (p.x - char_screen_cx)**2 + (p.foot_y - char_screen_cy)**2)
-                    state["last_mob_pos"] = (best_m.x, best_m.y)
-                    state["last_mob_time"] = curr_time
-                    state["mob_vx"], state["mob_vy"] = 0.0, 0.0
+                    if was_walking:
+                        state["last_mob_pos"] = (best_m.x, best_m.y)
+                        state["last_mob_time"] = curr_time
+                        state["mob_vx"], state["mob_vy"] = 0.0, 0.0
 
                     if was_walking:
                         dprint(key, "🏃 [이동 중 몹 발견] 무빙 감지(WALKING)! 급제동(0.13초) 직후 최신 프레임 좌표로 1차 저격합니다!")
@@ -23341,7 +23369,15 @@ def ai_commander_worker(target_pc):
                             state["cooldown"] = curr_time + 0.1
                             clear_movements_only(pico_queues[key])
 
+                        elif state.get("hw_current_action") == "FORCE_RELEASE":
+                            state["cooldown"] = curr_time + 0.02
+
                         else:
+                            real_cursor = find_cursor_pos(img_bgr, last_pos=(cur_x, cur_y), check_circle=False, allow_full_scan=True)
+                            if real_cursor:
+                                cur_x, cur_y = real_cursor[0], real_cursor[1]
+                                state["cursor_pos"] = [cur_x, cur_y]
+
                             best_box = min(item_boxes, key=lambda b: b.get('dist_to_b', calc_loot_norm_dist(b['x'], b['y'], char_screen_cx, char_screen_cy)))
                             tx = int(max(10, min(740, best_box['x'])))
                             ty = int(max(5, min(int(h * 0.68), best_box['y'] + 15)))
@@ -23551,6 +23587,8 @@ def ai_commander_worker(target_pc):
                         else:
                             state["astar_loot_stuck_timer"] = curr_time
 
+                        while len(l_path) > 2 and check_line_of_sight(pc_map_gray_los, char_map_pos, l_path[1], margin_steps=1):
+                            l_path.pop(0)
                         while l_path and math.hypot(char_map_pos[0] - l_path[0][0], char_map_pos[1] - l_path[0][1]) <= 3.5:
                             l_path.pop(0)
 
@@ -23578,6 +23616,10 @@ def ai_commander_worker(target_pc):
                             else: target_y = 150
 
                         if curr_time >= state.get("astar_loot_click_cd", 0):
+                            real_cursor = find_cursor_pos(img_bgr, last_pos=(cur_x, cur_y), check_circle=False, allow_full_scan=True)
+                            if real_cursor:
+                                cur_x, cur_y = real_cursor[0], real_cursor[1]
+                                state["cursor_pos"] = [cur_x, cur_y]
                             pico_queues[key].put({"action": "ATTACK", "dx": target_x - cur_x, "dy": target_y - cur_y, "is_combat": False})
                             state["pico_arrived"] = False
                             state["cursor_pos"] = [target_x, target_y]
@@ -23788,7 +23830,13 @@ def ai_commander_worker(target_pc):
                                 dprint(key, "💨 [회피 성공] 우회 이동 감지! 길이 뚫렸습니다. 즉시 템 박스를 다시 조준합니다!")
                                 clear_movements_only(pico_queues[key])
 
-                                cur_x, cur_y = state["cursor_pos"]
+                                real_cursor = find_cursor_pos(img_bgr, last_pos=state.get("cursor_pos", [cur_x, cur_y]), check_circle=False, allow_full_scan=True)
+                                if real_cursor:
+                                    cur_x, cur_y = real_cursor[0], real_cursor[1]
+                                    state["cursor_pos"] = [cur_x, cur_y]
+                                else:
+                                    cur_x, cur_y = state["cursor_pos"]
+
                                 best_box = min(item_boxes, key=lambda b: b.get('dist_to_b', calc_loot_norm_dist(b['x'], b['y'], char_screen_cx, char_screen_cy)))
                                 tx = int(max(10, min(740, best_box['x'])))
                                 ty = int(max(5, min(int(h * 0.68), best_box['y'] + 15)))
@@ -23937,13 +23985,16 @@ def ai_commander_worker(target_pc):
                                     sw_fitts = apply_human_variance(ideal_sw)
                                     state["pvp_wait_retried"] = False
 
+                                    sw_pvp_delay = 0.0
                                     if switch_type == "MELF":
                                         state["next_is_m_elf"] = True
-                                        state["pvp_on_protect_until"] = curr_time + g_val(1.2, 1.5)
-                                        state["pvp_wait_deadline"] = curr_time + sw_fitts + g_val(0.45, 0.55)
-                                        if not is_pvp_mode and curr_time > state.get("pvp_on_cmd_cd", 0):
-                                            if trigger_pvp_ctrl_double_tap_async(key, want_pvp_on=True):
-                                                dprint(key, "⚔️ [PK 병렬 스위칭] 마우스 이동과 동시에 병렬 Ctrl 더블탭으로 용머리를 켭니다!")
+                                        if not is_pvp_mode:
+                                            sw_pvp_delay = g_val(0.18, 0.22)
+                                            if curr_time > state.get("pvp_on_cmd_cd", 0):
+                                                if trigger_pvp_ctrl_double_tap_async(key, want_pvp_on=True):
+                                                    dprint(key, "⚔️ [PK 병렬 스위칭] 용머리 선행 입력 후 0.2초 뒤 마우스 커서를 출발시킵니다!")
+                                        state["pvp_on_protect_until"] = curr_time + sw_pvp_delay + g_val(1.2, 1.5)
+                                        state["pvp_wait_deadline"] = curr_time + sw_pvp_delay + sw_fitts + g_val(0.45, 0.55)
                                         if curr_time - state.get("pk_track_time", 0.0) < 0.45:
                                             lead_sw_x = max(-14.0, min(14.0, state.get("pk_vx", 0.0) * sw_fitts))
                                             lead_sw_y = max(-12.0, min(12.0, state.get("pk_vy", 0.0) * sw_fitts))
@@ -23965,6 +24016,8 @@ def ai_commander_worker(target_pc):
                                         if (165 - tx) < (150 - ty): tx = 165
                                         else: ty = 150
 
+                                    if sw_pvp_delay > 0.0:
+                                        pico_queues[key].put({"action": "WAIT", "delay_min": 0.18, "delay_max": 0.22})
                                     pico_queues[key].put({"action": "HOVER", "dx": tx - cur_x, "dy": ty - cur_y})
                                     pico_queues[key].put({"action": "SPECIAL_ACK"})
                                     state["special_ack_arrived"] = False
@@ -23976,7 +24029,7 @@ def ai_commander_worker(target_pc):
                                     state["has_fired_arrow"] = False
 
                                     state["sword_verify_active"] = False
-                                    state["gmob_ack_timeout"] = curr_time + 1.5
+                                    state["gmob_ack_timeout"] = curr_time + sw_pvp_delay + 1.5
                                     state["target_fsm"] = "HEINE_GMOB_VERIFY"
                                     state["switch_target_type"] = switch_type # 💡 갈아탄 타겟의 정체 기억
                                     state["cooldown"] = curr_time + 0.05
@@ -24043,7 +24096,7 @@ def ai_commander_worker(target_pc):
                                 state["pvp_on_protect_until"] = 0.0
                                 if state["current_is_m_elf"]:
                                     state["last_pk_target_seen"] = curr_time if state.get("has_clear_pk_mob", True) else max(state.get("last_pk_target_seen", curr_time), curr_time - 0.25)
-                                    state["pk_lost_limit"] = g_val(0.98, 1.05)
+                                    state["pk_lost_limit"] = g_val(1.98, 2.08)
 
                                 state["humanize_cd"] = 0
                                 state["park_push_dist"] = g_val(110, 130)
@@ -24605,7 +24658,7 @@ def ai_commander_worker(target_pc):
                             state["pvp_on_protect_until"] = 0.0
                             if state["current_is_m_elf"]:
                                 state["last_pk_target_seen"] = curr_time if state.get("has_clear_pk_mob", True) else max(state.get("last_pk_target_seen", curr_time), curr_time - 0.25)
-                                state["pk_lost_limit"] = g_val(0.98, 1.05)
+                                state["pk_lost_limit"] = g_val(1.98, 2.08)
                         else:
 
                             if curr_time - state.get("sword_verify_start", curr_time) <= 0.12:
@@ -25214,8 +25267,8 @@ def ai_commander_worker(target_pc):
                             if getattr(p, "is_g_mob", False):
                                 base_score -= 5000000
 
-                        if is_retry and last_pos and curr_time - last_time < 0.5:
-                            if (p.x - last_pos[0])**2 + (p.y - last_pos[1])**2 < 1600:
+                        if is_retry and last_pos and curr_time - last_time < 0.85:
+                            if (p.x - last_pos[0])**2 + (p.y - last_pos[1])**2 < 5625:
                                 base_score -= 1000000
                         return base_score
 
@@ -25237,20 +25290,29 @@ def ai_commander_worker(target_pc):
                     state["mob_template"] = img_bgr[my1:my2, mx1:mx2].copy() if mx2 > mx1 and my2 > my1 else None
 
                     old_vx, old_vy = state.get("mob_vx", 0.0), state.get("mob_vy", 0.0)
-                    vx, vy = 0.0, 0.0
+                    vx, vy = getattr(best_mob, "vx", 0.0), getattr(best_mob, "vy", 0.0)
 
-                    if last_pos and curr_time - last_time < 0.5:
+                    if last_pos and curr_time - last_time < 0.95:
                         dt = curr_time - last_time
-                        if dt > 0.01:
+                        if dt > 0.02:
                             raw_dx, raw_dy = best_mob.x - last_pos[0], best_mob.y - last_pos[1]
                             dist_moved = math.hypot(raw_dx, raw_dy)
-                            # 💡 브레이크 직후 또는 이동 중인 몹(45px 이내 이동)의 실제 이동 속도 벡터 추출
-                            if dist_moved < 45:
-                                if dist_moved > 1.5: curr_vx, curr_vy = raw_dx / dt, raw_dy / dt
-                                else: curr_vx, curr_vy = 0.0, 0.0
-                                vx, vy = (curr_vx * 0.55) + (old_vx * 0.45), (curr_vy * 0.55) + (old_vy * 0.45)
-                                speed = math.hypot(vx, vy)
-                                if speed > 220.0: vx, vy = (vx / speed) * 220.0, (vy / speed) * 220.0
+                            max_allowed_move = max(55.0, 220.0 * dt)
+                            # 💡 재조준(0.45~0.6초 경과) 시에도 이동 중인 몹의 속도 벡터가 끊기지 않도록 시간 비례 허용치 적용
+                            if dist_moved < max_allowed_move:
+                                if dist_moved > 1.5:
+                                    curr_vx, curr_vy = raw_dx / dt, raw_dy / dt
+                                else:
+                                    curr_vx, curr_vy = 0.0, 0.0
+                                if old_vx == 0.0 and old_vy == 0.0:
+                                    shot_vx, shot_vy = curr_vx, curr_vy
+                                else:
+                                    shot_vx, shot_vy = (curr_vx * 0.70) + (old_vx * 0.30), (curr_vy * 0.70) + (old_vy * 0.30)
+                                speed = math.hypot(shot_vx, shot_vy)
+                                if speed > 220.0:
+                                    shot_vx, shot_vy = (shot_vx / speed) * 220.0, (shot_vy / speed) * 220.0
+                                if math.hypot(shot_vx, shot_vy) > math.hypot(vx, vy):
+                                    vx, vy = shot_vx, shot_vy
 
                     state["mob_vx"], state["mob_vy"] = vx, vy
                     state["last_mob_pos"], state["last_mob_time"] = (best_mob.x, best_mob.y), curr_time
@@ -25261,16 +25323,18 @@ def ai_commander_worker(target_pc):
                     else: ideal_fitts = 0.040 + 0.024 * math.log2(1.0 + dist_to_raw / 30.0)
 
                     fitts_time = apply_human_variance(ideal_fitts)
+                    yolo_age = max(0.0, min(0.09, curr_time - state.get("last_yolo_time", curr_time)))
+                    effective_lead_t = fitts_time + yolo_age + (0.24 if is_retry else 0.16)
 
-                    # 💡 PK 대상은 수동 지그재그 헛방 방지를 위해 ±14/12px로 제한, 일반 몹은 기존 ±22/18px 유지
+                    # 💡 PK 대상은 수동 지그재그 헛방 방지를 위해 ±14/12px로 제한, 일반 몹은 실제 도착+검증 시간을 반영하여 몸통 앞쪽 조준
                     if state.get("next_is_m_elf", False):
                         use_vx = state.get("pk_vx", vx) if (curr_time - state.get("pk_track_time", 0.0) < 0.45) else vx
                         use_vy = state.get("pk_vy", vy) if (curr_time - state.get("pk_track_time", 0.0) < 0.45) else vy
                         lead_dx = max(-14.0, min(14.0, use_vx * fitts_time))
                         lead_dy = max(-12.0, min(12.0, use_vy * fitts_time))
                     else:
-                        lead_dx = max(-22.0, min(22.0, vx * fitts_time))
-                        lead_dy = max(-18.0, min(18.0, vy * fitts_time))
+                        lead_dx = max(-40.0, min(40.0, vx * effective_lead_t))
+                        lead_dy = max(-32.0, min(32.0, vy * effective_lead_t))
                     final_tx = raw_tx + lead_dx
                     final_ty = raw_ty + lead_dy
 
@@ -25282,11 +25346,13 @@ def ai_commander_worker(target_pc):
                         move_dy = ty - cur_y
                         move_dist = math.hypot(move_dx, move_dy)
 
-                        if 0 < move_dist <= 150.0:
-                            if move_dist < 15.0:
+                        if 0 < move_dist <= 180.0:
+                            if math.hypot(vx, vy) > 15.0:
+                                added_dist = min(28.0, max(15.0, move_dist * 0.28))
+                            elif move_dist < 15.0:
                                 added_dist = 0.0
                             else:
-                                added_dist = move_dist * 0.10
+                                added_dist = move_dist * 0.15
 
                             if added_dist > 0:
                                 nx = move_dx / move_dist
@@ -25305,11 +25371,13 @@ def ai_commander_worker(target_pc):
                     pvp_prep_delay = 0.0
                     state["pvp_wait_retried"] = False
                     if state.get("next_is_m_elf", False):
-                        state["pvp_on_protect_until"] = curr_time + g_val(1.2, 1.5)
-                        state["pvp_wait_deadline"] = curr_time + fitts_time + g_val(0.45, 0.55)
-                        if not is_pvp_mode and curr_time > state.get("pvp_on_cmd_cd", 0):
-                            if trigger_pvp_ctrl_double_tap_async(key, want_pvp_on=True):
-                                dprint(key, "⚔️ [PK 병렬 조준] 마우스 이동과 동시에 병렬 Ctrl 더블탭으로 용머리를 켭니다!")
+                        if not is_pvp_mode:
+                            pvp_prep_delay = g_val(0.18, 0.22)
+                            if curr_time > state.get("pvp_on_cmd_cd", 0):
+                                if trigger_pvp_ctrl_double_tap_async(key, want_pvp_on=True):
+                                    dprint(key, "⚔️ [PK 병렬 조준] 용머리 선행 입력 후 0.2초 뒤 마우스 커서를 출발시킵니다!")
+                        state["pvp_on_protect_until"] = curr_time + pvp_prep_delay + g_val(1.2, 1.5)
+                        state["pvp_wait_deadline"] = curr_time + pvp_prep_delay + fitts_time + g_val(0.45, 0.55)
                     else:
                         state["pvp_on_protect_until"] = 0.0
                         if is_pvp_mode:
@@ -25317,6 +25385,8 @@ def ai_commander_worker(target_pc):
                             if curr_time > state.get("pvp_off_retry_cd", 0):
                                 trigger_pvp_ctrl_double_tap_async(key, want_pvp_on=False)
 
+                    if pvp_prep_delay > 0.0:
+                        pico_queues[key].put({"action": "WAIT", "delay_min": 0.18, "delay_max": 0.22})
                     pico_queues[key].put({"action": "HOVER", "dx": tx - cur_x, "dy": ty - cur_y})
                     pico_queues[key].put({"action": "SPECIAL_ACK"})
                     state["special_ack_arrived"] = False
