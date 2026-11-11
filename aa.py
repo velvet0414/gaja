@@ -12230,16 +12230,22 @@ def ai_commander_worker(target_pc):
                                 send_keyboard_key(p_serial, p_lock, ord('1'), 0, is_manual=True)
                                 time.sleep(g_val(0.06, 0.12) if i == 0 else g_val(0.15, 0.25) if i == hit_count-1 else g_val(0.03, 0.07))
 
-                        def find_img_universal(img_data_or_path, th=0.82, ui_only=True):
+                        def find_img_universal(img_data_or_path, th=0.82, ui_only=True, item_only=False):
                             screen = latest_frames.get(key)
                             if screen is None: return None
 
                             h_scr, w_scr = screen.shape[:2]
-                            if ui_only:
-                                search_area = screen[0:min(400, h_scr), 0:min(290, w_scr)]
+                            if item_only:
+                                rx1, ry1 = 15, 32
+                                rx2, ry2 = min(85, w_scr), min(355, h_scr)
+                            elif ui_only:
+                                rx1, ry1 = 0, 0
+                                rx2, ry2 = min(290, w_scr), min(400, h_scr)
                             else:
+                                rx1, ry1 = 0, 0
+                                rx2, ry2 = w_scr, min(480, h_scr)
 
-                                search_area = screen[0:min(480, h_scr), 0:w_scr]
+                            search_area = screen[ry1:ry2, rx1:rx2]
 
                             if isinstance(img_data_or_path, str):
 
@@ -12248,6 +12254,8 @@ def ai_commander_worker(target_pc):
                                 with open(img_data_or_path, "rb") as f: np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
                                 tmpl_bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
                                 if tmpl_bgra is None: return None
+                                if search_area.shape[0] < tmpl_bgra.shape[0] or search_area.shape[1] < tmpl_bgra.shape[1]:
+                                    return None
                                 if len(tmpl_bgra.shape) == 3 and tmpl_bgra.shape[2] == 4:
                                     res = cv2.matchTemplate(search_area, tmpl_bgra[:,:,:3], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl_bgra[:,:,3]]*3))
                                 else:
@@ -12256,25 +12264,33 @@ def ai_commander_worker(target_pc):
                                 tmpl_h, tmpl_w = tmpl_bgra.shape[:2]
                             else:
                                 tmpl, mask = img_data_or_path["color"], img_data_or_path["mask"]
+                                if search_area.shape[0] < tmpl.shape[0] or search_area.shape[1] < tmpl.shape[1]:
+                                    return None
                                 if mask is not None: res = cv2.matchTemplate(search_area, tmpl, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask]*3))
                                 else: res = cv2.matchTemplate(search_area, tmpl, cv2.TM_CCOEFF_NORMED)
                                 tmpl_h, tmpl_w = tmpl.shape[:2]
 
                             _, max_val, _, max_loc = cv2.minMaxLoc(res)
                             if max_val >= th:
-                                return (max_loc[0] + tmpl_w//2, max_loc[1] + tmpl_h//2)
+                                return (rx1 + max_loc[0] + tmpl_w//2, ry1 + max_loc[1] + tmpl_h//2)
                             return None
 
-                        def find_all_imgs_universal(img_data_or_path, th=0.82, ui_only=True):
+                        def find_all_imgs_universal(img_data_or_path, th=0.82, ui_only=True, item_only=False):
                             screen = latest_frames.get(key)
                             if screen is None: return []
 
                             h_scr, w_scr = screen.shape[:2]
-                            if ui_only:
-                                search_area = screen[0:min(400, h_scr), 0:min(290, w_scr)]
+                            if item_only:
+                                rx1, ry1 = 15, 32
+                                rx2, ry2 = min(85, w_scr), min(355, h_scr)
+                            elif ui_only:
+                                rx1, ry1 = 0, 0
+                                rx2, ry2 = min(290, w_scr), min(400, h_scr)
                             else:
+                                rx1, ry1 = 0, 0
+                                rx2, ry2 = w_scr, min(480, h_scr)
 
-                                search_area = screen[0:min(480, h_scr), 0:w_scr]
+                            search_area = screen[ry1:ry2, rx1:rx2]
 
                             if isinstance(img_data_or_path, str):
 
@@ -12283,6 +12299,8 @@ def ai_commander_worker(target_pc):
                                 with open(img_data_or_path, "rb") as f: np_arr = np.asarray(bytearray(f.read()), dtype=np.uint8)
                                 tmpl_bgra = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
                                 if tmpl_bgra is None: return []
+                                if search_area.shape[0] < tmpl_bgra.shape[0] or search_area.shape[1] < tmpl_bgra.shape[1]:
+                                    return []
                                 if len(tmpl_bgra.shape) == 3 and tmpl_bgra.shape[2] == 4:
                                     res = cv2.matchTemplate(search_area, tmpl_bgra[:,:,:3], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl_bgra[:,:,3]]*3))
                                 else:
@@ -12291,6 +12309,8 @@ def ai_commander_worker(target_pc):
                                 tmpl_h, tmpl_w = tmpl_bgra.shape[:2]
                             else:
                                 tmpl, mask = img_data_or_path["color"], img_data_or_path["mask"]
+                                if search_area.shape[0] < tmpl.shape[0] or search_area.shape[1] < tmpl.shape[1]:
+                                    return []
                                 if mask is not None: res = cv2.matchTemplate(search_area, tmpl, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask]*3))
                                 else: res = cv2.matchTemplate(search_area, tmpl, cv2.TM_CCOEFF_NORMED)
                                 tmpl_h, tmpl_w = tmpl.shape[:2]
@@ -12298,7 +12318,7 @@ def ai_commander_worker(target_pc):
                             locs = np.where(res >= th)
                             pts = []
                             for pt in zip(*locs[::-1]):
-                                cx, cy = pt[0] + tmpl_w//2, pt[1] + tmpl_h//2
+                                cx, cy = rx1 + pt[0] + tmpl_w//2, ry1 + pt[1] + tmpl_h//2
                                 is_dup = False
                                 for ex, ey in pts:
                                     if abs(ex - cx) < 10 and abs(ey - cy) < 10:
@@ -12590,7 +12610,7 @@ def ai_commander_worker(target_pc):
 
                                             for tmpl_dict in SELL_TEMPLATES:
                                                 tmpl_name = tmpl_dict['name']
-                                                pos_list = find_all_imgs_universal(tmpl_dict, th=0.82, ui_only=True)
+                                                pos_list = find_all_imgs_universal(tmpl_dict, th=0.82, ui_only=True, item_only=True)
                                                 if not pos_list:
                                                     continue
 
@@ -12895,7 +12915,7 @@ def ai_commander_worker(target_pc):
                                             if is_ent_item and any(kw in dng_name.lower() for kw in skip_ent_dungeons):
                                                 continue
 
-                                            pos_list = find_all_imgs_universal(tmpl_dict, th=0.82, ui_only=True)
+                                            pos_list = find_all_imgs_universal(tmpl_dict, th=0.82, ui_only=True, item_only=True)
                                             if not pos_list:
                                                 continue
 
@@ -12994,7 +13014,7 @@ def ai_commander_worker(target_pc):
                                         if is_ent_item and any(kw in dng_name.lower() for kw in skip_ent_dungeons):
                                             continue
 
-                                        pos_list = find_all_imgs_universal(tmpl_dict, th=0.82, ui_only=True)
+                                        pos_list = find_all_imgs_universal(tmpl_dict, th=0.82, ui_only=True, item_only=True)
                                         if not pos_list:
                                             continue
 
@@ -13160,7 +13180,7 @@ def ai_commander_worker(target_pc):
                                                 if search_key not in PICK_TEMPLATES: continue
 
                                                 tmpl_dict = PICK_TEMPLATES[search_key]
-                                                pos = find_img_universal(tmpl_dict, th=0.82, ui_only=True)
+                                                pos = find_img_universal(tmpl_dict, th=0.82, ui_only=True, item_only=True)
 
                                                 if pos:
                                                     # 🛑 1) 스크롤 직후 1차 포착 시: 관성이 완전히 멈출 때까지 대기 후 최신 좌표 재확인!
@@ -13168,13 +13188,13 @@ def ai_commander_worker(target_pc):
                                                         time.sleep(g_val(0.28, 0.35))
                                                         settled_this_loop = True
 
-                                                    real_pos = find_img_universal(tmpl_dict, th=0.82, ui_only=True)
+                                                    real_pos = find_img_universal(tmpl_dict, th=0.82, ui_only=True, item_only=True)
                                                     if not real_pos:
                                                         # 관성으로 인해 맨 윗줄 위로 넘어가버린 경우: 휠을 위로 살짝 되돌려 재탐색
                                                         dprint(key, f"⚠️ [관성 이탈 복구] '{tmpl_dict['name']}'이(가) 스크롤 관성으로 지나갔습니다! 위로 살짝 되돌려 다시 잡습니다.")
                                                         send_mouse_scroll(p_serial, p_lock, 3)
                                                         time.sleep(g_val(0.28, 0.35))
-                                                        real_pos = find_img_universal(tmpl_dict, th=0.82, ui_only=True)
+                                                        real_pos = find_img_universal(tmpl_dict, th=0.82, ui_only=True, item_only=True)
 
                                                     if real_pos:
                                                         dprint(key, f"📦 [창고 찾기] '{tmpl_dict['name']}' 관성 정지 후 정밀 선택({real_pos[0]}, {real_pos[1]}) ➔ {qty}개 입력!")
@@ -13357,7 +13377,7 @@ def ai_commander_worker(target_pc):
                                 found_cholgi = False
 
                                 for scroll_idx in range(50):
-                                    pos = find_img_universal(gangchol_path, th=0.82, ui_only=True)
+                                    pos = find_img_universal(gangchol_path, th=0.82, ui_only=True, item_only=True)
                                     if pos:
                                         dprint(key, f"📦 [발견] 강촐 포착! 1개를 인출합니다.")
                                         time.sleep(0.3)
