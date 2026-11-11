@@ -10143,12 +10143,24 @@ def ai_commander_worker(target_pc):
             # ====================================================================
 
             fsm_for_map_scan = str(state.get("target_fsm", ""))
+            is_town_sub_action = (
+                (fsm_for_map_scan.startswith("BUFFING") and str(state.get("buff_return_fsm", "")).startswith("TOWN_MAINT")) or
+                (fsm_for_map_scan.startswith("INV_CLEAN") and str(state.get("inv_clean_done_next_fsm", "")).startswith("TOWN_MAINT")) or
+                (fsm_for_map_scan.startswith("HK_HEAL") and str(state.get("hk_return_fsm", "")).startswith("TOWN_MAINT")) or
+                (fsm_for_map_scan.startswith("CHAT_RECOVER") and str(state.get("chat_recover_return_fsm", "")).startswith("TOWN_MAINT"))
+            )
             is_in_town_or_death = (
                 fsm_for_map_scan.startswith("TOWN_MAINT") or
                 fsm_for_map_scan.startswith("DEATH") or
                 fsm_for_map_scan == "SHUTDOWN_WAIT" or
-                state.get("town_thread_running", False)
+                state.get("town_thread_running", False) or
+                is_town_sub_action
             )
+            if is_in_town_or_death:
+                state["is_out_of_zone"] = False
+                state["dungeon_map_pos"] = None
+                state["dungeon_last_map_pos"] = None
+                state["dungeon_global_path"] = []
 
             if role == "DUNGEON" and not is_in_town_or_death:
                 if minimap_bgr is not None and pc_map_edges is not None:
@@ -10827,7 +10839,19 @@ def ai_commander_worker(target_pc):
                 current_fsm_safe = str(state.get("target_fsm", ""))
 
                 if not current_fsm_safe.startswith("TOWN_MAINT") and not current_fsm_safe.startswith("DEATH_RESTART"):
-                    if current_fsm_safe not in ["F1_INIT_VERIFY", "F1_INIT_WAIT"]:
+                    if current_fsm_safe.startswith("BUFFING") and str(state.get("buff_return_fsm", "")).startswith("TOWN_MAINT"):
+                        state["target_fsm"] = state.pop("buff_return_fsm", "TOWN_MAINT_START")
+                        original_fsm = state["target_fsm"]
+                    elif current_fsm_safe.startswith("INV_CLEAN") and str(state.get("inv_clean_done_next_fsm", "")).startswith("TOWN_MAINT"):
+                        state["target_fsm"] = state.pop("inv_clean_done_next_fsm", "TOWN_MAINT_START")
+                        original_fsm = state["target_fsm"]
+                    elif current_fsm_safe.startswith("HK_HEAL") and str(state.get("hk_return_fsm", "")).startswith("TOWN_MAINT"):
+                        state["target_fsm"] = state.pop("hk_return_fsm", "TOWN_MAINT_START")
+                        original_fsm = state["target_fsm"]
+                    elif current_fsm_safe.startswith("CHAT_RECOVER") and str(state.get("chat_recover_return_fsm", "")).startswith("TOWN_MAINT"):
+                        state["target_fsm"] = state.pop("chat_recover_return_fsm", "TOWN_MAINT_START")
+                        original_fsm = state["target_fsm"]
+                    elif current_fsm_safe not in ["F1_INIT_VERIFY", "F1_INIT_WAIT"]:
                         state["target_fsm"] = "IDLE"
                         original_fsm = "IDLE"
 
@@ -11134,6 +11158,12 @@ def ai_commander_worker(target_pc):
                         prev_f_cr = str(state.get("target_fsm", "IDLE"))
                         if prev_f_cr.startswith("TOWN_MAINT") or prev_f_cr in ["PARTY_WAIT", "PARTY_ACTIVE_STANDBY"]:
                             state["chat_recover_return_fsm"] = prev_f_cr
+                        elif prev_f_cr.startswith("BUFFING") and str(state.get("buff_return_fsm", "")).startswith("TOWN_MAINT"):
+                            state["chat_recover_return_fsm"] = state.get("buff_return_fsm")
+                        elif prev_f_cr.startswith("INV_CLEAN") and str(state.get("inv_clean_done_next_fsm", "")).startswith("TOWN_MAINT"):
+                            state["chat_recover_return_fsm"] = state.get("inv_clean_done_next_fsm")
+                        elif prev_f_cr.startswith("HK_HEAL") and str(state.get("hk_return_fsm", "")).startswith("TOWN_MAINT"):
+                            state["chat_recover_return_fsm"] = state.get("hk_return_fsm")
                         else:
                             state["chat_recover_return_fsm"] = "IDLE"
 
@@ -11144,11 +11174,11 @@ def ai_commander_worker(target_pc):
                         continue
             # ====================================================================
 
-            is_cursed_now = raw_curse
+            is_cursed_now = raw_curse and not is_in_town_or_death
             was_cursed = state.get("was_cursed", False)
             state["was_cursed"] = is_cursed_now
 
-            if state.get("is_hunt_active", False) and not state.get("is_paused", False):
+            if state.get("is_hunt_active", False) and not state.get("is_paused", False) and not is_in_town_or_death:
                 fsm_c = str(state.get("target_fsm", ""))
 
                 if not is_cursed_now and was_cursed:
@@ -11500,7 +11530,7 @@ def ai_commander_worker(target_pc):
             dng_zone_chk_early = settings.get("dungeon_name", "")
             is_solo_zone_mode = ("본던 2-" in dng_zone_chk_early or "본던 4-" in dng_zone_chk_early or "본던 5-" in dng_zone_chk_early or "본던 6-" in dng_zone_chk_early or "본던 7-" in dng_zone_chk_early or "사던 4-" in dng_zone_chk_early) and not is_party_zone_chk2
 
-            if state.get("is_hunt_active", False) and not state.get("is_paused", False) and not my_fsm_zone.startswith("TOWN_MAINT") and not my_fsm_zone.startswith("DEATH") and my_fsm_zone not in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY"] and (is_party_zone_chk2 or is_solo_zone_mode) and is_m_out_of_zone and curr_map_pos and pc_graph and pc_graph.get("nodes"):
+            if state.get("is_hunt_active", False) and not state.get("is_paused", False) and not is_in_town_or_death and not my_fsm_zone.startswith(("TOWN_MAINT", "DEATH", "BUFFING", "INV_CLEAN", "HK_HEAL", "CHAT_RECOVER")) and my_fsm_zone not in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY"] and (is_party_zone_chk2 or is_solo_zone_mode) and is_m_out_of_zone and curr_map_pos and pc_graph and pc_graph.get("nodes"):
                 curr_target_str = str(state.get("current_target_node", ""))
                 is_curr_target_valid_zone = False
                 raw_sp_set_early = {str(s) for s in pc_graph.get("special_nodes", [])}
@@ -12718,6 +12748,10 @@ def ai_commander_worker(target_pc):
 
                                 send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
 
+                                ai_states[key]["dungeon_map_pos"] = None
+                                ai_states[key]["dungeon_last_map_pos"] = None
+                                ai_states[key]["dungeon_global_path"] = []
+                                ai_states[key]["is_out_of_zone"] = False
                                 ai_states[key]["target_fsm"] = "TOWN_MAINT_MOTHER_REST"
                                 ai_states[key]["cooldown"] = time.time() + 0.1
                                 ai_states[key]["town_thread_running"] = False
@@ -16130,6 +16164,7 @@ def ai_commander_worker(target_pc):
 
                             # 🛒 [1순위: 상점 순회 판매] 위기 대피가 아니라면 창고/엠탐 전에 1~3단계 상점 판매부터 수행
                             if not state.get("town_shop_sold_once", False):
+                                state["town_mp_rest_done"] = False
                                 if state.get("shop_sell_step", 0) not in [1, 2, 3]:
                                     state["shop_sell_step"] = 1
                                 dprint(key, f"🛒 [마을 정비 1순위] 상점 순회 판매({state['shop_sell_step']}단계부터)를 개시합니다!")
@@ -16154,20 +16189,12 @@ def ai_commander_worker(target_pc):
                                         state["return_to_start_after_wh"] = True
                                         state["cooldown"] = curr_time + 0.1
                                     else:
-
                                         dprint(key, "🚨 [정비 실패] 창고를 다녀왔는데도 여전히 무겁습니다! 매크로를 일시 정지합니다.")
                                         state["is_paused"] = True
                                         state["target_fsm"] = "IDLE"
                                         state["cooldown"] = curr_time + 0.1
-                            elif mp <= 20.0:
-                                dprint(key, f"🌳 [어머니 엠탐] MP가 {mp:.1f}% 입니다. 마더트리(F3->F9) 초고속 엠탐을 준비합니다.")
-                                state["target_fsm"] = "TOWN_MAINT_MOTHER_PREP"
-                                state["cooldown"] = curr_time + 0.1
-                            elif mp <= 40.0:
-                                dprint(key, f"💤 [마을 정비 엠탐] MP가 {mp:.1f}% 입니다. 제자리 바디(F7)+힐(F6) 엠탐을 실시합니다.")
-                                state["target_fsm"] = "TOWN_MAINT_MP_REST"
-                                state["cooldown"] = curr_time + 0.1
                             else:
+                                # 💡 상점 판매 후에는 엠탐보다 먼저 창고 업무(맡기기/찾기)를 수행합니다!
                                 if state.get("town_wh_visited_for_weight", False):
                                     state["target_fsm"] = "TOWN_MAINT_DONE"
                                 else:
@@ -16195,23 +16222,21 @@ def ai_commander_worker(target_pc):
                                     target_stop_pct = settings.get("mptam_stop_pct", 80.0)
 
                                 if mp >= target_stop_pct and hp > heal_limit:
-                                    dprint(key, f"🔋 [어머니 엠탐 완료] MP {mp:.1f}%, HP {hp:.1f}% 목표({target_stop_pct}%) 도달! 정비를 속행합니다.")
+                                    dprint(key, f"🔋 [어머니 엠탐 완료] MP {mp:.1f}%, HP {hp:.1f}% 목표({target_stop_pct}%) 도달! 사냥터 복귀 루트로 이동합니다.")
+                                    state["town_mp_rest_done"] = True
                                     if state.pop("event_mptam_skip_wh", False):
                                         state["target_fsm"] = "TOWN_MAINT_RETURN"
-                                    elif state.get("town_wh_visited_for_weight", False):
-                                        state["target_fsm"] = "TOWN_MAINT_DONE"
                                     else:
-                                        state["target_fsm"] = "TOWN_MAINT_WH_GO"
+                                        state["target_fsm"] = "TOWN_MAINT_ROUTE_CHECK"
                                     is_done = True
                             elif fsm_town == "TOWN_MAINT_MP_REST":
                                 if mp >= 60.0 and hp > heal_limit:
-                                    dprint(key, f"🔋 [마을 제자리 엠탐 완료] MP {mp:.1f}%, HP {hp:.1f}% 목표 도달! 정비를 속행합니다.")
+                                    dprint(key, f"🔋 [마을 제자리 엠탐 완료] MP {mp:.1f}%, HP {hp:.1f}% 목표 도달! 사냥터 복귀 루트로 이동합니다.")
+                                    state["town_mp_rest_done"] = True
                                     if state.pop("event_mptam_skip_wh", False):
                                         state["target_fsm"] = "TOWN_MAINT_RETURN"
-                                    elif state.get("town_wh_visited_for_weight", False):
-                                        state["target_fsm"] = "TOWN_MAINT_DONE"
                                     else:
-                                        state["target_fsm"] = "TOWN_MAINT_WH_GO"
+                                        state["target_fsm"] = "TOWN_MAINT_ROUTE_CHECK"
                                     is_done = True
                             elif fsm_town == "TOWN_MAINT_RETURN_MP_REST":
                                 if mp >= 60.0 and hp > heal_limit:
@@ -16450,14 +16475,27 @@ def ai_commander_worker(target_pc):
 
                         elif fsm_town == "TOWN_MAINT_DONE":
                             if not state.get("town_done_logged", False):
-                                dprint(key, "🎯 [창고 정비 완료] 다음 상태를 확인합니다.")
+                                dprint(key, "🎯 [창고 정비 완료] 창고 출/입고 완료! MP 상태 및 다음 동선을 확인합니다.")
                                 state["town_done_logged"] = True
 
                             if state.pop("return_to_start_after_wh", False):
-                                dprint(key, "⚖️ [무게 우회 복귀] 창고 정비를 마쳤습니다. 무게 해결 확인 및 남은 마을 정비(MP 등)를 진행합니다.")
+                                dprint(key, "⚖️ [무게 우회 복귀] 창고 정비를 마쳤습니다. 무게 해결 여부를 확인합니다.")
                                 state["target_fsm"] = "TOWN_MAINT_START"
                                 state["cooldown"] = curr_time + 0.1
                                 continue
+
+                            # 💡 창고 업무까지 모두 끝낸 시점에 MP를 확인하여 엠탐 진입!
+                            if not state.get("town_mp_rest_done", False):
+                                if mp <= 20.0:
+                                    dprint(key, f"🌳 [창고 완료 ➔ 어머니 엠탐] MP가 {mp:.1f}% 입니다. 마더트리(F3->F9) 초고속 엠탐을 준비합니다.")
+                                    state["target_fsm"] = "TOWN_MAINT_MOTHER_PREP"
+                                    state["cooldown"] = curr_time + 0.1
+                                    continue
+                                elif mp <= 40.0:
+                                    dprint(key, f"💤 [창고 완료 ➔ 마을 정비 엠탐] MP가 {mp:.1f}% 입니다. 제자리 바디(F7)+힐(F6) 엠탐을 실시합니다.")
+                                    state["target_fsm"] = "TOWN_MAINT_MP_REST"
+                                    state["cooldown"] = curr_time + 0.1
+                                    continue
 
                             state["target_fsm"] = "TOWN_MAINT_ROUTE_CHECK"
                             state["cooldown"] = curr_time + 0.1
@@ -16470,6 +16508,7 @@ def ai_commander_worker(target_pc):
                         elif fsm_town == "TOWN_MAINT_RETURN":
                             state["town_inv_cleaned_once"] = False
                             state["town_wh_visited_for_weight"] = False
+                            state["town_mp_rest_done"] = False
 
                             if mp < 12.0:
                                 dprint(key, f"💤 [사냥터 출발 전 엠탐] MP가 12% 미만({mp:.1f}%)입니다. 제자리에서 60%까지 엠탐을 실시합니다.")
@@ -17900,7 +17939,9 @@ def ai_commander_worker(target_pc):
                             state["has_fired_arrow"] = False
                             state["is_pulling"] = False
                             state["loot_state"] = "IDLE"
-                            if fsm_ui_watch not in ["PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY", "PARTY_WAIT", "PARTY_BUFF_L_DONE"]:
+                            if fsm_ui_watch.startswith("BUFFING") and str(state.get("buff_return_fsm", "")).startswith("TOWN_MAINT"):
+                                state["target_fsm"] = state.pop("buff_return_fsm", "TOWN_MAINT_START")
+                            elif fsm_ui_watch not in ["PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY", "PARTY_WAIT", "PARTY_BUFF_L_DONE"]:
                                 state["target_fsm"] = "IDLE"
 
                             def _emergency_esc_close(k=key):
@@ -18960,9 +19001,12 @@ def ai_commander_worker(target_pc):
                             state[f"buff_{b_info_poison['name']}_time"] = curr_time + 15.0
                             save_buff_times(ai_states)
 
-                    state["target_fsm"] = "IDLE"
+                    ret_after_psn = state.pop("buff_return_fsm", "IDLE")
+                    state["target_fsm"] = ret_after_psn if str(ret_after_psn).startswith("TOWN_MAINT") else "IDLE"
                     state["buff_aborted"] = True
                     state["cooldown"] = curr_time + 0.2
+                    if str(state["target_fsm"]).startswith("TOWN_MAINT"):
+                        continue
                     is_buff_fsm = False
 
                 if not is_buff_fsm and not is_panic_ticking:
@@ -24484,25 +24528,12 @@ def ai_commander_worker(target_pc):
                         hx, hy = cur_x, cur_y
                         want_pvp_hover = state.get("next_is_m_elf", False)
 
-                        if want_pvp_hover and not is_pvp_mode and curr_time < state.get("pvp_wait_deadline", 0):
-                            if not state.get("pvp_ctrl_thread_busy", False) and curr_time > state.get("pvp_on_cmd_cd", 0):
-                                if trigger_pvp_ctrl_double_tap_async(key, want_pvp_on=True):
-                                    state["pvp_on_cmd_cd"] = curr_time + g_val(0.42, 0.52)
-                                    if not state.get("pvp_wait_retried", False):
-                                        state["pvp_wait_retried"] = True
-                                        state["pvp_wait_deadline"] = max(state.get("pvp_wait_deadline", 0), curr_time + g_val(0.38, 0.46))
+                        if want_pvp_hover and not is_pvp_mode and (state.get("pvp_ctrl_thread_busy", False) or curr_time < state.get("pvp_wait_deadline", 0)):
                             state["sword_verify_start"] = curr_time
                             state["hover_start_time"] = max(state.get("hover_start_time", 0), curr_time + 0.5)
                             state["cooldown"] = curr_time + g_time(0.015, 0.025, key)
                             action_taken = True
-                        elif (not want_pvp_hover) and is_pvp_mode and curr_time < state.get("pvp_off_wait_deadline", 0):
-                            if not state.get("pvp_ctrl_thread_busy", False) and curr_time > state.get("pvp_off_retry_cd", 0):
-                                if trigger_pvp_ctrl_double_tap_async(key, want_pvp_on=False):
-                                    state["pvp_off_retry_cd"] = curr_time + g_val(0.45, 0.55)
-                                    state["pvp_off_cd"] = state["pvp_off_retry_cd"]
-                                    if not state.get("pvp_wait_retried", False):
-                                        state["pvp_wait_retried"] = True
-                                        state["pvp_off_wait_deadline"] = max(state.get("pvp_off_wait_deadline", 0), curr_time + g_val(0.36, 0.45))
+                        elif (not want_pvp_hover) and is_pvp_mode and (state.get("pvp_ctrl_thread_busy", False) or curr_time < state.get("pvp_off_wait_deadline", 0)):
                             state["sword_verify_start"] = curr_time
                             state["hover_start_time"] = max(state.get("hover_start_time", 0), curr_time + 0.5)
                             state["cooldown"] = curr_time + g_time(0.015, 0.025, key)
@@ -24512,11 +24543,7 @@ def ai_commander_worker(target_pc):
                             state["hover_start_time"] = 0
                             state["next_is_m_elf"] = False
                             state["pvp_on_protect_until"] = 0.0
-                            if not state.get("pvp_ctrl_thread_busy", False):
-                                if trigger_pvp_ctrl_double_tap_async(key, want_pvp_on=False):
-                                    state["pvp_off_retry_cd"] = curr_time + g_val(0.45, 0.58)
-                                    state["pvp_off_cd"] = state["pvp_off_retry_cd"]
-                            dprint(key, "🛡️ [오타격 방어] 일반 몹 조준 중 용머리 미해제 감지! 보라돌이 방지를 위해 공격을 보류하고 용머리를 다시 끕니다.")
+                            dprint(key, "🛡️ [오타격 방어] 용머리 해제 반영 대기 중! 보라돌이 방지를 위해 일반 몹 공격을 잠시 보류합니다.")
                             state["target_fsm"] = "IDLE"
                             state["cooldown"] = curr_time + g_time(0.12, 0.18, key)
                             action_taken = True
@@ -27916,7 +27943,7 @@ def ai_commander_worker(target_pc):
             if is_party_hunt or "event" in settings.get("dungeon_name", ""):
                 tele_hunt_enabled = False
 
-            if state.get("is_hunt_active", False) and not state.get("is_paused", False) and not survival_action_taken:
+            if state.get("is_hunt_active", False) and not state.get("is_paused", False) and not is_in_town_or_death and not survival_action_taken:
 
                 # =========================================================================
                 # 🌪️ [신형 팟바람 엔진] 인게임 초대조(invite_group) + 실제 파티(in_party) 연동
