@@ -1866,10 +1866,14 @@ def local_ipc_broadcaster_thread(my_key):
                     st.get("town_thread_running", False)
                 )
                 is_in_hunting_ground = bool(is_in_game and not is_in_town_maint)
-                in_party_now = bool(is_in_game and st.get("in_ingame_party", False))
-                is_inv_leader = bool(is_in_game and st.get("is_invite_leader", False) and not st.get("not_party_leader_locked", False))
+                is_leaving_now = bool(st.get("need_party_leave", False))
+                # 수동 조작이나 일시정지 중이어도 같은 조원이 파티 유무를 교차 검증할 수 있도록 실제 미니맵 파티 상태를 별도 기록
+                raw_minimap_party = bool(st.get("in_ingame_party", False) and not is_leaving_now)
+                in_party_now = bool(is_in_game and raw_minimap_party)
+                is_inv_leader = bool(is_in_game and st.get("is_invite_leader", False) and not st.get("not_party_leader_locked", False) and not is_leaving_now)
 
                 explicit_req = bool(
+                    not is_leaving_now and
                     is_in_hunting_ground and
                     now_req_t >= st.get("party_retry_wait_until", 0.0) and
                     not st.get("party_invite_giveup", False) and
@@ -1884,6 +1888,10 @@ def local_ipc_broadcaster_thread(my_key):
 
                 payload = {
                     "uid": my_uid,
+                    "raw_in_party": raw_minimap_party,
+                    "actual_joined_grp": str(st.get("actual_joined_inv_grp", "")),
+                    "is_leaving_party": is_leaving_now,
+                    "leaving_from_group": str(st.get("leaving_from_group", "선택안함")) if is_leaving_now else "선택안함",
                     "central_num": my_c_int,
                     "mini_num": my_m_int,
                     "pc_key": my_key,
@@ -5556,6 +5564,58 @@ def pico_worker_thread(key):
                         ai_states[key]["is_chat_typing"] = False
                         ai_states[key]["cooldown"] = time.time() + 0.2
 
+            elif action == "PARTY_LEAVE_CMD":
+                try:
+                    need_han_eng = cmd.get("need_han_eng", False)
+                    def k_tap_fast(kcode):
+                        send_keyboard_key(p_serial, p_lock, kcode, 1)
+                        h_sleep(0.055, 0.066)
+                        send_keyboard_key(p_serial, p_lock, kcode, 0)
+
+                    reset_hw_key_states(p_serial)
+                    send_keyboard_key(p_serial, p_lock, 129, 0, is_manual=True)
+                    send_keyboard_key(p_serial, p_lock, 32, 0, is_manual=True)
+                    h_sleep(0.10, 0.15)
+
+                    scr_now = latest_frames.get(key)
+                    if need_han_eng or (scr_now is not None and check_chat_template_match(scr_now, "yungta.png", th=0.80)):
+                        dprint(key, "🔄 [파티탈퇴 한/영 전환] 'yungta.png' 감지! 미니컴 직결 한영키(234)로 한글 전환합니다.")
+                        send_keyboard_key(p_serial, p_lock, 234, 1, is_manual=True)
+                        h_sleep(0.05, 0.08)
+                        send_keyboard_key(p_serial, p_lock, 234, 0, is_manual=True)
+                        h_sleep(0.20, 0.28)
+
+                    def _is_leave_aborted():
+                        st_chk = ai_states.get(key, {})
+                        return (
+                            active_manual_target == key or
+                            st_chk.get("is_paused", False) or
+                            st_chk.get("abort_macro", False) or
+                            not st_chk.get("is_hunt_active", False) or
+                            str(st_chk.get("target_fsm", "")).startswith("CERTI_")
+                        )
+
+                    leave_eng_str = kor_to_eng_typo("/파티탈퇴") # "/vkxlxkfxhl"
+                    for ch_cmd in leave_eng_str:
+                        if _is_leave_aborted():
+                            break
+                        k_tap_fast(ord(ch_cmd))
+                        h_sleep(0.04, 0.07)
+
+                    if not _is_leave_aborted():
+                        h_sleep(0.10, 0.16)
+                        k_tap_fast(176) # Enter
+                        if key in ai_states:
+                            ai_states[key]["waiting_party_leave_verify"] = True
+                            ai_states[key]["party_leave_verify_deadline"] = time.time() + 3.0
+                            ai_states[key]["solo_red_arrow_streak"] = 0
+                        dprint(key, "🚪 [파티탈퇴 타건 완료] '/파티탈퇴 + 엔터' 입력 완료! 미니맵 솔플 전환을 확인합니다.")
+                        h_sleep(0.15, 0.25)
+                finally:
+                    if key in ai_states:
+                        ai_states[key]["is_chat_typing"] = False
+                        ai_states[key]["cooldown"] = time.time() + 0.2
+
             elif action == "MOUSE_WHEEL":
                 amount = cmd.get("amount", -1)
                 try:
@@ -7023,7 +7083,7 @@ def clear_movements_only(q_obj):
         for item in q_obj.queue:
             action = item.get("action")
 
-            if action in ["ESCAPE", "TELEPORT", "HEAL", "POTION", "ANTIDOTE", "SWEEP_START", "SWEEP_STOP", "BUFF_COMBO", "BODY_TO_MIND", "HOLD_KEY", "SHIFT_SPACE", "MOUSE_WHEEL", "WAIT", "OPEN_MINIMAP", "HOME_MACRO", "CERTI_CLICK", "TYPE_STRING", "CLOSE_TAB", "OPEN_TASKMGR", "TASKMGR_DEL", "CLOSE_TASKMGR", "PARTY_INVITE_CMD", "PARTY_ACCEPT_CMD"]:
+            if action in ["ESCAPE", "TELEPORT", "HEAL", "POTION", "ANTIDOTE", "SWEEP_START", "SWEEP_STOP", "BUFF_COMBO", "BODY_TO_MIND", "HOLD_KEY", "SHIFT_SPACE", "MOUSE_WHEEL", "WAIT", "OPEN_MINIMAP", "HOME_MACRO", "CERTI_CLICK", "TYPE_STRING", "CLOSE_TAB", "OPEN_TASKMGR", "TASKMGR_DEL", "CLOSE_TASKMGR", "PARTY_INVITE_CMD", "PARTY_ACCEPT_CMD", "PARTY_LEAVE_CMD"]:
                 criticals.append(item)
             else:
                 if action in ["HOVER", "ATTACK", "SINGLE_ATTACK"]:
@@ -9697,81 +9757,17 @@ def ai_commander_worker(target_pc):
                 except Exception:
                     pass
 
-            if party_marker_px >= 5:
-                # 미니맵 중앙에 주황색/노란색 픽셀 5개 이상 감지 == 정상 파티 상태!
-                state["solo_red_arrow_streak"] = 0
-                state["no_red_arrow_streak"] = state.get("no_red_arrow_streak", 0) + 1
-                if state["no_red_arrow_streak"] >= 3:
-                    if state.get("waiting_party_minimap_verify", False) or not state.get("in_ingame_party", False):
-                        dprint(key, f"✅ [미니맵 파티 확인] 중앙 주황/노랑 픽셀({party_marker_px}개) 감지! 파티 합류 성공으로 확정합니다.")
-                    state["in_ingame_party"] = True
-                    state["need_party_invite_req"] = False
-                    state["waiting_party_minimap_verify"] = False
-                    state["pending_leader_invite_sig"] = False
-                    state["party_accept_try_cnt"] = 0
-                    state["party_accept_cycle_cnt"] = 0
-                    state["party_retry_wait_until"] = 0.0
-                    state["party_invite_giveup"] = False
-                    if state.get("is_invite_leader", False):
-                        state["had_party_as_leader"] = True
-            else:
-                state["no_red_arrow_streak"] = 0
-                # 0) 3회 실패 후 1분(60초) 대기 쿨타임이 끝났다면 다시 초대 요청 재개!
-                if state.get("party_retry_wait_until", 0.0) > 0.0 and curr_time >= state.get("party_retry_wait_until", 0.0):
-                    state["party_retry_wait_until"] = 0.0
-                    if not state.get("in_ingame_party", False) and not state.get("is_invite_leader", False) and not state.get("party_invite_giveup", False):
-                        state["need_party_invite_req"] = True
-                        dprint(key, f"🔄 [1분 대기 완료 ➔ 파티 재요청 개시] {state.get('party_accept_cycle_cnt', 1) + 1}/3세트(3회) 파티 초대 요청을 다시 시작합니다!")
-
-                # 1) 'y + 엔터' 입력 후 미니맵 파티 합류 여부를 검증 중인 경우 (3.5초 대기 -> 3x3 총 9회 시도)
-                if state.get("waiting_party_minimap_verify", False):
-                    if curr_time >= state.get("party_verify_deadline", 0.0):
-                        state["waiting_party_minimap_verify"] = False
-                        try_cnt = state.get("party_accept_try_cnt", 0) + 1
-                        state["party_accept_try_cnt"] = try_cnt
-                        cycle_cnt = state.get("party_accept_cycle_cnt", 0)
-                        if try_cnt < 3:
-                            state["in_ingame_party"] = False
-                            state["need_party_invite_req"] = True
-                            dprint(key, f"🔄 [파티 합류 미확인 ({cycle_cnt + 1}세트 {try_cnt}/3회 실패)] 'y + 엔터' 후 미니맵 마커 미감지! 파장에게 재초대를 요청합니다.")
-                        else:
-                            cycle_cnt += 1
-                            state["party_accept_cycle_cnt"] = cycle_cnt
-                            state["party_accept_try_cnt"] = 0
-                            state["in_ingame_party"] = False
-                            if cycle_cnt < 3:
-                                state["need_party_invite_req"] = False
-                                state["party_retry_wait_until"] = curr_time + 60.0
-                                dprint(key, f"⏳ [파티 수락 {cycle_cnt}/3세트(3회) 실패 ➔ 1분 대기] 60초 후 다시 3회 재시도합니다! (남은 세트: {3 - cycle_cnt}회)")
-                            else:
-                                state["need_party_invite_req"] = False
-                                state["party_invite_giveup"] = True
-                                dprint(key, "🚫 [파티 수락 3x3(총 9회) 모두 실패 ➔ 요청 중단] 총 9회 시도에도 미니맵 파티가 확인되지 않아, 수동 개입(`) 또는 사냥 껐다 켜기 전까지 파티 요청을 중단합니다!")
-                # 2) 일반 상태에서 순수 빨간 화살표 픽셀(5개 이상) 감지 == 솔플(파탈) 상태!
-                elif solo_red_px >= 5:
-                    if curr_time > state.get("party_accept_grace_until", 0.0):
-                        state["solo_red_arrow_streak"] = state.get("solo_red_arrow_streak", 0) + 1
-                        if state["solo_red_arrow_streak"] >= 5:
-                            state["in_ingame_party"] = False
-                            state["not_party_leader_locked"] = False
-                            # 💡 초대조가 설정되어 있고, 내가 파장이 아니며, 1분 대기 중이거나 9회 실패 포기 상태가 아닐 때만 요청 ON
-                            if (
-                                str(settings.get("invite_group", "선택안함")) != "선택안함" and
-                                not state.get("is_invite_leader", False) and
-                                not state.get("party_invite_giveup", False) and
-                                curr_time >= state.get("party_retry_wait_until", 0.0)
-                            ):
-                                if not state.get("need_party_invite_req", False):
-                                    dprint(key, f"🚨 [미니맵 파탈 감지] 주황/노랑 없음({party_marker_px}개) & 빨간 화살표({solo_red_px}개) 확인! 초대를 요청합니다.")
-                                state["need_party_invite_req"] = True
-
             my_inv_grp = str(settings.get("invite_group", "선택안함"))
             my_char_name = str(settings.get("char_name", "")).strip()
 
-            # 초대조 변경 또는 해제 감지 시 상태 초기화 및 진입 시각 기록
-            if state.get("last_invite_group", "선택안함") != my_inv_grp:
+            # 🔄 [초대조 변경 감지 시 기존 파티 탈퇴(/파티탈퇴) 예약]
+            if "last_invite_group" not in state:
                 state["last_invite_group"] = my_inv_grp
-                state["in_ingame_party"] = False
+            prev_inv_grp = state.get("last_invite_group", my_inv_grp)
+
+            if prev_inv_grp != my_inv_grp:
+                was_in_party_before_change = bool(state.get("in_ingame_party", False) or party_marker_px >= 5 or state.get("need_party_leave", False))
+                state["last_invite_group"] = my_inv_grp
                 state["no_red_arrow_streak"] = 0
                 state["solo_red_arrow_streak"] = 0
                 state["is_invite_leader"] = False
@@ -9788,19 +9784,191 @@ def ai_commander_worker(target_pc):
                 state["no_party_2m_start"] = 0.0
                 state["waiting_party_minimap_verify"] = False
                 state["pending_leader_invite_sig"] = False
-                if my_inv_grp != "선택안함":
-                    state["invite_group_join_time"] = curr_time
-                    state["invite_listen_until"] = curr_time + 0.6
-                else:
-                    state["invite_group_join_time"] = 0.0
-                    state["need_party_invite_req"] = False
+                state["wrong_party_mismatch_start"] = 0.0
 
-            if my_inv_grp != "선택안함" and state.get("is_hunt_active", False) and not state.get("is_paused", False) and active_manual_target != key:
+                if was_in_party_before_change:
+                    state["need_party_leave"] = True
+                    state["leaving_from_group"] = prev_inv_grp
+                    state["waiting_party_leave_verify"] = False
+                    state["need_party_invite_req"] = False
+                    dprint(key, f"🚪 [초대조 변경 ➔ 파티탈퇴 예약] 기존 조({prev_inv_grp})에서 새 조({my_inv_grp})로 변경됨! 먼저 '/파티탈퇴'를 실행한 뒤 새 조에 합류합니다.")
+                else:
+                    state["need_party_leave"] = False
+                    state["leaving_from_group"] = "선택안함"
+                    state["in_ingame_party"] = False
+                    state["actual_joined_inv_grp"] = ""
+                    if my_inv_grp != "선택안함":
+                        state["invite_group_join_time"] = curr_time
+                        state["invite_listen_until"] = curr_time + 0.8
+                        state["need_party_invite_req"] = True
+                    else:
+                        state["invite_group_join_time"] = 0.0
+                        state["need_party_invite_req"] = False
+
+            if party_marker_px >= 5:
+                state["solo_red_arrow_streak"] = 0
+                if state.get("need_party_leave", False):
+                    state["in_ingame_party"] = True
+                    state["need_party_invite_req"] = False
+                    if state.get("waiting_party_leave_verify", False) and curr_time >= state.get("party_leave_verify_deadline", 0.0):
+                        state["waiting_party_leave_verify"] = False
+                        dprint(key, "🔄 [파티탈퇴 미확인 ➔ 재시도] '/파티탈퇴' 입력 후에도 파티 마커가 남아있어 재입력합니다.")
+                else:
+                    state["no_red_arrow_streak"] = state.get("no_red_arrow_streak", 0) + 1
+                    if state["no_red_arrow_streak"] >= 3:
+                        # 🛡️ [판독 1: GUI 초대조가 '선택안함'(솔플)인데 인게임에서 파티가 맺어져 있는 경우 -> 즉시 파티탈퇴!]
+                        if my_inv_grp == "선택안함":
+                            state["in_ingame_party"] = True
+                            state["need_party_leave"] = True
+                            state["leaving_from_group"] = "선택안함"
+                            state["waiting_party_leave_verify"] = False
+                            state["need_party_invite_req"] = False
+                            dprint(key, "🚪 [솔플조 파티 감지 ➔ 파티탈퇴] 현재 GUI 초대조가 '선택안함'(솔플)인데 미니맵에 파티가 감지되어 '/파티탈퇴'를 실행합니다!")
+                        # 🛡️ [판독 2: 기억된 실제 가입 조(actual_joined_inv_grp)와 현재 GUI 초대조가 다른 경우 -> 즉시 파티탈퇴 후 재가입!]
+                        elif state.get("actual_joined_inv_grp") and state.get("actual_joined_inv_grp") != my_inv_grp:
+                            old_j_grp = state.get("actual_joined_inv_grp")
+                            state["in_ingame_party"] = True
+                            state["need_party_leave"] = True
+                            state["leaving_from_group"] = old_j_grp
+                            state["waiting_party_leave_verify"] = False
+                            state["need_party_invite_req"] = False
+                            dprint(key, f"🚪 [타 파티 잔류 감지 ➔ 파티탈퇴] 실제 가입된 파티({old_j_grp}조)가 현재 GUI 지정 파티({my_inv_grp}조)와 달라 '/파티탈퇴' 후 재가입합니다!")
+                        else:
+                            if state.get("waiting_party_minimap_verify", False) or not state.get("in_ingame_party", False):
+                                dprint(key, f"✅ [미니맵 파티 확인] 중앙 주황/노랑 픽셀({party_marker_px}개) 감지! ({my_inv_grp}조) 파티 합류 성공으로 확정합니다.")
+                                state["party_mismatch_grace_until"] = curr_time + 8.0
+                            state["in_ingame_party"] = True
+                            state["actual_joined_inv_grp"] = my_inv_grp
+                            state["need_party_invite_req"] = False
+                            state["waiting_party_minimap_verify"] = False
+                            state["pending_leader_invite_sig"] = False
+                            state["party_accept_try_cnt"] = 0
+                            state["party_accept_cycle_cnt"] = 0
+                            state["party_retry_wait_until"] = 0.0
+                            state["party_invite_giveup"] = False
+                            if state.get("is_invite_leader", False):
+                                state["had_party_as_leader"] = True
+            else:
+                state["no_red_arrow_streak"] = 0
+                state["wrong_party_mismatch_start"] = 0.0
+                # 0) 파티 탈퇴 대기 중 미니맵에서 주황/노란 마커가 사라지고 빨간 화살표가 확인되면 탈퇴 완료 확정!
+                if state.get("need_party_leave", False) and solo_red_px >= 5:
+                    state["solo_red_arrow_streak"] = state.get("solo_red_arrow_streak", 0) + 1
+                    if state["solo_red_arrow_streak"] >= 2:
+                        state["need_party_leave"] = False
+                        state["waiting_party_leave_verify"] = False
+                        state["leaving_from_group"] = "선택안함"
+                        state["in_ingame_party"] = False
+                        state["actual_joined_inv_grp"] = ""
+                        state["is_invite_leader"] = False
+                        state["had_party_as_leader"] = False
+                        state["not_party_leader_locked"] = False
+                        state["party_order"] = []
+                        state["known_party_order"] = []
+                        if my_inv_grp != "선택안함":
+                            state["invite_group_join_time"] = curr_time
+                            state["invite_listen_until"] = curr_time + 1.0
+                            state["need_party_invite_req"] = True
+                            dprint(key, f"✅ [파티탈퇴 완료 확인] 미니맵 솔플 화살표 확인! 이제 GUI에 지정된 ({my_inv_grp}조) 파티로 재가입을 시작합니다!")
+                        else:
+                            state["invite_group_join_time"] = 0.0
+                            state["need_party_invite_req"] = False
+                            dprint(key, "✅ [파티탈퇴 완료 확인] 미니맵 솔플 화살표 확인! 단독(솔플) 사냥을 속행합니다.")
+
+                elif not state.get("need_party_leave", False):
+                    if state.get("party_retry_wait_until", 0.0) > 0.0 and curr_time >= state.get("party_retry_wait_until", 0.0):
+                        state["party_retry_wait_until"] = 0.0
+                        if not state.get("in_ingame_party", False) and not state.get("is_invite_leader", False) and not state.get("party_invite_giveup", False):
+                            state["need_party_invite_req"] = True
+                            dprint(key, f"🔄 [1분 대기 완료 ➔ 파티 재요청 개시] {state.get('party_accept_cycle_cnt', 1) + 1}/3세트(3회) 파티 초대 요청을 다시 시작합니다!")
+
+                    if state.get("waiting_party_minimap_verify", False):
+                        if curr_time >= state.get("party_verify_deadline", 0.0):
+                            state["waiting_party_minimap_verify"] = False
+                            try_cnt = state.get("party_accept_try_cnt", 0) + 1
+                            state["party_accept_try_cnt"] = try_cnt
+                            cycle_cnt = state.get("party_accept_cycle_cnt", 0)
+                            if try_cnt < 3:
+                                state["in_ingame_party"] = False
+                                state["need_party_invite_req"] = True
+                                dprint(key, f"🔄 [파티 합류 미확인 ({cycle_cnt + 1}세트 {try_cnt}/3회 실패)] 'y + 엔터' 후 미니맵 마커 미감지! 파장에게 재초대를 요청합니다.")
+                            else:
+                                cycle_cnt += 1
+                                state["party_accept_cycle_cnt"] = cycle_cnt
+                                state["party_accept_try_cnt"] = 0
+                                state["in_ingame_party"] = False
+                                if cycle_cnt < 3:
+                                    state["need_party_invite_req"] = False
+                                    state["party_retry_wait_until"] = curr_time + 60.0
+                                    dprint(key, f"⏳ [파티 수락 {cycle_cnt}/3세트(3회) 실패 ➔ 1분 대기] 60초 후 다시 3회 재시도합니다! (남은 세트: {3 - cycle_cnt}회)")
+                                else:
+                                    state["need_party_invite_req"] = False
+                                    state["party_invite_giveup"] = True
+                                    dprint(key, "🚫 [파티 수락 3x3(총 9회) 모두 실패 ➔ 요청 중단] 총 9회 시도에도 미니맵 파티가 확인되지 않아, 수동 개입(`) 또는 사냥 껐다 켜기 전까지 파티 요청을 중단합니다!")
+                    elif solo_red_px >= 5:
+                        if curr_time > state.get("party_accept_grace_until", 0.0):
+                            state["solo_red_arrow_streak"] = state.get("solo_red_arrow_streak", 0) + 1
+                            if state["solo_red_arrow_streak"] >= 5:
+                                state["in_ingame_party"] = False
+                                state["actual_joined_inv_grp"] = ""
+                                state["not_party_leader_locked"] = False
+                                if (
+                                    my_inv_grp != "선택안함" and
+                                    not state.get("is_invite_leader", False) and
+                                    not state.get("party_invite_giveup", False) and
+                                    curr_time >= state.get("party_retry_wait_until", 0.0)
+                                ):
+                                    if not state.get("need_party_invite_req", False):
+                                        dprint(key, f"🚨 [미니맵 파탈 감지] 주황/노랑 없음({party_marker_px}개) & 빨간 화살표({solo_red_px}개) 확인! 초대를 요청합니다.")
+                                    state["need_party_invite_req"] = True
+
+            # 🚪 [파티 탈퇴(/파티탈퇴) 최우선 실행 블록]
+            if (
+                state.get("need_party_leave", False) and
+                state.get("is_hunt_active", False) and
+                not state.get("is_paused", False) and
+                active_manual_target != key and
+                not is_ui_busy_for_chat
+            ):
+                if not state.get("waiting_party_leave_verify", False) and curr_time >= state.get("party_leave_cmd_cd", 0.0):
+                    is_in_combat_leave = (
+                        state.get("is_attacking", False) or
+                        state.get("arrow_is_firing", False) or
+                        fsm_inv_chk in ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "MOTION_SNAP_CHECK_SWORD", "HEINE_GMOB_VERIFY"]
+                    )
+                    if not is_in_combat_leave:
+                        is_yungta_now = check_chat_template_match(img_bgr, "yungta.png", th=0.80)
+                        state["abort_macro"] = True
+                        with pico_queues[key].mutex:
+                            pico_queues[key].queue.clear()
+                        pico_queues[key].put({"action": "FORCE_RELEASE"})
+                        if state.get("sweep_active", False):
+                            pico_queues[key].put({"action": "SWEEP_STOP"})
+                            state["sweep_active"] = False
+                        if state.get("body_held", False):
+                            if picos.get(key) and pico_locks.get(key):
+                                send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                            state["body_held"] = False
+
+                        state["is_attacking"] = False
+                        state["arrow_is_firing"] = False
+                        state["has_fired_arrow"] = False
+                        state["is_pulling"] = False
+                        state["target_fsm"] = "IDLE"
+
+                        state["is_chat_typing"] = True
+                        state["chat_typing_timeout"] = curr_time + 4.5
+                        pico_queues[key].put({"action": "PARTY_LEAVE_CMD", "need_han_eng": is_yungta_now})
+                        state["party_leave_cmd_cd"] = curr_time + 3.5
+                        state["cooldown"] = curr_time + 1.8
+                        dprint(key, f"🚪 [파티탈퇴 명령 전송] 비사격 상태 확인! '/파티탈퇴' 입력을 시작합니다. (영타감지:{is_yungta_now})")
+                        continue
+
+            if my_inv_grp != "선택안함" and not state.get("need_party_leave", False) and state.get("is_hunt_active", False) and not state.get("is_paused", False) and active_manual_target != key:
                 if state.get("invite_group_join_time", 0.0) == 0.0:
                     state["invite_group_join_time"] = curr_time
                     state["invite_listen_until"] = curr_time + 0.6
 
-                # 🔎 내가 파장이라고 생각 중일 때 채팅창에 pratyjangx.png가 뜨면 즉시 파장 권한 해제!
                 if state.get("is_invite_leader", False) and curr_time > state.get("next_pj_x_scan", 0.0):
                     state["next_pj_x_scan"] = curr_time + 0.15
                     if check_pratyjangx_in_chat(img_bgr):
@@ -9817,7 +9985,6 @@ def ai_commander_worker(target_pc):
                 except: my_m_int = 1
                 my_uid = f"{my_c_int}-{key}"
 
-                # 💡 사냥터 여부 판별 (마을 정비/사망/수리 중이 아니면 사냥터 인게임 상태로 인정)
                 is_in_town_or_maint_inv = (
                     fsm_inv_chk.startswith("TOWN_MAINT") or
                     fsm_inv_chk.startswith("WEAPON_REPAIR") or
@@ -9827,11 +9994,9 @@ def ai_commander_worker(target_pc):
                 )
                 is_in_hunting_ground = not is_in_town_or_maint_inv
 
-                # 만약 파장 초대 신호를 받았으나 인벤 정리 등 UI 동작 때문에 10초 이상 수락을 못 했다면 신호 리셋하여 재초대 유도
                 if state.get("pending_leader_invite_sig", False) and (curr_time - state.get("leader_invite_sig_time", 0.0) > 10.0):
                     state["pending_leader_invite_sig"] = False
 
-                # 💡 사냥터에 있는 동안에는 이동/전투/루팅 중이어도 초대 요청(need_invite)을 상시 True로 유지!
                 my_need_invite_now = bool(
                     is_in_hunting_ground and
                     curr_time >= state.get("party_retry_wait_until", 0.0) and
@@ -9843,7 +10008,6 @@ def ai_commander_worker(target_pc):
                     not state.get("pending_leader_invite_sig", False)
                 )
 
-                # 1) 같은 초대조의 인게임(비인증) 멤버 수집
                 online_inv_members = {
                     my_uid: {
                         "uid": my_uid,
@@ -9854,6 +10018,7 @@ def ai_commander_worker(target_pc):
                         "in_hunting_ground": is_in_hunting_ground,
                         "is_demoted": bool(curr_time < state.get("leader_demoted_until", 0.0)),
                         "in_party": state.get("in_ingame_party", False),
+                        "raw_in_party": state.get("in_ingame_party", False),
                         "need_invite": my_need_invite_now,
                         "is_invite_leader": bool(state.get("is_invite_leader", False) and not state.get("not_party_leader_locked", False)),
                         "not_leader_locked": bool(state.get("not_party_leader_locked", False)),
@@ -9864,15 +10029,63 @@ def ai_commander_worker(target_pc):
                         "last_invited_ts": state.get("last_invited_ts", 0.0)
                     }
                 }
+                someone_leaving_our_group = False
+                any_same_grp_raw_partied = False
                 with party_lock:
                     for p_uid, p_info in list(global_invite_states.items()):
-                        if curr_time - p_info.get("recv_time", 0.0) <= 3.0 and str(p_info.get("invite_group", "선택안함")) == my_inv_grp:
-                            if p_info.get("in_game", False):
-                                if "in_hunting_ground" not in p_info:
-                                    p_info["in_hunting_ground"] = (str(p_info.get("party_state", "")) != "TOWN")
-                                online_inv_members[p_uid] = p_info
+                        if curr_time - p_info.get("recv_time", 0.0) <= 3.5:
+                            if p_info.get("is_leaving_party", False) and str(p_info.get("leaving_from_group", "")) == my_inv_grp:
+                                someone_leaving_our_group = True
+                                continue
+                            if str(p_info.get("invite_group", "선택안함")) == my_inv_grp and not p_info.get("is_leaving_party", False):
+                                if p_info.get("raw_in_party", p_info.get("in_party", False)):
+                                    any_same_grp_raw_partied = True
+                                if p_info.get("in_game", False):
+                                    if "in_hunting_ground" not in p_info:
+                                        p_info["in_hunting_ground"] = (str(p_info.get("party_state", "")) != "TOWN")
+                                    online_inv_members[p_uid] = p_info
 
-                # 🔓 pratyjangx.png 파장 잠금(not_party_leader_locked) 해제 체크
+                if someone_leaving_our_group:
+                    state["party_invite_global_cd"] = max(state.get("party_invite_global_cd", 0.0), curr_time + 2.5)
+                    state["invite_listen_until"] = max(state.get("invite_listen_until", 0.0), curr_time + 1.5)
+
+                # 🛡️ [판독 3: 실시간 조원 교차 검증]
+                # 리니지에 '1인 단독 파티'는 존재할 수 없으므로, 내 미니맵은 파티 상태(in_ingame_party == True)인데
+                # 같은 GUI 초대조(my_inv_grp)에 속한 다른 캐릭터 중 파티 상태인 캐릭터가 단 1명도 없는 상태가 5초 연속 지속되면
+                # 100% 타 조 캐릭터와 엉뚱하게 파티가 묶여 있는 것이므로 즉시 '/파티탈퇴' 후 내 GUI 조로 재가입!
+                in_grace_period = (
+                    curr_time < state.get("party_mismatch_grace_until", 0.0) or
+                    curr_time < state.get("party_accept_grace_until", 0.0) or
+                    (curr_time - state.get("last_invited_ts", 0.0) <= 8.0) or
+                    (curr_time - state.get("invite_group_join_time", 0.0) <= 5.0) or
+                    someone_leaving_our_group
+                )
+                if state.get("in_ingame_party", False) and is_in_hunting_ground and not in_grace_period:
+                    other_partied_in_my_grp = [
+                        u for u, m in online_inv_members.items()
+                        if u != my_uid and m.get("in_party", False)
+                    ]
+                    # 같은 조에 다른 파티원이 아예 없거나, 우리 조 확정 파장의 파티원 명단(party_order)이 2인 이상인데 내가 빠져 있고 파장이 다른 사람과만 파티 중일 때
+                    is_isolated_wrong_party = (not any_same_grp_raw_partied and len(other_partied_in_my_grp) == 0)
+
+                    if is_isolated_wrong_party:
+                        if state.get("wrong_party_mismatch_start", 0.0) == 0.0:
+                            state["wrong_party_mismatch_start"] = curr_time
+                        elif curr_time - state.get("wrong_party_mismatch_start", curr_time) >= 5.0:
+                            state["wrong_party_mismatch_start"] = 0.0
+                            state["need_party_leave"] = True
+                            state["leaving_from_group"] = my_inv_grp
+                            state["waiting_party_leave_verify"] = False
+                            state["is_invite_leader"] = False
+                            state["had_party_as_leader"] = False
+                            state["need_party_invite_req"] = False
+                            dprint(key, f"🚪 [실제 파티 불일치 감지] 내 미니맵은 파티 중이나 같은 GUI 조({my_inv_grp}조)에 파티원이 0명입니다! (타 조와 파티 묶임 확정) ➔ '/파티탈퇴' 후 {my_inv_grp}조로 재가입합니다!")
+                            continue
+                    else:
+                        state["wrong_party_mismatch_start"] = 0.0
+                else:
+                    state["wrong_party_mismatch_start"] = 0.0
+
                 curr_in_party_set = {u for u, m in online_inv_members.items() if m.get("in_party", False)}
                 if state.pop("need_lock_snapshot", False):
                     state["locked_party_snapshot"] = set(curr_in_party_set)
@@ -9890,18 +10103,15 @@ def ai_commander_worker(target_pc):
                         online_inv_members[my_uid]["not_leader_locked"] = False
                         dprint(key, "🔓 [파장 잠금 자동 해제] 기존 파티원 이탈(또는 전원 미파티/잠금) 감지! 파장 후보 자격을 복구합니다.")
 
-                # 🛡️ 내가 파장인 동안에는 잔류 수락 신호(pending_leader_invite_sig)를 상시 제거하여 파장이 y+엔터를 치는 현상 원천 차단
                 if state.get("is_invite_leader", False):
                     state["pending_leader_invite_sig"] = False
 
-                # 2) 파장 단독 파탈 시 자동 권위 이양 체크 (통신/인증감지 시차 2.0초 검증 적용)
                 if state.get("is_invite_leader", False) and state.get("had_party_as_leader", False) and not state.get("in_ingame_party", True):
                     other_in_party = [
                         u for u, m in online_inv_members.items()
                         if u != my_uid and m.get("in_party", False) and (curr_time - m.get("recv_time", 0.0) <= 1.2)
                     ]
                     if other_in_party:
-                        # 💡 파티원 전원이 인증하러 나가서 파티가 깨졌을 때 UDP/인증감지 시차(약 1초)로 인해 단독 파탈로 오판하는 것을 막기 위해 2.0초간 유예 검증
                         if state.get("leader_solo_drop_check_t", 0.0) == 0.0:
                             state["leader_solo_drop_check_t"] = curr_time
                         elif curr_time - state.get("leader_solo_drop_check_t", curr_time) >= 2.0:
@@ -9925,9 +10135,6 @@ def ai_commander_worker(target_pc):
                 else:
                     state["leader_solo_drop_check_t"] = 0.0
 
-                # ⏱️ [2분 무파티 워치독 & 파장 강제 교체]
-                # 같은 초대조에서 2캐릭 이상이 사냥터(in_hunting_ground)에 있는데 파티 맺어진 캐릭이 하나도 없는 상태가 2분(120초) 이상 지속되면,
-                # 기존 파장(마을 정비 중 포함)을 강등시키고 사냥터에서 사냥 중인 다른 캐릭터에게 파장을 넘깁니다!
                 demoted_map = state.setdefault("demoted_leaders", {})
                 for d_u in list(demoted_map.keys()):
                     if curr_time >= demoted_map[d_u]:
@@ -9980,7 +10187,6 @@ def ai_commander_worker(target_pc):
                 else:
                     state["no_party_2m_start"] = 0.0
 
-                # 3) 현재 온라인 멤버 중 활성 파장 확인 및 선출/위임 (잠금 또는 강등된 파장은 후보에서 제외)
                 active_leaders = [
                     m for m in online_inv_members.values()
                     if m.get("is_invite_leader", False)
