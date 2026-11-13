@@ -32625,6 +32625,220 @@ for i, pc in enumerate(MINI_PCS):
     tk.Button(auth_launch_frame, text="🌐 VPN테스트➔접속", font=("맑은 고딕", 8, "bold"), bg="#6A1B9A", fg="white", relief="flat", pady=3, command=lambda k=key: start_vpn_test_certi_and_launch(k)).pack(side="left", fill="x", expand=True, padx=(2, 2))
     tk.Button(auth_launch_frame, text="🎮 게임접속(13~)", font=("맑은 고딕", 8, "bold"), bg="#2E7D32", fg="white", relief="flat", pady=3, command=lambda k=key: start_game_launch_from_step13(k)).pack(side="left", fill="x", expand=True, padx=(2, 2))
 
+    # 🔄 [원터치 ipTIME 공유기 MAC 주소 변경 & 공인 IP 리셋 버튼 (ID/PW 하드코딩)]
+    auth_mac_frame = tk.Frame(tab_auth, bg=BG_PANEL)
+    auth_mac_frame.pack(side="top", fill="x", padx=10, pady=(2, 4))
+
+    ROUTER_IP_CONST = "192.168.0.1"
+    ROUTER_ID_CONST = "velvet7"
+    ROUTER_PW_CONST = "flcl1030"
+
+    def one_touch_rotate_iptime_mac(btn_w):
+        import urllib.parse
+        import http.cookiejar
+        import re
+
+        # 🛡️ 안전장치: 같은 중앙컴 내 인게임 사냥 중인 미니컴이 있는지 확인
+        active_ingame_minis = []
+        my_st = ai_states.get(TARGET_PC_KEY, {})
+        if my_st.get("is_hunt_active", False) and not str(my_st.get("target_fsm", "")).startswith("CERTI_"):
+            active_ingame_minis.append(TARGET_PC_KEY)
+        with party_lock:
+            my_c_str = str(get_my_central_num())
+            for p_uid, p_info in list(global_invite_states.items()):
+                if str(p_info.get("central_num", "")) == my_c_str and time.time() - p_info.get("recv_time", 0) <= 5.0:
+                    if p_info.get("in_game", False):
+                        p_k = p_info.get("pc_key", p_uid)
+                        if p_k not in active_ingame_minis:
+                            active_ingame_minis.append(p_k)
+            for p_k, p_info in list(local_party_states.items()):
+                if time.time() - p_info.get("recv_time", 0) <= 5.0 and p_info.get("in_game", False):
+                    if p_k not in active_ingame_minis:
+                        active_ingame_minis.append(p_k)
+
+        if active_ingame_minis:
+            warn_ok = messagebox.askyesno(
+                "사냥 중 인터넷 끊김 주의",
+                f"현재 이 중앙컴에서 인게임 가동 중인 클라({', '.join(active_ingame_minis)})가 있습니다.\n\n"
+                f"공유기 맥주소를 바꾸면 약 5~10초간 인터넷이 끊기며 인게임 캐릭터가 튕길 수 있습니다.\n"
+                f"그래도 즉시 공유기 IP를 변경하시겠습니까?"
+            )
+            if not warn_ok:
+                return
+
+        def _get_public_ip():
+            for url in ("https://api.ipify.org", "https://icanhazip.com", "https://ident.me"):
+                try:
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(req, timeout=3.0, context=ctx) as resp:
+                        ip_txt = resp.read().decode("utf-8", errors="ignore").strip()
+                        if ip_txt:
+                            return ip_txt
+                except Exception:
+                    pass
+            return "확인불가"
+
+        def _increment_mac(mac_str):
+            clean = re.sub(r'[^0-9A-Fa-f]', '', str(mac_str or ""))
+            if len(clean) != 12:
+                rand_tail = [random.randint(0x10, 0xFE) for _ in range(3)]
+                return f"00:26:66:{rand_tail[0]:02X}:{rand_tail[1]:02X}:{rand_tail[2]:02X}"
+            last_byte = (int(clean[10:12], 16) + 1) % 256
+            if last_byte in (0x00, 0xFF):
+                last_byte = 0x01
+            new_clean = clean[:10].upper() + f"{last_byte:02X}"
+            return ":".join(new_clean[i:i+2] for i in range(0, 12, 2))
+
+        def _worker():
+            root.after(0, lambda: btn_w.config(text="⏳ 공유기 MAC 변경 및 새 IP 할당 대기중...", bg="#F57C00", state="disabled"))
+            old_pub_ip = _get_public_ip()
+            print(f"\n🌐 [공유기 MAC 변경 시작] 현재 공인 IP: {old_pub_ip} ➔ 공유기({ROUTER_IP_CONST}) 접속 중...")
+
+            cj = http.cookiejar.CookieJar()
+            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+            rpc_url = f"http://{ROUTER_IP_CONST}/cgi/service.cgi"
+
+            def _rpc_call(method_name, params=None):
+                body = {"method": method_name}
+                if params is not None:
+                    body["params"] = params
+                req = urllib.request.Request(
+                    rpc_url,
+                    data=json.dumps(body).encode("utf-8"),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Referer": f"http://{ROUTER_IP_CONST}/ui/",
+                        "Origin": f"http://{ROUTER_IP_CONST}",
+                        "User-Agent": "Mozilla/5.0"
+                    }
+                )
+                with opener.open(req, timeout=4.0) as resp:
+                    return json.loads(resp.read().decode("utf-8", errors="ignore"))
+
+            changed_ok = False
+            new_mac_str = ""
+
+            # 1순위: 신형 iUX 3.0 (/ui/ -> /cgi/service.cgi JSON-RPC) 방식
+            try:
+                login_res = _rpc_call("session/login", {"id": ROUTER_ID_CONST, "pw": ROUTER_PW_CONST})
+                if login_res.get("error"):
+                    print(f"🚨 [공유기 로그인 거부] {login_res['error']} (아이디/비번 또는 보안문자 해제 여부를 확인하세요!)")
+                else:
+                    for m_name in ("network/interface/wan", "network/wan", "wan/config", "netconf/waninfo"):
+                        try:
+                            wan_res = _rpc_call(m_name)
+                            res_data = wan_res.get("result")
+                            if isinstance(res_data, dict):
+                                target_cfg = res_data.get("wan1", res_data) if isinstance(res_data.get("wan1"), dict) else res_data
+                                cur_mac = target_cfg.get("mac") or target_cfg.get("hwaddr") or target_cfg.get("clone_mac") or ""
+                                new_mac_str = _increment_mac(cur_mac)
+                                if "hwaddr" in target_cfg:
+                                    target_cfg["hwaddr"] = new_mac_str
+                                elif "clone_mac" in target_cfg:
+                                    target_cfg["clone_mac"] = new_mac_str
+                                else:
+                                    target_cfg["mac"] = new_mac_str
+                                if "mac_clone" in target_cfg:
+                                    target_cfg["mac_clone"] = True
+                                if "custom_mac" in target_cfg:
+                                    target_cfg["custom_mac"] = True
+                                _rpc_call(m_name, res_data)
+                                changed_ok = True
+                                break
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+
+            # 2순위: 호환 CGI (/sess-bin/login_handler.cgi + /sess-bin/timepro.cgi) 방식
+            if not changed_ok:
+                try:
+                    login_data = urllib.parse.urlencode({
+                        "init_status": "1", "captcha_on": "0",
+                        "username": ROUTER_ID_CONST, "passwd": ROUTER_PW_CONST
+                    }).encode("utf-8")
+                    req_l = urllib.request.Request(
+                        f"http://{ROUTER_IP_CONST}/sess-bin/login_handler.cgi",
+                        data=login_data,
+                        headers={"Referer": f"http://{ROUTER_IP_CONST}/", "User-Agent": "Mozilla/5.0"}
+                    )
+                    with opener.open(req_l, timeout=4.0) as resp_l:
+                        html_l = resp_l.read().decode("euc-kr", errors="ignore")
+                        m_cookie = re.search(r"setCookie\(['\"]([^'\"]+)['\"]\)", html_l)
+                        sess_id = m_cookie.group(1).strip() if m_cookie else ""
+
+                    cookie_hdr = f"efm_session_id={sess_id}" if sess_id else ""
+                    wan_url = f"http://{ROUTER_IP_CONST}/sess-bin/timepro.cgi?tmenu=netconf&smenu=waninfo"
+                    req_g = urllib.request.Request(wan_url, headers={"Referer": wan_url, "Cookie": cookie_hdr, "User-Agent": "Mozilla/5.0"})
+                    with opener.open(req_g, timeout=4.0) as resp_g:
+                        wan_html = resp_g.read().decode("euc-kr", errors="ignore")
+
+                    m_mac = re.search(r'name=["\']?hw_dynamic["\']?[^>]*value=["\']?([0-9A-Fa-f:-]{12,17})', wan_html)
+                    cur_mac = m_mac.group(1) if m_mac else ""
+                    new_mac_str = _increment_mac(cur_mac)
+                    mac_parts = new_mac_str.split(":")
+
+                    apply_dict = {
+                        "tmenu": "netconf", "smenu": "waninfo", "act": "apply",
+                        "wan": "wan1", "conntype": "dynamic", "mac_clone": "1",
+                        "hw_dynamic": new_mac_str, "hw_addr": new_mac_str
+                    }
+                    for idx_p, hex_p in enumerate(mac_parts, 1):
+                        apply_dict[f"hw_dynamic{idx_p}"] = hex_p
+                        apply_dict[f"mac{idx_p}"] = hex_p
+
+                    req_p = urllib.request.Request(
+                        f"http://{ROUTER_IP_CONST}/sess-bin/timepro.cgi",
+                        data=urllib.parse.urlencode(apply_dict).encode("utf-8"),
+                        headers={"Referer": wan_url, "Cookie": cookie_hdr, "User-Agent": "Mozilla/5.0"}
+                    )
+                    try:
+                        opener.open(req_p, timeout=4.0)
+                    except Exception:
+                        pass
+                    changed_ok = True
+                except Exception as e:
+                    print(f"⚠️ [공유기 제어 예외] {e}")
+
+            if not changed_ok:
+                print("❌ [공유기 MAC 변경 실패] 공유기 설정(ID: velvet7 / PW: flcl1030 및 보안문자 해제)을 확인하세요.")
+                root.after(0, lambda: btn_w.config(text="❌ 공유기 MAC 변경 실패 (터미널 확인)", bg="#C62828", state="normal"))
+                root.after(3000, lambda: btn_w.config(text="🔄 원터치 공유기 맥주소 변경 (KT 공인IP 리셋)", bg="#0277BD"))
+                return
+
+            print(f"✅ [MAC 변경 명령 전송 완료] 새 MAC: {new_mac_str} ➔ KT 모뎀 새 IP 할당 대기 중(약 5~10초)...")
+            new_pub_ip = "확인불가"
+            for _ in range(12):
+                time.sleep(1.2)
+                cand_ip = _get_public_ip()
+                if cand_ip != "확인불가" and cand_ip != old_pub_ip:
+                    new_pub_ip = cand_ip
+                    break
+                new_pub_ip = cand_ip
+
+            # 새 공인 IP 할당 완료 시 내 중앙컴의 인증 실패(fail.png) 이력을 초기화하여 즉시 내 회선부터 다시 쓰도록 복구
+            my_c_num = get_my_central_num()
+            for st_obj in ai_states.values():
+                if "certi_failed_centrals" in st_obj and isinstance(st_obj["certi_failed_centrals"], set):
+                    st_obj["certi_failed_centrals"].discard(my_c_num)
+                if st_obj.get("certi_curr_central") == "VPN":
+                    st_obj["certi_curr_central"] = my_c_num
+                    st_obj["certi_use_sub"] = False
+                    st_obj["certi_vpn_enter_time"] = 0.0
+
+            print(f"🎉 [공인 IP 변경 완료] 기존 IP: {old_pub_ip} ➔ 새 IP: {new_pub_ip} (MAC: {new_mac_str})")
+            root.after(0, lambda: btn_w.config(text=f"✅ IP 변경 완료: {old_pub_ip} ➔ {new_pub_ip}", bg="#2E7D32", state="normal"))
+            root.after(5000, lambda: btn_w.config(text="🔄 원터치 공유기 맥주소 변경 (KT 공인IP 리셋)", bg="#0277BD"))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    btn_mac_rot = tk.Button(auth_mac_frame, text="🔄 원터치 공유기 맥주소 변경 (KT 공인IP 리셋)", font=("맑은 고딕", 8, "bold"), bg="#0277BD", fg="white", relief="flat", pady=3)
+    btn_mac_rot.config(command=lambda b=btn_mac_rot: one_touch_rotate_iptime_mac(b))
+    btn_mac_rot.pack(side="left", fill="x", expand=True, padx=(2, 2))
+
     bottom_frame = tk.Frame(col_frame, bg=BG_PANEL)
     bottom_frame.pack(side="bottom", fill="x")
 
