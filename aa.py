@@ -1594,7 +1594,7 @@ def apply_bong_assignment_to_self(my_key, new_dng, new_inv_grp, source_label="�
         curr_inv = v_dict["invite_group"].get().strip()
 
         # 이미 동일한 사냥터/초대조로 설정되어 있거나 동일하게 예약된 상태면 중복 처리 스킵
-        if curr_dng == new_dng and curr_inv == new_inv_grp and st.get(" override_dungeon_name") != "본던 5to6":
+        if curr_dng == new_dng and curr_inv == new_inv_grp and st.get("override_dungeon_name") != "본던 5to6":
             if st.get("reserved_next_dng"):
                 st.pop("reserved_next_dng", None)
                 st.pop("reserved_next_inv_grp", None)
@@ -1611,9 +1611,50 @@ def apply_bong_assignment_to_self(my_key, new_dng, new_inv_grp, source_label="�
             st.get("town_thread_running", False)
         )
 
-        # 실제 물리적으로 캐릭터가 서 있는 층수 판별 (5to6 이동 중이면 아직 5층)
         real_curr_floor = 5 if st.get("override_dungeon_name") == "본던 5to6" else _extract_bong_floor_num(curr_dng)
         new_floor = _extract_bong_floor_num(new_dng)
+
+        def _trigger_party_regroup_if_needed(old_grp, target_grp):
+            now_t = time.time()
+            actual_grp = str(st.get("actual_joined_inv_grp", "")).strip()
+            if old_grp != target_grp or (actual_grp and actual_grp != target_grp):
+                was_partied = bool(st.get("in_ingame_party", False) or st.get("need_party_leave", False) or actual_grp)
+                st["last_invite_group"] = target_grp
+                st["no_red_arrow_streak"] = 0
+                st["solo_red_arrow_streak"] = 0
+                st["is_invite_leader"] = False
+                st["not_party_leader_locked"] = False
+                st["had_party_as_leader"] = False
+                st["invite_leader_since"] = 0.0
+                st["party_order"] = []
+                st["known_party_order"] = []
+                st["party_invite_giveup"] = False
+                st["party_accept_try_cnt"] = 0
+                st["party_accept_cycle_cnt"] = 0
+                st["party_retry_wait_until"] = 0.0
+                st["leader_demoted_until"] = 0.0
+                st["no_party_2m_start"] = 0.0
+                st["waiting_party_minimap_verify"] = False
+                st["pending_leader_invite_sig"] = False
+                st["wrong_party_mismatch_start"] = 0.0
+                if was_partied:
+                    st["need_party_leave"] = True
+                    st["leaving_from_group"] = actual_grp or old_grp
+                    st["waiting_party_leave_verify"] = False
+                    st["need_party_invite_req"] = False
+                    dprint(my_key, f"🚪 [파티조 재배치] 기존({old_grp}조) ➔ 신규({target_grp}조) 변경! 인게임 '/파티탈퇴' 후 새 파티로 가입합니다.")
+                else:
+                    st["need_party_leave"] = False
+                    st["leaving_from_group"] = "선택안함"
+                    st["in_ingame_party"] = False
+                    st["actual_joined_inv_grp"] = ""
+                    if target_grp != "선택안함":
+                        st["invite_group_join_time"] = now_t
+                        st["invite_listen_until"] = now_t + 0.8
+                        st["need_party_invite_req"] = True
+                    else:
+                        st["invite_group_join_time"] = 0.0
+                        st["need_party_invite_req"] = False
 
         # 1) 마을/인증 중이거나, 같은 층 내 라인 이동인 경우 -> 즉시 반영!
         if is_in_town_or_certi or real_curr_floor == new_floor or real_curr_floor == 0:
@@ -1624,13 +1665,14 @@ def apply_bong_assignment_to_self(my_key, new_dng, new_inv_grp, source_label="�
             v_dict["party_dungeon_name"].set(new_dng)
             v_dict["dungeon_name"].set(new_dng)
             v_dict["invite_group"].set(new_inv_grp)
+            _trigger_party_regroup_if_needed(curr_inv, new_inv_grp)
             st["dungeon_map_pos"] = None
             st["dungeon_last_map_pos"] = None
             st["dungeon_global_path"] = []
             st["current_target_node"] = None
             sync_gui_vars()
             save_settings()
-            dprint(my_key, f"🎯 [{source_label} 즉시적용] 사냥터: '{curr_dng}' ➔ '{new_dng}' | 초대조: '{new_inv_grp}' 반영 완료!")
+            dprint(my_key, f"🎯 [{source_label} 즉시적용] 사냥터: '{curr_dng}' ➔ '{new_dng}' | 초대조: '{curr_inv}' ➔ '{new_inv_grp}' 반영 완료!")
 
         # 2) 현재 5층 사냥 중인데 6층으로 배정된 경우 -> 기존 5층 엠탐/대기를 풀고 즉시 '본던 5to6' 계단 진격!
         elif real_curr_floor == 5 and new_floor == 6:
@@ -1639,8 +1681,8 @@ def apply_bong_assignment_to_self(my_key, new_dng, new_inv_grp, source_label="�
             v_dict["party_dungeon_name"].set(new_dng)
             v_dict["dungeon_name"].set(new_dng)
             v_dict["invite_group"].set(new_inv_grp)
+            _trigger_party_regroup_if_needed(curr_inv, new_inv_grp)
 
-            # 5층에서 엠탐이나 팟바람 대기 중이었더라도 즉시 해제하고 계단으로 출발하도록 상태 초기화
             st["abort_macro"] = True
             clear_movements_only(pico_queues[my_key])
             if st.get("sweep_active", False):
@@ -9851,10 +9893,12 @@ def ai_commander_worker(target_pc):
             else:
                 state["no_red_arrow_streak"] = 0
                 state["wrong_party_mismatch_start"] = 0.0
-                # 0) 파티 탈퇴 대기 중 미니맵에서 주황/노란 마커가 사라지고 빨간 화살표가 확인되면 탈퇴 완료 확정!
-                if state.get("need_party_leave", False) and solo_red_px >= 5:
-                    state["solo_red_arrow_streak"] = state.get("solo_red_arrow_streak", 0) + 1
-                    if state["solo_red_arrow_streak"] >= 2:
+                # 0) 파티 탈퇴 대기 중 미니맵에서 주황/노란 파티 마커가 사라지면(빨간 화살표 2회 또는 파티마커 소멸 3회) 즉시 탈퇴 완료 확정!
+                if state.get("need_party_leave", False):
+                    if solo_red_px >= 5 or state.get("waiting_party_leave_verify", False):
+                        state["solo_red_arrow_streak"] = state.get("solo_red_arrow_streak", 0) + 1
+                    need_streak = 2 if solo_red_px >= 5 else 3
+                    if state.get("solo_red_arrow_streak", 0) >= need_streak:
                         state["need_party_leave"] = False
                         state["waiting_party_leave_verify"] = False
                         state["leaving_from_group"] = "선택안함"
@@ -9869,11 +9913,11 @@ def ai_commander_worker(target_pc):
                             state["invite_group_join_time"] = curr_time
                             state["invite_listen_until"] = curr_time + 1.0
                             state["need_party_invite_req"] = True
-                            dprint(key, f"✅ [파티탈퇴 완료 확인] 미니맵 솔플 화살표 확인! 이제 GUI에 지정된 ({my_inv_grp}조) 파티로 재가입을 시작합니다!")
+                            dprint(key, f"✅ [파티탈퇴 완료 확인] 미니맵 파티 마커 소멸 확인! 이제 GUI에 지정된 ({my_inv_grp}조) 파티로 재가입을 시작합니다!")
                         else:
                             state["invite_group_join_time"] = 0.0
                             state["need_party_invite_req"] = False
-                            dprint(key, "✅ [파티탈퇴 완료 확인] 미니맵 솔플 화살표 확인! 단독(솔플) 사냥을 속행합니다.")
+                            dprint(key, "✅ [파티탈퇴 완료 확인] 미니맵 파티 마커 소멸 확인! 단독(솔플) 사냥을 속행합니다.")
 
                 elif not state.get("need_party_leave", False):
                     if state.get("party_retry_wait_until", 0.0) > 0.0 and curr_time >= state.get("party_retry_wait_until", 0.0):
@@ -31550,9 +31594,31 @@ for i, pc in enumerate(MINI_PCS):
         except Exception:
             pass
 
+    def _resolve_bong_inv_grp_by_zone(dng_name, zone_counts, fallback_inv="선택안함"):
+        """사냥터 이름을 기준으로 지정된 파티(초대조) 번호를 자동 산출합니다."""
+        z_fixed_map = {
+            "본던 5-1": "1", "본던 5-2": "1",
+            "본던 5-3": "2", "본던 5-4": "2",
+            "본던 5-5": "3", "본던 5-6": "3",
+            "본던 5-7": "4", "본던 5-10": "4", "본던 5-11": "4",
+            "본던 5-8": "5", "본던 5-9": "5",
+            "본던 6-1": "7", "본던 6-3": "7", "본던 6-14": "7",
+            "본던 6-4": "8",
+            "본던 6-5": "9",
+            "본던 4-12": "10",
+        }
+        if dng_name in z_fixed_map:
+            return z_fixed_map[dng_name]
+        if dng_name in ("본던 5-12", "본던 5-13"):
+            # 5-12, 5-13은 어느 한 곳이라도 2인 이상 배치될 때만 6조로 묶고, 각 1인이면 솔플('선택안함')
+            if zone_counts.get("본던 5-12", 0) >= 2 or zone_counts.get("본던 5-13", 0) >= 2:
+                return "6"
+            return "선택안함"
+        return fallback_inv
+
     def broadcast_and_apply_bong_plan_from_file(is_auto=False, precomputed_map=None):
-        """새 표 양식(5-1 | 1조 | 10-4...)과 기존 양식을 모두 호환하여 읽고 전체 중앙컴에 반영합니다."""
-        import re
+        """메모장에서 사냥터만 수정해도 사냥터 기준으로 초대조를 자동 재계산하여 전체 중앙컴에 반영합니다."""
+        import re, unicodedata
         assign_map = {}
 
         if precomputed_map is not None:
@@ -31563,45 +31629,85 @@ for i, pc in enumerate(MINI_PCS):
                     messagebox.showwarning("파일 없음", f"'{BONG_PLAN_FILE}' 파일이 없습니다.\n먼저 [📄 최적배치 파일생성] 버튼을 눌러주세요.")
                 return
             try:
+                raw_lines = []
+                parsed_entries = []
+                zone_counts = {}
+
                 with open(BONG_PLAN_FILE, "r", encoding="utf-8") as f:
-                    for raw_line in f:
-                        line = raw_line.strip()
-                        if not line or line.startswith(("=", "-", "*", "#", "■", "[", "사냥터")):
-                            continue
-                        if "|" not in line:
-                            continue
+                    raw_lines = f.readlines()
 
-                        parts = [p.strip() for p in line.split("|")]
-                        if len(parts) < 3:
-                            continue
+                for line_idx, raw_line in enumerate(raw_lines):
+                    line = raw_line.strip()
+                    if not line or line.startswith(("=", "-", "*", "#", "■", "[", "사냥터")):
+                        continue
+                    if "|" not in line:
+                        continue
 
-                        # 1) 신형 표 양식: 5-1 | 1조 | 10-4 (인트당) | ...
-                        m_id_col2 = re.match(r'^(\d+)-(?:미니)?(\d+)', parts[2])
-                        if m_id_col2:
-                            c_part, m_part = m_id_col2.group(1), m_id_col2.group(2)
-                            uid_norm = f"{c_part}-미니{m_part}"
+                    parts = [p.strip() for p in line.split("|")]
+                    if len(parts) < 3:
+                        continue
 
-                            raw_z = parts[0].replace("사냥터:", "").strip()
-                            dng_val = raw_z if raw_z.startswith("본던") else f"본던 {raw_z}"
+                    # 1) 신형 표 양식: 5-1 | 1조 | 10-4 (인트당) | ...
+                    m_id_col2 = re.match(r'^(\d+)-(?:미니)?(\d+)', parts[2])
+                    if m_id_col2:
+                        c_part, m_part = m_id_col2.group(1), m_id_col2.group(2)
+                        uid_norm = f"{c_part}-미니{m_part}"
 
-                            raw_inv = parts[1].replace("초대조:", "").replace("조", "").strip()
-                            inv_val = "선택안함" if raw_inv in ("솔플", "없음", "선택안함", "0", "-") else raw_inv
-                            assign_map[uid_norm] = {"dng": dng_val, "inv_grp": inv_val}
-                            continue
+                        raw_z = parts[0].replace("사냥터:", "").strip()
+                        dng_val = raw_z if raw_z.startswith("본던") else f"본던 {raw_z}"
 
-                        # 2) 구형 양식 호환: 10-미니4 | 사냥터: 본던 5-1 | 초대조: 1 | ...
-                        m_old = re.search(r'^(\d+-(?:미니\d+|\d+))\s*\|\s*사냥터\s*:\s*([^|]+)\|\s*초대조\s*:\s*([^|]+)', line)
-                        if m_old:
-                            uid_raw = m_old.group(1).strip()
-                            dng_val = m_old.group(2).strip()
-                            if not dng_val.startswith("본던"):
-                                dng_val = f"본던 {dng_val}"
-                            inv_val = m_old.group(3).replace("조", "").strip()
-                            if inv_val in ("없음", "솔플", "선택안함", "0", "-"):
-                                inv_val = "선택안함"
-                            c_part, m_part = uid_raw.split("-", 1)
-                            uid_norm = f"{c_part}-미니{m_part}" if not m_part.startswith("미니") else uid_raw
-                            assign_map[uid_norm] = {"dng": dng_val, "inv_grp": inv_val}
+                        raw_inv = parts[1].replace("초대조:", "").replace("조", "").strip()
+                        fb_inv = "선택안함" if raw_inv in ("솔플", "없음", "선택안함", "0", "-") else raw_inv
+
+                        zone_counts[dng_val] = zone_counts.get(dng_val, 0) + 1
+                        parsed_entries.append((line_idx, uid_norm, dng_val, fb_inv, parts))
+                        continue
+
+                    # 2) 구형 양식 호환: 10-미니4 | 사냥터: 본던 5-1 | 초대조: 1 | ...
+                    m_old = re.search(r'^(\d+-(?:미니\d+|\d+))\s*\|\s*사냥터\s*:\s*([^|]+)\|\s*초대조\s*:\s*([^|]+)', line)
+                    if m_old:
+                        uid_raw = m_old.group(1).strip()
+                        dng_val = m_old.group(2).strip()
+                        if not dng_val.startswith("본던"):
+                            dng_val = f"본던 {dng_val}"
+                        fb_inv = m_old.group(3).replace("조", "").strip()
+                        if fb_inv in ("없음", "솔플", "선택안함", "0", "-"):
+                            fb_inv = "선택안함"
+                        c_part, m_part = uid_raw.split("-", 1)
+                        uid_norm = f"{c_part}-미니{m_part}" if not m_part.startswith("미니") else uid_raw
+
+                        zone_counts[dng_val] = zone_counts.get(dng_val, 0) + 1
+                        parsed_entries.append((line_idx, uid_norm, dng_val, fb_inv, None))
+
+                def _pad_k(s, width):
+                    s = str(s)
+                    d_len = sum(2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1 for ch in s)
+                    return s + (" " * max(0, width - d_len))
+
+                file_updated = False
+                for line_idx, uid_norm, dng_val, fb_inv, parts in parsed_entries:
+                    # 💡 핵심: 메모장에 적힌 이전 초대조 대신, 변경된 사냥터(dng_val)를 기준으로 초대조를 자동 결정!
+                    auto_inv = _resolve_bong_inv_grp_by_zone(dng_val, zone_counts, fallback_inv=fb_inv)
+                    assign_map[uid_norm] = {"dng": dng_val, "inv_grp": auto_inv}
+
+                    # 메모장 파일 내 초대조 표기도 자동 갱신된 조 번호로 동기화
+                    if parts is not None and len(parts) >= 5:
+                        short_z = dng_val.replace("본던 ", "").strip()
+                        inv_str = f"{auto_inv}조" if auto_inv != "선택안함" else "솔플"
+                        if parts[1] != inv_str:
+                            file_updated = True
+                            col1 = _pad_k(short_z, 5)
+                            col2 = _pad_k(inv_str, 4)
+                            col3 = _pad_k(parts[2], 18)
+                            col4 = _pad_k(parts[3], 6)
+                            raw_lines[line_idx] = f"  {col1} | {col2} | {col3} | {col4} | {parts[4]}\n"
+
+                if file_updated:
+                    try:
+                        with open(BONG_PLAN_FILE, "w", encoding="utf-8") as fw:
+                            fw.writelines(raw_lines)
+                    except Exception:
+                        pass
             except Exception as e:
                 print(f"⚠️ 배치 파일 읽기 오류: {e}")
                 return
@@ -31650,7 +31756,7 @@ for i, pc in enumerate(MINI_PCS):
                 except Exception: pass
 
         threading.Thread(target=_send_all, daemon=True).start()
-        dprint(TARGET_PC_KEY, f"🚀 [{src_label} 완료] 총 {len(assign_map)}개 캐릭터 사냥터/초대조 배정 신호를 전체 중앙컴에 송출했습니다!")
+        dprint(TARGET_PC_KEY, f"🚀 [{src_label} 완료] 총 {len(assign_map)}개 캐릭터 사냥터/초대조(사냥터 기준 자동매칭) 신호를 전체 중앙컴에 송출했습니다!")
 
     def broadcast_auto_bong_toggle():
         """어느 한 창에서 '실시간 자동배치' 체크박스를 클릭하면 1~13번 전체 창에 체크 상태를 동기화합니다."""
