@@ -1559,9 +1559,136 @@ def broadcast_config_sync(sender_key, group_name, btn_widget=None):
         btn_widget.config(text="✅완료", bg="#2E7D32")
         root.after(1500, lambda: btn_widget.config(text=orig_text, bg=orig_bg))
 
+_LAST_APPLIED_BONG_SYNC_ID = ""
+
+def _extract_bong_floor_num(dng_str):
+    import re
+    s = str(dng_str or "").strip()
+    if "5to6" in s:
+        return 6
+    m = re.search(r'본던\s*(\d+)', s)
+    if m:
+        return int(m.group(1))
+    return 0
+
+def apply_bong_assignment_to_self(my_key, new_dng, new_inv_grp, source_label="수동반영"):
+    """배정된 사냥터와 초대조를 내 클라이언트에 반영합니다. (타 층 이동 시 다음 마을 정비 예약)"""
+    try:
+        if my_key not in gui_vars or my_key not in ai_states:
+            return
+        v_dict = gui_vars[my_key]
+        st = ai_states[my_key]
+
+        new_dng = str(new_dng or "").strip()
+        new_inv_grp = str(new_inv_grp or "선택안함").strip()
+        if not new_dng:
+            return
+
+        # 파티 이동식 자동 활성화
+        if "use_party_hunt" in v_dict and not v_dict["use_party_hunt"].get():
+            v_dict["use_party_hunt"].set(True)
+        if "use_party_fixed" in v_dict and v_dict["use_party_fixed"].get():
+            v_dict["use_party_fixed"].set(False)
+
+        curr_dng = v_dict["party_dungeon_name"].get().strip()
+        curr_inv = v_dict["invite_group"].get().strip()
+
+        # 이미 동일한 사냥터/초대조로 설정되어 있거나 동일하게 예약된 상태면 중복 처리 스킵
+        if curr_dng == new_dng and curr_inv == new_inv_grp and st.get(" override_dungeon_name") != "본던 5to6":
+            if st.get("reserved_next_dng"):
+                st.pop("reserved_next_dng", None)
+                st.pop("reserved_next_inv_grp", None)
+                dprint(my_key, f"🔄 [{source_label}] 다시 현재 사냥터('{curr_dng}')로 배정되어 층간 이동 예약을 취소하고 현 위치를 유지합니다.")
+            return
+        if st.get("reserved_next_dng") == new_dng and st.get("reserved_next_inv_grp") == new_inv_grp:
+            return
+
+        raw_fsm = str(st.get("backup_target_fsm", st.get("target_fsm", "IDLE"))) if st.get("target_fsm") == "GHOST_MODE" else str(st.get("target_fsm", "IDLE"))
+        is_in_town_or_certi = (
+            not st.get("is_hunt_active", False) or
+            raw_fsm.startswith(("TOWN_MAINT", "DEATH", "CERTI_", "WEAPON_REPAIR")) or
+            raw_fsm == "SHUTDOWN_WAIT" or
+            st.get("town_thread_running", False)
+        )
+
+        # 실제 물리적으로 캐릭터가 서 있는 층수 판별 (5to6 이동 중이면 아직 5층)
+        real_curr_floor = 5 if st.get("override_dungeon_name") == "본던 5to6" else _extract_bong_floor_num(curr_dng)
+        new_floor = _extract_bong_floor_num(new_dng)
+
+        # 1) 마을/인증 중이거나, 같은 층 내 라인 이동인 경우 -> 즉시 반영!
+        if is_in_town_or_certi or real_curr_floor == new_floor or real_curr_floor == 0:
+            st.pop("reserved_next_dng", None)
+            st.pop("reserved_next_inv_grp", None)
+            if real_curr_floor == new_floor and st.get("override_dungeon_name") == "본던 5to6":
+                st.pop("override_dungeon_name", None)
+            v_dict["party_dungeon_name"].set(new_dng)
+            v_dict["dungeon_name"].set(new_dng)
+            v_dict["invite_group"].set(new_inv_grp)
+            st["dungeon_map_pos"] = None
+            st["dungeon_last_map_pos"] = None
+            st["dungeon_global_path"] = []
+            st["current_target_node"] = None
+            sync_gui_vars()
+            save_settings()
+            dprint(my_key, f"🎯 [{source_label} 즉시적용] 사냥터: '{curr_dng}' ➔ '{new_dng}' | 초대조: '{new_inv_grp}' 반영 완료!")
+
+        # 2) 현재 5층 사냥 중인데 6층으로 배정된 경우 -> 기존 5층 엠탐/대기를 풀고 즉시 '본던 5to6' 계단 진격!
+        elif real_curr_floor == 5 and new_floor == 6:
+            st.pop("reserved_next_dng", None)
+            st.pop("reserved_next_inv_grp", None)
+            v_dict["party_dungeon_name"].set(new_dng)
+            v_dict["dungeon_name"].set(new_dng)
+            v_dict["invite_group"].set(new_inv_grp)
+
+            # 5층에서 엠탐이나 팟바람 대기 중이었더라도 즉시 해제하고 계단으로 출발하도록 상태 초기화
+            st["abort_macro"] = True
+            clear_movements_only(pico_queues[my_key])
+            if st.get("sweep_active", False):
+                pico_queues[my_key].put({"action": "SWEEP_STOP"})
+                st["sweep_active"] = False
+            if st.get("body_held", False):
+                if picos.get(my_key) and pico_locks.get(my_key):
+                    send_keyboard_key(picos[my_key], pico_locks[my_key], KEY_F7, 0, is_manual=True)
+                st["body_held"] = False
+
+            st["is_mptam_mode"] = False
+            st["pending_mptam"] = False
+            st["mptam_standby_guard"] = False
+            st["mptam_extend_80"] = False
+            st["mptam_extend_95"] = False
+            st["is_active_standby"] = False
+            st["req_party_buff"] = False
+            st["party_buff_status"] = "EXCLUDED"
+            st["standby_reason"] = ""
+            st["retreat_reason"] = ""
+
+            st["override_dungeon_name"] = "본던 5to6"
+            st["entered_target_floor"] = False
+            st["portal_retry_mode"] = False
+            st["portal_entry_start_time"] = 0
+            st["dungeon_map_pos"] = None
+            st["dungeon_last_map_pos"] = None
+            st["dungeon_global_path"] = []
+            st["current_target_node"] = None
+            if raw_fsm in ["PARTY_WAIT", "PARTY_ACTIVE_STANDBY", "PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV", "SQUAD_WAIT"]:
+                st["target_fsm"] = "IDLE"
+                st["backup_target_fsm"] = "IDLE"
+
+            sync_gui_vars()
+            save_settings()
+            dprint(my_key, f"🚀 [{source_label} 5➔6층 즉시진격] 목표 '{new_dng}'(초대조:{new_inv_grp}) 설정 & 5층 대기 해제 후 '본던 5to6' 계단 이동 가동!")
+
+        # 3) 4↔5층, 6➔5층, 6↔4층 등 층간 이동 로직이 없는 경우 -> 현재 사냥 유지 후 다음 마을 정비 때 변경 예약!
+        else:
+            st["reserved_next_dng"] = new_dng
+            st["reserved_next_inv_grp"] = new_inv_grp
+            dprint(my_key, f"📌 [{source_label} 다음정비 예약] 현재 {real_curr_floor}층('{curr_dng}') 사냥 유지 ➔ 다음 마을 귀환/정비 시 '{new_dng}'(초대조:{new_inv_grp})로 자동 변경됩니다!")
+    except Exception as e:
+        print(f"⚠️ [{my_key}] 사냥터 배정 반영 오류: {e}")
+
 def local_ipc_listener_thread(my_key):
     """내 전용 포트를 열고 로컬 및 타 중앙컴 파티원들의 외침을 듣는 귀(Receiver)"""
-    global _LAST_APPLIED_SYNC_ID
+    global _LAST_APPLIED_SYNC_ID, _LAST_APPLIED_BONG_SYNC_ID
     my_port = LOCAL_IPC_PORTS.get(my_key)
     if not my_port: return
 
@@ -1573,16 +1700,46 @@ def local_ipc_listener_thread(my_key):
     while True:
         try:
             while True:
-                data, _ = sock.recvfrom(4096)
+                data, _ = sock.recvfrom(8192)
                 msg = json.loads(data.decode('utf-8'))
 
-                # 📡 [0순위: 1~13번 전체컴 설정 동기화 신호 처리] 파티 조와 무관하게 즉시 처리!
+                # 📡 [0순위: 1~13번 전체컴 설정 동기화 신호 처리]
                 if msg.get("msg_type") == "CONFIG_SYNC":
                     sync_id = msg.get("sync_id", "")
                     my_uid_chk = f"{get_my_central_num()}-{my_key}"
                     if sync_id and sync_id != _LAST_APPLIED_SYNC_ID and msg.get("sender_uid") != my_uid_chk:
                         _LAST_APPLIED_SYNC_ID = sync_id
                         _GUI_TASK_QUEUE.put((apply_received_config_sync, (my_key, msg)))
+                    continue
+
+                # 🔄 [0-0.3순위: '실시간 자동배치' 체크박스 전체 창 동기화]
+                if msg.get("msg_type") == "BONG_AUTO_TOGGLE":
+                    t_sync_id = msg.get("sync_id", "")
+                    if t_sync_id and t_sync_id != getattr(local_ipc_listener_thread, "last_toggle_id", ""):
+                        local_ipc_listener_thread.last_toggle_id = t_sync_id
+                        new_auto_val = bool(msg.get("auto_on", False))
+                        def _sync_auto_chk(val=new_auto_val):
+                            if my_key in gui_vars and "use_auto_bong_assign" in gui_vars[my_key]:
+                                gui_vars[my_key]["use_auto_bong_assign"].set(val)
+                                save_settings()
+                        _GUI_TASK_QUEUE.put((_sync_auto_chk, ()))
+                    continue
+
+                # 🎯 [0-0.5순위: 본던 최적 사냥터 배치표 광역 일괄 반영 신호 처리]
+                if msg.get("msg_type") == "BONG_ASSIGN_APPLY":
+                    b_sync_id = msg.get("sync_id", "")
+                    if b_sync_id and b_sync_id != _LAST_APPLIED_BONG_SYNC_ID:
+                        _LAST_APPLIED_BONG_SYNC_ID = b_sync_id
+                        assign_map = msg.get("assignments", {})
+                        src_lbl = msg.get("source_label", "광역배치")
+                        is_auto_sig = bool(msg.get("is_auto", False))
+                        if is_auto_sig and not gui_vars.get(my_key, {}).get("use_auto_bong_assign", tk.BooleanVar(value=False)).get():
+                            continue
+                        my_uid_str = f"{int(get_my_central_num()) if str(get_my_central_num()).isdigit() else get_my_central_num()}-{my_key}"
+                        my_short_uid = f"{get_my_central_num()}-{my_key.replace('미니', '')}"
+                        my_assign = assign_map.get(my_uid_str) or assign_map.get(my_short_uid)
+                        if my_assign:
+                            _GUI_TASK_QUEUE.put((apply_bong_assignment_to_self, (my_key, my_assign.get("dng"), my_assign.get("inv_grp"), src_lbl)))
                     continue
 
                 # 🔄 [0-1순위: 동일 중앙컴 내 땜빵 모드 바통터치 시 기존 미니창 자동 본케 복귀]
@@ -1603,24 +1760,22 @@ def local_ipc_listener_thread(my_key):
                 now_t = time.time()
                 msg["recv_time"] = now_t
 
-                # 1) 기존 전술 파티(A~D조): 동일 중앙컴 내부 미니컴끼리만 연동 (기존 기능 100% 보존)
+                # 1) 기존 전술 파티(A~D조): 동일 중앙컴 내부 미니컴끼리만 연동
                 sender_party = msg.get("party_group", "선택안함")
                 my_party = current_settings.get(my_key, {}).get("party_group", "선택안함")
                 if sender_c_num == my_c_num and sender_key != my_key and my_party != "선택안함" and sender_party == my_party:
                     with party_lock:
                         local_party_states[sender_key] = msg
 
-                # 2) 다중 중앙컴 인게임 자동초대 조(1~12): 조 선택 즉시 기존 파장을 알 수 있도록 상시 수신 저장
-                sender_inv_grp = str(msg.get("invite_group", "선택안함"))
-                if sender_inv_grp != "선택안함":
-                    with party_lock:
-                        global_invite_states[sender_uid] = msg
+                # 2) 전체 가용 인원 집계 및 다중 중앙컴 초대조 연동을 위해 모든 미니컴 상태를 상시 저장
+                with party_lock:
+                    global_invite_states[sender_uid] = msg
         except BlockingIOError: pass
         except Exception: pass
         time.sleep(0.05)
 
 def local_ipc_broadcaster_thread(my_key):
-    """내 상태와 '내가 치고 있는 몹의 절대 좌표(GPS)' 및 '자동 초대조 상태'를 쏴주는 입(Sender)"""
+    """내 상태와 '내가 치고 있는 몹의 절대 좌표(GPS)' 및 '가용 인원/초대조 상태'를 쏴주는 입(Sender)"""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     last_remote_broadcast = 0.0
 
@@ -1632,10 +1787,8 @@ def local_ipc_broadcaster_thread(my_key):
             use_party_fixed = current_settings.get(my_key, {}).get("use_party_fixed", False)
             st = ai_states.get(my_key, {})
 
-            need_tactic_bcast = (use_party_hunt or use_party_fixed) and my_party != "선택안함"
-            need_invite_bcast = (my_inv_grp != "선택안함")
-
-            if need_tactic_bcast or need_invite_bcast:
+            # 💡 초대조가 '선택안함'(5-12, 5-13 솔플 등)이어도 전체 가용 인원 집계를 위해 상시 브로드캐스트
+            if True:
                 hp = st.get("last_hp", 100.0)
                 mp = sorted(st.get("mp_buffer", [100.0]*5))[2] if "mp_buffer" in st else 100.0
                 my_map_pos = st.get("dungeon_map_pos")
@@ -1668,27 +1821,22 @@ def local_ipc_broadcaster_thread(my_key):
                     is_motion = st.get("is_motion_target", False)
 
                     if not is_motion and st.get("last_mob_pos"):
-
                         mob_screen_pos = st.get("last_mob_pos")
                     elif is_motion and st.get("hover_pos"):
-
                         mob_screen_pos = st.get("hover_pos")
                     elif st.get("cursor_pos"):
                         mob_screen_pos = st.get("cursor_pos")
 
                     if mob_screen_pos:
                         try:
-
                             scale_x = globals().get("DUNGEON_SCALE_X", 0.1)
                             scale_y = globals().get("DUNGEON_SCALE_Y", 0.1)
 
                             if not is_motion:
-
                                 mob_map_x = my_map_pos[0] + (mob_screen_pos[0] - 400) * scale_x
                                 mob_map_y = my_map_pos[1] + (mob_screen_pos[1] + 10 - 245) * scale_y
                                 mob_map_pos = (mob_map_x, mob_map_y)
                             else:
-
                                 dx = mob_screen_pos[0] - 400
                                 dy = (mob_screen_pos[1] - 245) / 0.85
                                 if math.hypot(dx, dy) > 10:
@@ -1706,7 +1854,6 @@ def local_ipc_broadcaster_thread(my_key):
                 except: my_m_int = 1
                 my_uid = f"{my_c_int}-{my_key}"
 
-                # 💡 자동사냥 가동 여부(hunt_active)와 인게임 상태(in_game: 인증 중 제외)를 분리하여 송출
                 now_req_t = time.time()
                 real_hunt_on = bool(st.get("backup_hunt_active", st.get("is_hunt_active", False)) and not st.get("is_paused", False))
                 real_fsm_str = str(st.get("backup_target_fsm", raw_fsm)) if raw_fsm == "GHOST_MODE" else raw_fsm
@@ -1722,7 +1869,6 @@ def local_ipc_broadcaster_thread(my_key):
                 in_party_now = bool(is_in_game and st.get("in_ingame_party", False))
                 is_inv_leader = bool(is_in_game and st.get("is_invite_leader", False) and not st.get("not_party_leader_locked", False))
 
-                # 💡 사냥터에 있는 동안에는 전투/이동 중에도 초대 요청 신호를 상시 유지 (단, 1분 대기 쿨타임 및 3x3 9회 실패 포기 시 제외)
                 explicit_req = bool(
                     is_in_hunting_ground and
                     now_req_t >= st.get("party_retry_wait_until", 0.0) and
@@ -1734,6 +1880,8 @@ def local_ipc_broadcaster_thread(my_key):
                     not is_inv_leader
                 )
 
+                active_dng_str = current_settings.get(my_key, {}).get("party_dungeon_name" if (use_party_hunt or use_party_fixed) else "dungeon_name", "")
+
                 payload = {
                     "uid": my_uid,
                     "central_num": my_c_int,
@@ -1742,6 +1890,7 @@ def local_ipc_broadcaster_thread(my_key):
                     "party_group": my_party,
                     "invite_group": my_inv_grp,
                     "char_name": current_settings.get(my_key, {}).get("char_name", ""),
+                    "is_sub_mode": bool(globals().get("IS_SUB_CHAR_MODE", False)),
                     "hunt_active": real_hunt_on,
                     "in_game": is_in_game,
                     "in_hunting_ground": is_in_hunting_ground,
@@ -1781,7 +1930,8 @@ def local_ipc_broadcaster_thread(my_key):
                     "party_buff_done": bool(st.get("party_buff_done", False) and now_req_t <= st.get("party_buff_done_timer", 0.0)),
                     "elem_rem": max(0.0, st.get("buff_element_time", 0.0) - now_req_t) if current_settings.get(my_key, {}).get("is_party_inviter", False) else 0.0,
                     "post_certi_need_pb": bool(st.get("post_certi_need_pb", False)),
-                    "dungeon_name": current_settings.get(my_key, {}).get("dungeon_name", ""),
+                    "dungeon_name": active_dng_str,
+                    "reserved_next_dng": st.get("reserved_next_dng", ""),
                     "is_out_of_zone": st.get("is_out_of_zone", False)
                 }
 
@@ -1792,10 +1942,10 @@ def local_ipc_broadcaster_thread(my_key):
                         except: pass
 
                 now_b = time.time()
-                if need_invite_bcast and (now_b - last_remote_broadcast >= 0.4):
+                if now_b - last_remote_broadcast >= 0.5:
                     last_remote_broadcast = now_b
                     target_ips = [ip for _, ip in ALIVE_OTHER_PROXIES] if ALIVE_OTHER_PROXIES else [
-                        ip for c_k, ip in CENTRAL_TAILSCALE_MAP.items() if c_k != my_c_num
+                        ip for c_k, ip in CENTRAL_TAILSCALE_MAP.items() if c_k != my_c_num and c_k != "VPN"
                     ]
                     for r_ip in target_ips:
                         for port in LOCAL_IPC_PORTS.values():
@@ -3915,6 +4065,7 @@ _GUI_DEFAULT_SCHEMA = {
     "party_mptam_tele_use": True, "party_mptam_tele_pct": "12",
     "party_help_call_use": True, "party_help_call_pct": "20",
     "use_config_sync": True, "sync_target_dng": "모든사냥터",
+    "use_auto_bong_assign": False,
     "use_m_elf_pk": False, "use_m_wiz_pk": False, "use_f_knight_pk": False, "use_m_knight_pk": False, "use_m_prince_pk": False, "use_halloween_pk": False,
     "m_elf_conf": "70", "m_wiz_conf": "70", "f_knight_conf": "70", "m_knight_conf": "70", "m_prince_conf": "70", "halloween_conf": "70",
     "dungeon_name": "개미굴 6층",
@@ -16067,6 +16218,12 @@ def ai_commander_worker(target_pc):
 
                             if state.pop("override_dungeon_name", None):
                                 dprint(key, f"🔄 [목표 층수 복구] 마을 도착! 오입장 상태를 해제하고 다음 출발 시 원래 사냥터로 정상 복구합니다.")
+
+                            # 🎯 [예약된 층간 이동 사냥터 자동 반영] 사냥 중 다른 층으로 재배치 예약된 경우 마을 정비 시작 시점에 즉시 교체!
+                            res_dng = state.pop("reserved_next_dng", None)
+                            res_inv = state.pop("reserved_next_inv_grp", None)
+                            if res_dng and key in gui_vars:
+                                _GUI_TASK_QUEUE.put((apply_bong_assignment_to_self, (key, res_dng, res_inv or "선택안함", "마을정비 예약반영")))
 
                             state["entered_target_floor"] = False
                             state.pop("original_dungeon_name", None)
@@ -30837,6 +30994,559 @@ for i, pc in enumerate(MINI_PCS):
     )
     btn_pk_sync.config(command=lambda k=key, b=btn_pk_sync: broadcast_config_sync(k, "PK", b))
     btn_pk_sync.pack(side="left", padx=2)
+
+    # ==============================================================================
+    # 🧠 [본던 5층(23인 독식 최우선) ➔ 6층 ➔ 4층 최적 인원 배치 & 파티 자동 묶음 엔진]
+    # ==============================================================================
+    BONG_PLAN_FILE = "optimal_bong_plan.txt"
+    BONG_PLAN_BACKUP_FILE = "optimal_bong_plan_backup.txt"
+
+    def _collect_all_active_bong_units():
+        """1~13번 전체 중앙컴에서 사냥 버튼이 켜진(인증 중 포함) '본던' 가용 캐릭터만 수집합니다."""
+        now_t = time.time()
+        units = {}
+
+        my_c_str = str(get_my_central_num())
+        try: my_c_int = int(my_c_str)
+        except: my_c_int = 1
+        try: my_m_int = int(TARGET_PC_KEY.replace("미니", ""))
+        except: my_m_int = 1
+        my_uid = f"{my_c_int}-{TARGET_PC_KEY}"
+
+        my_st = ai_states.get(TARGET_PC_KEY, {})
+        my_hunt_on = bool(my_st.get("backup_hunt_active", my_st.get("is_hunt_active", False)) and not my_st.get("is_paused", False))
+        my_v = gui_vars.get(TARGET_PC_KEY, {})
+        if my_hunt_on and my_v:
+            eff_my_dng = my_st.get("reserved_next_dng") or my_v["party_dungeon_name"].get().strip()
+            if "본던" in eff_my_dng or "gludio" in eff_my_dng.lower():
+                units[my_uid] = {
+                    "uid": my_uid,
+                    "short_id": f"{my_c_int}-{my_m_int}",
+                    "c_num": my_c_int,
+                    "m_num": my_m_int,
+                    "pc_key": TARGET_PC_KEY,
+                    "char_name": my_v["char_name"].get().strip() if "char_name" in my_v else "",
+                    "is_sub": bool(globals().get("IS_SUB_CHAR_MODE", False)),
+                    "is_wind": bool(my_v["is_party_inviter"].get()) and not bool(globals().get("IS_SUB_CHAR_MODE", False)),
+                    "curr_dng": eff_my_dng,
+                    "curr_inv": my_v["invite_group"].get().strip()
+                }
+
+        with party_lock:
+            for p_uid, p_info in list(global_invite_states.items()):
+                if now_t - p_info.get("recv_time", 0.0) <= 15.0 and p_info.get("hunt_active", False):
+                    eff_p_dng = str(p_info.get("reserved_next_dng") or p_info.get("dungeon_name", "")).strip()
+                    # 개미굴, 수던 등 본던이 아닌 타 사냥터 캐릭터는 본던 배치에서 자동 제외
+                    if "본던" not in eff_p_dng and "gludio" not in eff_p_dng.lower():
+                        continue
+                    c_i = int(p_info.get("central_num", 1))
+                    m_i = int(p_info.get("mini_num", 1))
+                    p_k = p_info.get("pc_key", f"미니{m_i}")
+                    u_key = f"{c_i}-{p_k}"
+                    is_sub_u = bool(p_info.get("is_sub_mode", False))
+                    is_wind_u = bool(p_info.get("is_party_inviter", False)) and not is_sub_u
+                    units[u_key] = {
+                        "uid": u_key,
+                        "short_id": f"{c_i}-{m_i}",
+                        "c_num": c_i,
+                        "m_num": m_i,
+                        "pc_key": p_k,
+                        "char_name": str(p_info.get("char_name", "")).strip(),
+                        "is_sub": is_sub_u,
+                        "is_wind": is_wind_u,
+                        "curr_dng": eff_p_dng,
+                        "curr_inv": str(p_info.get("invite_group", "선택안함")).strip()
+                    }
+
+        sorted_units = sorted(units.values(), key=lambda x: (x["c_num"], x["m_num"]))
+        return sorted_units
+
+    def _compute_optimal_bong_plan(units):
+        all_zones = [
+            "본던 5-1", "본던 5-2", "본던 5-3", "본던 5-4", "본던 5-5", "본던 5-6", "본던 5-7",
+            "본던 5-8", "본던 5-9", "본던 5-10", "본던 5-11", "본던 5-12", "본던 5-13",
+            "본던 6-1", "본던 6-4", "본던 6-5", "본던 6-3", "본던 6-14",
+            "본던 4-12"
+        ]
+        quota = {z: 0 for z in all_zones}
+        N = len(units)
+        mains = [u for u in units if not u["is_sub"]]
+        subs = [u for u in units if u["is_sub"]]
+
+        order_5f_1st = [
+            "본던 5-1", "본던 5-4",
+            "본던 5-2", "본던 5-8", "본던 5-9", "본던 5-11",
+            "본던 5-3", "본던 5-5", "본던 5-6", "본던 5-7",
+            "본던 5-10", "본던 5-12", "본던 5-13"
+        ]
+        order_5f_2nd = [
+            "본던 5-1", "본던 5-4",
+            "본던 5-2", "본던 5-8", "본던 5-9",
+            "본던 5-11",
+            "본던 5-3", "본던 5-5", "본던 5-6", "본던 5-7"
+        ]
+
+        rem = N
+        for z in order_5f_1st:
+            if rem <= 0: break
+            quota[z] += 1
+            rem -= 1
+
+        for z in order_5f_2nd:
+            if rem <= 0: break
+            quota[z] += 1
+            rem -= 1
+
+        avail_upper_mains = max(0, len(mains) - max(0, 23 - len(subs)))
+        upper_pool = min(rem, avail_upper_mains)
+
+        if upper_pool >= 4:
+            quota["본던 6-1"] = 4
+            rem -= 4
+            upper_pool -= 4
+
+            if upper_pool >= 3:
+                quota["본던 6-4"] = 3
+                rem -= 3
+                upper_pool -= 3
+
+            if upper_pool >= 2:
+                quota["본던 6-5"] = 2
+                rem -= 2
+                upper_pool -= 2
+            if upper_pool >= 1:
+                quota["본던 6-3"] = 1
+                rem -= 1
+                upper_pool -= 1
+            if upper_pool >= 1:
+                quota["본던 6-14"] = 1
+                rem -= 1
+                upper_pool -= 1
+
+            for z_exp in ["본던 6-1", "본던 6-5", "본던 6-3", "본던 6-14"]:
+                if upper_pool <= 0:
+                    break
+                if z_exp == "본던 6-5" and quota["본던 6-5"] == 2:
+                    quota["본던 6-5"] += 1
+                    rem -= 1
+                    upper_pool -= 1
+                elif z_exp in ("본던 6-1", "본던 6-3", "본던 6-14") and quota[z_exp] >= 1:
+                    if (quota["본던 6-1"] + quota["본던 6-3"] + quota["본던 6-14"]) < 8:
+                        quota[z_exp] += 1
+                        rem -= 1
+                        upper_pool -= 1
+
+            if upper_pool >= 4:
+                take_4f = min(5, upper_pool)
+                quota["본던 4-12"] = take_4f
+                rem -= take_4f
+                upper_pool -= take_4f
+
+        expand_5f_extra = ["본던 5-1", "본던 5-4", "본던 5-2", "본던 5-8", "본던 5-9", "본던 5-11", "본던 5-12", "본던 5-13"]
+        idx_ex = 0
+        while rem > 0:
+            z_e = expand_5f_extra[idx_ex % len(expand_5f_extra)]
+            quota[z_e] += 1
+            rem -= 1
+            idx_ex += 1
+
+        party_clusters = [
+            {"inv": "7",  "zones": ["본던 6-1", "본던 6-3", "본던 6-14"], "floor": 6},
+            {"inv": "10", "zones": ["본던 4-12"],                        "floor": 4},
+            {"inv": "8",  "zones": ["본던 6-4"],                         "floor": 6},
+            {"inv": "9",  "zones": ["본던 6-5"],                         "floor": 6},
+            {"inv": "1",  "zones": ["본던 5-1", "본던 5-2"],             "floor": 5},
+            {"inv": "2",  "zones": ["본던 5-3", "본던 5-4"],             "floor": 5},
+            {"inv": "5",  "zones": ["본던 5-8", "본던 5-9"],             "floor": 5},
+            {"inv": "4",  "zones": ["본던 5-7", "본던 5-10", "본던 5-11"], "floor": 5},
+            {"inv": "3",  "zones": ["본던 5-5", "본던 5-6"],             "floor": 5},
+        ]
+
+        # 💡 5-12와 5-13은 기본 각 1인일 때는 솔플('선택안함')이며, 인원이 많아 어느 한 곳에라도 2인 이상(합산 3인↑) 배치될 때만 6조로 묶음!
+        inv_12_13 = "6" if (quota["본던 5-12"] >= 2 or quota["본던 5-13"] >= 2) else "선택안함"
+
+        zone_to_inv = {}
+        for cl in party_clusters:
+            tot_cl = sum(quota[z] for z in cl["zones"])
+            for z in cl["zones"]:
+                zone_to_inv[z] = cl["inv"] if tot_cl >= 2 else "선택안함"
+        zone_to_inv["본던 5-12"] = inv_12_13
+        zone_to_inv["본던 5-13"] = inv_12_13
+
+        assigned_zone_members = {z: [] for z in all_zones}
+        unassigned_uids = {u["uid"] for u in units}
+        unit_map = {u["uid"]: u for u in units}
+
+        def _pick_best_unit(cand_uids, target_zone):
+            t_fl = _extract_bong_floor_num(target_zone)
+            def _score(uid):
+                u = unit_map[uid]
+                c_dng = u["curr_dng"]
+                c_fl = _extract_bong_floor_num(c_dng)
+                if c_dng == target_zone:
+                    return (0, u["c_num"], u["m_num"])
+                if c_fl == t_fl:
+                    return (1, u["c_num"], u["m_num"])
+                return (2, u["c_num"], u["m_num"])
+            return min(cand_uids, key=_score)
+
+        wind_uids = [u["uid"] for u in units if u["is_wind"] and u["uid"] in unassigned_uids]
+        for cl in party_clusters:
+            active_cl_zones = [z for z in cl["zones"] if quota[z] > len(assigned_zone_members[z])]
+            tot_cl = sum(quota[z] for z in cl["zones"])
+            if tot_cl >= 2 and active_cl_zones and wind_uids:
+                target_z = active_cl_zones[0]
+                for z_cand in active_cl_zones:
+                    if any(unit_map[w_id]["curr_dng"] == z_cand for w_id in wind_uids):
+                        target_z = z_cand
+                        break
+                chosen_w = _pick_best_unit(wind_uids, target_z)
+                assigned_zone_members[target_z].append(chosen_w)
+                unassigned_uids.remove(chosen_w)
+                wind_uids.remove(chosen_w)
+
+        if wind_uids and quota["본던 5-12"] > len(assigned_zone_members["본던 5-12"]):
+            chosen_w12 = _pick_best_unit(wind_uids, "본던 5-12")
+            assigned_zone_members["본던 5-12"].append(chosen_w12)
+            unassigned_uids.remove(chosen_w12)
+            wind_uids.remove(chosen_w12)
+
+        sub_uids = [u["uid"] for u in units if u["is_sub"] and u["uid"] in unassigned_uids]
+        five_f_pair_zones = [
+            "본던 5-2", "본던 5-8", "본던 5-9", "본던 5-11",
+            "본던 5-1", "본던 5-4", "본던 5-3", "본던 5-5", "본던 5-6", "본던 5-7"
+        ]
+        for z5 in five_f_pair_zones:
+            if not sub_uids:
+                break
+            if quota[z5] >= 2:
+                has_main_in_z5 = any(not unit_map[uid]["is_sub"] for uid in assigned_zone_members[z5])
+                if not has_main_in_z5 and len(assigned_zone_members[z5]) < quota[z5]:
+                    avail_mains_now = [uid for uid in unassigned_uids if not unit_map[uid]["is_sub"]]
+                    if avail_mains_now:
+                        chosen_m = _pick_best_unit(avail_mains_now, z5)
+                        assigned_zone_members[z5].append(chosen_m)
+                        unassigned_uids.remove(chosen_m)
+                has_sub_in_z5 = any(unit_map[uid]["is_sub"] for uid in assigned_zone_members[z5])
+                if not has_sub_in_z5 and sub_uids and len(assigned_zone_members[z5]) < quota[z5]:
+                    chosen_s = _pick_best_unit(sub_uids, z5)
+                    assigned_zone_members[z5].append(chosen_s)
+                    unassigned_uids.remove(chosen_s)
+                    sub_uids.remove(chosen_s)
+
+        for z5 in [z for z in all_zones if "본던 5-" in z]:
+            while sub_uids and len(assigned_zone_members[z5]) < quota[z5]:
+                chosen_s = _pick_best_unit(sub_uids, z5)
+                assigned_zone_members[z5].append(chosen_s)
+                unassigned_uids.remove(chosen_s)
+                sub_uids.remove(chosen_s)
+
+        for z in all_zones:
+            need_cnt = quota[z] - len(assigned_zone_members[z])
+            if need_cnt <= 0:
+                continue
+            exact_matches = [uid for uid in list(unassigned_uids) if unit_map[uid]["curr_dng"] == z]
+            for uid in exact_matches[:need_cnt]:
+                assigned_zone_members[z].append(uid)
+                unassigned_uids.remove(uid)
+
+        for z in all_zones:
+            while len(assigned_zone_members[z]) < quota[z] and unassigned_uids:
+                chosen_u = _pick_best_unit(list(unassigned_uids), z)
+                assigned_zone_members[z].append(chosen_u)
+                unassigned_uids.remove(chosen_u)
+
+        return quota, assigned_zone_members, zone_to_inv, unit_map
+
+    def generate_optimal_bong_plan_file():
+        """이모지를 제거하고 파티(초대조) 단위 표 정렬로 가독성을 극대화하여 메모장에 출력합니다."""
+        import shutil, unicodedata
+        units = _collect_all_active_bong_units()
+        if not units:
+            messagebox.showwarning("가용 인원 없음", "현재 본던 사냥 중이거나 가동 중인 캐릭터가 없습니다.")
+            return
+
+        if os.path.exists(BONG_PLAN_FILE):
+            try:
+                shutil.copyfile(BONG_PLAN_FILE, BONG_PLAN_BACKUP_FILE)
+            except Exception:
+                pass
+
+        def _pad_kor(s, width):
+            s = str(s)
+            disp_len = sum(2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1 for ch in s)
+            return s + (" " * max(0, width - disp_len))
+
+        quota, assigned_zone_members, zone_to_inv, unit_map = _compute_optimal_bong_plan(units)
+
+        mains_cnt = sum(1 for u in units if not u["is_sub"])
+        subs_cnt = sum(1 for u in units if u["is_sub"])
+        winds_cnt = sum(1 for u in units if u["is_wind"])
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        lines = [
+            "==========================================================================",
+            f" [본던 최적 배치표] {now_str} (총 {len(units)}명 | 본케:{mains_cnt} / 땜빵:{subs_cnt} / 팟바람:{winds_cnt})",
+            " * 수정법: 맨 앞 [사냥터]나 [초대조]만 고친 뒤 저장(Ctrl+S) -> [리스트 수동반영] 클릭",
+            " * 주의  : 모든 중앙컴(1~12번)에 최신 코드가 실행 중이어야 전체 인원/땜빵이 집계됩니다.",
+            "==========================================================================",
+            " 사냥터 | 초대조 | 컴번호 (케릭명)      | 구분   | 상태",
+            "--------------------------------------------------------------------------"
+        ]
+
+        group_sections = [
+            ("1조 파티 (5-1, 5-2)",        ["본던 5-1", "본던 5-2"]),
+            ("2조 파티 (5-3, 5-4)",        ["본던 5-3", "본던 5-4"]),
+            ("3조 파티 (5-5, 5-6)",        ["본던 5-5", "본던 5-6"]),
+            ("4조 파티 (5-7, 5-10, 5-11)", ["본던 5-7", "본던 5-10", "본던 5-11"]),
+            ("5조 파티 (5-8, 5-9)",        ["본던 5-8", "본던 5-9"]),
+            ("5층 단독/기타 (5-12, 5-13)", ["본던 5-12", "본던 5-13"]),
+            ("7조 6층파티 (6-1, 6-3, 6-14)", ["본던 6-1", "본던 6-3", "본던 6-14"]),
+            ("8조 6층파티 (6-4)",          ["본던 6-4"]),
+            ("9조 6층파티 (6-5)",          ["본던 6-5"]),
+            ("10조 4층파티 (4-12)",        ["본던 4-12"]),
+        ]
+
+        for grp_title, z_list in group_sections:
+            grp_rows = []
+            for z in z_list:
+                for uid in assigned_zone_members.get(z, []):
+                    grp_rows.append((z, uid))
+            if not grp_rows:
+                continue
+
+            lines.append(f"\n■ [{grp_title}] (배정 {len(grp_rows)}명)")
+            for z, uid in grp_rows:
+                u = unit_map[uid]
+                short_z = z.replace("본던 ", "").strip()
+                inv_g = zone_to_inv.get(z, "선택안함")
+                inv_str = f"{inv_g}조" if inv_g != "선택안함" else "솔플"
+                id_name_str = f"{u['short_id']} ({u['char_name']})" if u["char_name"] else u["short_id"]
+                role_str = "땜빵" if u["is_sub"] else ("팟바람" if u["is_wind"] else "본케")
+
+                curr_short = u["curr_dng"].replace("본던 ", "").strip()
+                move_str = "유지" if u["curr_dng"] == z else f"이동 ({curr_short} -> {short_z})"
+
+                col1 = _pad_kor(short_z, 5)
+                col2 = _pad_kor(inv_str, 4)
+                col3 = _pad_kor(id_name_str, 18)
+                col4 = _pad_kor(role_str, 6)
+                lines.append(f"  {col1} | {col2} | {col3} | {col4} | {move_str}")
+
+        lines.append("\n==========================================================================")
+
+        with open(BONG_PLAN_FILE, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+        dprint(key, f"📄 [최적 배치 파일 생성] 총 {len(units)}명 기준 '{BONG_PLAN_FILE}' 저장 완료! 메모장을 엽니다.")
+        try:
+            subprocess.Popen(["notepad.exe", BONG_PLAN_FILE])
+        except Exception:
+            pass
+
+    def broadcast_and_apply_bong_plan_from_file(is_auto=False, precomputed_map=None):
+        """새 표 양식(5-1 | 1조 | 10-4...)과 기존 양식을 모두 호환하여 읽고 전체 중앙컴에 반영합니다."""
+        import re
+        assign_map = {}
+
+        if precomputed_map is not None:
+            assign_map = precomputed_map
+        else:
+            if not os.path.exists(BONG_PLAN_FILE):
+                if not is_auto:
+                    messagebox.showwarning("파일 없음", f"'{BONG_PLAN_FILE}' 파일이 없습니다.\n먼저 [📄 최적배치 파일생성] 버튼을 눌러주세요.")
+                return
+            try:
+                with open(BONG_PLAN_FILE, "r", encoding="utf-8") as f:
+                    for raw_line in f:
+                        line = raw_line.strip()
+                        if not line or line.startswith(("=", "-", "*", "#", "■", "[", "사냥터")):
+                            continue
+                        if "|" not in line:
+                            continue
+
+                        parts = [p.strip() for p in line.split("|")]
+                        if len(parts) < 3:
+                            continue
+
+                        # 1) 신형 표 양식: 5-1 | 1조 | 10-4 (인트당) | ...
+                        m_id_col2 = re.match(r'^(\d+)-(?:미니)?(\d+)', parts[2])
+                        if m_id_col2:
+                            c_part, m_part = m_id_col2.group(1), m_id_col2.group(2)
+                            uid_norm = f"{c_part}-미니{m_part}"
+
+                            raw_z = parts[0].replace("사냥터:", "").strip()
+                            dng_val = raw_z if raw_z.startswith("본던") else f"본던 {raw_z}"
+
+                            raw_inv = parts[1].replace("초대조:", "").replace("조", "").strip()
+                            inv_val = "선택안함" if raw_inv in ("솔플", "없음", "선택안함", "0", "-") else raw_inv
+                            assign_map[uid_norm] = {"dng": dng_val, "inv_grp": inv_val}
+                            continue
+
+                        # 2) 구형 양식 호환: 10-미니4 | 사냥터: 본던 5-1 | 초대조: 1 | ...
+                        m_old = re.search(r'^(\d+-(?:미니\d+|\d+))\s*\|\s*사냥터\s*:\s*([^|]+)\|\s*초대조\s*:\s*([^|]+)', line)
+                        if m_old:
+                            uid_raw = m_old.group(1).strip()
+                            dng_val = m_old.group(2).strip()
+                            if not dng_val.startswith("본던"):
+                                dng_val = f"본던 {dng_val}"
+                            inv_val = m_old.group(3).replace("조", "").strip()
+                            if inv_val in ("없음", "솔플", "선택안함", "0", "-"):
+                                inv_val = "선택안함"
+                            c_part, m_part = uid_raw.split("-", 1)
+                            uid_norm = f"{c_part}-미니{m_part}" if not m_part.startswith("미니") else uid_raw
+                            assign_map[uid_norm] = {"dng": dng_val, "inv_grp": inv_val}
+            except Exception as e:
+                print(f"⚠️ 배치 파일 읽기 오류: {e}")
+                return
+
+        if not assign_map:
+            if not is_auto:
+                messagebox.showwarning("반영 대상 없음", "파일에서 유효한 사냥터 배정 내역을 찾지 못했습니다.")
+            return
+
+        src_label = "실시간자동배치" if is_auto else "메모장수동반영"
+        sync_id = f"bong_{time.time():.4f}_{random.randint(1000, 9999)}"
+        global _LAST_APPLIED_BONG_SYNC_ID
+        _LAST_APPLIED_BONG_SYNC_ID = sync_id
+
+        my_uid_str = f"{int(get_my_central_num()) if str(get_my_central_num()).isdigit() else get_my_central_num()}-{TARGET_PC_KEY}"
+        if my_uid_str in assign_map:
+            my_a = assign_map[my_uid_str]
+            apply_bong_assignment_to_self(TARGET_PC_KEY, my_a["dng"], my_a["inv_grp"], src_label)
+
+        payload = {
+            "msg_type": "BONG_ASSIGN_APPLY",
+            "sync_id": sync_id,
+            "is_auto": is_auto,
+            "source_label": src_label,
+            "assignments": assign_map
+        }
+        raw_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+        def _send_all():
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                my_c_num = str(get_my_central_num())
+                for _ in range(2):
+                    for k_p, port_p in LOCAL_IPC_PORTS.items():
+                        if k_p != TARGET_PC_KEY:
+                            try: sock.sendto(raw_bytes, ("127.0.0.1", port_p))
+                            except Exception: pass
+                    for c_num, r_ip in CENTRAL_TAILSCALE_MAP.items():
+                        if str(c_num) != my_c_num and c_num != "VPN" and r_ip:
+                            for port_p in LOCAL_IPC_PORTS.values():
+                                try: sock.sendto(raw_bytes, (r_ip, port_p))
+                                except Exception: pass
+                    time.sleep(0.05)
+            finally:
+                try: sock.close()
+                except Exception: pass
+
+        threading.Thread(target=_send_all, daemon=True).start()
+        dprint(TARGET_PC_KEY, f"🚀 [{src_label} 완료] 총 {len(assign_map)}개 캐릭터 사냥터/초대조 배정 신호를 전체 중앙컴에 송출했습니다!")
+
+    def broadcast_auto_bong_toggle():
+        """어느 한 창에서 '실시간 자동배치' 체크박스를 클릭하면 1~13번 전체 창에 체크 상태를 동기화합니다."""
+        val = bool(gui_vars.get(TARGET_PC_KEY, {}).get("use_auto_bong_assign", tk.BooleanVar(value=False)).get())
+        save_settings()
+        t_id = f"b_tog_{time.time():.4f}_{random.randint(1000, 9999)}"
+        local_ipc_listener_thread.last_toggle_id = t_id
+        payload = {"msg_type": "BONG_AUTO_TOGGLE", "sync_id": t_id, "auto_on": val}
+        raw_bytes = json.dumps(payload).encode("utf-8")
+
+        def _send_tog():
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                my_c_num = str(get_my_central_num())
+                for _ in range(2):
+                    for k_p, port_p in LOCAL_IPC_PORTS.items():
+                        if k_p != TARGET_PC_KEY:
+                            try: sock.sendto(raw_bytes, ("127.0.0.1", port_p))
+                            except Exception: pass
+                    for c_num, r_ip in CENTRAL_TAILSCALE_MAP.items():
+                        if str(c_num) != my_c_num and c_num != "VPN" and r_ip:
+                            for port_p in LOCAL_IPC_PORTS.values():
+                                try: sock.sendto(raw_bytes, (r_ip, port_p))
+                                except Exception: pass
+                    time.sleep(0.04)
+            finally:
+                try: sock.close()
+                except Exception: pass
+
+        threading.Thread(target=_send_tog, daemon=True).start()
+        dprint(TARGET_PC_KEY, f"📡 [실시간 자동배치 {'ON' if val else 'OFF'}] 전체 중앙컴에 체크박스 상태를 동기화했습니다.")
+
+    def _auto_bong_assign_scheduler():
+        """[자동배치] 체크박스가 켜져 있을 때 가용 인원 변동을 감지(20초 안정화)하여 마스터 창 1대가 대표로 최적 배치를 적용합니다."""
+        try:
+            if gui_vars.get(TARGET_PC_KEY, {}).get("use_auto_bong_assign", tk.BooleanVar(value=False)).get():
+                units = _collect_all_active_bong_units()
+                if units:
+                    my_uid_str = f"{int(get_my_central_num()) if str(get_my_central_num()).isdigit() else get_my_central_num()}-{TARGET_PC_KEY}"
+                    # 45개 창이 동시에 패킷을 쏘는 충돌을 막기 위해, 가동 중인 가장 앞 번호(마스터) 클라이언트만 계산 및 브로드캐스트 수행
+                    is_master_coordinator = (units[0]["uid"] == my_uid_str)
+                    curr_sig = ",".join(f"{u['uid']}:{int(u['is_sub'])}:{int(u['is_wind'])}" for u in units)
+                    now_t = time.time()
+                    if curr_sig != getattr(_auto_bong_assign_scheduler, "last_sig", ""):
+                        _auto_bong_assign_scheduler.last_sig = curr_sig
+                        _auto_bong_assign_scheduler.sig_change_time = now_t
+                        _auto_bong_assign_scheduler.applied = False
+                    elif not getattr(_auto_bong_assign_scheduler, "applied", True) and (now_t - getattr(_auto_bong_assign_scheduler, "sig_change_time", now_t) >= 20.0):
+                        _auto_bong_assign_scheduler.applied = True
+                        if is_master_coordinator:
+                            _, assigned_zone_members, zone_to_inv, _ = _compute_optimal_bong_plan(units)
+                            auto_map = {}
+                            for z_name, m_list in assigned_zone_members.items():
+                                inv_g = zone_to_inv.get(z_name, "선택안함")
+                                for u_id in m_list:
+                                    auto_map[u_id] = {"dng": z_name, "inv_grp": inv_g}
+                            if auto_map:
+                                broadcast_and_apply_bong_plan_from_file(is_auto=True, precomputed_map=auto_map)
+        except Exception:
+            pass
+        root.after(5000, _auto_bong_assign_scheduler)
+
+    root.after(8000, _auto_bong_assign_scheduler)
+
+    p_bong_auto_frame = tk.Frame(tab_party, bg=BG_PANEL)
+    p_bong_auto_frame.pack(side="top", fill="x", padx=2, pady=(2, 2))
+
+    tk.Checkbutton(
+        p_bong_auto_frame,
+        text="실시간 자동배치",
+        variable=vars_dict["use_auto_bong_assign"],
+        command=broadcast_auto_bong_toggle,
+        bg=BG_PANEL,
+        fg="#FFD54F",
+        selectcolor="#3E3E42",
+        activebackground=BG_PANEL,
+        activeforeground="#FFD54F",
+        font=("맑은 고딕", 8, "bold")
+    ).pack(side="left", padx=(0, 4))
+
+    tk.Button(
+        p_bong_auto_frame,
+        text="📄 최적배치 파일생성",
+        font=("맑은 고딕", 8, "bold"),
+        bg="#2E7D32",
+        fg="white",
+        relief="flat",
+        pady=1,
+        command=generate_optimal_bong_plan_file
+    ).pack(side="left", fill="x", expand=True, padx=2)
+
+    tk.Button(
+        p_bong_auto_frame,
+        text="🚀 리스트 수동반영",
+        font=("맑은 고딕", 8, "bold"),
+        bg="#D84315",
+        fg="white",
+        relief="flat",
+        pady=1,
+        command=lambda: broadcast_and_apply_bong_plan_from_file(is_auto=False)
+    ).pack(side="left", fill="x", expand=True, padx=2)
+    # ==============================================================================
 
     hp_top_frame = tk.Frame(tab1, bg=BG_PANEL)
     hp_top_frame.pack(side="top", fill="x", padx=2, pady=(0, 2))
