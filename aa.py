@@ -32634,9 +32634,27 @@ for i, pc in enumerate(MINI_PCS):
     ROUTER_PW_CONST = "flcl1030"
 
     def one_touch_rotate_iptime_mac(btn_w):
-        import urllib.parse
         import http.cookiejar
         import re
+
+        # 🔒 중앙컴별 고유 앞 5자리(1~5번째 바이트) 고정 테이블 (상호 중복 확률 0%)
+        ROUTER_MAC_PREFIX_MAP = {
+            "1":  "30-C5-99-D9-A1",
+            "2":  "30-C5-99-C9-A1",
+            "3":  "30-C5-99-B9-A1",
+            "4":  "30-C5-99-D1-A1",
+            "6":  "30-C5-99-C1-B1",
+            "7":  "30-C5-99-B1-A1",
+            "8":  "30-C5-99-A1-B1",
+            "9":  "30-C5-99-D7-F0",
+            "10": "30-C5-99-E1-4A",
+            "11": "30-C5-99-A6-8A",
+        }
+
+        my_c_num_chk = str(get_my_central_num()).strip()
+        if my_c_num_chk not in ROUTER_MAC_PREFIX_MAP:
+            messagebox.showinfo("제외 대상", f"{my_c_num_chk}번 중앙컴은 공유기 기종이 달라 맥주소 변경 대상에서 제외됩니다. (5, 12, 13번 패스)")
+            return
 
         # 🛡️ 안전장치: 같은 중앙컴 내 인게임 사냥 중인 미니컴이 있는지 확인
         active_ingame_minis = []
@@ -32681,16 +32699,19 @@ for i, pc in enumerate(MINI_PCS):
                     pass
             return "확인불가"
 
-        def _increment_mac(mac_str):
-            clean = re.sub(r'[^0-9A-Fa-f]', '', str(mac_str or ""))
-            if len(clean) != 12:
-                rand_tail = [random.randint(0x10, 0xFE) for _ in range(3)]
-                return f"00:26:66:{rand_tail[0]:02X}:{rand_tail[1]:02X}:{rand_tail[2]:02X}"
-            last_byte = (int(clean[10:12], 16) + 1) % 256
-            if last_byte in (0x00, 0xFF):
-                last_byte = 0x01
-            new_clean = clean[:10].upper() + f"{last_byte:02X}"
-            return ":".join(new_clean[i:i+2] for i in range(0, 12, 2))
+        def _increment_mac_for_pc(mac_str):
+            # 앞 5자리는 내 중앙컴 고유 프리픽스로 무조건 고정하고, 맨 끝(6번째) 자리만 01~FE 범위에서 +1 증가!
+            fixed_prefix = ROUTER_MAC_PREFIX_MAP[my_c_num_chk]
+            clean = re.sub(r'[^0-9A-Fa-f]', '', str(mac_str or "")).upper()
+
+            if len(clean) == 12:
+                last_byte = (int(clean[10:12], 16) + 1) % 256
+                if last_byte in (0x00, 0xFF):
+                    last_byte = 0x01
+            else:
+                last_byte = 0x02
+
+            return f"{fixed_prefix}-{last_byte:02X}"
 
         def _worker():
             root.after(0, lambda: btn_w.config(text="⏳ 공유기 MAC 변경 및 새 IP 할당 대기중...", bg="#F57C00", state="disabled"))
@@ -32709,99 +32730,55 @@ for i, pc in enumerate(MINI_PCS):
                     rpc_url,
                     data=json.dumps(body).encode("utf-8"),
                     headers={
-                        "Content-Type": "application/json",
-                        "Referer": f"http://{ROUTER_IP_CONST}/ui/",
+                        "Content-Type": "application/json; charset=utf-8",
+                        "Accept": "*/*",
+                        "Referer": f"http://{ROUTER_IP_CONST}/ui/wan",
                         "Origin": f"http://{ROUTER_IP_CONST}",
                         "User-Agent": "Mozilla/5.0"
                     }
                 )
                 with opener.open(req, timeout=4.0) as resp:
-                    return json.loads(resp.read().decode("utf-8", errors="ignore"))
+                    raw_txt = resp.read().decode("utf-8", errors="ignore").strip()
+                    return json.loads(raw_txt) if raw_txt else {}
 
             changed_ok = False
             new_mac_str = ""
 
-            # 1순위: 신형 iUX 3.0 (/ui/ -> /cgi/service.cgi JSON-RPC) 방식
             try:
+                # 1) 로그인 세션 획득
                 login_res = _rpc_call("session/login", {"id": ROUTER_ID_CONST, "pw": ROUTER_PW_CONST})
-                if login_res.get("error"):
+                if isinstance(login_res, dict) and login_res.get("error"):
                     print(f"🚨 [공유기 로그인 거부] {login_res['error']} (아이디/비번 또는 보안문자 해제 여부를 확인하세요!)")
                 else:
-                    for m_name in ("network/interface/wan", "network/wan", "wan/config", "netconf/waninfo"):
-                        try:
-                            wan_res = _rpc_call(m_name)
-                            res_data = wan_res.get("result")
-                            if isinstance(res_data, dict):
-                                target_cfg = res_data.get("wan1", res_data) if isinstance(res_data.get("wan1"), dict) else res_data
-                                cur_mac = target_cfg.get("mac") or target_cfg.get("hwaddr") or target_cfg.get("clone_mac") or ""
-                                new_mac_str = _increment_mac(cur_mac)
-                                if "hwaddr" in target_cfg:
-                                    target_cfg["hwaddr"] = new_mac_str
-                                elif "clone_mac" in target_cfg:
-                                    target_cfg["clone_mac"] = new_mac_str
-                                else:
-                                    target_cfg["mac"] = new_mac_str
-                                if "mac_clone" in target_cfg:
-                                    target_cfg["mac_clone"] = True
-                                if "custom_mac" in target_cfg:
-                                    target_cfg["custom_mac"] = True
-                                _rpc_call(m_name, res_data)
-                                changed_ok = True
-                                break
-                        except Exception:
-                            continue
-            except Exception:
-                pass
-
-            # 2순위: 호환 CGI (/sess-bin/login_handler.cgi + /sess-bin/timepro.cgi) 방식
-            if not changed_ok:
-                try:
-                    login_data = urllib.parse.urlencode({
-                        "init_status": "1", "captcha_on": "0",
-                        "username": ROUTER_ID_CONST, "passwd": ROUTER_PW_CONST
-                    }).encode("utf-8")
-                    req_l = urllib.request.Request(
-                        f"http://{ROUTER_IP_CONST}/sess-bin/login_handler.cgi",
-                        data=login_data,
-                        headers={"Referer": f"http://{ROUTER_IP_CONST}/", "User-Agent": "Mozilla/5.0"}
-                    )
-                    with opener.open(req_l, timeout=4.0) as resp_l:
-                        html_l = resp_l.read().decode("euc-kr", errors="ignore")
-                        m_cookie = re.search(r"setCookie\(['\"]([^'\"]+)['\"]\)", html_l)
-                        sess_id = m_cookie.group(1).strip() if m_cookie else ""
-
-                    cookie_hdr = f"efm_session_id={sess_id}" if sess_id else ""
-                    wan_url = f"http://{ROUTER_IP_CONST}/sess-bin/timepro.cgi?tmenu=netconf&smenu=waninfo"
-                    req_g = urllib.request.Request(wan_url, headers={"Referer": wan_url, "Cookie": cookie_hdr, "User-Agent": "Mozilla/5.0"})
-                    with opener.open(req_g, timeout=4.0) as resp_g:
-                        wan_html = resp_g.read().decode("euc-kr", errors="ignore")
-
-                    m_mac = re.search(r'name=["\']?hw_dynamic["\']?[^>]*value=["\']?([0-9A-Fa-f:-]{12,17})', wan_html)
-                    cur_mac = m_mac.group(1) if m_mac else ""
-                    new_mac_str = _increment_mac(cur_mac)
-                    mac_parts = new_mac_str.split(":")
-
-                    apply_dict = {
-                        "tmenu": "netconf", "smenu": "waninfo", "act": "apply",
-                        "wan": "wan1", "conntype": "dynamic", "mac_clone": "1",
-                        "hw_dynamic": new_mac_str, "hw_addr": new_mac_str
-                    }
-                    for idx_p, hex_p in enumerate(mac_parts, 1):
-                        apply_dict[f"hw_dynamic{idx_p}"] = hex_p
-                        apply_dict[f"mac{idx_p}"] = hex_p
-
-                    req_p = urllib.request.Request(
-                        f"http://{ROUTER_IP_CONST}/sess-bin/timepro.cgi",
-                        data=urllib.parse.urlencode(apply_dict).encode("utf-8"),
-                        headers={"Referer": wan_url, "Cookie": cookie_hdr, "User-Agent": "Mozilla/5.0"}
-                    )
+                    # 2) 현재 WAN1 설정 읽기 (method: "network/interface/wan1/config")
+                    cur_mac = ""
+                    wan_cfg = {"enable": True, "type": "dhcp"}
                     try:
-                        opener.open(req_p, timeout=4.0)
+                        read_res = _rpc_call("network/interface/wan1/config")
+                        res_obj = read_res.get("result") if isinstance(read_res, dict) else None
+                        if isinstance(res_obj, dict):
+                            cur_mac = str(res_obj.get("mac", "")).strip()
+                            wan_cfg.update(res_obj)
                     except Exception:
                         pass
-                    changed_ok = True
-                except Exception as e:
-                    print(f"⚠️ [공유기 제어 예외] {e}")
+
+                    # 3) 중앙컴 고유 번호가 반영된 새 MAC 주소 생성 후 적용 요청
+                    new_mac_str = _increment_mac_for_pc(cur_mac)
+                    wan_cfg["enable"] = True
+                    wan_cfg["mac"] = new_mac_str
+                    wan_cfg["type"] = wan_cfg.get("type") or "dhcp"
+
+                    try:
+                        write_res = _rpc_call("network/interface/wan1/config", wan_cfg)
+                        if isinstance(write_res, dict) and write_res.get("error"):
+                            print(f"⚠️ [WAN 설정 적용 응답 오류] {write_res['error']}")
+                        else:
+                            changed_ok = True
+                    except Exception:
+                        # MAC이 바뀌는 즉시 공유기 네트워크가 리셋되며 응답 대기 중 끊기는 것은 정상 동작
+                        changed_ok = True
+            except Exception as e:
+                print(f"⚠️ [공유기 통신 예외] {e}")
 
             if not changed_ok:
                 print("❌ [공유기 MAC 변경 실패] 공유기 설정(ID: velvet7 / PW: flcl1030 및 보안문자 해제)을 확인하세요.")
