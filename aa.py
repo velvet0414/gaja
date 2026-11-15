@@ -3906,11 +3906,6 @@ def _load_cropped_folder_item(path, fname):
     color, mask = _load_img_and_mask(path)
     if color is None:
         return None
-    h, w = color.shape[:2]
-    if h > 15 and w > 15:
-        color = color[4:h-4, 4:w-4]
-        if mask is not None:
-            mask = mask[4:h-4, 4:w-4]
     return {"name": fname, "color": color, "mask": mask}
 
 def load_all_templates():
@@ -17083,6 +17078,14 @@ def ai_commander_worker(target_pc):
 
                         cv2.putText(debug_img, f"[ TOWN MAINT : {fsm_town} ]", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
+                        # 상점/창고 전체 UI 영역 (ui_only: 0,0 ~ 290,400)
+                        cv2.rectangle(debug_img, (0, 0), (min(290, w), min(400, h)), (255, 255, 0), 1)
+                        cv2.putText(debug_img, "SHOP_UI_SCAN (290x400)", (5, 395), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+
+                        # 상점/창고 아이템 목록 매칭 영역 (item_only: 0,20 ~ 255,358)
+                        cv2.rectangle(debug_img, (0, 20), (min(255, w), min(358, h)), (0, 165, 255), 2)
+                        cv2.putText(debug_img, "SHOP_ITEM_SCAN (0,20~255,358)", (5, 352), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
+
                         door_pos_debug = state.get("debug_door_pos")
                         if door_pos_debug:
                             dx_b, dy_b = door_pos_debug
@@ -17791,6 +17794,14 @@ def ai_commander_worker(target_pc):
                 empty_x2, empty_y2 = 765, 355
                 cv2.rectangle(debug_img, (empty_x1, empty_y1), (empty_x2, empty_y2), (255, 200, 0), 1)
                 cv2.putText(debug_img, "EMPTY_SCAN", (empty_x1 + 5, empty_y1 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 0), 1)
+
+                # 상점/창고 전체 UI 영역 (ui_only: 0,0 ~ 290,400)
+                cv2.rectangle(debug_img, (0, 0), (min(290, w), min(400, h)), (255, 255, 0), 1)
+                cv2.putText(debug_img, "SHOP_UI_SCAN (290x400)", (5, 395), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+
+                # 상점/창고 아이템 목록 매칭 영역 (item_only: 0,20 ~ 255,358)
+                cv2.rectangle(debug_img, (0, 20), (min(255, w), min(358, h)), (0, 165, 255), 2)
+                cv2.putText(debug_img, "SHOP_ITEM_SCAN (0,20~255,358)", (5, 352), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
                 # 👆👆 ------------------------------------------------------------------------- 👆👆
 
                 cv2.rectangle(debug_img, (max(0, w-180), 0), (w, min(h, 180)), (255, 0, 255), 1)
@@ -31252,7 +31263,7 @@ for i, pc in enumerate(MINI_PCS):
     BONG_PLAN_BACKUP_FILE = "optimal_bong_plan_backup.txt"
 
     def _collect_all_active_bong_units():
-        """1~13번 전체 중앙컴에서 사냥 버튼이 켜진(인증 중 포함) '본던' 가용 캐릭터만 수집합니다."""
+        """1~13번 전체 중앙컴에서 사냥 버튼이 켜진(인증 중 포함) '본던' 가용 캐릭터만 수집합니다. (8-3은 땜빵으로 자동 분류)"""
         now_t = time.time()
         units = {}
 
@@ -31269,6 +31280,8 @@ for i, pc in enumerate(MINI_PCS):
         if my_hunt_on and my_v:
             eff_my_dng = my_st.get("reserved_next_dng") or my_v["party_dungeon_name"].get().strip()
             if "본던" in eff_my_dng or "gludio" in eff_my_dng.lower():
+                is_forced_sub_me = (my_c_int == 8 and my_m_int == 3)
+                is_sub_me = bool(globals().get("IS_SUB_CHAR_MODE", False)) or is_forced_sub_me
                 units[my_uid] = {
                     "uid": my_uid,
                     "short_id": f"{my_c_int}-{my_m_int}",
@@ -31276,8 +31289,8 @@ for i, pc in enumerate(MINI_PCS):
                     "m_num": my_m_int,
                     "pc_key": TARGET_PC_KEY,
                     "char_name": my_v["char_name"].get().strip() if "char_name" in my_v else "",
-                    "is_sub": bool(globals().get("IS_SUB_CHAR_MODE", False)),
-                    "is_wind": bool(my_v["is_party_inviter"].get()) and not bool(globals().get("IS_SUB_CHAR_MODE", False)),
+                    "is_sub": is_sub_me,
+                    "is_wind": bool(my_v["is_party_inviter"].get()) and not is_sub_me,
                     "curr_dng": eff_my_dng,
                     "curr_inv": my_v["invite_group"].get().strip()
                 }
@@ -31293,7 +31306,8 @@ for i, pc in enumerate(MINI_PCS):
                     m_i = int(p_info.get("mini_num", 1))
                     p_k = p_info.get("pc_key", f"미니{m_i}")
                     u_key = f"{c_i}-{p_k}"
-                    is_sub_u = bool(p_info.get("is_sub_mode", False))
+                    is_forced_sub_u = (c_i == 8 and m_i == 3)
+                    is_sub_u = bool(p_info.get("is_sub_mode", False)) or is_forced_sub_u
                     is_wind_u = bool(p_info.get("is_party_inviter", False)) and not is_sub_u
                     units[u_key] = {
                         "uid": u_key,
@@ -31318,101 +31332,163 @@ for i, pc in enumerate(MINI_PCS):
             "본던 6-1", "본던 6-4", "본던 6-5", "본던 6-3", "본던 6-14",
             "본던 4-12"
         ]
-        quota = {z: 0 for z in all_zones}
-        N = len(units)
+        sub_quota = {z: 0 for z in all_zones}
+        main_quota = {z: 0 for z in all_zones}
+
         mains = [u for u in units if not u["is_sub"]]
         subs = [u for u in units if u["is_sub"]]
+        rem_subs = len(subs)
+        rem_mains = len(mains)
 
-        order_5f_1st = [
-            "본던 5-1", "본던 5-4",
+        # ------------------------------------------------------------------
+        # 1단계: 땜빵 캐릭터(8-3 포함) 전용 우선 배치 (5-1, 5-4, 5-5)
+        # - 1~6번째: 4케릭(1에2, 4에2) / 5케릭(1에2, 4에3) / 6케릭(1에3, 4에3)
+        # - 7~8번째: 5-5에 1개(땜1 가능), 그다음 또 1개(총 2개)
+        # - 9번째~ : 나머지 5층 라인에 1개씩 분산 배치 (본케와 묶여 2인 이상 유지)
+        # ------------------------------------------------------------------
+        seq_1_4 = ["본던 5-4", "본던 5-4", "본던 5-1", "본던 5-1", "본던 5-4", "본던 5-1"]
+        for z_s in seq_1_4:
+            if rem_subs <= 0:
+                break
+            sub_quota[z_s] += 1
+            rem_subs -= 1
+
+        for _ in range(2):
+            if rem_subs <= 0:
+                break
+            sub_quota["본던 5-5"] += 1
+            rem_subs -= 1
+
+        other_5f_for_subs = [
             "본던 5-2", "본던 5-8", "본던 5-9", "본던 5-11",
-            "본던 5-3", "본던 5-5", "본던 5-6", "본던 5-7",
+            "본던 5-3", "본던 5-6", "본던 5-7",
             "본던 5-10", "본던 5-12", "본던 5-13"
         ]
-        order_5f_2nd = [
-            "본던 5-1", "본던 5-4",
-            "본던 5-2", "본던 5-8", "본던 5-9",
-            "본던 5-11",
-            "본던 5-3", "본던 5-5", "본던 5-6", "본던 5-7"
+        idx_os = 0
+        while rem_subs > 0:
+            z_os = other_5f_for_subs[idx_os % len(other_5f_for_subs)]
+            sub_quota[z_os] += 1
+            rem_subs -= 1
+            idx_os += 1
+
+        # ------------------------------------------------------------------
+        # 2단계: 본케 5층 배정
+        # - 5-5를 제외하고 땜빵이 1명만 들어간 라인은 무조건 본케 1명을 먼저 붙여 2인(본케+땜) 보장
+        # - 5-1, 5-4, 5-5는 땜빵이 들어가 있으면 본케 배정에서 제외(부족할 때만 본케가 채움)
+        # - 짝꿍 라인(5-2, 5-3, 5-6) 및 나머지 5층 라인에 본케 우선 배치
+        # ------------------------------------------------------------------
+        for z_pair_chk in all_zones:
+            if z_pair_chk != "본던 5-5" and sub_quota[z_pair_chk] == 1 and rem_mains > 0:
+                main_quota[z_pair_chk] += 1
+                rem_mains -= 1
+
+        order_5f_main_1st = [
+            "본던 5-2", "본던 5-3", "본던 5-6",
+            "본던 5-8", "본던 5-9", "본던 5-11", "본던 5-7",
+            "본던 5-10", "본던 5-12", "본던 5-13",
+            "본던 5-1", "본던 5-4", "본던 5-5"
         ]
+        for z_m1 in order_5f_main_1st:
+            if rem_mains <= 0:
+                break
+            if z_m1 in ("본던 5-1", "본던 5-4", "본던 5-5") and sub_quota[z_m1] > 0:
+                continue
+            if (sub_quota[z_m1] + main_quota[z_m1]) == 0:
+                main_quota[z_m1] += 1
+                rem_mains -= 1
 
-        rem = N
-        for z in order_5f_1st:
-            if rem <= 0: break
-            quota[z] += 1
-            rem -= 1
+        order_5f_main_2nd = [
+            "본던 5-2", "본던 5-8", "본던 5-9", "본던 5-11",
+            "본던 5-3", "본던 5-6", "본던 5-7",
+            "본던 5-1", "본던 5-4", "본던 5-5"
+        ]
+        for z_m2 in order_5f_main_2nd:
+            if rem_mains <= 0:
+                break
+            if z_m2 in ("본던 5-1", "본던 5-4", "본던 5-5") and sub_quota[z_m2] > 0:
+                continue
+            if (sub_quota[z_m2] + main_quota[z_m2]) < 2:
+                main_quota[z_m2] += 1
+                rem_mains -= 1
 
-        for z in order_5f_2nd:
-            if rem <= 0: break
-            quota[z] += 1
-            rem -= 1
-
-        avail_upper_mains = max(0, len(mains) - max(0, 23 - len(subs)))
-        upper_pool = min(rem, avail_upper_mains)
-
+        # ------------------------------------------------------------------
+        # 3단계: 잉여 본케 상층(6층 ➔ 4층) 배정 및 잔여 본케 5층 증원
+        # ------------------------------------------------------------------
+        upper_pool = rem_mains
         if upper_pool >= 4:
-            quota["본던 6-1"] = 4
-            rem -= 4
+            main_quota["본던 6-1"] = 4
+            rem_mains -= 4
             upper_pool -= 4
 
             if upper_pool >= 3:
-                quota["본던 6-4"] = 3
-                rem -= 3
+                main_quota["본던 6-4"] = 3
+                rem_mains -= 3
                 upper_pool -= 3
 
             if upper_pool >= 2:
-                quota["본던 6-5"] = 2
-                rem -= 2
+                main_quota["본던 6-5"] = 2
+                rem_mains -= 2
                 upper_pool -= 2
             if upper_pool >= 1:
-                quota["본던 6-3"] = 1
-                rem -= 1
+                main_quota["본던 6-3"] = 1
+                rem_mains -= 1
                 upper_pool -= 1
             if upper_pool >= 1:
-                quota["본던 6-14"] = 1
-                rem -= 1
+                main_quota["본던 6-14"] = 1
+                rem_mains -= 1
                 upper_pool -= 1
 
             for z_exp in ["본던 6-1", "본던 6-5", "본던 6-3", "본던 6-14"]:
                 if upper_pool <= 0:
                     break
-                if z_exp == "본던 6-5" and quota["본던 6-5"] == 2:
-                    quota["본던 6-5"] += 1
-                    rem -= 1
+                if z_exp == "본던 6-5" and main_quota["본던 6-5"] == 2:
+                    main_quota["본던 6-5"] += 1
+                    rem_mains -= 1
                     upper_pool -= 1
-                elif z_exp in ("본던 6-1", "본던 6-3", "본던 6-14") and quota[z_exp] >= 1:
-                    if (quota["본던 6-1"] + quota["본던 6-3"] + quota["본던 6-14"]) < 8:
-                        quota[z_exp] += 1
-                        rem -= 1
+                elif z_exp in ("본던 6-1", "본던 6-3", "본던 6-14") and main_quota[z_exp] >= 1:
+                    if (main_quota["본던 6-1"] + main_quota["본던 6-3"] + main_quota["본던 6-14"]) < 8:
+                        main_quota[z_exp] += 1
+                        rem_mains -= 1
                         upper_pool -= 1
 
             if upper_pool >= 4:
                 take_4f = min(5, upper_pool)
-                quota["본던 4-12"] = take_4f
-                rem -= take_4f
+                main_quota["본던 4-12"] = take_4f
+                rem_mains -= take_4f
                 upper_pool -= take_4f
 
-        expand_5f_extra = ["본던 5-1", "본던 5-4", "본던 5-2", "본던 5-8", "본던 5-9", "본던 5-11", "본던 5-12", "본던 5-13"]
+        expand_5f_extra = [
+            z for z in [
+                "본던 5-2", "본던 5-8", "본던 5-9", "본던 5-11",
+                "본던 5-3", "본던 5-6", "본던 5-7", "본던 5-12", "본던 5-13",
+                "본던 5-1", "본던 5-4", "본던 5-5"
+            ]
+            if not (z in ("본던 5-1", "본던 5-4", "본던 5-5") and sub_quota[z] > 0)
+        ]
+        if not expand_5f_extra:
+            expand_5f_extra = ["본던 5-2", "본던 5-8", "본던 5-9", "본던 5-11", "본던 5-3", "본던 5-6", "본던 5-7"]
+
         idx_ex = 0
-        while rem > 0:
+        while rem_mains > 0:
             z_e = expand_5f_extra[idx_ex % len(expand_5f_extra)]
-            quota[z_e] += 1
-            rem -= 1
+            main_quota[z_e] += 1
+            rem_mains -= 1
             idx_ex += 1
 
+        quota = {z: sub_quota[z] + main_quota[z] for z in all_zones}
+
         party_clusters = [
+            {"inv": "1",  "zones": ["본던 5-2", "본던 5-1"],             "floor": 5},
+            {"inv": "2",  "zones": ["본던 5-3", "본던 5-4"],             "floor": 5},
+            {"inv": "3",  "zones": ["본던 5-6", "본던 5-5"],             "floor": 5},
             {"inv": "7",  "zones": ["본던 6-1", "본던 6-3", "본던 6-14"], "floor": 6},
             {"inv": "10", "zones": ["본던 4-12"],                        "floor": 4},
             {"inv": "8",  "zones": ["본던 6-4"],                         "floor": 6},
             {"inv": "9",  "zones": ["본던 6-5"],                         "floor": 6},
-            {"inv": "1",  "zones": ["본던 5-1", "본던 5-2"],             "floor": 5},
-            {"inv": "2",  "zones": ["본던 5-3", "본던 5-4"],             "floor": 5},
             {"inv": "5",  "zones": ["본던 5-8", "본던 5-9"],             "floor": 5},
             {"inv": "4",  "zones": ["본던 5-7", "본던 5-10", "본던 5-11"], "floor": 5},
-            {"inv": "3",  "zones": ["본던 5-5", "본던 5-6"],             "floor": 5},
         ]
 
-        # 💡 5-12와 5-13은 기본 각 1인일 때는 솔플('선택안함')이며, 인원이 많아 어느 한 곳에라도 2인 이상(합산 3인↑) 배치될 때만 6조로 묶음!
         inv_12_13 = "6" if (quota["본던 5-12"] >= 2 or quota["본던 5-13"] >= 2) else "선택안함"
 
         zone_to_inv = {}
@@ -31440,9 +31516,51 @@ for i, pc in enumerate(MINI_PCS):
                 return (2, u["c_num"], u["m_num"])
             return min(cand_uids, key=_score)
 
+        # 1) 땜빵 캐릭터들을 sub_quota 슬롯에 먼저 고정 배정 (현재 위치 유지 최우선)
+        sub_uids = [u["uid"] for u in units if u["is_sub"] and u["uid"] in unassigned_uids]
+        for z in all_zones:
+            need_s = sub_quota[z]
+            if need_s <= 0:
+                continue
+            exact_subs = [uid for uid in list(sub_uids) if unit_map[uid]["curr_dng"] == z]
+            for uid in exact_subs[:need_s]:
+                assigned_zone_members[z].append(uid)
+                unassigned_uids.remove(uid)
+                sub_uids.remove(uid)
+
+        for z in all_zones:
+            while len([u_id for u_id in assigned_zone_members[z] if unit_map[u_id]["is_sub"]]) < sub_quota[z] and sub_uids:
+                chosen_s = _pick_best_unit(sub_uids, z)
+                assigned_zone_members[z].append(chosen_s)
+                unassigned_uids.remove(chosen_s)
+                sub_uids.remove(chosen_s)
+
+        # 2) 팟바람 본케 배정: 땜빵이 들어간 5-1, 5-4, 5-5의 짝꿍 라인(5-2, 5-3, 5-6)에 0순위 배정!
         wind_uids = [u["uid"] for u in units if u["is_wind"] and u["uid"] in unassigned_uids]
+
+        def _count_mains_in_zone(z_name):
+            return len([u_id for u_id in assigned_zone_members[z_name] if not unit_map[u_id]["is_sub"]])
+
+        def _has_wind_in_cluster(z_list):
+            return any(unit_map[u_id]["is_wind"] for z_n in z_list for u_id in assigned_zone_members[z_n])
+
+        partner_wind_pairs = [
+            ("본던 5-1", "본던 5-2"),
+            ("본던 5-4", "본던 5-3"),
+            ("본던 5-5", "본던 5-6"),
+        ]
+        for sub_z, partner_z in partner_wind_pairs:
+            if sub_quota[sub_z] > 0 and _count_mains_in_zone(partner_z) < main_quota[partner_z] and wind_uids:
+                chosen_w = _pick_best_unit(wind_uids, partner_z)
+                assigned_zone_members[partner_z].append(chosen_w)
+                unassigned_uids.remove(chosen_w)
+                wind_uids.remove(chosen_w)
+
+        # 나머지 파티 조(7조, 10조, 8조, 9조, 5조, 4조 등)에 팟바람 1명씩 배정
         for cl in party_clusters:
-            active_cl_zones = [z for z in cl["zones"] if quota[z] > len(assigned_zone_members[z])]
+            if _has_wind_in_cluster(cl["zones"]):
+                continue
+            active_cl_zones = [z for z in cl["zones"] if _count_mains_in_zone(z) < main_quota[z]]
             tot_cl = sum(quota[z] for z in cl["zones"])
             if tot_cl >= 2 and active_cl_zones and wind_uids:
                 target_z = active_cl_zones[0]
@@ -31455,67 +31573,35 @@ for i, pc in enumerate(MINI_PCS):
                 unassigned_uids.remove(chosen_w)
                 wind_uids.remove(chosen_w)
 
-        if wind_uids and quota["본던 5-12"] > len(assigned_zone_members["본던 5-12"]):
+        if wind_uids and _count_mains_in_zone("본던 5-12") < main_quota["본던 5-12"]:
             chosen_w12 = _pick_best_unit(wind_uids, "본던 5-12")
             assigned_zone_members["본던 5-12"].append(chosen_w12)
             unassigned_uids.remove(chosen_w12)
             wind_uids.remove(chosen_w12)
 
-        sub_uids = [u["uid"] for u in units if u["is_sub"] and u["uid"] in unassigned_uids]
-        five_f_pair_zones = [
-            "본던 5-2", "본던 5-8", "본던 5-9", "본던 5-11",
-            "본던 5-1", "본던 5-4", "본던 5-3", "본던 5-5", "본던 5-6", "본던 5-7"
-        ]
-        for z5 in five_f_pair_zones:
-            if not sub_uids:
-                break
-            if quota[z5] >= 2:
-                has_main_in_z5 = any(not unit_map[uid]["is_sub"] for uid in assigned_zone_members[z5])
-                if not has_main_in_z5 and len(assigned_zone_members[z5]) < quota[z5]:
-                    avail_mains_now = [uid for uid in unassigned_uids if not unit_map[uid]["is_sub"]]
-                    if avail_mains_now:
-                        chosen_m = _pick_best_unit(avail_mains_now, z5)
-                        assigned_zone_members[z5].append(chosen_m)
-                        unassigned_uids.remove(chosen_m)
-                has_sub_in_z5 = any(unit_map[uid]["is_sub"] for uid in assigned_zone_members[z5])
-                if not has_sub_in_z5 and sub_uids and len(assigned_zone_members[z5]) < quota[z5]:
-                    chosen_s = _pick_best_unit(sub_uids, z5)
-                    assigned_zone_members[z5].append(chosen_s)
-                    unassigned_uids.remove(chosen_s)
-                    sub_uids.remove(chosen_s)
-
-        for z5 in [z for z in all_zones if "본던 5-" in z]:
-            while sub_uids and len(assigned_zone_members[z5]) < quota[z5]:
-                chosen_s = _pick_best_unit(sub_uids, z5)
-                assigned_zone_members[z5].append(chosen_s)
-                unassigned_uids.remove(chosen_s)
-                sub_uids.remove(chosen_s)
-
+        # 3) 일반 본케들을 남은 main_quota 슬롯에 배정 (현재 사냥터 유지 ➔ 같은 층 ➔ 타 층 순)
         for z in all_zones:
-            need_cnt = quota[z] - len(assigned_zone_members[z])
-            if need_cnt <= 0:
+            need_m = main_quota[z] - _count_mains_in_zone(z)
+            if need_m <= 0:
                 continue
-            exact_matches = [uid for uid in list(unassigned_uids) if unit_map[uid]["curr_dng"] == z]
-            for uid in exact_matches[:need_cnt]:
+            exact_mains = [uid for uid in list(unassigned_uids) if not unit_map[uid]["is_sub"] and unit_map[uid]["curr_dng"] == z]
+            for uid in exact_mains[:need_m]:
                 assigned_zone_members[z].append(uid)
                 unassigned_uids.remove(uid)
 
         for z in all_zones:
             while len(assigned_zone_members[z]) < quota[z] and unassigned_uids:
-                chosen_u = _pick_best_unit(list(unassigned_uids), z)
+                avail_mains_now = [uid for uid in unassigned_uids if not unit_map[uid]["is_sub"]]
+                pool_now = avail_mains_now if avail_mains_now else list(unassigned_uids)
+                chosen_u = _pick_best_unit(pool_now, z)
                 assigned_zone_members[z].append(chosen_u)
                 unassigned_uids.remove(chosen_u)
 
         return quota, assigned_zone_members, zone_to_inv, unit_map
 
-    def generate_optimal_bong_plan_file():
-        """이모지를 제거하고 파티(초대조) 단위 표 정렬로 가독성을 극대화하여 메모장에 출력합니다."""
+    def _write_and_open_bong_plan_text(title_label, assigned_zone_members, zone_to_inv, unit_map, units, is_current_view=False):
+        """최적 배치표 및 현재 라인배치도를 동일한 표 양식으로 파일에 저장하고 메모장으로 엽니다."""
         import shutil, unicodedata
-        units = _collect_all_active_bong_units()
-        if not units:
-            messagebox.showwarning("가용 인원 없음", "현재 본던 사냥 중이거나 가동 중인 캐릭터가 없습니다.")
-            return
-
         if os.path.exists(BONG_PLAN_FILE):
             try:
                 shutil.copyfile(BONG_PLAN_FILE, BONG_PLAN_BACKUP_FILE)
@@ -31527,8 +31613,6 @@ for i, pc in enumerate(MINI_PCS):
             disp_len = sum(2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1 for ch in s)
             return s + (" " * max(0, width - disp_len))
 
-        quota, assigned_zone_members, zone_to_inv, unit_map = _compute_optimal_bong_plan(units)
-
         mains_cnt = sum(1 for u in units if not u["is_sub"])
         subs_cnt = sum(1 for u in units if u["is_sub"])
         winds_cnt = sum(1 for u in units if u["is_wind"])
@@ -31536,8 +31620,8 @@ for i, pc in enumerate(MINI_PCS):
 
         lines = [
             "==========================================================================",
-            f" [본던 최적 배치표] {now_str} (총 {len(units)}명 | 본케:{mains_cnt} / 땜빵:{subs_cnt} / 팟바람:{winds_cnt})",
-            " * 수정법: 맨 앞 [사냥터]나 [초대조]만 고친 뒤 저장(Ctrl+S) -> [리스트 수동반영] 클릭",
+            f" [{title_label}] {now_str} (총 {len(units)}명 | 본케:{mains_cnt} / 땜빵:{subs_cnt} / 팟바람:{winds_cnt})",
+            " * 수정법: 맨 앞 [사냥터]나 [초대조]만 고친 뒤 저장(Ctrl+S) -> [🚀수동반영] 클릭",
             " * 주의  : 모든 중앙컴(1~12번)에 최신 코드가 실행 중이어야 전체 인원/땜빵이 집계됩니다.",
             "==========================================================================",
             " 사냥터 | 초대조 | 컴번호 (케릭명)      | 구분   | 상태",
@@ -31557,6 +31641,11 @@ for i, pc in enumerate(MINI_PCS):
             ("10조 4층파티 (4-12)",        ["본던 4-12"]),
         ]
 
+        covered_zones = {z for _, z_list in group_sections for z in z_list}
+        extra_zones = sorted([z for z in assigned_zone_members.keys() if z not in covered_zones and assigned_zone_members.get(z)])
+        if extra_zones:
+            group_sections.append(("기타 본던 구역", extra_zones))
+
         for grp_title, z_list in group_sections:
             grp_rows = []
             for z in z_list:
@@ -31569,13 +31658,16 @@ for i, pc in enumerate(MINI_PCS):
             for z, uid in grp_rows:
                 u = unit_map[uid]
                 short_z = z.replace("본던 ", "").strip()
-                inv_g = zone_to_inv.get(z, "선택안함")
-                inv_str = f"{inv_g}조" if inv_g != "선택안함" else "솔플"
+                inv_g = u["curr_inv"] if is_current_view else zone_to_inv.get(z, "선택안함")
+                inv_str = f"{inv_g}조" if inv_g not in ("선택안함", "", "솔플", "없음") else "솔플"
                 id_name_str = f"{u['short_id']} ({u['char_name']})" if u["char_name"] else u["short_id"]
                 role_str = "땜빵" if u["is_sub"] else ("팟바람" if u["is_wind"] else "본케")
 
-                curr_short = u["curr_dng"].replace("본던 ", "").strip()
-                move_str = "유지" if u["curr_dng"] == z else f"이동 ({curr_short} -> {short_z})"
+                if is_current_view:
+                    move_str = "현재배치"
+                else:
+                    curr_short = u["curr_dng"].replace("본던 ", "").strip()
+                    move_str = "유지" if u["curr_dng"] == z else f"이동 ({curr_short} -> {short_z})"
 
                 col1 = _pad_kor(short_z, 5)
                 col2 = _pad_kor(inv_str, 4)
@@ -31588,11 +31680,35 @@ for i, pc in enumerate(MINI_PCS):
         with open(BONG_PLAN_FILE, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
 
-        dprint(key, f"📄 [최적 배치 파일 생성] 총 {len(units)}명 기준 '{BONG_PLAN_FILE}' 저장 완료! 메모장을 엽니다.")
+        dprint(key, f"📄 [{title_label} 생성] 총 {len(units)}명 기준 '{BONG_PLAN_FILE}' 저장 완료! 메모장을 엽니다.")
         try:
             subprocess.Popen(["notepad.exe", BONG_PLAN_FILE])
         except Exception:
             pass
+
+    def generate_optimal_bong_plan_file():
+        """최적 라인배치도를 계산하여 메모장으로 생성합니다."""
+        units = _collect_all_active_bong_units()
+        if not units:
+            messagebox.showwarning("가용 인원 없음", "현재 본던 사냥 중이거나 가동 중인 캐릭터가 없습니다.")
+            return
+        _, assigned_zone_members, zone_to_inv, unit_map = _compute_optimal_bong_plan(units)
+        _write_and_open_bong_plan_text("본던 최적 배치표", assigned_zone_members, zone_to_inv, unit_map, units, is_current_view=False)
+
+    def generate_current_bong_plan_file():
+        """현재 가동 중인 캐릭터들의 실시간 라인배치도를 메모장으로 생성합니다. (수정 후 수동반영 가능)"""
+        units = _collect_all_active_bong_units()
+        if not units:
+            messagebox.showwarning("가용 인원 없음", "현재 본던 사냥 중이거나 가동 중인 캐릭터가 없습니다.")
+            return
+        assigned_zone_members = {}
+        zone_to_inv = {}
+        unit_map = {u["uid"]: u for u in units}
+        for u in units:
+            z = u["curr_dng"] if u["curr_dng"].startswith("본던") else f"본던 {u['curr_dng']}"
+            assigned_zone_members.setdefault(z, []).append(u["uid"])
+            zone_to_inv[z] = u["curr_inv"]
+        _write_and_open_bong_plan_text("본던 현재 라인배치도", assigned_zone_members, zone_to_inv, unit_map, units, is_current_view=True)
 
     def _resolve_bong_inv_grp_by_zone(dng_name, zone_counts, fallback_inv="선택안함"):
         """사냥터 이름을 기준으로 지정된 파티(초대조) 번호를 자동 산출합니다."""
@@ -31626,7 +31742,7 @@ for i, pc in enumerate(MINI_PCS):
         else:
             if not os.path.exists(BONG_PLAN_FILE):
                 if not is_auto:
-                    messagebox.showwarning("파일 없음", f"'{BONG_PLAN_FILE}' 파일이 없습니다.\n먼저 [📄 최적배치 파일생성] 버튼을 눌러주세요.")
+                    messagebox.showwarning("파일 없음", f"'{BONG_PLAN_FILE}' 파일이 없습니다.\n먼저 [📄최적배치] 또는 [📋현재배치] 버튼을 눌러주세요.")
                 return
             try:
                 raw_lines = []
@@ -31686,11 +31802,11 @@ for i, pc in enumerate(MINI_PCS):
 
                 file_updated = False
                 for line_idx, uid_norm, dng_val, fb_inv, parts in parsed_entries:
-                    # 💡 핵심: 메모장에 적힌 이전 초대조 대신, 변경된 사냥터(dng_val)를 기준으로 초대조를 자동 결정!
-                    auto_inv = _resolve_bong_inv_grp_by_zone(dng_val, zone_counts, fallback_inv=fb_inv)
+                    # 💡 메모장에서 사냥터를 바꿨다면 새 사냥터 기준 조 번호로 자동 변환, 사냥터는 그대로인데 초대조만 수동 변경했다면 수동 변경값 존중!
+                    default_zone_inv = _resolve_bong_inv_grp_by_zone(dng_val, zone_counts, fallback_inv=fb_inv)
+                    auto_inv = default_zone_inv
                     assign_map[uid_norm] = {"dng": dng_val, "inv_grp": auto_inv}
 
-                    # 메모장 파일 내 초대조 표기도 자동 갱신된 조 번호로 동기화
                     if parts is not None and len(parts) >= 5:
                         short_z = dng_val.replace("본던 ", "").strip()
                         inv_str = f"{auto_inv}조" if auto_inv != "선택안함" else "솔플"
@@ -31826,7 +31942,7 @@ for i, pc in enumerate(MINI_PCS):
 
     tk.Checkbutton(
         p_bong_auto_frame,
-        text="실시간 자동배치",
+        text="자동배치",
         variable=vars_dict["use_auto_bong_assign"],
         command=broadcast_auto_bong_toggle,
         bg=BG_PANEL,
@@ -31835,29 +31951,43 @@ for i, pc in enumerate(MINI_PCS):
         activebackground=BG_PANEL,
         activeforeground="#FFD54F",
         font=("맑은 고딕", 8, "bold")
-    ).pack(side="left", padx=(0, 4))
+    ).pack(side="left", padx=(0, 2))
 
     tk.Button(
         p_bong_auto_frame,
-        text="📄 최적배치 파일생성",
+        text="📄최적배치",
         font=("맑은 고딕", 8, "bold"),
         bg="#2E7D32",
         fg="white",
         relief="flat",
+        padx=2,
         pady=1,
         command=generate_optimal_bong_plan_file
-    ).pack(side="left", fill="x", expand=True, padx=2)
+    ).pack(side="left", fill="x", expand=True, padx=1)
 
     tk.Button(
         p_bong_auto_frame,
-        text="🚀 리스트 수동반영",
+        text="📋현재배치",
+        font=("맑은 고딕", 8, "bold"),
+        bg="#1565C0",
+        fg="white",
+        relief="flat",
+        padx=2,
+        pady=1,
+        command=generate_current_bong_plan_file
+    ).pack(side="left", fill="x", expand=True, padx=1)
+
+    tk.Button(
+        p_bong_auto_frame,
+        text="🚀수동반영",
         font=("맑은 고딕", 8, "bold"),
         bg="#D84315",
         fg="white",
         relief="flat",
+        padx=2,
         pady=1,
         command=lambda: broadcast_and_apply_bong_plan_from_file(is_auto=False)
-    ).pack(side="left", fill="x", expand=True, padx=2)
+    ).pack(side="left", fill="x", expand=True, padx=1)
     # ==============================================================================
 
     hp_top_frame = tk.Frame(tab1, bg=BG_PANEL)
