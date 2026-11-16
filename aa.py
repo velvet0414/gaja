@@ -17795,6 +17795,9 @@ def ai_commander_worker(target_pc):
                 cv2.rectangle(debug_img, (empty_x1, empty_y1), (empty_x2, empty_y2), (255, 200, 0), 1)
                 cv2.putText(debug_img, "EMPTY_SCAN", (empty_x1 + 5, empty_y1 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 0), 1)
 
+                # 인벤 우측 스크롤바(휠바) 움직임 감지 영역 (초록 박스: 768,15 ~ 792,355)
+                cv2.rectangle(debug_img, (768, 15), (792, 355), (0, 255, 0), 2)
+
                 # 상점/창고 전체 UI 영역 (ui_only: 0,0 ~ 290,400)
                 cv2.rectangle(debug_img, (0, 0), (min(290, w), min(400, h)), (255, 255, 0), 1)
                 cv2.putText(debug_img, "SHOP_UI_SCAN (290x400)", (5, 395), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
@@ -18658,6 +18661,8 @@ def ai_commander_worker(target_pc):
 
                             state["inv_clean_last_action"] = "OPEN"
                             state["inv_up_scrolls"] = 0
+                            state["inv_up_stuck_cnt"] = 0
+                            state["inv_wheel_prev_gray"] = None
                             state["inv_down_scrolls"] = 0
 
                             state["trash_blacklist"] = []
@@ -18723,10 +18728,13 @@ def ai_commander_worker(target_pc):
                                     state["cooldown"] = curr_time + 0.05
                                     continue
 
-                            # 🔄 [핵심 2] 다음 순위(00 ➔ 11 ➔ 22 ➔ 33)로 넘어갈 때 스크롤을 맨 위로 복귀
+                            # 📏 우측 휠바 트랙 영역(초록 박스 내부: X 770~790, Y 18~352) 흑백 추출
+                            wheel_track_gray = cv2.cvtColor(img_bgr[18:352, 770:790], cv2.COLOR_BGR2GRAY)
+
+                            # 🔄 [핵심 2] 다음 순위(00 ➔ 11 ➔ 22 ➔ 33)로 넘어갈 때 아래로 내린 적이 있을 때만 맨 위로 복귀
                             if last_act == "TIER_RESET":
                                 down_cnt = state.get("inv_down_scrolls", 0)
-                                if down_cnt > 0 or (empty_count > 4 and state.get("inv_up_scrolls", 0) < 60):
+                                if down_cnt > 0:
                                     if not is_cursor_in_inven:
                                         tx = inv_cx + random.randint(-15, 15)
                                         ty = inv_cy + random.randint(-15, 15)
@@ -18740,18 +18748,26 @@ def ai_commander_worker(target_pc):
                                         state["cooldown"] = curr_time + dur + 0.05
                                         continue
                                     else:
-                                        up_amt = max(8, down_cnt + 3) if down_cnt > 0 else 3
+                                        up_amt = max(8, down_cnt + 3)
                                         dprint(key, f"🔼 [{curr_tier}순위 상단 복귀] {curr_tier}{curr_tier} 폴더 스캔을 위해 인벤 스크롤을 맨 위로 올립니다.")
+                                        state["inv_wheel_prev_gray"] = wheel_track_gray.copy()
                                         pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": up_amt})
                                         state["inv_down_scrolls"] = 0
-                                        state["inv_up_scrolls"] = state.get("inv_up_scrolls", 0) + 1
+                                        state["inv_up_scrolls"] = 1
+                                        state["inv_up_stuck_cnt"] = 0
                                         state["inv_clean_last_action"] = "SCROLL_UP"
                                         state["target_fsm"] = "INV_CLEAN_WAIT_HW"
                                         state["inv_wait_next_fsm"] = "INV_CLEAN_EVALUATE"
                                         state["cooldown"] = curr_time + g_val(0.15, 0.22)
                                         continue
                                 else:
-                                    state["inv_clean_last_action"] = "SCROLL_UP"
+                                    # 이전 순위에서 아래로 스크롤한 적이 없다면 이미 상단 끝이므로 즉시 스캔 돌입
+                                    state["inv_up_scrolls"] = 0
+                                    state["inv_up_stuck_cnt"] = 0
+                                    state["inv_wheel_prev_gray"] = None
+                                    state["target_fsm"] = "INV_CLEAN_SCAN"
+                                    state["cooldown"] = curr_time + 0.05
+                                    continue
 
                             # 아래로 1줄 스크롤한 직후에는 바로 현재 화면에 대상 템이 있는지 스캔부터 수행
                             if last_act == "SCROLL_DOWN":
@@ -18759,10 +18775,26 @@ def ai_commander_worker(target_pc):
                                 state["cooldown"] = curr_time + 0.05
                                 continue
 
-                            # 처음 열었을 때(OPEN) 또는 위로 스크롤 중(SCROLL_UP) 빈칸이 4개 초과면 위로 스크롤 (단, 픽셀 변화가 6회 연속 없으면 최상단 도달로 확정!)
+                            # 🔎 휠을 올린 직후(SCROLL_UP): 초록 박스(770~790, 18~352) 안에서 휠바가 움직였는지 판독!
+                            if last_act == "SCROLL_UP" and state.get("inv_wheel_prev_gray") is not None:
+                                prev_w_gray = state["inv_wheel_prev_gray"]
+                                if prev_w_gray.shape == wheel_track_gray.shape:
+                                    diff_w = cv2.absdiff(prev_w_gray, wheel_track_gray)
+                                    _, thresh_w = cv2.threshold(diff_w, 20, 255, cv2.THRESH_BINARY)
+                                    if cv2.countNonZero(thresh_w) < 10:
+                                        # 휠바가 안 움직임 -> 상단 끝 도달!
+                                        state["inv_up_stuck_cnt"] = state.get("inv_up_stuck_cnt", 0) + 1
+                                    else:
+                                        # 휠바가 움직임 -> 아직 상단이 아니므로 카운트 리셋 후 계속 올림
+                                        state["inv_up_stuck_cnt"] = 0
+
+                            # 빈칸이 4개 초과면 위로 스크롤하되, 우측 휠바가 멈추면(2회 연속 부동) 즉시 상단 끝으로 확정하고 다음 로직(SCAN)으로 이동!
                             if empty_count > 4:
-                                if state.get("inv_up_stuck_cnt", 0) >= 6 or state.get("inv_up_scrolls", 0) >= 60:
-                                    dprint(key, f"🎒 [상단 도달] 스크롤 60회 도달! {curr_tier}순위({curr_tier}{curr_tier}) 스캔 시작!")
+                                if state.get("inv_up_stuck_cnt", 0) >= 2 or state.get("inv_up_scrolls", 0) >= 60:
+                                    dprint(key, f"🎒 [휠바 상단끝 감지] 우측 휠바 정지 확인(스크롤 {state.get('inv_up_scrolls', 0)}회)! {curr_tier}순위({curr_tier}{curr_tier}) 스캔 시작!")
+                                    state["inv_up_scrolls"] = 0
+                                    state["inv_up_stuck_cnt"] = 0
+                                    state["inv_wheel_prev_gray"] = None
                                     state["target_fsm"] = "INV_CLEAN_SCAN"
                                     state["cooldown"] = curr_time + 0.05
                                 else:
@@ -18778,6 +18810,7 @@ def ai_commander_worker(target_pc):
                                         state["inv_wait_next_fsm"] = "INV_CLEAN_EVALUATE"
                                         state["cooldown"] = curr_time + dur + 0.05
                                     else:
+                                        state["inv_wheel_prev_gray"] = wheel_track_gray.copy()
                                         scroll_amount = 3 if last_act == "OPEN" else 1
                                         pico_queues[key].put({"action": "MOUSE_WHEEL", "amount": scroll_amount})
                                         state["inv_clean_last_action"] = "SCROLL_UP"
@@ -18789,6 +18822,8 @@ def ai_commander_worker(target_pc):
                             else:
                                 dprint(key, f"🎒 [{curr_tier}순위 스캔 돌입] 빈칸 {empty_count}개 확인! {curr_tier}{curr_tier} 폴더 아이템 탐색을 시작합니다.")
                                 state["inv_up_scrolls"] = 0
+                                state["inv_up_stuck_cnt"] = 0
+                                state["inv_wheel_prev_gray"] = None
                                 state["target_fsm"] = "INV_CLEAN_SCAN"
                                 state["cooldown"] = curr_time + 0.05
 
