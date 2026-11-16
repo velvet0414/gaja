@@ -18182,6 +18182,17 @@ def ai_commander_worker(target_pc):
 
                     else:
                         if curr_time > state.get("teleport_next_spam", 0):
+                            if mp <= 2.5:
+                                dprint(key, f"🚨 [텔포 중 마나 부족] 현재 MP({mp:.1f}% <= 2.5%) 부족으로 헛텔포 연타를 중단하고 바디(F7) 마나 확보로 전환합니다!")
+                                state["abort_macro"] = True
+                                with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                                state["target_fsm"] = "IDLE"
+                                state["is_pulling"] = False
+                                state.pop("teleport_start_pos", None)
+                                state["hp_danger_cd"] = 0.0
+                                state["cooldown"] = curr_time + 0.05
+                                continue
+
                             dprint(key, "⚠️ [텔포 스팸] 화면 전환 지연! F11 초고속 난타 발동!")
                             with pico_queues[key].mutex: pico_queues[key].queue.clear()
 
@@ -18274,7 +18285,29 @@ def ai_commander_worker(target_pc):
                         state["event_skip_maint"] = True
 
                     if "텔" in danger_action:
-                        dprint(key, "🚨 [위기 텔레포트] 1프레임 조건 달성! 딜레이 없이 텔레포트 즉시 시도!")
+                        if mp <= 2.5:
+                            if curr_time >= state.get("body_cd", 0):
+                                dprint(key, f"🚨 [위기 저마나 바디] 위기 HP({hp:.1f}%) 도달했으나 MP({mp:.1f}% <= 2.5%) 부족! 바디(F7)로 마나부터 만들고 텔포합니다!")
+                                if state.get("body_held", False):
+                                    if picos.get(key) and pico_locks.get(key):
+                                        send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                                    state["body_held"] = False
+                                pico_queues[key].put({"action": "BODY_TO_MIND"})
+                                state["last_body_time"] = curr_time
+                                state["body_cd"] = curr_time + g_time(0.8, 1.1, key)
+
+                            state["dungeon_global_path"] = []
+                            state["is_pulling"] = False
+                            state["is_attacking"] = False
+                            state["arrow_is_firing"] = False
+                            state["has_fired_arrow"] = False
+                            if not str(state.get("target_fsm", "")).startswith("TOWN_MAINT") and not str(state.get("target_fsm", "")).startswith("DEATH"):
+                                state["target_fsm"] = "IDLE"
+                            state["perc_danger"] = 0.0
+                            state["cooldown"] = curr_time + 0.1
+                            continue
+
+                        dprint(key, f"🚨 [위기 텔레포트] 1프레임 조건 달성(MP {mp:.1f}% > 2.5%)! 딜레이 없이 텔레포트 즉시 시도!")
                         pico_queues[key].put({"action": "TELEPORT"})
                         state["dungeon_global_path"] = []
 
