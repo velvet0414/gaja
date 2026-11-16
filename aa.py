@@ -19605,58 +19605,64 @@ def ai_commander_worker(target_pc):
                         state["antidote_clear_cnt"] = 0
 
                     if not survival_action_taken:
-                        heal_mp_limit = settings.get("heal_mp_percent", 30.0)
-                        
-                        # 👇👇 [엠탐물약(무게/위즈 무관 상시) & 위즈 무거운 엠탐 생존 제어 + 물약 고갈 안전장치] 👇👇
+                        # 👇👇 [상시 물약 고갈(nopotion.png) 1초 주기 감지 & 노포션 생존 모드] 👇👇
                         is_wiz_heavy = state.get("is_mptam_mode", False) and (
                             settings.get("use_mptam_pot", False) or
                             (settings.get("is_wiz_mptam", False) and locals().get("is_heavy", False))
                         )
-                        is_potion_empty = False
-                        
-                        if is_wiz_heavy:
-                            # 1초에 한 번만 물약 고갈(nopotion.png) 상태 확인 (CPU 렉 방지)
-                            if curr_time > state.get("next_nopotion_check", 0):
-                                state["next_nopotion_check"] = curr_time + 1.0
-                                
-                                if globals().get("img_nopotion") is not None and img_bgr is not None:
-                                    try:
-                                        f6_cx = globals().get("SLOT_F6_CX", 688)
-                                        f6_cy = globals().get("SLOT_F6_CY", 502)
-                                        s_size = globals().get("SLOT_SIZE", 40)
-                                        f5_cx, f5_cy = f6_cx - s_size, f6_cy # F5 슬롯 타겟팅
-                                        
-                                        pad = 10
-                                        roi_x1, roi_y1 = max(0, int(f5_cx - s_size/2 - pad)), max(0, int(f5_cy - s_size/2 - pad))
-                                        roi_x2, roi_y2 = min(w, int(f5_cx + s_size/2 + pad)), min(h, int(f5_cy + s_size/2 + pad))
-                                        
-                                        if roi_x2 > roi_x1 and roi_y2 > roi_y1:
-                                            chk_roi = img_bgr[roi_y1:roi_y2, roi_x1:roi_x2]
-                                            tmpl = globals().get("img_nopotion")
-                                            mask = globals().get("img_nopotion_mask")
-                                            if mask is not None: res = cv2.matchTemplate(chk_roi, tmpl, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask]*3))
-                                            else: res = cv2.matchTemplate(chk_roi, tmpl, cv2.TM_CCOEFF_NORMED)
-                                            if cv2.minMaxLoc(res)[1] >= 0.80:
-                                                is_potion_empty = True
-                                    except: pass
-                                state["cached_nopotion"] = is_potion_empty
-                            else:
-                                is_potion_empty = state.get("cached_nopotion", False)
-                        
+
+                        if curr_time > state.get("next_nopotion_check", 0):
+                            state["next_nopotion_check"] = curr_time + 1.0
+                            is_potion_empty = False
+
+                            if globals().get("img_nopotion") is not None and img_bgr is not None:
+                                try:
+                                    f6_cx = globals().get("SLOT_F6_CX", 688)
+                                    f6_cy = globals().get("SLOT_F6_CY", 502)
+                                    s_size = globals().get("SLOT_SIZE", 40)
+                                    f5_cx, f5_cy = f6_cx - s_size, f6_cy # F5 슬롯 타겟팅
+
+                                    pad = 10
+                                    roi_x1, roi_y1 = max(0, int(f5_cx - s_size/2 - pad)), max(0, int(f5_cy - s_size/2 - pad))
+                                    roi_x2, roi_y2 = min(w, int(f5_cx + s_size/2 + pad)), min(h, int(f5_cy + s_size/2 + pad))
+
+                                    if roi_x2 > roi_x1 and roi_y2 > roi_y1:
+                                        chk_roi = img_bgr[roi_y1:roi_y2, roi_x1:roi_x2]
+                                        tmpl = globals().get("img_nopotion")
+                                        mask = globals().get("img_nopotion_mask")
+                                        if mask is not None: res = cv2.matchTemplate(chk_roi, tmpl, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask]*3))
+                                        else: res = cv2.matchTemplate(chk_roi, tmpl, cv2.TM_CCOEFF_NORMED)
+                                        if cv2.minMaxLoc(res)[1] >= 0.80:
+                                            is_potion_empty = True
+                                except: pass
+
+                            was_nopot = state.get("cached_nopotion", False)
+                            state["cached_nopotion"] = is_potion_empty
+                            if is_potion_empty and not was_nopot:
+                                dprint(key, "🚨 [노포션 상태 진입] 물약(nopotion.png) 고갈 감지! 빈 F5 연타를 차단하고 [힐 MP 5% 시전 + 절대귀환 HP까지 바디 허용] 모드로 전환합니다!")
+                            elif not is_potion_empty and was_nopot:
+                                dprint(key, "✅ [노포션 해제] 물약 슬롯 정상 복구 확인! 기존 GUI 설정 기준으로 복귀합니다.")
+                        else:
+                            is_potion_empty = state.get("cached_nopotion", False)
+
+                        # 노포션 상태일 때는 힐 시전 MP 기준을 5%까지 완화
+                        heal_mp_limit = 5.0 if is_potion_empty else settings.get("heal_mp_percent", 30.0)
+
                         # 물약이 고갈되었으면 위즈 특권을 즉시 박탈!
                         state["wiz_heavy_active"] = is_wiz_heavy and not is_potion_empty
-                        
+
                         if state["wiz_heavy_active"]:
                             need_heal = False # 무거울 땐 마나 1이 아까우므로 힐(F6) 완벽 차단!
                             need_pot = (hp <= 80.0) # 설정 무시하고 80% 이하일 땐 무조건 물약(F5) 복용!
                         else:
                             if is_wiz_heavy and is_potion_empty:
                                 if curr_time - state.get("nopotion_warn_log", 0) > 5.0:
-                                    dprint(key, "🚨 [위즈 엠탐 비상] 물약(nopotion) 고갈 감지! 무거운 상태지만 생존을 위해 일반 힐(F6) 모드로 전환합니다!")
+                                    dprint(key, "🚨 [위즈 엠탐 비상] 물약(nopotion) 고갈 감지! 무거운 상태지만 생존을 위해 일반 힐(F6, MP 5%↑) 모드로 전환합니다!")
                                     state["nopotion_warn_log"] = curr_time
-                                    
+
                             need_heal = settings.get("heal_use") and hp <= settings.get("heal_percent", 70.0) and mp >= heal_mp_limit
-                            need_pot = settings.get("potion_use") and hp <= settings.get("potion_percent", 60.0)
+                            # 노포션 상태(is_potion_empty)일 때는 빈 F5를 절대 누르지 않도록 차단!
+                            need_pot = (not is_potion_empty) and settings.get("potion_use") and hp <= settings.get("potion_percent", 60.0)
                         # 👆👆 ------------------------------------------------------------- 👆👆
 
                         if need_heal or need_pot:
@@ -21103,9 +21109,10 @@ def ai_commander_worker(target_pc):
                 else:
                     is_fighting = False
 
-            heal_mp_limit_buff = settings.get("heal_mp_percent", 30.0)
+            is_nopot_for_buff = state.get("cached_nopotion", False)
+            heal_mp_limit_buff = 5.0 if is_nopot_for_buff else settings.get("heal_mp_percent", 30.0)
             need_heal_now = settings.get("heal_use") and hp <= settings.get("heal_percent", 70.0) and mp >= heal_mp_limit_buff
-            need_pot_now = settings.get("potion_use") and hp <= settings.get("potion_percent", 60.0)
+            need_pot_now = (not is_nopot_for_buff) and settings.get("potion_use") and hp <= settings.get("potion_percent", 60.0)
             is_hp_safe_for_buff = not need_heal_now and not need_pot_now and not is_poisoned
 
             is_strictly_combat = (state.get("target_fsm") in ["COMBAT", "COMBAT_PARK_VERIFY"]) or state.get("is_attacking", False) or state.get("arrow_is_firing", False)
@@ -29569,8 +29576,12 @@ def ai_commander_worker(target_pc):
                     else:
                         state["body_to_mind_active"] = False
 
-                    heal_mp_limit = settings.get("heal_mp_percent", 30.0)
-                    is_critical_hp = state.get("is_panic", False)
+                    is_nopot_body = state.get("cached_nopotion", False)
+                    heal_mp_limit = 5.0 if is_nopot_body else settings.get("heal_mp_percent", 30.0)
+                    try: abs_ret_hp_limit = float(settings.get("abs_return_pct", 15.0))
+                    except: abs_ret_hp_limit = 15.0
+                    # 노포션 상태일 때는 패닉(30%/50%) 락을 해제하고 절대귀환 HP 수치 이상(hp >= abs_ret_hp_limit)까지 바디 허용!
+                    is_critical_hp = (hp < abs_ret_hp_limit) if is_nopot_body else state.get("is_panic", False)
 
                     fsm_body_chk = str(state.get("target_fsm", ""))
                     # 💡 [핵심 방어막] 인벤 정리, 단축키 복구, 모션 스냅, 8각 이동 수색 및 교전 중에는 바디(F7) 홀드 차단
