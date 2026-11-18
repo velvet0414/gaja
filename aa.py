@@ -1981,7 +1981,9 @@ def local_ipc_broadcaster_thread(my_key):
                     "elem_rem": max(0.0, st.get("buff_element_time", 0.0) - now_req_t) if current_settings.get(my_key, {}).get("is_party_inviter", False) else 0.0,
                     "post_certi_need_pb": bool(st.get("post_certi_need_pb", False)),
                     "dungeon_name": active_dng_str,
+                    "override_dungeon_name": st.get("override_dungeon_name", ""),
                     "reserved_next_dng": st.get("reserved_next_dng", ""),
+                    "reserved_next_inv_grp": st.get("reserved_next_inv_grp", ""),
                     "is_out_of_zone": st.get("is_out_of_zone", False)
                 }
 
@@ -31357,8 +31359,13 @@ for i, pc in enumerate(MINI_PCS):
         my_hunt_on = bool(my_st.get("backup_hunt_active", my_st.get("is_hunt_active", False)) and not my_st.get("is_paused", False))
         my_v = gui_vars.get(TARGET_PC_KEY, {})
         if my_hunt_on and my_v:
-            eff_my_dng = my_st.get("reserved_next_dng") or my_v["party_dungeon_name"].get().strip()
-            if "본던" in eff_my_dng or "gludio" in eff_my_dng.lower():
+            is_p_on_me = bool(my_v.get("use_party_hunt", tk.BooleanVar(value=False)).get() or my_v.get("use_party_fixed", tk.BooleanVar(value=False)).get())
+            actual_my_dng = (my_v["party_dungeon_name"].get() if is_p_on_me else my_v["dungeon_name"].get()).strip()
+            res_my_dng = str(my_st.get("reserved_next_dng") or "").strip()
+            res_my_inv = str(my_st.get("reserved_next_inv_grp") or "").strip()
+            ovr_my_dng = str(my_st.get("override_dungeon_name") or "").strip()
+            chk_my_dng = res_my_dng or actual_my_dng
+            if "본던" in chk_my_dng or "gludio" in chk_my_dng.lower():
                 is_forced_sub_me = (my_c_int == 8 and my_m_int == 3)
                 is_sub_me = bool(globals().get("IS_SUB_CHAR_MODE", False)) or is_forced_sub_me
                 units[my_uid] = {
@@ -31370,16 +31377,23 @@ for i, pc in enumerate(MINI_PCS):
                     "char_name": my_v["char_name"].get().strip() if "char_name" in my_v else "",
                     "is_sub": is_sub_me,
                     "is_wind": bool(my_v["is_party_inviter"].get()) and not is_sub_me,
-                    "curr_dng": eff_my_dng,
-                    "curr_inv": my_v["invite_group"].get().strip()
+                    "curr_dng": actual_my_dng,
+                    "curr_inv": my_v["invite_group"].get().strip(),
+                    "reserved_dng": res_my_dng,
+                    "reserved_inv": res_my_inv,
+                    "override_dng": ovr_my_dng
                 }
 
         with party_lock:
             for p_uid, p_info in list(global_invite_states.items()):
                 if now_t - p_info.get("recv_time", 0.0) <= 15.0 and p_info.get("hunt_active", False):
-                    eff_p_dng = str(p_info.get("reserved_next_dng") or p_info.get("dungeon_name", "")).strip()
+                    actual_p_dng = str(p_info.get("dungeon_name", "")).strip()
+                    res_p_dng = str(p_info.get("reserved_next_dng") or "").strip()
+                    res_p_inv = str(p_info.get("reserved_next_inv_grp") or "").strip()
+                    ovr_p_dng = str(p_info.get("override_dungeon_name") or "").strip()
+                    chk_p_dng = res_p_dng or actual_p_dng
                     # 개미굴, 수던 등 본던이 아닌 타 사냥터 캐릭터는 본던 배치에서 자동 제외
-                    if "본던" not in eff_p_dng and "gludio" not in eff_p_dng.lower():
+                    if "본던" not in chk_p_dng and "gludio" not in chk_p_dng.lower():
                         continue
                     c_i = int(p_info.get("central_num", 1))
                     m_i = int(p_info.get("mini_num", 1))
@@ -31397,8 +31411,11 @@ for i, pc in enumerate(MINI_PCS):
                         "char_name": str(p_info.get("char_name", "")).strip(),
                         "is_sub": is_sub_u,
                         "is_wind": is_wind_u,
-                        "curr_dng": eff_p_dng,
-                        "curr_inv": str(p_info.get("invite_group", "선택안함")).strip()
+                        "curr_dng": actual_p_dng,
+                        "curr_inv": str(p_info.get("invite_group", "선택안함")).strip(),
+                        "reserved_dng": res_p_dng,
+                        "reserved_inv": res_p_inv,
+                        "override_dng": ovr_p_dng
                     }
 
         sorted_units = sorted(units.values(), key=lambda x: (x["c_num"], x["m_num"]))
@@ -31742,11 +31759,32 @@ for i, pc in enumerate(MINI_PCS):
                 id_name_str = f"{u['short_id']} ({u['char_name']})" if u["char_name"] else u["short_id"]
                 role_str = "땜빵" if u["is_sub"] else ("팟바람" if u["is_wind"] else "본케")
 
+                res_dng = str(u.get("reserved_dng") or "").strip()
+                res_inv = str(u.get("reserved_inv") or "").strip()
+                ovr_dng = str(u.get("override_dng") or "").strip()
+
                 if is_current_view:
-                    move_str = "현재배치"
+                    if res_dng and res_dng != u["curr_dng"]:
+                        res_short = res_dng.replace("본던 ", "").strip()
+                        res_inv_txt = f"/{res_inv}조" if res_inv not in ("", "선택안함", "솔플", "없음") else ("/솔플" if res_inv == "선택안함" else "")
+                        move_str = f"현재:{short_z} (다음정비시 ➔ {res_short}{res_inv_txt} 이동예정)"
+                    elif ovr_dng == "본던 5to6":
+                        move_str = f"현재배치 (5➔6층 계단이동중 ➔ {short_z})"
+                    else:
+                        move_str = "현재배치"
                 else:
                     curr_short = u["curr_dng"].replace("본던 ", "").strip()
-                    move_str = "유지" if u["curr_dng"] == z else f"이동 ({curr_short} -> {short_z})"
+                    if u["curr_dng"] == z:
+                        if res_dng and res_dng != z:
+                            res_short = res_dng.replace("본던 ", "").strip()
+                            move_str = f"유지 (기존 {res_short} 이동예약 취소)"
+                        else:
+                            move_str = "유지"
+                    else:
+                        if res_dng == z:
+                            move_str = f"이동 ({curr_short} -> {short_z} | 다음정비시 이동예정)"
+                        else:
+                            move_str = f"이동 ({curr_short} -> {short_z})"
 
                 col1 = _pad_kor(short_z, 5)
                 col2 = _pad_kor(inv_str, 4)
@@ -31853,6 +31891,18 @@ for i, pc in enumerate(MINI_PCS):
 
                         raw_inv = parts[1].replace("초대조:", "").replace("조", "").strip()
                         fb_inv = "선택안함" if raw_inv in ("솔플", "없음", "선택안함", "0", "-") else raw_inv
+
+                        # 현재배치 메모장에서 사냥터 칸을 건드리지 않은 예약 캐릭터는 기존 이동 예약을 그대로 유지
+                        status_col = parts[4] if len(parts) >= 5 else ""
+                        m_res = re.search(r'현재\s*:\s*([^\s(]+).*?다음정비시\s*(?:➔|->)?\s*([0-9]+-[0-9]+)', status_col)
+                        if m_res:
+                            orig_short_z = m_res.group(1).replace("본던", "").strip()
+                            res_short_z = m_res.group(2).strip()
+                            curr_short_z = dng_val.replace("본던 ", "").strip()
+                            if curr_short_z == orig_short_z:
+                                dng_val = f"본던 {res_short_z}"
+                            else:
+                                parts[4] = f"수동변경 ({orig_short_z} -> {curr_short_z})"
 
                         zone_counts[dng_val] = zone_counts.get(dng_val, 0) + 1
                         parsed_entries.append((line_idx, uid_norm, dng_val, fb_inv, parts))
