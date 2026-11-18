@@ -1288,7 +1288,7 @@ CONFIG_SYNC_GROUPS = {
         "m_elf_conf", "m_wiz_conf", "f_knight_conf", "m_knight_conf", "m_prince_conf", "halloween_conf"
     ],
     "MAIN": [
-        # 사냥터(dungeon_name) 및 윈웍(use_windwalk)을 제외한 메인 탭 전체 항목
+        # 사냥터(dungeon_name) 및 윈웍(use_windwalk)을 제외한 메인 탭 + 상단 픽셀감도/사냥우선/노드밖텔 전체 항목
         "role", "tele_hunt_use", "tele_hunt_time",
         "heal_pct", "heal_mp_pct", "heal_use", "abs_return_use", "abs_return_pct",
         "pot_pct", "pot_use", "poison_type", "poison_delay",
@@ -1300,7 +1300,8 @@ CONFIG_SYNC_GROUPS = {
         "use_extra_f10", "extra_f10_dur",
         "use_body", "body_pct", "body_stop_pct", "use_mptam_pot",
         "use_mptam", "mptam_start_pct", "mptam_stop_pct", "is_wiz_mptam", "use_mptam_hit", "mptam_hit_pct",
-        "use_blue_pot", "use_blue_pot_combat", "blue_mp_pct", "blue_cd_min"
+        "use_blue_pot", "use_blue_pot_combat", "blue_mp_pct", "blue_cd_min",
+        "move_sens", "hunt_first", "hunt_first_keep_loot", "hunt_first_item_use", "hunt_first_item_cnt", "zone_tele_nodes"
     ],
     "SUB": [
         # 보조 탭 전체 항목 (구매 / 판매 / 창고 찾기)
@@ -1515,7 +1516,7 @@ def broadcast_config_sync(sender_key, group_name, btn_widget=None):
     target_filter = v_dict.get("sync_target_dng", tk.StringVar(value="모든사냥터")).get().strip() or "모든사냥터"
     curr_sub_mode = bool(globals().get("IS_SUB_CHAR_MODE", False))
 
-    payload = {
+    base_payload = {
         "msg_type": "CONFIG_SYNC",
         "sync_id": sync_id,
         "group": group_name,
@@ -1524,28 +1525,49 @@ def broadcast_config_sync(sender_key, group_name, btn_widget=None):
         "sender_uid": sender_uid,
         "pc_key": sender_key,
         "central_num": my_c_num,
-        "settings_data": extracted
+        "settings_data": {}
     }
-    raw_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    def _encode_chunk(c_dict, idx):
+        p = dict(base_payload)
+        p["sync_id"] = f"{sync_id}_{idx}"
+        p["settings_data"] = c_dict
+        return json.dumps(p, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+    chunk_packets = []
+    curr_chunk = {}
+    for k_name, val in extracted.items():
+        test_chunk = dict(curr_chunk)
+        test_chunk[k_name] = val
+        if curr_chunk and len(_encode_chunk(test_chunk, len(chunk_packets) + 1)) > 950:
+            chunk_packets.append(_encode_chunk(curr_chunk, len(chunk_packets) + 1))
+            curr_chunk = {k_name: val}
+        else:
+            curr_chunk = test_chunk
+    if curr_chunk:
+        chunk_packets.append(_encode_chunk(curr_chunk, len(chunk_packets) + 1))
 
     def _send_burst():
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            # 테일스케일 원격망 패킷 유실 방지를 위해 0.05초 간격으로 2회 연속 발송
-            for _ in range(2):
-                # 1) 내 중앙컴 내부 미니1~4 전송
-                for k, port in LOCAL_IPC_PORTS.items():
-                    if k != sender_key:
-                        try: sock.sendto(raw_bytes, ("127.0.0.1", port))
-                        except Exception: pass
-
-                # 2) 1~13번 모든 타 중앙컴(테일스케일 IP)의 미니1~4 전송
-                for c_num, r_ip in CENTRAL_TAILSCALE_MAP.items():
-                    if str(c_num) != my_c_num and r_ip:
-                        for port in LOCAL_IPC_PORTS.values():
-                            try: sock.sendto(raw_bytes, (r_ip, port))
+            # 테일스케일 MTU 초과 방지용 분할 청크를 각 2회씩 순차 발송
+            for pkt_bytes in chunk_packets:
+                for _ in range(2):
+                    # 1) 내 중앙컴 내부 미니1~4 전송
+                    for k, port in LOCAL_IPC_PORTS.items():
+                        if k != sender_key:
+                            try: sock.sendto(pkt_bytes, ("127.0.0.1", port))
                             except Exception: pass
-                time.sleep(0.05)
+
+                    # 2) 1~13번 모든 타 중앙컴(테일스케일 IP)의 미니1~4 전송
+                    for c_num, r_ip in CENTRAL_TAILSCALE_MAP.items():
+                        if str(c_num) != my_c_num and c_num != "VPN" and r_ip:
+                            for port in LOCAL_IPC_PORTS.values():
+                                try: sock.sendto(pkt_bytes, (r_ip, port))
+                                except Exception: pass
+                    time.sleep(0.05)
+                if len(chunk_packets) > 1:
+                    time.sleep(0.05)
         finally:
             try: sock.close()
             except Exception: pass
@@ -1571,18 +1593,32 @@ def _extract_bong_floor_num(dng_str):
         return int(m.group(1))
     return 0
 
-def apply_bong_assignment_to_self(my_key, new_dng, new_inv_grp, source_label="수동반영"):
+def apply_bong_assignment_to_self(my_key, new_dng, new_inv_grp, source_label="수동반영", is_auto=False):
     """배정된 사냥터와 초대조를 내 클라이언트에 반영합니다. (타 층 이동 시 다음 마을 정비 예약)"""
     try:
+        import re
         if my_key not in gui_vars or my_key not in ai_states:
             return
         v_dict = gui_vars[my_key]
         st = ai_states[my_key]
 
-        new_dng = str(new_dng or "").strip()
+        # 🛡️ 자동배치 ON/OFF 검사를 반드시 메인 스레드에서 수행 (백그라운드 Tkinter 충돌 원천 차단)
+        if is_auto and ("use_auto_bong_assign" in v_dict) and not v_dict["use_auto_bong_assign"].get():
+            dprint(my_key, f"🛡️ [{source_label} 스킵] '자동배치' 체크가 꺼져 있어 배정('{new_dng}')을 무시합니다.")
+            return
+
+        new_dng = re.sub(r'^본던\s*', '본던 ', str(new_dng or "").strip())
         new_inv_grp = str(new_inv_grp or "선택안함").strip()
         if not new_dng:
             return
+
+        # ✅ 파티 이동식을 켜기 전에 현재 실제 활성 탭의 사냥터부터 먼저 판독!
+        was_party_on = bool(
+            (v_dict["use_party_hunt"].get() if "use_party_hunt" in v_dict else False) or
+            (v_dict["use_party_fixed"].get() if "use_party_fixed" in v_dict else False)
+        )
+        curr_dng = (v_dict["party_dungeon_name"].get() if was_party_on else v_dict["dungeon_name"].get()).strip()
+        curr_inv = v_dict["invite_group"].get().strip()
 
         # 파티 이동식 자동 활성화
         if "use_party_hunt" in v_dict and not v_dict["use_party_hunt"].get():
@@ -1590,17 +1626,18 @@ def apply_bong_assignment_to_self(my_key, new_dng, new_inv_grp, source_label="�
         if "use_party_fixed" in v_dict and v_dict["use_party_fixed"].get():
             v_dict["use_party_fixed"].set(False)
 
-        curr_dng = v_dict["party_dungeon_name"].get().strip()
-        curr_inv = v_dict["invite_group"].get().strip()
-
-        # 이미 동일한 사냥터/초대조로 설정되어 있거나 동일하게 예약된 상태면 중복 처리 스킵
-        if curr_dng == new_dng and curr_inv == new_inv_grp and st.get("override_dungeon_name") != "본던 5to6":
+        # 이미 양쪽 탭 사냥터와 초대조가 모두 동일하게 맞춰져 있으면 중복 처리 스킵
+        if (
+            curr_dng == new_dng and
+            v_dict["party_dungeon_name"].get().strip() == new_dng and
+            v_dict["dungeon_name"].get().strip() == new_dng and
+            curr_inv == new_inv_grp and
+            st.get("override_dungeon_name") != "본던 5to6"
+        ):
             if st.get("reserved_next_dng"):
                 st.pop("reserved_next_dng", None)
                 st.pop("reserved_next_inv_grp", None)
                 dprint(my_key, f"🔄 [{source_label}] 다시 현재 사냥터('{curr_dng}')로 배정되어 층간 이동 예약을 취소하고 현 위치를 유지합니다.")
-            return
-        if st.get("reserved_next_dng") == new_dng and st.get("reserved_next_inv_grp") == new_inv_grp:
             return
 
         raw_fsm = str(st.get("backup_target_fsm", st.get("target_fsm", "IDLE"))) if st.get("target_fsm") == "GHOST_MODE" else str(st.get("target_fsm", "IDLE"))
@@ -1670,7 +1707,20 @@ def apply_bong_assignment_to_self(my_key, new_dng, new_inv_grp, source_label="�
             st["dungeon_last_map_pos"] = None
             st["dungeon_global_path"] = []
             st["current_target_node"] = None
-            sync_gui_vars()
+            st["unvisited_nodes"] = []
+            st["last_known_tour_nodes"] = None
+            st["designated_base_node"] = None
+            st["is_out_of_zone"] = False
+            st["zone_check_time"] = 0.0
+            if curr_dng != new_dng and raw_fsm in ["PARTY_WAIT", "PARTY_ACTIVE_STANDBY", "PARTY_RETREAT_NAV", "SQUAD_WAIT"]:
+                st["is_active_standby"] = False
+                st["standby_reason"] = ""
+                st["retreat_reason"] = ""
+                st["req_party_buff"] = False
+                st["party_buff_status"] = "IDLE"
+                st["target_fsm"] = "IDLE"
+                st["backup_target_fsm"] = "IDLE"
+            sync_gui_vars(schedule_next=False)
             save_settings()
             dprint(my_key, f"🎯 [{source_label} 즉시적용] 사냥터: '{curr_dng}' ➔ '{new_dng}' | 초대조: '{curr_inv}' ➔ '{new_inv_grp}' 반영 완료!")
 
@@ -1716,12 +1766,14 @@ def apply_bong_assignment_to_self(my_key, new_dng, new_inv_grp, source_label="�
                 st["target_fsm"] = "IDLE"
                 st["backup_target_fsm"] = "IDLE"
 
-            sync_gui_vars()
+            sync_gui_vars(schedule_next=False)
             save_settings()
             dprint(my_key, f"🚀 [{source_label} 5➔6층 즉시진격] 목표 '{new_dng}'(초대조:{new_inv_grp}) 설정 & 5층 대기 해제 후 '본던 5to6' 계단 이동 가동!")
 
         # 3) 4↔5층, 6➔5층, 6↔4층 등 층간 이동 로직이 없는 경우 -> 현재 사냥 유지 후 다음 마을 정비 때 변경 예약!
         else:
+            if st.get("reserved_next_dng") == new_dng and st.get("reserved_next_inv_grp") == new_inv_grp:
+                return
             st["reserved_next_dng"] = new_dng
             st["reserved_next_inv_grp"] = new_inv_grp
             dprint(my_key, f"📌 [{source_label} 다음정비 예약] 현재 {real_curr_floor}층('{curr_dng}') 사냥 유지 ➔ 다음 마을 귀환/정비 시 '{new_dng}'(초대조:{new_inv_grp})로 자동 변경됩니다!")
@@ -1771,17 +1823,19 @@ def local_ipc_listener_thread(my_key):
                 if msg.get("msg_type") == "BONG_ASSIGN_APPLY":
                     b_sync_id = msg.get("sync_id", "")
                     if b_sync_id and b_sync_id != _LAST_APPLIED_BONG_SYNC_ID:
-                        _LAST_APPLIED_BONG_SYNC_ID = b_sync_id
                         assign_map = msg.get("assignments", {})
                         src_lbl = msg.get("source_label", "광역배치")
                         is_auto_sig = bool(msg.get("is_auto", False))
-                        if is_auto_sig and not gui_vars.get(my_key, {}).get("use_auto_bong_assign", tk.BooleanVar(value=False)).get():
-                            continue
-                        my_uid_str = f"{int(get_my_central_num()) if str(get_my_central_num()).isdigit() else get_my_central_num()}-{my_key}"
-                        my_short_uid = f"{get_my_central_num()}-{my_key.replace('미니', '')}"
+                        my_c_raw = str(get_my_central_num()).strip()
+                        my_uid_str = f"{int(my_c_raw) if my_c_raw.isdigit() else my_c_raw}-{my_key}"
+                        my_short_uid = f"{my_c_raw}-{my_key.replace('미니', '')}"
                         my_assign = assign_map.get(my_uid_str) or assign_map.get(my_short_uid)
+                        _LAST_APPLIED_BONG_SYNC_ID = b_sync_id
                         if my_assign:
-                            _GUI_TASK_QUEUE.put((apply_bong_assignment_to_self, (my_key, my_assign.get("dng"), my_assign.get("inv_grp"), src_lbl)))
+                            dprint(my_key, f"📥 [{src_lbl} 신호 수신] 목표:'{my_assign.get('dng')}' (초대조:{my_assign.get('inv_grp')}) ➔ GUI 반영 예약")
+                            _GUI_TASK_QUEUE.put((apply_bong_assignment_to_self, (my_key, my_assign.get("dng"), my_assign.get("inv_grp"), src_lbl, is_auto_sig)))
+                        else:
+                            dprint(my_key, f"⚠️ [{src_lbl} 신호 수신-미매칭] 내 ID('{my_uid_str}')가 배정표에 없어 패스합니다.")
                     continue
 
                 # 🔄 [0-1순위: 동일 중앙컴 내 땜빵 모드 바통터치 시 기존 미니창 자동 본케 복귀]
@@ -3653,6 +3707,105 @@ img_haste_x, img_haste_x_mask = _load_img_and_mask("qq/haste_x.png")
 _pj_path = "qq/pratyjangx.png" if os.path.exists("qq/pratyjangx.png") else ("pratyjangx.png" if os.path.exists("pratyjangx.png") else "qq/partyjangx.png")
 img_pratyjang_x, img_pratyjang_x_mask = _load_img_and_mask(_pj_path)
 img_nopotion, img_nopotion_mask = _load_img_and_mask("qq/nopotion.png")
+img_nopotion2, img_nopotion2_mask = _load_img_and_mask("qq/nopotion2.png")
+
+F8_NUM_X1, F8_NUM_X2 = 755, 794
+F8_NUM_Y1, F8_NUM_Y2 = 504, 523
+F8_ICON_X1, F8_ICON_X2 = 755, 792
+F8_ICON_Y1, F8_ICON_Y2 = 487, 522
+
+def check_nopotion_detected(img_bgr, th=0.80):
+    """F5 슬롯 영역에서 qq/nopotion.png 또는 qq/nopotion2.png 중 하나라도 감지되면 True 반환 (실행 중 파일 추가 자동 반영)"""
+    if img_bgr is None:
+        return False
+    try:
+        h, w = img_bgr.shape[:2]
+        f6_cx = globals().get("SLOT_F6_CX", 688)
+        f6_cy = globals().get("SLOT_F6_CY", 502)
+        s_size = globals().get("SLOT_SIZE", 40)
+        f5_cx, f5_cy = f6_cx - s_size, f6_cy
+
+        roi_x1 = max(0, int(f5_cx - s_size // 2 - 10))
+        roi_y1 = max(0, int(f5_cy - s_size // 2 - 10))
+        roi_x2 = min(w, int(f5_cx + s_size // 2 + 20))
+        roi_y2 = min(h, int(f5_cy + s_size // 2 + 14))
+        if roi_x2 <= roi_x1 or roi_y2 <= roi_y1:
+            return False
+
+        chk_roi = img_bgr[roi_y1:roi_y2, roi_x1:roi_x2]
+        for np_path in ("qq/nopotion.png", "qq/nopotion2.png"):
+            tmpl_data = _load_cached_ui_tmpl([np_path])
+            if tmpl_data is None:
+                continue
+            tmpl = tmpl_data["color"]
+            mask = tmpl_data["mask"]
+            if chk_roi.shape[0] < tmpl.shape[0] or chk_roi.shape[1] < tmpl.shape[1]:
+                continue
+            if mask is not None:
+                res = cv2.matchTemplate(chk_roi, tmpl, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask] * 3))
+            else:
+                res = cv2.matchTemplate(chk_roi, tmpl, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(res)
+            if not (np.isnan(max_val) or np.isinf(max_val)) and max_val >= th:
+                return True
+    except Exception:
+        pass
+    return False
+
+def capture_f8_escape_snapshot(img_bgr):
+    """절대귀환(F8) 시전 직전 F8 주문서 숫자 영역 및 아이콘 영역 스냅샷 캡처"""
+    if img_bgr is None:
+        return None, None
+    try:
+        h, w = img_bgr.shape[:2]
+        if w < F8_NUM_X2 or h < F8_NUM_Y2:
+            return None, None
+        num_gray = cv2.cvtColor(img_bgr[F8_NUM_Y1:F8_NUM_Y2, F8_NUM_X1:F8_NUM_X2], cv2.COLOR_BGR2GRAY).copy()
+        icon_gray = cv2.cvtColor(img_bgr[F8_ICON_Y1:F8_ICON_Y2, F8_ICON_X1:F8_ICON_X2], cv2.COLOR_BGR2GRAY).copy()
+        return num_gray, icon_gray
+    except Exception:
+        return None, None
+
+def is_f8_scroll_consumed(img_bgr, snap_num, snap_icon):
+    """F8 주문서 잔량 숫자의 초미세 픽셀 변화(1~2픽셀 획 변화 포함) 및 마지막 1장 소모 시 아이콘 증발 판독"""
+    if img_bgr is None or snap_num is None:
+        return False, 0, 0
+    try:
+        h, w = img_bgr.shape[:2]
+        if w < F8_NUM_X2 or h < F8_NUM_Y2:
+            return False, 0, 0
+
+        curr_num = cv2.cvtColor(img_bgr[F8_NUM_Y1:F8_NUM_Y2, F8_NUM_X1:F8_NUM_X2], cv2.COLOR_BGR2GRAY)
+        if curr_num.shape != snap_num.shape:
+            return False, 0, 0
+
+        diff_num = cv2.absdiff(curr_num, snap_num)
+        _, curr_b = cv2.threshold(curr_num, 145, 255, cv2.THRESH_BINARY)
+        _, prev_b = cv2.threshold(snap_num, 145, 255, cv2.THRESH_BINARY)
+        bright_mask = cv2.bitwise_or(curr_b, prev_b)
+
+        masked_diff = cv2.bitwise_and(diff_num, bright_mask)
+        _, diff_th = cv2.threshold(masked_diff, 16, 255, cv2.THRESH_BINARY)
+        changed_px = int(cv2.countNonZero(diff_th))
+        max_diff = int(np.max(masked_diff)) if masked_diff.size > 0 else 0
+
+        # 1) 잔량 숫자 미세 변화 (9->8 등 1~2픽셀 획 변화도 즉시 포착)
+        if changed_px >= 2 or (changed_px >= 1 and max_diff >= 26):
+            return True, changed_px, max_diff
+
+        # 2) 마지막 1장(숫자 미표기) 소모로 주문서 아이콘 자체가 빈 슬롯으로 사라진 경우
+        if snap_icon is not None:
+            curr_icon = cv2.cvtColor(img_bgr[F8_ICON_Y1:F8_ICON_Y2, F8_ICON_X1:F8_ICON_X2], cv2.COLOR_BGR2GRAY)
+            if curr_icon.shape == snap_icon.shape:
+                diff_ic = cv2.absdiff(curr_icon, snap_icon)
+                _, ic_th = cv2.threshold(diff_ic, 28, 255, cv2.THRESH_BINARY)
+                ic_chg = int(cv2.countNonZero(ic_th))
+                if ic_chg >= 25 and float(np.mean(curr_icon)) < float(np.mean(snap_icon)) - 10.0:
+                    return True, ic_chg, int(np.max(diff_ic))
+
+        return False, changed_px, max_diff
+    except Exception:
+        return False, 0, 0
 
 cursor_color, cursor_mask = _load_img_and_mask("qq/cursor_custom.png", require_alpha=True)
 cursor2_color, cursor2_mask = _load_img_and_mask("qq/cursor2.png", require_alpha=True)
@@ -5170,7 +5323,7 @@ def trigger_pvp_ctrl_double_tap_async(key, want_pvp_on=False):
             return True
         if cur_fsm.startswith(("CERTI_", "DEATH", "INV_CLEAN", "HK_HEAL_", "TOWN_MAINT", "WEAPON_REPAIR", "CHAT_RECOVER", "BUFFING", "F1_INIT")):
             return True
-        if cur_fsm in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"]:
+        if cur_fsm in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "ABS_ESCAPE_VERIFY", "ABS_ESCAPE_F1_PREP"]:
             return True
         return False
 
@@ -5320,7 +5473,7 @@ def pico_worker_thread(key):
             # 🛡️ [바탕화면 엣지(F1) 실행 원천 차단] 인증 모드(CERTI_) 중에는 인게임 F1~F12 단축키 및 사냥/버프 매크로 실행을 하드웨어 직전에서 폐기!
             curr_fsm_hw = str(ai_states.get(key, {}).get("target_fsm", ""))
             if curr_fsm_hw.startswith("CERTI_"):
-                if action in ["ESCAPE", "TELEPORT", "TELEPORT_SPAM", "HEAL", "POTION", "BODY_TO_MIND", "ANTIDOTE", "BUFF_COMBO", "SWEEP_START", "TRASH_DELETE", "PARTY_INVITE_CMD", "PARTY_ACCEPT_CMD"]:
+                if action in ["ESCAPE", "ESCAPE_SPAM", "TELEPORT", "TELEPORT_SPAM", "HEAL", "POTION", "BODY_TO_MIND", "ANTIDOTE", "BUFF_COMBO", "SWEEP_START", "TRASH_DELETE", "PARTY_INVITE_CMD", "PARTY_ACCEPT_CMD"]:
                     dprint(key, f"🛡️ [인증모드 키 차단] 바탕화면 오작동 방지를 위해 잔여 인게임 명령({action})을 폐기합니다.")
                     if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
                     continue
@@ -5407,6 +5560,13 @@ def pico_worker_thread(key):
                 for _ in range(2):
                     k_tap(KEY_ESCAPE)
                     h_sleep(0.25, 0.35)
+
+            elif action == "ESCAPE_SPAM":
+                if cmd.get("press_f1", False):
+                    k_tap(KEY_F1)
+                    h_sleep(0.08, 0.12)
+                k_tap(KEY_ESCAPE)
+                h_sleep(0.05, 0.09)
 
             elif action == "TELEPORT":
                 k_tap(KEY_F1)
@@ -9769,7 +9929,7 @@ def ai_commander_worker(target_pc):
                 fsm_inv_chk.startswith("DEATH") or
                 fsm_inv_chk.startswith("BUFFING") or
                 fsm_inv_chk.startswith("F1_INIT") or
-                fsm_inv_chk in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY", "PARTY_BUFF_L_DONE"] or
+                fsm_inv_chk in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "ABS_ESCAPE_VERIFY", "ABS_ESCAPE_F1_PREP", "PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY", "PARTY_BUFF_L_DONE"] or
                 state.get("req_party_buff", False) or
                 state.get("party_buff_status") in ["MOVING", "ARRIVED"] or
                 state.get("town_thread_running", False)
@@ -12383,9 +12543,9 @@ def ai_commander_worker(target_pc):
 
                 is_safe_in_town = (fsm_for_abs.startswith("TOWN_MAINT") and fsm_for_abs != "TOWN_MAINT_NORMAL_RETURN") or                                  fsm_for_abs.startswith("WEAPON_REPAIR_") or                                  (fsm_for_abs.startswith("BUFFING") and buff_ret_abs.startswith("TOWN_MAINT")) or                                  (fsm_for_abs.startswith("HK_HEAL_") and hk_ret_abs.startswith("TOWN_MAINT"))
 
-                if abs_return_use and hp > 0.0 and hp <= abs_return_pct and not is_safe_in_town and fsm_for_abs != "SHUTDOWN_WAIT":
+                if abs_return_use and hp > 0.0 and hp <= abs_return_pct and not is_safe_in_town and fsm_for_abs not in ["SHUTDOWN_WAIT", "ABS_ESCAPE_VERIFY", "ABS_ESCAPE_F1_PREP"]:
                     if curr_time > state.get("abs_return_cd", 0):
-                        dprint(key, f"🚨 [절대 귀환 발동] HP {hp:.1f}%! 절대귀환 기준치({abs_return_pct}%) 이하 감지. 무조건 F8 비상 탈출!")
+                        dprint(key, f"🚨 [절대 귀환 발동] HP {hp:.1f}%! 절대귀환 기준치({abs_return_pct}%) 이하 감지. F8 주문서 소모 검증 모드로 즉시 탈출 시도!")
 
                         if fsm_for_abs.startswith("BUFFING"):
                             b_info_abs = state.get("current_buff")
@@ -12416,7 +12576,10 @@ def ai_commander_worker(target_pc):
                                 else:
                                     state[f"buff_{b_info_abs['name']}_time"] = curr_time + 15.0
                                     save_buff_times(ai_states)
+                            state["buff_aborted"] = True
+                            state["is_combat_emergency_buff"] = False
 
+                        state["abort_macro"] = True
                         with pico_queues[key].mutex: pico_queues[key].queue.clear()
                         clear_movements_only(pico_queues[key])
 
@@ -12425,24 +12588,95 @@ def ai_commander_worker(target_pc):
                             state["sweep_active"] = False
 
                         if state.get("body_held", False):
-                            if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0)
+                            if picos.get(key) and pico_locks.get(key): send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
                             state["body_held"] = False
 
-                        pico_queues[key].put({"action": "ESCAPE"})
-                        pc_num_str = current_pc_num if current_pc_num else "1"
-                        if current_pc_num: threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 절대 귀환",), daemon=True).start()
+                        is_f1_ready_abs = False
+                        if not fsm_for_abs.startswith("BUFFING") and h >= 130 and w >= 220 and not (cur_x >= 735 and cur_y >= 475):
+                            q_roi_abs = img_bgr[h - 130:h, w - 220:w]
+                            for _anc in ("heal.png", "body.png", "home.png", "home2.png", "duru.png", "tel.png"):
+                                _td = loaded_models.get(f"qq/{_anc}")
+                                if _td and _td.get("color") is not None:
+                                    try:
+                                        if _td["color"].shape[0] <= q_roi_abs.shape[0] and _td["color"].shape[1] <= q_roi_abs.shape[1]:
+                                            _r = cv2.matchTemplate(q_roi_abs, _td["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([_td["mask"]] * 3)) if _td["mask"] is not None else cv2.matchTemplate(q_roi_abs, _td["color"], cv2.TM_CCOEFF_NORMED)
+                                            if cv2.minMaxLoc(_r)[1] >= 0.70:
+                                                is_f1_ready_abs = True
+                                                break
+                                    except Exception:
+                                        pass
 
                         state["is_pulling"] = False; state["is_attacking"] = False; state["arrow_is_firing"] = False; state["has_fired_arrow"] = False
-
-                        state["dungeon_map_pos"] = None
-                        state["dungeon_last_map_pos"] = None
-                        state["dungeon_global_path"] = []
-
-                        state["target_fsm"] = "SHUTDOWN_WAIT"
-                        state["shutdown_timer"] = curr_time + 2.0
-                        state["abs_return_cd"] = curr_time + 5.0
+                        state["abs_esc_start_time"] = curr_time
+                        state["abs_esc_retry_cnt"] = 0
+                        state["abs_esc_diff_streak"] = 0
                         state["perc_danger"] = 0.0
+
+                        pc_num_str = current_pc_num if current_pc_num else "1"
+                        if current_pc_num and curr_time > state.get("abs_tts_cd", 0):
+                            state["abs_tts_cd"] = curr_time + 6.0
+                            threading.Thread(target=play_tts_alert, args=(f"{pc_num_str}번 절대 귀환",), daemon=True).start()
+
+                        if is_f1_ready_abs:
+                            snap_num, snap_icon = capture_f8_escape_snapshot(img_bgr)
+                            state["abs_f8_snap_num"] = snap_num
+                            state["abs_f8_snap_icon"] = snap_icon
+                            pico_queues[key].put({"action": "ESCAPE_SPAM", "press_f1": False})
+                            state["abs_esc_next_check"] = curr_time + g_time(0.22, 0.28, key)
+                            state["target_fsm"] = "ABS_ESCAPE_VERIFY"
+                        else:
+                            if cur_x >= 735 and cur_y >= 475:
+                                pico_queues[key].put({"action": "HOVER", "dx": -150, "dy": -150})
+                                state["cursor_pos"] = [max(400, cur_x - 150), max(245, cur_y - 150)]
+                            pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.06, 0.10)})
+                            state["abs_f1_prep_until"] = curr_time + g_time(0.22, 0.28, key)
+                            state["target_fsm"] = "ABS_ESCAPE_F1_PREP"
                         continue
+
+                if state.get("target_fsm") == "ABS_ESCAPE_F1_PREP":
+                    if not state.get("hw_busy", False) and pico_queues[key].empty() and curr_time >= state.get("abs_f1_prep_until", 0):
+                        snap_num, snap_icon = capture_f8_escape_snapshot(img_bgr)
+                        state["abs_f8_snap_num"] = snap_num
+                        state["abs_f8_snap_icon"] = snap_icon
+                        state["abs_esc_diff_streak"] = 0
+                        pico_queues[key].put({"action": "ESCAPE_SPAM", "press_f1": False})
+                        state["abs_esc_next_check"] = curr_time + g_time(0.22, 0.28, key)
+                        state["target_fsm"] = "ABS_ESCAPE_VERIFY"
+                    continue
+
+                if state.get("target_fsm") == "ABS_ESCAPE_VERIFY":
+                    if not state.get("hw_busy", False) and pico_queues[key].empty() and curr_time >= state.get("abs_esc_next_check", 0):
+                        consumed, chg_px, max_d = is_f8_scroll_consumed(
+                            img_bgr,
+                            state.get("abs_f8_snap_num"),
+                            state.get("abs_f8_snap_icon")
+                        )
+                        if consumed:
+                            state["abs_esc_diff_streak"] = state.get("abs_esc_diff_streak", 0) + 1
+                            if state["abs_esc_diff_streak"] >= 2:
+                                dprint(key, f"✅ [절대귀환 검증 성공] F8 주문서 잔량 픽셀 변화 확정(변화픽셀:{chg_px}개, 최대밝기차:{max_d})! 마을 정비로 진입합니다.")
+                                state["dungeon_map_pos"] = None
+                                state["dungeon_last_map_pos"] = None
+                                state["dungeon_global_path"] = []
+                                state["target_fsm"] = "SHUTDOWN_WAIT"
+                                state["shutdown_timer"] = curr_time + 1.8
+                                state["abs_return_cd"] = curr_time + 5.0
+                                state["perc_danger"] = 0.0
+                            else:
+                                state["abs_esc_next_check"] = curr_time + 0.04
+                        else:
+                            state["abs_esc_diff_streak"] = 0
+                            retry_cnt = state.get("abs_esc_retry_cnt", 0) + 1
+                            state["abs_esc_retry_cnt"] = retry_cnt
+                            if curr_time - state.get("abs_esc_start_time", curr_time) > 6.5 or retry_cnt > 18:
+                                dprint(key, "⚠️ [절대귀환 재시전 한도 도달] 6.5초간 F8 주문서 잔량 변화 없음(주문서 고갈/행동불능 의심)! 1초간 타 생존기 허용 후 재시도합니다.")
+                                state["target_fsm"] = "IDLE"
+                                state["abs_return_cd"] = curr_time + 1.0
+                            else:
+                                dprint(key, f"🔄 [절대귀환 미발동 ➔ 재시전 ({retry_cnt}회차)] F8 주문서 잔량 변화 없음(px:{chg_px}, diff:{max_d})! 즉시 F8을 다시 누릅니다!")
+                                pico_queues[key].put({"action": "ESCAPE_SPAM", "press_f1": (retry_cnt % 4 == 0)})
+                                state["abs_esc_next_check"] = curr_time + g_time(0.26, 0.34, key)
+                    continue
 
                 if state.get("target_fsm") == "SHUTDOWN_WAIT":
                     if curr_time > state.get("shutdown_timer", 0):
@@ -17770,6 +18004,9 @@ def ai_commander_worker(target_pc):
                 cv2.rectangle(debug_img, (ARROW_ROI_X1, ARROW_ROI_Y1), (ARROW_ROI_X2, ARROW_ROI_Y2), (255, 255, 255), 1)
                 cv2.rectangle(debug_img, (ARROW_ICON_X1, ARROW_ICON_Y1), (ARROW_ICON_X2, ARROW_ICON_Y2), (0, 0, 255), 1)
                 cv2.putText(debug_img, "ICON", (ARROW_ICON_X1, max(0, ARROW_ICON_Y1 - 2)), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 255), 1)
+                cv2.rectangle(debug_img, (F8_NUM_X1, F8_NUM_Y1), (F8_NUM_X2, F8_NUM_Y2), (255, 255, 0), 1)
+                if state.get("cached_nopotion", False):
+                    cv2.putText(debug_img, "NOPOTION!", (626, 478), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 2)
                 cv2.rectangle(debug_img, (EXP_ROI_X1, EXP_ROI_Y1), (EXP_ROI_X2, EXP_ROI_Y2), (0, 165, 255), 1)
                 cv2.rectangle(debug_img, (DRAGON_ROI_X1, DRAGON_ROI_Y1), (DRAGON_ROI_X2, DRAGON_ROI_Y2), (255, 0, 0), 1)
                 cv2.rectangle(debug_img, (CHATUP_ROI_X1, CHATUP_ROI_Y1), (CHATUP_ROI_X2, CHATUP_ROI_Y2), (0, 0, 255), 2)
@@ -19648,33 +19885,12 @@ def ai_commander_worker(target_pc):
 
                         if curr_time > state.get("next_nopotion_check", 0):
                             state["next_nopotion_check"] = curr_time + 1.0
-                            is_potion_empty = False
-
-                            if globals().get("img_nopotion") is not None and img_bgr is not None:
-                                try:
-                                    f6_cx = globals().get("SLOT_F6_CX", 688)
-                                    f6_cy = globals().get("SLOT_F6_CY", 502)
-                                    s_size = globals().get("SLOT_SIZE", 40)
-                                    f5_cx, f5_cy = f6_cx - s_size, f6_cy # F5 슬롯 타겟팅
-
-                                    pad = 10
-                                    roi_x1, roi_y1 = max(0, int(f5_cx - s_size/2 - pad)), max(0, int(f5_cy - s_size/2 - pad))
-                                    roi_x2, roi_y2 = min(w, int(f5_cx + s_size/2 + pad)), min(h, int(f5_cy + s_size/2 + pad))
-
-                                    if roi_x2 > roi_x1 and roi_y2 > roi_y1:
-                                        chk_roi = img_bgr[roi_y1:roi_y2, roi_x1:roi_x2]
-                                        tmpl = globals().get("img_nopotion")
-                                        mask = globals().get("img_nopotion_mask")
-                                        if mask is not None: res = cv2.matchTemplate(chk_roi, tmpl, cv2.TM_CCORR_NORMED, mask=cv2.merge([mask]*3))
-                                        else: res = cv2.matchTemplate(chk_roi, tmpl, cv2.TM_CCOEFF_NORMED)
-                                        if cv2.minMaxLoc(res)[1] >= 0.80:
-                                            is_potion_empty = True
-                                except: pass
+                            is_potion_empty = check_nopotion_detected(img_bgr, th=0.80)
 
                             was_nopot = state.get("cached_nopotion", False)
                             state["cached_nopotion"] = is_potion_empty
                             if is_potion_empty and not was_nopot:
-                                dprint(key, "🚨 [노포션 상태 진입] 물약(nopotion.png) 고갈 감지! 빈 F5 연타를 차단하고 [힐 MP 5% 시전 + 절대귀환 HP까지 바디 허용] 모드로 전환합니다!")
+                                dprint(key, "🚨 [노포션 상태 진입] 물약(nopotion/nopotion2) 고갈 감지! 빈 F5 연타를 차단하고 [힐 MP 5% 시전 + 절대귀환 HP까지 바디 허용] 모드로 전환합니다!")
                             elif not is_potion_empty and was_nopot:
                                 dprint(key, "✅ [노포션 해제] 물약 슬롯 정상 복구 확인! 기존 GUI 설정 기준으로 복귀합니다.")
                         else:
@@ -30230,7 +30446,7 @@ def win32_event_filter(msg, data):
 keyboard.Listener(on_press=on_press, on_release=on_release, win32_event_filter=win32_event_filter).start()
 mouse.Listener(on_scroll=on_scroll, on_click=on_click).start()
 
-def sync_gui_vars():
+def sync_gui_vars(schedule_next=True):
     import re
     def sf(v_dict, k_name, default_value):
         try:
@@ -30404,7 +30620,8 @@ def sync_gui_vars():
         _NEED_SAVE_SETTINGS = False
         save_settings()
 
-    root.after(500, sync_gui_vars)
+    if schedule_next:
+        root.after(500, sync_gui_vars)
 
 def _poll_gui_task_queue():
     try:
@@ -31972,36 +32189,48 @@ for i, pc in enumerate(MINI_PCS):
             my_a = assign_map[my_uid_str]
             apply_bong_assignment_to_self(TARGET_PC_KEY, my_a["dng"], my_a["inv_grp"], src_label)
 
-        payload = {
-            "msg_type": "BONG_ASSIGN_APPLY",
-            "sync_id": sync_id,
-            "is_auto": is_auto,
-            "source_label": src_label,
-            "assignments": assign_map
-        }
-        raw_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-
         def _send_all():
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
-                my_c_num = str(get_my_central_num())
-                for _ in range(2):
-                    for k_p, port_p in LOCAL_IPC_PORTS.items():
-                        if k_p != TARGET_PC_KEY:
-                            try: sock.sendto(raw_bytes, ("127.0.0.1", port_p))
-                            except Exception: pass
-                    for c_num, r_ip in CENTRAL_TAILSCALE_MAP.items():
-                        if str(c_num) != my_c_num and c_num != "VPN" and r_ip:
-                            for port_p in LOCAL_IPC_PORTS.values():
-                                try: sock.sendto(raw_bytes, (r_ip, port_p))
-                                except Exception: pass
-                    time.sleep(0.05)
+                my_c_num = str(get_my_central_num()).strip()
+                # 캐릭터별 개별 경량 패킷(~170바이트)으로 분할 직송 ➔ Tailscale MTU(1280B) 초과/단편화 드롭 100% 차단
+                target_packets = []
+                for uid_k, a_info in assign_map.items():
+                    if "-" not in str(uid_k):
+                        continue
+                    c_raw, m_raw = str(uid_k).split("-", 1)
+                    c_part = str(int(c_raw.strip())) if c_raw.strip().isdigit() else c_raw.strip()
+                    m_key = m_raw.strip() if m_raw.strip().startswith("미니") else f"미니{m_raw.strip()}"
+                    if c_part == my_c_num and m_key == TARGET_PC_KEY:
+                        continue
+                    t_port = LOCAL_IPC_PORTS.get(m_key)
+                    if not t_port:
+                        continue
+                    t_ip = "127.0.0.1" if c_part == my_c_num else CENTRAL_TAILSCALE_MAP.get(c_part)
+                    if not t_ip:
+                        continue
+                    single_payload = {
+                        "msg_type": "BONG_ASSIGN_APPLY",
+                        "sync_id": sync_id,
+                        "is_auto": is_auto,
+                        "source_label": src_label,
+                        "assignments": {uid_k: a_info}
+                    }
+                    target_packets.append((t_ip, t_port, json.dumps(single_payload, ensure_ascii=False).encode("utf-8")))
+
+                for _ in range(3):
+                    for t_ip, t_port, pkt_bytes in target_packets:
+                        try:
+                            sock.sendto(pkt_bytes, (t_ip, t_port))
+                        except Exception:
+                            pass
+                    time.sleep(0.08)
             finally:
                 try: sock.close()
                 except Exception: pass
 
         threading.Thread(target=_send_all, daemon=True).start()
-        dprint(TARGET_PC_KEY, f"🚀 [{src_label} 완료] 총 {len(assign_map)}개 캐릭터 사냥터/초대조(사냥터 기준 자동매칭) 신호를 전체 중앙컴에 송출했습니다!")
+        dprint(TARGET_PC_KEY, f"🚀 [{src_label} 완료] 총 {len(assign_map)}개 캐릭터에 개별 경량 패킷(3회 직송)으로 사냥터/초대조 신호를 송출했습니다!")
 
     def broadcast_auto_bong_toggle():
         """어느 한 창에서 '실시간 자동배치' 체크박스를 클릭하면 1~13번 전체 창에 체크 상태를 동기화합니다."""
