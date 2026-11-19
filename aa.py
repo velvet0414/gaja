@@ -1384,27 +1384,51 @@ def apply_received_config_sync(my_key, msg):
         target_filter = str(msg.get("target_dng_filter", "모든사냥터")).strip()
         mode_label = "🔄땜빵" if sender_is_sub else "👤본케"
 
+        def _sync_inactive_sub_slot_files():
+            """미니1 대표로 현재 이 중앙컴에서 꺼져 있는 땜빵 슬롯(1~4) 파일들만 충돌 없이 백그라운드 동기화합니다."""
+            if my_key != "미니1":
+                return
+            now_chk = time.time()
+            my_c_str_chk = str(get_my_central_num()).strip()
+            active_local_slots = set()
+            if int(globals().get("SUB_CHAR_SLOT", 0) or 0) > 0:
+                active_local_slots.add(int(globals().get("SUB_CHAR_SLOT", 0)))
+            with party_lock:
+                for p_info in list(global_invite_states.values()):
+                    if str(p_info.get("central_num", "")).strip() == my_c_str_chk and (now_chk - p_info.get("recv_time", 0.0) <= 5.0):
+                        s_n = int(p_info.get("sub_char_slot", 0) or 0)
+                        if s_n > 0:
+                            active_local_slots.add(s_n)
+
+            for s_idx in range(1, 5):
+                if s_idx in active_local_slots:
+                    continue
+                sf_path = get_sub_settings_file(s_idx)
+                if not os.path.exists(sf_path):
+                    continue
+                sub_raw = _read_json_safe(sf_path)
+                sub_pc = sub_raw.get("SHARED_SUB", {})
+                if sub_pc and bool(sub_pc.get("use_config_sync", True)):
+                    is_p_sub = bool(sub_pc.get("use_party_hunt", False) or sub_pc.get("use_party_fixed", False))
+                    sub_dng = str(sub_pc.get("party_dungeon_name" if is_p_sub else "dungeon_name", "")).strip()
+                    if check_sync_dng_filter(target_filter, sub_dng):
+                        for k_name, val in settings_data.items():
+                            if k_name not in _HW_FIXED_KEYS:
+                                sub_pc[k_name] = val
+                        sub_raw["SHARED_SUB"] = sub_pc
+                        with settings_io_lock:
+                            with open(sf_path, "w", encoding="utf-8") as f:
+                                json.dump(sub_raw, f, ensure_ascii=False, indent=4)
+                        dprint(my_key, f"📡 [땜빵{s_idx} 백그라운드 동기화] 비활성 슬롯 '{sf_path}'에 [{group_name}] 설정을 저장했습니다!")
+
+        # 땜빵 동기화가 왔을 때 미니1이 현재 켜진 창 외의 나머지 비활성 땜빵 슬롯 파일들도 함께 갱신
+        if sender_is_sub and my_key == "미니1":
+            _sync_inactive_sub_slot_files()
+
         # 🔀 [모드 불일치 시 백그라운드 분리 저장] 현재 켜진 화면(본케/땜빵)은 절대 건드리지 않고, 뒤에서 해당 모드 파일만 갱신!
         if sender_is_sub != my_is_sub:
-            if sender_is_sub:
-                # 1) 상대방이 [땜빵] 동기화를 쐈는데 내 창이 [본케] 모드인 경우 -> 미니1 대표로 settings_땜빵.json만 백그라운드 갱신
-                if my_key == "미니1" and os.path.exists(SUB_SETTINGS_SAVE_FILE):
-                    sub_raw = _read_json_safe(SUB_SETTINGS_SAVE_FILE)
-                    sub_pc = sub_raw.get("SHARED_SUB", {})
-                    if sub_pc and bool(sub_pc.get("use_config_sync", True)):
-                        is_p_sub = bool(sub_pc.get("use_party_hunt", False) or sub_pc.get("use_party_fixed", False))
-                        sub_dng = str(sub_pc.get("party_dungeon_name" if is_p_sub else "dungeon_name", "")).strip()
-                        if check_sync_dng_filter(target_filter, sub_dng):
-                            for k_name, val in settings_data.items():
-                                if k_name not in _HW_FIXED_KEYS:
-                                    sub_pc[k_name] = val
-                            sub_raw["SHARED_SUB"] = sub_pc
-                            with settings_io_lock:
-                                with open(SUB_SETTINGS_SAVE_FILE, "w", encoding="utf-8") as f:
-                                    json.dump(sub_raw, f, ensure_ascii=False, indent=4)
-                            dprint(my_key, f"📡 [땜빵 백그라운드 동기화] 현재 본케 화면은 유지하고 '{SUB_SETTINGS_SAVE_FILE}'에 [{group_name}] 설정을 저장했습니다!")
-            else:
-                # 2) 상대방이 [본케] 동기화를 쐈는데 내 창이 [땜빵] 모드인 경우 -> 내 본케 파일(settings_미니X.json)만 백그라운드 갱신
+            if not sender_is_sub:
+                # 상대방이 [본케] 동기화를 쐈는데 내 창이 [땜빵] 모드인 경우 -> 내 본케 파일(settings_미니X.json)만 백그라운드 갱신
                 base_raw = _read_json_safe(SETTINGS_SAVE_FILE)
                 main_pc = base_raw.get(my_key, {})
                 if main_pc and bool(main_pc.get("use_config_sync", True)):
@@ -1571,6 +1595,39 @@ def broadcast_config_sync(sender_key, group_name, btn_widget=None):
         finally:
             try: sock.close()
             except Exception: pass
+
+    # 발신자가 땜빵 모드일 때, 본인 중앙컴에 꺼져 있는 나머지 땜빵 슬롯(1~4) 파일도 누락 없이 함께 동기화
+    if curr_sub_mode:
+        now_loc_chk = time.time()
+        active_loc_slots = set()
+        if int(globals().get("SUB_CHAR_SLOT", 0) or 0) > 0:
+            active_loc_slots.add(int(globals().get("SUB_CHAR_SLOT", 0)))
+        with party_lock:
+            for p_info in list(global_invite_states.values()):
+                if str(p_info.get("central_num", "")).strip() == my_c_num and (now_loc_chk - p_info.get("recv_time", 0.0) <= 5.0):
+                    s_n = int(p_info.get("sub_char_slot", 0) or 0)
+                    if s_n > 0:
+                        active_loc_slots.add(s_n)
+        for s_idx in range(1, 5):
+            if s_idx in active_loc_slots:
+                continue
+            sf_path = get_sub_settings_file(s_idx)
+            if not os.path.exists(sf_path):
+                continue
+            sub_raw = _read_json_safe(sf_path)
+            sub_pc = sub_raw.get("SHARED_SUB", {})
+            if sub_pc and bool(sub_pc.get("use_config_sync", True)):
+                is_p_sub = bool(sub_pc.get("use_party_hunt", False) or sub_pc.get("use_party_fixed", False))
+                sub_dng = str(sub_pc.get("party_dungeon_name" if is_p_sub else "dungeon_name", "")).strip()
+                if check_sync_dng_filter(target_filter, sub_dng):
+                    for k_name, val in extracted.items():
+                        if k_name not in _HW_FIXED_KEYS:
+                            sub_pc[k_name] = val
+                    sub_raw["SHARED_SUB"] = sub_pc
+                    with settings_io_lock:
+                        with open(sf_path, "w", encoding="utf-8") as f:
+                            json.dump(sub_raw, f, ensure_ascii=False, indent=4)
+                    dprint(sender_key, f"📡 [로컬 땜빵{s_idx} 동기화] 내 중앙컴 비활성 슬롯 '{sf_path}'에 [{group_name}] 설정을 함께 저장했습니다!")
 
     threading.Thread(target=_send_burst, daemon=True).start()
     dprint(sender_key, f"📡 [광역 동기화 발신] 1~13번 전체 중앙컴으로 [{group_name}] 설정 동기화 신호를 전송했습니다!")
@@ -1801,7 +1858,12 @@ def local_ipc_listener_thread(my_key):
                 if msg.get("msg_type") == "CONFIG_SYNC":
                     sync_id = msg.get("sync_id", "")
                     my_uid_chk = f"{get_my_central_num()}-{my_key}"
-                    if sync_id and sync_id != _LAST_APPLIED_SYNC_ID and msg.get("sender_uid") != my_uid_chk:
+                    recent_ids = getattr(local_ipc_listener_thread, "recent_sync_ids", [])
+                    if sync_id and sync_id not in recent_ids and msg.get("sender_uid") != my_uid_chk:
+                        recent_ids.append(sync_id)
+                        if len(recent_ids) > 20:
+                            recent_ids.pop(0)
+                        local_ipc_listener_thread.recent_sync_ids = recent_ids
                         _LAST_APPLIED_SYNC_ID = sync_id
                         _GUI_TASK_QUEUE.put((apply_received_config_sync, (my_key, msg)))
                     continue
@@ -1838,10 +1900,12 @@ def local_ipc_listener_thread(my_key):
                             dprint(my_key, f"⚠️ [{src_lbl} 신호 수신-미매칭] 내 ID('{my_uid_str}')가 배정표에 없어 패스합니다.")
                     continue
 
-                # 🔄 [0-1순위: 동일 중앙컴 내 땜빵 모드 바통터치 시 기존 미니창 자동 본케 복귀]
+                # 🔄 [0-1순위: 동일 중앙컴 내 '같은 땜빵 슬롯' 바통터치 시에만 기존 미니창 자동 본케 복귀]
                 if msg.get("msg_type") == "SUB_MODE_HANDOVER":
-                    if msg.get("sender_key") != my_key and globals().get("IS_SUB_CHAR_MODE", False):
-                        _GUI_TASK_QUEUE.put((switch_profile_mode, (False, True)))
+                    req_slot = int(msg.get("sub_slot", 1) or 0)
+                    my_slot_now = int(globals().get("SUB_CHAR_SLOT", 0) or 0)
+                    if msg.get("sender_key") != my_key and req_slot > 0 and my_slot_now == req_slot:
+                        _GUI_TASK_QUEUE.put((switch_profile_mode, (0, True)))
                     continue
 
                 sender_key = msg.get("pc_key")
@@ -1855,6 +1919,24 @@ def local_ipc_listener_thread(my_key):
 
                 now_t = time.time()
                 msg["recv_time"] = now_t
+
+                # 🛡️ [동일 중앙컴 내 같은 땜빵 슬롯 중복 실행 자동 방어]
+                if sender_c_num == my_c_num and sender_key != my_key:
+                    my_slot_chk = int(globals().get("SUB_CHAR_SLOT", 0) or 0)
+                    sender_slot_chk = int(msg.get("sub_char_slot", 0) or 0)
+                    if my_slot_chk > 0 and sender_slot_chk == my_slot_chk:
+                        my_slot_ts = float(globals().get("SUB_SLOT_CHANGED_AT", 0.0) or 0.0)
+                        sender_slot_ts = float(msg.get("sub_slot_ts", 0.0) or 0.0)
+                        try: my_m_i = int(str(my_key).replace("미니", ""))
+                        except: my_m_i = 99
+                        try: sender_m_i = int(msg.get("mini_num", 99))
+                        except: sender_m_i = 99
+                        # 최근에 전환한 창(타임스탬프 우선), 동시 부팅 시 앞 번호 미니창이 슬롯을 유지하고 나머지는 본케로 자동 양보
+                        if (now_t - my_slot_ts > 3.0) and ((sender_slot_ts, -sender_m_i) > (my_slot_ts, -my_m_i)):
+                            if now_t - getattr(local_ipc_listener_thread, "last_dup_yield_t", 0.0) > 2.0:
+                                local_ipc_listener_thread.last_dup_yield_t = now_t
+                                dprint(my_key, f"🛡️ [땜빵{my_slot_chk} 중복 감지] '{sender_key}'와 같은 슬롯이 겹쳐 본케 모드로 자동 전환합니다.")
+                                _GUI_TASK_QUEUE.put((switch_profile_mode, (0, True)))
 
                 # 1) 기존 전술 파티(A~D조): 동일 중앙컴 내부 미니컴끼리만 연동
                 sender_party = msg.get("party_group", "선택안함")
@@ -1995,6 +2077,8 @@ def local_ipc_broadcaster_thread(my_key):
                     "invite_group": my_inv_grp,
                     "char_name": current_settings.get(my_key, {}).get("char_name", ""),
                     "is_sub_mode": bool(globals().get("IS_SUB_CHAR_MODE", False)),
+                    "sub_char_slot": int(globals().get("SUB_CHAR_SLOT", 0)),
+                    "sub_slot_ts": float(globals().get("SUB_SLOT_CHANGED_AT", 0.0)),
                     "hunt_active": real_hunt_on,
                     "in_game": is_in_game,
                     "in_hunting_ground": is_in_hunting_ground,
@@ -3490,15 +3574,34 @@ SETTINGS_SAVE_FILE = f"settings_{TARGET_PC_KEY}.json"
 SUB_BUFF_SAVE_FILE = "buff_times_땜빵.json"
 SUB_SETTINGS_SAVE_FILE = "settings_땜빵.json"
 IS_SUB_CHAR_MODE = False
+SUB_CHAR_SLOT = 0          # 0: 본케, 1~4: 공용 땜빵 슬롯 1~4 (1번은 기존 settings_땜빵.json 호환)
+SUB_SLOT_CHANGED_AT = 0.0
 _HW_FIXED_KEYS = {"com_port", "pico_hwid", "certi_curr_central"}
+
+def get_sub_settings_file(slot=None):
+    s = SUB_CHAR_SLOT if slot is None else int(slot or 0)
+    return SUB_SETTINGS_SAVE_FILE if s <= 1 else f"settings_땜빵{s}.json"
+
+def get_sub_buff_file(slot=None):
+    s = SUB_CHAR_SLOT if slot is None else int(slot or 0)
+    return SUB_BUFF_SAVE_FILE if s <= 1 else f"buff_times_땜빵{s}.json"
 
 file_io_lock = threading.Lock()
 buff_io_lock = threading.Lock()
 settings_io_lock = threading.Lock()
 
-def load_buff_times(is_sub=None):
-    use_sub = IS_SUB_CHAR_MODE if is_sub is None else bool(is_sub)
-    target_f = SUB_BUFF_SAVE_FILE if use_sub else BUFF_SAVE_FILE
+def load_buff_times(is_sub=None, sub_slot=None):
+    if sub_slot is not None:
+        use_slot = max(0, min(4, int(sub_slot or 0)))
+        use_sub = (use_slot > 0)
+    elif is_sub is not None:
+        use_sub = bool(is_sub)
+        use_slot = (SUB_CHAR_SLOT if SUB_CHAR_SLOT > 0 else 1) if use_sub else 0
+    else:
+        use_slot = SUB_CHAR_SLOT
+        use_sub = (use_slot > 0)
+
+    target_f = get_sub_buff_file(use_slot) if use_sub else BUFF_SAVE_FILE
     if os.path.exists(target_f):
         try:
             with open(target_f, "r", encoding="utf-8") as f:
@@ -3525,13 +3628,13 @@ _STRIP_SETTING_KEYS = {
 def _save_buff_times_internal(states_dict):
     try:
         curr_t = time.time()
-        if IS_SUB_CHAR_MODE:
+        if IS_SUB_CHAR_MODE and SUB_CHAR_SLOT > 0:
             st = states_dict.get(TARGET_PC_KEY, {})
             sub_b = {bk: max(0.0, st.get(f"buff_{bk}_time", 0) - curr_t) for bk in _BUFF_SAVE_KEYS}
             sub_b["_haste_elapsed"] = (curr_t - st["last_haste_time"]) if st.get("last_haste_time", 0.0) > 0.0 else None
             sub_b["_real_buff_elapsed"] = (curr_t - st["real_buff_time"]) if st.get("real_buff_time", 0.0) > 0.0 else None
             data = {"SHARED_SUB": sub_b, TARGET_PC_KEY: sub_b}
-            with open(SUB_BUFF_SAVE_FILE, "w", encoding="utf-8") as f:
+            with open(get_sub_buff_file(SUB_CHAR_SLOT), "w", encoding="utf-8") as f:
                 json.dump(data, f)
         else:
             data = {
@@ -3553,11 +3656,17 @@ def _read_json_safe(fpath):
     return {}
 
 def load_settings():
-    global IS_SUB_CHAR_MODE
+    global IS_SUB_CHAR_MODE, SUB_CHAR_SLOT
     base_data = _read_json_safe(SETTINGS_SAVE_FILE)
-    IS_SUB_CHAR_MODE = bool(base_data.get("GLOBAL", {}).get("is_sub_char_mode", False))
+    g_sec = base_data.get("GLOBAL", {})
+    if "sub_char_slot" in g_sec:
+        SUB_CHAR_SLOT = max(0, min(4, int(g_sec.get("sub_char_slot", 0) or 0)))
+    else:
+        SUB_CHAR_SLOT = 1 if bool(g_sec.get("is_sub_char_mode", False)) else 0
+    IS_SUB_CHAR_MODE = (SUB_CHAR_SLOT > 0)
+
     if IS_SUB_CHAR_MODE:
-        sub_raw = _read_json_safe(SUB_SETTINGS_SAVE_FILE)
+        sub_raw = _read_json_safe(get_sub_settings_file(SUB_CHAR_SLOT))
         sub_pc_data = sub_raw.get("SHARED_SUB", sub_raw.get(TARGET_PC_KEY, {}))
         if sub_pc_data:
             merged_pc = dict(base_data.get(TARGET_PC_KEY, {}))
@@ -3607,20 +3716,22 @@ def _save_settings_internal():
             "gui_h": root.winfo_height() if root.winfo_height() > 100 else 700,
             "debug_mode": DEBUG_MODE,
             "frame_delay": GLOBAL_FRAME_DELAY,
-            "is_sub_char_mode": IS_SUB_CHAR_MODE
+            "is_sub_char_mode": IS_SUB_CHAR_MODE,
+            "sub_char_slot": SUB_CHAR_SLOT
         }
 
-        if IS_SUB_CHAR_MODE:
-            # 1) 땜빵 모드일 때: 하드웨어 고유키(COM포트/피코지문)를 제외한 모든 탭 설정을 중앙컴 공용 settings_땜빵.json에 저장!
+        if IS_SUB_CHAR_MODE and SUB_CHAR_SLOT > 0:
+            # 1) 땜빵 모드일 때: 하드웨어 고유키(COM포트/피코지문)를 제외한 모든 탭 설정을 해당 슬롯 공용 파일에 저장!
+            target_sub_f = get_sub_settings_file(SUB_CHAR_SLOT)
             sub_char_only = {
                 k_name: k_val for k_name, k_val in curr_pc_dict.get(TARGET_PC_KEY, {}).items()
                 if k_name not in _HW_FIXED_KEYS
             }
             sub_save_payload = {"SHARED_SUB": sub_char_only}
-            with open(SUB_SETTINGS_SAVE_FILE, "w", encoding="utf-8") as f:
+            with open(target_sub_f, "w", encoding="utf-8") as f:
                 json.dump(sub_save_payload, f, ensure_ascii=False, indent=4)
 
-            # 2) 본케 파일(settings_미니X.json)에는 본케 캐릭터 설정은 그대로 보존하고, 하드웨어 포트와 GLOBAL(창 위치/현재 모드)만 갱신!
+            # 2) 본케 파일(settings_미니X.json)에는 본케 캐릭터 설정은 그대로 보존하고, 하드웨어 포트와 GLOBAL(창 위치/현재 슬롯)만 갱신!
             preserved_main_pc = dict(base_file_data.get(TARGET_PC_KEY, {}))
             for hw_k in _HW_FIXED_KEYS:
                 if hw_k in curr_pc_dict.get(TARGET_PC_KEY, {}):
@@ -3629,7 +3740,7 @@ def _save_settings_internal():
             base_file_data["GLOBAL"] = global_block
             with open(SETTINGS_SAVE_FILE, "w", encoding="utf-8") as f:
                 json.dump(base_file_data, f, ensure_ascii=False, indent=4)
-            dprint("SYSTEM", "💾 [🔄땜빵 공용 프로필] 설정 영구 저장 완료 (본케 설정 보존됨)")
+            dprint("SYSTEM", f"💾 [🔄땜빵{SUB_CHAR_SLOT} 공용 프로필] '{target_sub_f}' 영구 저장 완료 (본케 설정 보존됨)")
         else:
             # 본케 모드일 때: 기존과 동일하게 settings_미니X.json에 전체 저장
             curr_pc_dict["GLOBAL"] = global_block
@@ -30594,7 +30705,7 @@ def sync_gui_vars(schedule_next=True):
 
             if k in ai_states and k in btn_dict:
                 fatigue = ai_states[k].get("fatigue_mult", 1.0)
-                mode_tag = "🔄[땜빵 공용]" if IS_SUB_CHAR_MODE else "👤[본케 전용]"
+                mode_tag = f"🔄[땜빵{SUB_CHAR_SLOT} 공용]" if IS_SUB_CHAR_MODE else "👤[본케 전용]"
                 mode_fg = "#FF80AB" if IS_SUB_CHAR_MODE else "#4FC3F7"
                 btn_dict[k].config(text=f" 📺 [{k}] {mode_tag} (피로도: x{fatigue:.3f}) ", fg=mode_fg)
 
@@ -30621,7 +30732,13 @@ def sync_gui_vars(schedule_next=True):
         save_settings()
 
     if schedule_next:
-        root.after(500, sync_gui_vars)
+        prev_after_id = getattr(sync_gui_vars, "_after_id", None)
+        if prev_after_id is not None:
+            try:
+                root.after_cancel(prev_after_id)
+            except Exception:
+                pass
+        sync_gui_vars._after_id = root.after(500, sync_gui_vars)
 
 def _poll_gui_task_queue():
     try:
@@ -30779,7 +30896,7 @@ def toggle_individual_hunt(key):
     if btn:
         if state["is_hunt_active"]:
             if globals().get("IS_SUB_CHAR_MODE", False):
-                btn.config(text=f"▶ {key} [땜빵] 사냥 가동 중", bg="#E91E63", fg="white")
+                btn.config(text=f"▶ {key} [땜빵{globals().get('SUB_CHAR_SLOT', 1)}] 사냥 가동 중", bg="#E91E63", fg="white")
             else:
                 btn.config(text=f"▶ {key} 사냥 가동 중", bg="#4CAF50", fg="white")
         else:
@@ -31006,10 +31123,16 @@ def reset_all_fatigue():
 btn_reset_fatigue = tk.Button(btn_frame, text="🔄피로", font=("맑은 고딕", 8, "bold"), bg="#E65100", fg="white", relief="flat", command=reset_all_fatigue)
 btn_reset_fatigue.pack(side="left", padx=1, ipadx=2, ipady=1)
 
-def switch_profile_mode(target_sub_mode=None, from_remote=False):
-    global IS_SUB_CHAR_MODE
-    new_mode = (not IS_SUB_CHAR_MODE) if target_sub_mode is None else bool(target_sub_mode)
-    if new_mode == IS_SUB_CHAR_MODE and target_sub_mode is not None:
+def switch_profile_mode(target_slot=None, from_remote=False):
+    global IS_SUB_CHAR_MODE, SUB_CHAR_SLOT, SUB_SLOT_CHANGED_AT
+    if target_slot is None:
+        new_slot = 0 if SUB_CHAR_SLOT > 0 else 1
+    elif isinstance(target_slot, bool):
+        new_slot = 1 if target_slot else 0
+    else:
+        new_slot = max(0, min(4, int(target_slot)))
+
+    if new_slot == SUB_CHAR_SLOT and target_slot is not None:
         return
 
     # 1) 사냥 중이면 안전하게 사냥 정지 후 전환
@@ -31021,23 +31144,32 @@ def switch_profile_mode(target_sub_mode=None, from_remote=False):
         _save_settings_internal()
         save_buff_times(ai_states)
 
-    IS_SUB_CHAR_MODE = new_mode
+    SUB_CHAR_SLOT = new_slot
+    IS_SUB_CHAR_MODE = (new_slot > 0)
+    SUB_SLOT_CHANGED_AT = time.time()
 
-    # 3) 목표 프로필 파일(settings_땜빵.json 또는 settings_미니X.json) 로드
+    # 3) 목표 프로필 파일(settings_땜빵*.json 또는 settings_미니X.json) 로드
+    is_newly_created_slot = False
     if IS_SUB_CHAR_MODE:
-        sub_raw = _read_json_safe(SUB_SETTINGS_SAVE_FILE)
+        target_sub_f = get_sub_settings_file(SUB_CHAR_SLOT)
+        sub_raw = _read_json_safe(target_sub_f)
         prof_data = sub_raw.get("SHARED_SUB", sub_raw.get(TARGET_PC_KEY, {}))
-        # 만약 해당 중앙컴에서 처음 땜빵 모드를 켰다면 현재 화면의 값을 초기값으로 사용하여 파일 즉시 생성
+        # 처음 사용하는 슬롯이라면 현재 화면의 사냥 설정을 초기값으로 파일 생성
         if not prof_data:
+            is_newly_created_slot = True
             _save_settings_internal()
-            sub_raw = _read_json_safe(SUB_SETTINGS_SAVE_FILE)
+            sub_raw = _read_json_safe(target_sub_f)
             prof_data = sub_raw.get("SHARED_SUB", {})
 
-        # 같은 중앙컴의 다른 미니창이 땜빵 모드에 머물러 있다면 자동으로 본케 모드로 원복하도록 신호 전송!
+        # 같은 중앙컴에서 '동일한 땜빵 슬롯'을 쓰고 있는 다른 미니창만 본케로 원복! (다른 슬롯 땜빵들은 유지됨)
         if not from_remote:
             try:
                 sock_ho = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                ho_bytes = json.dumps({"msg_type": "SUB_MODE_HANDOVER", "sender_key": TARGET_PC_KEY}).encode("utf-8")
+                ho_bytes = json.dumps({
+                    "msg_type": "SUB_MODE_HANDOVER",
+                    "sender_key": TARGET_PC_KEY,
+                    "sub_slot": SUB_CHAR_SLOT
+                }).encode("utf-8")
                 for k_p, port_p in LOCAL_IPC_PORTS.items():
                     if k_p != TARGET_PC_KEY:
                         sock_ho.sendto(ho_bytes, ("127.0.0.1", port_p))
@@ -31067,7 +31199,7 @@ def switch_profile_mode(target_sub_mode=None, from_remote=False):
 
     # 5) 해당 프로필의 버프 쿨타임 및 헤이스트 타이머 복원 + 파티/맵 상태 초기화
     curr_t = time.time()
-    loaded_b = load_buff_times(is_sub=IS_SUB_CHAR_MODE).get(TARGET_PC_KEY, {})
+    loaded_b = load_buff_times(sub_slot=SUB_CHAR_SLOT).get(TARGET_PC_KEY, {})
     st = ai_states.get(TARGET_PC_KEY, {})
     if st:
         for bk, (r_min, r_max) in _BUFF_INIT_RANGES.items():
@@ -31088,23 +31220,62 @@ def switch_profile_mode(target_sub_mode=None, from_remote=False):
 
     # 6) 상단 버튼 색상/텍스트 갱신 및 파일 저장
     if IS_SUB_CHAR_MODE:
-        btn_profile_mode.config(text="🔄땜빵", bg="#D81B60")
-        dprint(TARGET_PC_KEY, "🔄 [프로필 스왑 완료] 중앙컴 공용 [땜빵 모드]가 장착되었습니다! (메인/파티/보조/인증 탭 + 버프시간 연동)")
+        btn_profile_mode.config(text=f"🔄땜빵{SUB_CHAR_SLOT}▾", bg="#D81B60")
+        extra_msg = " (신규 슬롯 생성됨 ➔ 파티탭 케릭명/인증탭 계정정보를 입력해 주세요)" if is_newly_created_slot else ""
+        dprint(TARGET_PC_KEY, f"🔄 [프로필 스왑 완료] 중앙컴 공용 [땜빵{SUB_CHAR_SLOT} 모드] 장착 완료!{extra_msg}")
     else:
-        btn_profile_mode.config(text="👤본케", bg="#1565C0")
+        btn_profile_mode.config(text="👤본케▾", bg="#1565C0")
         dprint(TARGET_PC_KEY, f"👤 [프로필 스왑 완료] [{TARGET_PC_KEY} 본케 전용 모드]로 복귀했습니다!")
 
-    sync_gui_vars()
+    try:
+        sync_gui_vars(schedule_next=False)
+    except TypeError:
+        sync_gui_vars()
     _save_settings_internal()
+
+def popup_profile_mode_menu():
+    """상단 프로필 버튼 클릭 시 본케 및 공용 땜빵1~4 슬롯 선택 메뉴(케릭명/사용중 표시)를 띄웁니다."""
+    menu = tk.Menu(root, tearoff=0, bg="#2D2D30", fg="white", activebackground="#0E639C", activeforeground="white", font=("맑은 고딕", 9, "bold"))
+    my_c_str = str(get_my_central_num()).strip()
+    now_t = time.time()
+
+    slot_users = {}
+    if SUB_CHAR_SLOT > 0:
+        slot_users[SUB_CHAR_SLOT] = TARGET_PC_KEY
+    with party_lock:
+        for p_info in list(global_invite_states.values()):
+            if str(p_info.get("central_num", "")).strip() == my_c_str and (now_t - p_info.get("recv_time", 0.0) <= 5.0):
+                s_num = int(p_info.get("sub_char_slot", 0) or 0)
+                if s_num > 0:
+                    slot_users[s_num] = p_info.get("pc_key", "")
+
+    mark_0 = "✔ " if SUB_CHAR_SLOT == 0 else "   "
+    menu.add_command(label=f"{mark_0}👤 본케 전용", command=lambda: switch_profile_mode(0))
+    menu.add_separator()
+
+    for s_idx in range(1, 5):
+        mark_s = "✔ " if SUB_CHAR_SLOT == s_idx else "   "
+        s_raw = _read_json_safe(get_sub_settings_file(s_idx))
+        s_char = str(s_raw.get("SHARED_SUB", {}).get("char_name", "")).strip()
+        char_txt = f" ({s_char})" if s_char else ""
+        user_txt = f" [{slot_users[s_idx]} 사용중]" if s_idx in slot_users else ""
+        menu.add_command(
+            label=f"{mark_s}🔄 땜빵{s_idx}{char_txt}{user_txt}",
+            command=lambda sl=s_idx: switch_profile_mode(sl)
+        )
+
+    bx = btn_profile_mode.winfo_rootx()
+    by = btn_profile_mode.winfo_rooty() + btn_profile_mode.winfo_height()
+    menu.tk_popup(bx, by)
 
 btn_profile_mode = tk.Button(
     btn_frame,
-    text="🔄땜빵" if IS_SUB_CHAR_MODE else "👤본케",
+    text=f"🔄땜빵{SUB_CHAR_SLOT}▾" if IS_SUB_CHAR_MODE else "👤본케▾",
     font=("맑은 고딕", 8, "bold"),
     bg="#D81B60" if IS_SUB_CHAR_MODE else "#1565C0",
     fg="white",
     relief="flat",
-    command=lambda: switch_profile_mode()
+    command=popup_profile_mode_menu
 )
 btn_profile_mode.pack(side="left", padx=1, ipadx=3, ipady=1)
 
@@ -31643,7 +31814,7 @@ for i, pc in enumerate(MINI_PCS):
             "본던 5-1", "본던 5-2", "본던 5-3", "본던 5-4", "본던 5-5", "본던 5-6", "본던 5-7",
             "본던 5-8", "본던 5-9", "본던 5-10", "본던 5-11", "본던 5-12", "본던 5-13",
             "본던 6-1", "본던 6-4", "본던 6-5", "본던 6-3", "본던 6-14",
-            "본던 4-12"
+            "본던 6-6", "본던 6-7"
         ]
         sub_quota = {z: 0 for z in all_zones}
         main_quota = {z: 0 for z in all_zones}
@@ -31725,7 +31896,7 @@ for i, pc in enumerate(MINI_PCS):
                 rem_mains -= 1
 
         # ------------------------------------------------------------------
-        # 3단계: 잉여 본케 상층(6층 ➔ 4층) 배정 및 잔여 본케 5층 증원
+        # 3단계: 잉여 본케 6층 배정(6-1, 6-4, 6-5, 6-3, 6-14 ➔ 6-6, 6-7) 및 잔여 본케 5층 증원
         # ------------------------------------------------------------------
         upper_pool = rem_mains
         if upper_pool >= 4:
@@ -31765,10 +31936,14 @@ for i, pc in enumerate(MINI_PCS):
                         upper_pool -= 1
 
             if upper_pool >= 4:
-                take_4f = min(5, upper_pool)
-                main_quota["본던 4-12"] = take_4f
-                rem_mains -= take_4f
-                upper_pool -= take_4f
+                main_quota["본던 6-6"] = 4
+                rem_mains -= 4
+                upper_pool -= 4
+
+                if upper_pool >= 2:
+                    main_quota["본던 6-7"] = 2
+                    rem_mains -= 2
+                    upper_pool -= 2
 
         expand_5f_extra = [
             z for z in [
@@ -31795,7 +31970,7 @@ for i, pc in enumerate(MINI_PCS):
             {"inv": "2",  "zones": ["본던 5-3", "본던 5-4"],             "floor": 5},
             {"inv": "3",  "zones": ["본던 5-6", "본던 5-5"],             "floor": 5},
             {"inv": "7",  "zones": ["본던 6-1", "본던 6-3", "본던 6-14"], "floor": 6},
-            {"inv": "10", "zones": ["본던 4-12"],                        "floor": 4},
+            {"inv": "10", "zones": ["본던 6-6", "본던 6-7"],             "floor": 6},
             {"inv": "8",  "zones": ["본던 6-4"],                         "floor": 6},
             {"inv": "9",  "zones": ["본던 6-5"],                         "floor": 6},
             {"inv": "5",  "zones": ["본던 5-8", "본던 5-9"],             "floor": 5},
@@ -31951,7 +32126,7 @@ for i, pc in enumerate(MINI_PCS):
             ("7조 6층파티 (6-1, 6-3, 6-14)", ["본던 6-1", "본던 6-3", "본던 6-14"]),
             ("8조 6층파티 (6-4)",          ["본던 6-4"]),
             ("9조 6층파티 (6-5)",          ["본던 6-5"]),
-            ("10조 4층파티 (4-12)",        ["본던 4-12"]),
+            ("10조 6층파티 (6-6, 6-7)",    ["본던 6-6", "본던 6-7"]),
         ]
 
         covered_zones = {z for _, z_list in group_sections for z in z_list}
@@ -32055,7 +32230,7 @@ for i, pc in enumerate(MINI_PCS):
             "본던 6-1": "7", "본던 6-3": "7", "본던 6-14": "7",
             "본던 6-4": "8",
             "본던 6-5": "9",
-            "본던 4-12": "10",
+            "본던 6-6": "10", "본던 6-7": "10",
         }
         if dng_name in z_fixed_map:
             return z_fixed_map[dng_name]
