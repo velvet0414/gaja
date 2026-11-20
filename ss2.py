@@ -1342,26 +1342,74 @@ def get_target_server(pc_num, char_id):
     # 🚀 모든 사냥컴 번호를 불문하고 무조건 '글루디오'로 강제 연동!
     return "글루디오"
 
-def allocate_casts(buffers_mp, total_casts=6):
-    def get_max_casts(mp):
-        # 🔒 [원본 코드 복구] 마나가 100%일 때만 6방을 쏠 수 있게 정상화!
-        if mp >= 100.0: return 6   # 👈 형님 지시대로 98%에서 100%로 상향 완료!
-        if mp >= 84.0: return 5
-        if mp >= 67.0: return 4
-        if mp >= 50.0: return 3
-        if mp >= 33.0: return 2
-        if mp >= 16.0: return 1
-        return 0
+HASTE_MP_COST_MAP = {
+    "군주": 20.0,
+    "마법사": 40.0
+}
+MP_BAR_SAFETY_MARGIN_PCT = 1.0  # MP 바 픽셀 측정 오차(+1%) 방어 마진
 
-    if sum(get_max_casts(v) for v in buffers_mp.values()) < total_casts: return None
-    
+def get_haste_mp_cost(char_class):
+    return HASTE_MP_COST_MAP.get(str(char_class).strip(), 20.0)
+
+def get_effective_abs_mp(mp_pct, max_mp):
+    max_mp_val = max(20.0, float(max_mp))
+    pct = max(0.0, min(100.0, float(mp_pct)))
+    if pct >= 100.0:
+        return max_mp_val
+    return max(0.0, max_mp_val * max(0.0, pct - MP_BAR_SAFETY_MARGIN_PCT) / 100.0)
+
+def get_dynamic_buffer_casts(mp_pct, max_mp, mp_cost):
+    cost = max(1.0, float(mp_cost))
+    return int(get_effective_abs_mp(mp_pct, max_mp) // cost)
+
+def allocate_casts(buffers_mp, total_casts=6, buffers_meta=None, queue_length=0):
+    meta_map = {}
+    remain_casts = {}
+    sim_abs_mp = {}
+
+    for k, mp_pct in buffers_mp.items():
+        if buffers_meta and k in buffers_meta:
+            m_info = buffers_meta[k]
+            m_cls = m_info.get("char_class", "군주")
+            m_max = max(20.0, float(m_info.get("max_mp", 120.0 if m_cls == "군주" else 240.0)))
+            m_cost = float(m_info.get("cost", get_haste_mp_cost(m_cls)))
+            m_medi = bool(m_info.get("is_meditating", False))
+        else:
+            m_cls, m_max, m_cost, m_medi = "군주", 120.0, 20.0, False
+
+        meta_map[k] = {"char_class": m_cls, "max_mp": m_max, "cost": m_cost, "is_meditating": m_medi}
+        eff_mp = get_effective_abs_mp(mp_pct, m_max)
+        sim_abs_mp[k] = eff_mp
+        remain_casts[k] = int(eff_mp // max(1.0, m_cost))
+
+    if sum(remain_casts.values()) < total_casts:
+        return None
+
+    # 🧘 [메디 보호 몰아주기] 뒤에 추가 대기자가 없고, 메디 중이 아닌 버퍼(군주 등)만으로 목표 방수 충족 시 메디 법사 보호!
+    pool_keys = list(buffers_mp.keys())
+    if queue_length == 0:
+        non_medi_keys = [
+            k for k in pool_keys
+            if not (meta_map[k]["is_meditating"] and buffers_mp[k] < 85.0)
+        ]
+        if non_medi_keys and len(non_medi_keys) < len(pool_keys):
+            if sum(remain_casts[k] for k in non_medi_keys) >= total_casts:
+                pool_keys = non_medi_keys
+
     alloc = {k: 0 for k in buffers_mp}
-    simulated_mp = buffers_mp.copy()
     for _ in range(total_casts):
-        best_buffer = max(simulated_mp, key=simulated_mp.get)
+        candidates = [k for k in pool_keys if remain_casts[k] > 0]
+        if not candidates:
+            return None
+        # 남은 MP 비율(%)이 가장 높은 버퍼 우선 배정 (100% 풀마나 엠틱 증발 방지), 동률 시 절대 MP 높은 쪽 우선
+        best_buffer = max(
+            candidates,
+            key=lambda k: (sim_abs_mp[k] / meta_map[k]["max_mp"], sim_abs_mp[k])
+        )
         alloc[best_buffer] += 1
-        # 🚀 [원본 복구] 마나 차감량을 다시 1방당 16.6으로 돌려놓았습니다.
-        simulated_mp[best_buffer] -= 16.6 
+        remain_casts[best_buffer] -= 1
+        sim_abs_mp[best_buffer] = max(0.0, sim_abs_mp[best_buffer] - meta_map[best_buffer]["cost"])
+
     return {k: v for k, v in alloc.items() if v > 0}
 
 def send_to_central_pc(client_id, data_dict):
@@ -1374,6 +1422,81 @@ def send_to_central_pc(client_id, data_dict):
     return False
 
 history_target_casts = {} # 🚀 [신규 추가] 사냥컴별 최초 목표 방수를 5분간 영구 기억하는 장부
+
+CHAR_BUFF_LEDGER_FILE = "char_buff_ledger.json"
+HASTE_CAST_DUR_SEC = 1200.0       # 헤이 1방당 지속시간 (20분)
+HASTE_MAX_DUR_SEC = 7200.0        # 헤이 최대 누적 지속시간 (2시간)
+HASTE_OVERFLOW_TOLERANCE = 180.0  # 3분 이내 자투리 부족분은 올림 제외 (0.0 설정 시 무조건 올림)
+char_buff_ledger_lock = threading.Lock()
+
+def load_char_buff_ledger():
+    if os.path.exists(CHAR_BUFF_LEDGER_FILE):
+        try:
+            with open(CHAR_BUFF_LEDGER_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+    return {}
+
+def save_char_buff_ledger():
+    try:
+        with char_buff_ledger_lock:
+            snapshot = dict(char_buff_ledger)
+        with open(CHAR_BUFF_LEDGER_FILE, "w", encoding="utf-8") as f:
+            json.dump(snapshot, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+char_buff_ledger = load_char_buff_ledger()
+
+def get_buff_ledger_key(req):
+    cid = str(req.get("char_id", "")).strip()
+    sub_slot = int(req.get("sub_slot", 0) or 0)
+    cname = str(req.get("char_name", "")).strip()
+    if cname:
+        return f"{cid}|s{sub_slot}|{cname}"
+    return f"{cid}|s{sub_slot}"
+
+def calc_needed_casts_from_ledger(req, curr_time):
+    """버퍼 장부 기준으로 부족한 방수(1~6)를 산출합니다. 사망/헤이없음/2시간초과/미기록은 무조건 6방."""
+    l_key = get_buff_ledger_key(req)
+    force_full = bool(req.get("force_full", False))
+    reason = str(req.get("buff_reason", "")).strip()
+
+    if force_full:
+        return 6, 0.0, (reason or "사망/헤이없음(6방)"), l_key
+
+    with char_buff_ledger_lock:
+        rec = char_buff_ledger.get(l_key)
+
+    if not rec:
+        return 6, 0.0, "최초/미기록(6방)", l_key
+
+    expire_t = float(rec.get("expire_time", 0.0))
+    rem_sec = max(0.0, expire_t - curr_time)
+    if rem_sec <= 0.0:
+        return 6, 0.0, "2시간만료(6방)", l_key
+
+    missing_sec = max(0.0, HASTE_MAX_DUR_SEC - rem_sec)
+    eff_missing = max(0.0, missing_sec - HASTE_OVERFLOW_TOLERANCE)
+    needed = int(math.ceil(eff_missing / HASTE_CAST_DUR_SEC))
+    needed = max(1, min(6, needed))
+    return needed, rem_sec, f"잔여{rem_sec/60:.0f}분➔보충{needed}방", l_key
+
+def update_char_buff_ledger(ledger_key, actual_casts, force_full, curr_time):
+    with char_buff_ledger_lock:
+        old_rec = char_buff_ledger.get(ledger_key, {})
+        prev_rem = 0.0 if force_full else max(0.0, float(old_rec.get("expire_time", 0.0)) - curr_time)
+        new_rem = min(HASTE_MAX_DUR_SEC, prev_rem + (float(actual_casts) * HASTE_CAST_DUR_SEC))
+        char_buff_ledger[ledger_key] = {
+            "expire_time": curr_time + new_rem,
+            "last_buff_time": curr_time,
+            "last_casts": int(actual_casts)
+        }
+    save_char_buff_ledger()
+    return new_rem
 
 def dispatcher_thread():
     global reserved_servers, history_target_casts, buff_fail_tracker 
@@ -1429,8 +1552,18 @@ def dispatcher_thread():
                             if r_mini in task["pending_reports"]:
                                 task["pending_reports"].remove(r_mini)
                             if len(task["pending_reports"]) == 0:
-                                send_to_central_pc(client_id, {"action": "BUFF_COMPLETE", "char_id": r_char_id})
-                                print(f"✨ [통제실] {r_char_id} 최종 버프 완수! 사냥터 복귀 지시.")
+                                actual_casts = sum(task.get("alloc", {}).values())
+                                l_key = task.get("ledger_key", r_char_id)
+                                was_force_full = bool(task.get("force_full", False))
+                                new_rem_sec = update_char_buff_ledger(l_key, actual_casts, was_force_full, curr_time)
+
+                                send_to_central_pc(client_id, {
+                                    "action": "BUFF_COMPLETE",
+                                    "char_id": r_char_id,
+                                    "given_casts": actual_casts,
+                                    "rem_sec": round(new_rem_sec, 1)
+                                })
+                                print(f"✨ [통제실] {r_char_id} 최종 버프 완수! ({actual_casts}방 시전 ➔ 누적 잔여 {new_rem_sec/60:.1f}분 기록)")
                                 
                                 if r_char_id in history_target_casts:
                                     del history_target_casts[r_char_id]
@@ -1559,12 +1692,25 @@ def dispatcher_thread():
                 ]
                 
                 buffers_mp = {}
+                buffers_meta = {}
                 for m in active_minis:
                     st = ai_states.get(m, {})
                     mp_buf = st.get("mp_buffer", [])
                     if len(mp_buf) >= 3: buffers_mp[m] = sorted(mp_buf)[len(mp_buf)//2]
                     elif mp_buf: buffers_mp[m] = mp_buf[-1]
                     else: buffers_mp[m] = 0.0
+
+                    m_set = current_settings.get(m, {})
+                    m_cls = m_set.get("char_class", "군주")
+                    m_max_mp = max(20.0, float(m_set.get("max_mp", 120.0 if m_cls == "군주" else 240.0)))
+                    m_cost = get_haste_mp_cost(m_cls)
+                    m_is_medi = (m_cls == "마법사") and (curr_time < st.get("meditation_expire_time", 0.0))
+                    buffers_meta[m] = {
+                        "char_class": m_cls,
+                        "max_mp": m_max_mp,
+                        "cost": m_cost,
+                        "is_meditating": m_is_medi
+                    }
                         
                 # 🚀 [이벤트 던전 추가] "event" 또는 "이벤트"가 포함된 모든 던전(event1~10 등)을 탄력적 헤이방수로 자동 적용!
                 ELASTIC_DUNGEONS = [
@@ -1575,16 +1721,11 @@ def dispatcher_thread():
                 
                 is_elastic = any(d.lower() in str(dungeon_name).lower() for d in ELASTIC_DUNGEONS)
                 
-                def get_buffer_casts(mp):
-                    if mp >= 100.0: return 6
-                    if mp >= 84.0: return 5
-                    if mp >= 67.0: return 4
-                    if mp >= 50.0: return 3
-                    if mp >= 33.0: return 2
-                    if mp >= 16.0: return 1
-                    return 0
-                    
-                total_current_casts = sum(get_buffer_casts(mp) for mp in buffers_mp.values()) if buffers_mp else 0
+                def get_buffer_casts_for(m_key, mp_val):
+                    meta = buffers_meta.get(m_key, {"max_mp": 120.0, "cost": 20.0})
+                    return get_dynamic_buffer_casts(mp_val, meta["max_mp"], meta["cost"])
+
+                total_current_casts = sum(get_buffer_casts_for(m, mp_v) for m, mp_v in buffers_mp.items()) if buffers_mp else 0
                 num_buffers = len(buffers_mp)
                 
                 queue_length = 0
@@ -1638,17 +1779,28 @@ def dispatcher_thread():
                 
                 # 💡 아직 안 먹은 인원(inactive_blue_minis)이 있을 때만 팩트체크 진행
                 if inactive_blue_minis and num_buffers > 0:
-                    # 🚨 오링(증발) 패널티를 받는 놈은 후보에서 제외하여 다른 버퍼에게 기회 양보
-                    valid_inactive_minis = [m for m in inactive_blue_minis if curr_time >= ai_states.get(m, {}).get("blue_pot_penalty_time", 0)]
+                    # 🚨 오링(증발) 패널티를 받거나 파랭이 체크가 꺼진 버퍼는 후보에서 제외하여 다른 버퍼에게 기회 양보
+                    valid_inactive_minis = [
+                        m for m in inactive_blue_minis
+                        if current_settings.get(m, {}).get("use_blue_pot", False)
+                        and curr_time >= ai_states.get(m, {}).get("blue_pot_penalty_time", 0)
+                    ]
+
+                    # 👑 [파랭이 효율 우선순위] 1) MP 85% 미만(풀마나 낭비 방지) 2) 군주(20MP) 1순위 > 마법사(40MP) 2순위 3) MP 더 낮은 순
+                    def _blue_pot_priority(m_key):
+                        mp_val = buffers_mp.get(m_key, 100.0)
+                        nearly_full = 1 if mp_val >= 85.0 else 0
+                        cls_rank = 0 if buffers_meta.get(m_key, {}).get("char_class", "군주") == "군주" else 1
+                        return (nearly_full, cls_rank, mp_val)
+
+                    sorted_valid = sorted(valid_inactive_minis, key=_blue_pot_priority)
                     
                     vip_candidates = []
-                    if needed_vip_drinks > 0 and valid_inactive_minis:
-                        # 🚀 마나가 가장 적은(가장 헐떡이는) 버퍼부터 정렬해서 핀셋으로 뽑아 먼저 먹임!
-                        sorted_valid = sorted(valid_inactive_minis, key=lambda x: buffers_mp.get(x, 100.0))
+                    if needed_vip_drinks > 0 and sorted_valid:
                         vip_candidates = sorted_valid[:needed_vip_drinks]
                         drink_candidates.extend(vip_candidates)
                         
-                    # 일반 결손치(Deficit) 계산
+                    # 일반 결손치(Deficit) 계단식 계산: 기준치 1배 -> 총 1명, 2배 -> 총 2명 순차 투입
                     pot_thresholds = []
                     use_blue_pot_any = False
                     
@@ -1656,21 +1808,36 @@ def dispatcher_thread():
                         settings = current_settings.get(m, {})
                         if settings.get("use_blue_pot", False):
                             use_blue_pot_any = True
-                            try: val = int(float(settings.get("blue_deficit", 11)))
+                            try: val = max(1, int(float(settings.get("blue_deficit", 11))))
                             except: val = 11
                             pot_thresholds.append(val)
                                 
                     if use_blue_pot_any and pot_thresholds:
-                        synced_threshold = min(pot_thresholds)
-                        total_required_casts = (queue_length + 1) * 6
+                        synced_threshold = max(1, min(pot_thresholds))
+                        with global_req_queue.mutex:
+                            total_required_casts = 0
+                            for r_q in global_req_queue.queue:
+                                rq_cid = str(r_q.get("char_id"))
+                                try: rq_pc = int(rq_cid.split('-')[0])
+                                except: rq_pc = 0
+                                if get_target_server(rq_pc, rq_cid) == target_server:
+                                    rq_need, _, _, _ = calc_needed_casts_from_ledger(r_q, curr_time)
+                                    total_required_casts += rq_need
+                        if total_required_casts <= 0:
+                            total_required_casts = calc_needed_casts_from_ledger(req_to_process, curr_time)[0]
                         deficit_casts = max(0, total_required_casts - total_current_casts)
-                        final_threshold = synced_threshold * num_buffers
+                        target_deficit_blue_count = min(num_buffers, deficit_casts // synced_threshold)
+                        needed_deficit_drinks = max(0, target_deficit_blue_count - len(active_blue_minis))
+                        final_threshold = synced_threshold * (len(active_blue_minis) + 1)
                         
-                        if deficit_casts >= final_threshold:
+                        if needed_deficit_drinks > len(drink_candidates):
                             deficit_trigger = True
-                            for m in valid_inactive_minis:
-                                if m not in drink_candidates and current_settings.get(m, {}).get("use_blue_pot", False):
-                                    drink_candidates.append(m)
+                            extra_needed = needed_deficit_drinks - len(drink_candidates)
+                            eligible_deficit = [
+                                m for m in sorted_valid
+                                if m not in drink_candidates and current_settings.get(m, {}).get("use_blue_pot", False)
+                            ]
+                            drink_candidates.extend(eligible_deficit[:extra_needed])
                                     
                 if drink_candidates:
                     drinks_consumed = 0
@@ -1730,46 +1897,45 @@ def dispatcher_thread():
                         save_buff_times(ai_states) 
                 # =====================================================================
                 
-                target_casts = 6 
+                needed_casts, rem_sec_est, ledger_reason, req_ledger_key = calc_needed_casts_from_ledger(req_to_process, curr_time)
+                target_casts = needed_casts
                 mode_str = ""
                 
                 remembered_target = None
                 if char_id in history_target_casts:
                     remembered_target = history_target_casts[char_id]["casts"]
                 
-                # 🚀 [고정 사냥터] "본던", "수던", "사던"은 복수버퍼/탄력 룰 모두 씹고 무조건 6방 고정!
+                # 🚀 [고정 사냥터] "본던", "수던", "사던"은 버퍼 장부 기준 필요 방수(1~6방)를 정확히 채워줌!
                 is_fixed_dungeon = any(d in str(dungeon_name) for d in ["본던", "수던", "사던"])
                 
-                # 🚀 [파랭이 부스터 & 고정 사냥터] 무조건 6방 풀버프 고정!
+                # 🚀 [파랭이 부스터 & 고정 사냥터] 장부 기준 필요 방수(사망/헤이없음/만료 시 6방, 일반 복귀 시 부족 방수) 고정!
                 if is_blue_pot_active or is_fixed_dungeon:
-                    if is_blue_pot_active:
-                        mode_str = "파랭이부스터(무조건6방)"
-                    else:
-                        mode_str = "고정사냥터(무조건6방)"
-                    target_casts = 6
+                    base_tag = "파랭이부스터" if is_blue_pot_active else "고정사냥터"
+                    mode_str = f"{base_tag}/{ledger_reason}"
+                    target_casts = needed_casts
                     history_target_casts[char_id] = {"casts": target_casts, "timestamp": curr_time}
                 else:
                     if num_buffers > 1:
-                        mode_str = "복수버퍼(우선)"
+                        mode_str = f"복수버퍼/{ledger_reason}"
                         if remembered_target is not None:
-                            target_casts = remembered_target
+                            target_casts = min(remembered_target, needed_casts)
                             mode_str += "-기억복구"
                         else:
-                            if total_current_casts < 2: target_casts = 4
-                            else: target_casts = 6
+                            if total_current_casts < 2: target_casts = min(4, needed_casts)
+                            else: target_casts = needed_casts
                             
                             if queue_length > 0:
-                                dynamic_target = max(4, min(6, (total_current_casts // 2) * 2))
-                                target_casts = dynamic_target if total_current_casts >= 4 else 4
+                                dynamic_target = max(min(4, needed_casts), min(needed_casts, (total_current_casts // 2) * 2))
+                                target_casts = dynamic_target if total_current_casts >= 4 else min(4, needed_casts)
                                 
-                            if target_casts != 6: # 6방은 기억할 필요 없음
+                            if target_casts != needed_casts:
                                 history_target_casts[char_id] = {"casts": target_casts, "timestamp": curr_time}
                             
                     elif num_buffers == 1:
                         if is_elastic:
-                            mode_str = "1인/탄력"
+                            mode_str = f"1인탄력/{ledger_reason}"
                             if remembered_target is not None:
-                                target_casts = remembered_target
+                                target_casts = min(remembered_target, needed_casts)
                                 mode_str += "-기억복구"
                             else:
                                 mp = list(buffers_mp.values())[0] if buffers_mp else 0
@@ -1780,21 +1946,22 @@ def dispatcher_thread():
                                 else: target_casts = 6
                                 
                                 if queue_length > 0:
-                                    target_casts = max(2, min(6, total_current_casts))
+                                    target_casts = max(1, min(6, total_current_casts))
+                                target_casts = min(target_casts, needed_casts)
                                     
-                                if target_casts != 6:
+                                if target_casts != needed_casts:
                                     history_target_casts[char_id] = {"casts": target_casts, "timestamp": curr_time}
                         else:
-                            mode_str = "1인/고정"
-                            target_casts = 6
+                            mode_str = f"1인고정/{ledger_reason}"
+                            target_casts = needed_casts
                             history_target_casts[char_id] = {"casts": target_casts, "timestamp": curr_time}
 
                 alloc = None
-                # 🚀 파랭이 상태이거나 고정 사냥터면 최소 6방이 모일 때까지 절대 승인 안 함!
-                min_required_casts = 6 if (is_blue_pot_active or is_fixed_dungeon) else (4 if num_buffers > 1 else 2)
+                # 🚀 고정 사냥터/파랭이 상태에서는 필요 방수(1~6방)가 모일 때까지 대기 (부족 방수 < 6방일 때 데드락 방지!)
+                min_required_casts = needed_casts if (is_blue_pot_active or is_fixed_dungeon) else min(needed_casts, 4 if num_buffers > 1 else 2)
                 
                 if total_current_casts >= target_casts and target_casts >= min_required_casts:
-                    alloc = allocate_casts(buffers_mp, target_casts)
+                    alloc = allocate_casts(buffers_mp, target_casts, buffers_meta=buffers_meta, queue_length=queue_length)
 
                 if alloc:
                     with global_req_queue.mutex:
@@ -1809,7 +1976,9 @@ def dispatcher_thread():
                             "alloc": alloc,
                             "pending_reports": set(alloc.keys()),
                             "timeout": curr_time + 40.0,
-                            "first_shooter": first_shooter
+                            "first_shooter": first_shooter,
+                            "ledger_key": req_ledger_key,
+                            "force_full": bool(req_to_process.get("force_full", False))
                         }
                     
                     print(f"🧮 [{target_server}] 사냥컴({char_id}) {dungeon_name}({mode_str}) {target_casts}방 배분 완료! ➔ " + ", ".join([f"{k}({v}방)" for k, v in alloc.items()]) + f" | ★1타 대장: {first_shooter}")
@@ -1843,7 +2012,10 @@ def dispatcher_thread():
                                     mark = "[수던VIP]" if any(d in r_dname for d in ["본던", "수던", "사던"]) else ""
                                     waiting_chars.append(f"{r_cid}{mark}")
                         
-                        mp_status = " / ".join([f"{k}:{v:.1f}%({get_buffer_casts(v)}방)" for k, v in buffers_mp.items()])
+                        mp_status = " / ".join([
+                            f"{k}({buffers_meta[k]['char_class']}):{v:.1f}%({get_buffer_casts_for(k, v)}/{int(buffers_meta[k]['max_mp'] // buffers_meta[k]['cost'])}방{'/메디' if buffers_meta[k]['is_meditating'] else ''})"
+                            for k, v in buffers_mp.items()
+                        ])
                         print(f"💤 [{target_server}] 버퍼 마나 충전 대기 중... [목표:{target_casts}방, 현재가능:{total_current_casts}방] [{mp_status}] (대기열 {len(waiting_chars)}명: {', '.join(waiting_chars)})")
                         last_mp_wait_log[target_server] = curr_time
                                 
@@ -1894,11 +2066,26 @@ def command_server_thread():
                             print(f"📡 [통제실] {char_id} 버프 요청 수신! 즉각 통신양호(CC_STATUS_OK) 신호 발송 완료.")
                         except Exception as e: pass
                         
-                        # 🚀 [중복 예약 방지] 사냥컴이 지속적으로 요청(생존핑)을 보내도 큐에 1번만 등록되게 기억(방어막)!
+                        # 🚀 [중복 예약 방지 + 재접속 소켓 최신화] 사냥컴이 재요청 시 큐 중복 등록은 막되 최신 소켓/메타정보는 즉시 갱신!
                         with global_req_queue.mutex:
-                            already_in_queue = any(str(req.get("char_id")) == char_id for req in global_req_queue.queue)
+                            already_in_queue = False
+                            for req in global_req_queue.queue:
+                                if str(req.get("char_id")) == char_id:
+                                    already_in_queue = True
+                                    req["client_id"] = client_id
+                                    if "force_full" in msg:
+                                        req["force_full"] = bool(req.get("force_full", False) or msg.get("force_full", False))
+                                    if msg.get("buff_reason"):
+                                        req["buff_reason"] = msg["buff_reason"]
+                                    if msg.get("char_name"):
+                                        req["char_name"] = msg["char_name"]
+                                    if "sub_slot" in msg:
+                                        req["sub_slot"] = msg["sub_slot"]
+                                    break
                         with task_lock:
                             already_in_process = char_id in active_group_tasks
+                            if already_in_process:
+                                active_group_tasks[char_id]["client_id"] = client_id
                             
                         if not already_in_queue and not already_in_process:
                             global_req_queue.put(msg)
@@ -1938,6 +2125,14 @@ def command_server_thread():
                             for req in global_req_queue.queue:
                                 if str(req.get("char_id")) == char_id:
                                     req["client_id"] = client_id
+                                    if "force_full" in msg:
+                                        req["force_full"] = bool(req.get("force_full", False) or msg.get("force_full", False))
+                                    if msg.get("buff_reason"):
+                                        req["buff_reason"] = msg["buff_reason"]
+                                    if msg.get("char_name"):
+                                        req["char_name"] = msg["char_name"]
+                                    if "sub_slot" in msg:
+                                        req["sub_slot"] = msg["sub_slot"]
                                     break
                             already_in_queue = any(str(req.get("char_id")) == char_id for req in global_req_queue.queue)
                             
@@ -3084,11 +3279,20 @@ def _save_settings_internal():
             saved_settings[k]["dbg_x"] = dbg_x
             saved_settings[k]["dbg_y"] = dbg_y
 
+            try:
+                _bd_val = float(str(v.get("blue_deficit").get()).strip()) if "blue_deficit" in v else 11.0
+            except Exception:
+                _bd_val = float(saved_settings.get(k, {}).get("blue_deficit", 11.0))
+
             data[k] = {
                 "com_port": v.get("com_port").get().strip() if "com_port" in v else "", 
                 "pico_hwid": st.get("pico_hwid", ""),
+                "char_class": v.get("char_class").get() if "char_class" in v else "군주",
+                "max_mp": v.get("max_mp").get().strip() if "max_mp" in v else "120",
+                "use_meditation": v.get("use_meditation").get() if "use_meditation" in v else False,
+                "medi_mp_pct": v.get("medi_mp_pct").get().strip() if "medi_mp_pct" in v else "66",
                 "use_blue_pot": v.get("use_blue_pot").get() if "use_blue_pot" in v else False,
-                "blue_deficit": float(v.get("blue_deficit").get()) if "blue_deficit" in v else 11.0, # 🚀 파랭이 결손치 값 저장
+                "blue_deficit": _bd_val, # 🚀 파랭이 결손치 값 안전 저장
                 
                 "use_dir_lock": v.get("use_dir_lock").get() if "use_dir_lock" in v else False,
                 "lock_dir": v.get("lock_dir").get() if "lock_dir" in v else "9시",
@@ -3523,6 +3727,10 @@ for pc in MINI_PCS:
         
         "use_extra_f10": tk.BooleanVar(value=pc_set.get("use_extra_f10", False)),
         "extra_f10_dur": tk.StringVar(value=pc_set.get("extra_f10_dur", "10분")),
+        "char_class": tk.StringVar(value=pc_set.get("char_class", "군주")),
+        "max_mp": tk.StringVar(value=str(pc_set.get("max_mp", "120" if pc_set.get("char_class", "군주") == "군주" else "240"))),
+        "use_meditation": tk.BooleanVar(value=pc_set.get("use_meditation", False)),
+        "medi_mp_pct": tk.StringVar(value=str(pc_set.get("medi_mp_pct", "66"))),
         "use_blue_pot": tk.BooleanVar(value=pc_set.get("use_blue_pot", False)),
         "blue_deficit": tk.StringVar(value=str(pc_set.get("blue_deficit", "11"))), # 🚀 결손방수 변수 적용
         "tele_hunt_use": tk.BooleanVar(value=pc_set.get("tele_hunt_use", True)),
@@ -4603,7 +4811,7 @@ def pico_worker_thread(key):
             # 🛡️ [바탕화면 엣지(F1) 실행 원천 차단] 인증 모드(CERTI_) 중에는 잔여 인게임 단축키를 하드웨어 직전에서 폐기!
             curr_fsm_hw = str(ai_states.get(key, {}).get("target_fsm", ""))
             if curr_fsm_hw.startswith("CERTI_"):
-                if action in ["ESCAPE", "TELEPORT", "HEAL", "POTION", "TAKE_BLUE_POTION", "ANTIDOTE", "BUFF_COMBO", "SWEEP_START", "TRASH_DELETE"]:
+                if action in ["ESCAPE", "TELEPORT", "HEAL", "POTION", "TAKE_BLUE_POTION", "CAST_MEDITATION", "ANTIDOTE", "BUFF_COMBO", "SWEEP_START", "TRASH_DELETE"]:
                     dprint(key, f"🛡️ [인증모드 키 차단] 바탕화면 오작동 방지를 위해 잔여 인게임 명령({action})을 폐기합니다.")
                     if key in ai_states and q.empty(): ai_states[key]["hw_busy"] = False
                     continue
@@ -4758,6 +4966,10 @@ def pico_worker_thread(key):
             elif action == "TAKE_BLUE_POTION":
                 dprint(key, "💊 [스마트 자원관리] 결손치 임계점 돌파! 파랭이(F7)를 복용합니다.")
                 k_tap(KEY_F7)
+
+            elif action == "CAST_MEDITATION":
+                dprint(key, "🧘 [메디테이션] 마법사 MP 회복용 메디테이션(F10) 시전!")
+                k_tap(KEY_F10)
 
             elif action == "ANTIDOTE":
                 is_spell = cmd.get("is_spell", False)
@@ -7735,9 +7947,12 @@ def ai_commander_worker(target_pc):
                         state["cmd_fsm"] = "IDLE"
                         state["target_fsm"] = "IDLE"
                         state["certi_last_box"] = None
+                        state["meditation_expire_time"] = 0.0
+                        state["last_buff_active_time"] = curr_time
+                        state["meditation_idle_delay"] = g_val(1.5, 2.2)
                         state["was_manual_mode"] = True
                         state["cooldown"] = curr_time + 0.8
-                        dprint(key, "👑 [군주 복귀 완료] F6 헤이스트 휠 지정 완료! 즉시 버프/상점/회수 임무로 복귀합니다!")
+                        dprint(key, "👑 [버퍼 복귀 완료] F6 헤이스트 휠 지정 완료! 즉시 버프/상점/회수 임무로 복귀합니다!")
 
                 if DEBUG_MODE and debug_img is not None:
                     cur_x_c, cur_y_c = state.get("cursor_pos", [400, 300])
@@ -7775,7 +7990,14 @@ def ai_commander_worker(target_pc):
                 else:
                     cv2.putText(debug_img, f"LORD FSM: {state.get('cmd_fsm', 'IDLE')} [{my_assigned_server}]", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
-                cv2.putText(debug_img, f"MP: {mp:.1f}%", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                dbg_cls = settings.get("char_class", "군주")
+                dbg_max_mp = max(20.0, float(settings.get("max_mp", 120.0 if dbg_cls == "군주" else 240.0)))
+                dbg_cost = get_haste_mp_cost(dbg_cls)
+                dbg_cur_casts = get_dynamic_buffer_casts(mp, dbg_max_mp, dbg_cost)
+                dbg_max_casts = int(dbg_max_mp // dbg_cost)
+                medi_rem = max(0, int(state.get("meditation_expire_time", 0.0) - curr_time))
+                medi_tag = f" | MEDI:{medi_rem}s" if (dbg_cls == "마법사" and medi_rem > 0) else ""
+                cv2.putText(debug_img, f"MP: {mp:.1f}% ({dbg_cur_casts}/{dbg_max_casts}){medi_tag}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
 
                 if is_shop_mode or is_manual or is_idle:
                     try:
@@ -7811,11 +8033,14 @@ def ai_commander_worker(target_pc):
                 
             if state.get("was_manual_mode", False):
                 state["was_manual_mode"] = False
+                state["meditation_expire_time"] = 0.0
+                state["last_buff_active_time"] = curr_time
+                state["meditation_idle_delay"] = g_val(1.5, 2.2)
                 clear_movements_only(pico_queues[key])
 
             fsm = state.get("cmd_fsm", "IDLE")
             
-            # [단계 1] IDLE/ASSIGNED: 할당 대기
+            # [단계 1] IDLE/ASSIGNED: 할당 대기 (+ 마법사 메디테이션 자동 발동)
             if fsm in ["IDLE", "ASSIGNED"]:
                 if my_direct_queue and not my_direct_queue.empty():
                     req = my_direct_queue.get()
@@ -7826,6 +8051,7 @@ def ai_commander_worker(target_pc):
                         state["target_client_id"] = req.get("client_id")
                         state["assigned_casts"] = req.get("cast_count", 0)
                         state["is_first_shooter"] = req.get("is_first_shooter", False)
+                        state["last_buff_active_time"] = curr_time
                         
                         role_str = "★1타 발사대" if state["is_first_shooter"] else "보조 대기"
                         dprint(key, f"📩 임무 하달! 사냥컴({state['target_char_id']})에게 {state['assigned_casts']}방 준비. ({role_str})")
@@ -7833,6 +8059,50 @@ def ai_commander_worker(target_pc):
                         state["cmd_fsm"] = "WAIT_FOR_ANGLE"
                         state["wait_timeout"] = curr_time + 10.0 # 🚀 [안전장치 1] 10초 타임아웃
                         state["last_ping_send"] = curr_time
+
+                elif (
+                    fsm == "IDLE"
+                    and state.get("is_hunt_active", False)
+                    and not state.get("is_shop_active", False)
+                    and not state.get("is_recall_active", False)
+                    and settings.get("char_class", "군주") == "마법사"
+                    and settings.get("use_meditation", False)
+                ):
+                    medi_mp_pct = float(settings.get("medi_mp_pct", 66.0))
+                    is_medi_active = curr_time < state.get("meditation_expire_time", 0.0)
+                    idle_elapsed = curr_time - state.get("last_buff_active_time", 0.0)
+                    idle_need = state.get("meditation_idle_delay", 1.8)
+
+                    if (
+                        not is_medi_active
+                        and 5.0 <= mp <= medi_mp_pct
+                        and curr_time >= state.get("meditation_cd", 0.0)
+                        and idle_elapsed >= idle_need
+                        and pico_queues[key].empty()
+                        and not state.get("hw_busy", False)
+                    ):
+                        # 대기열 0 + 진행중 임무 없음 + 예약석 없음 확인 (데드락 방지를 위해 락 분리 조회)
+                        srv_q_cnt = 0
+                        with global_req_queue.mutex:
+                            for r in global_req_queue.queue:
+                                r_cid = str(r.get("char_id"))
+                                try: r_pc = int(r_cid.split('-')[0])
+                                except: r_pc = 0
+                                if get_target_server(r_pc, r_cid) == my_assigned_server:
+                                    srv_q_cnt += 1
+
+                        srv_busy_or_res = False
+                        with task_lock:
+                            if any(t.get("server") == my_assigned_server for t in active_group_tasks.values()):
+                                srv_busy_or_res = True
+                            elif my_assigned_server in reserved_servers:
+                                srv_busy_or_res = True
+
+                        if srv_q_cnt == 0 and not srv_busy_or_res:
+                            pico_queues[key].put({"action": "CAST_MEDITATION"})
+                            state["meditation_expire_time"] = curr_time + 600.0
+                            state["meditation_cd"] = curr_time + g_val(2.5, 3.5)
+                            dprint(key, f"🧘 [메디테이션 자동발동] 대기열 0 & MP {mp:.1f}% (기준 {medi_mp_pct:.0f}%↓) ➔ F10 시전! (600초 타이머 시작)")
                         
             # [단계 2] WAIT_FOR_ANGLE: 목표 각도 수신 및 1방 장전
             elif fsm == "WAIT_FOR_ANGLE":
@@ -7932,10 +8202,12 @@ def ai_commander_worker(target_pc):
                             
                             if state["is_first_shooter"]:
                                 pico_queues[key].put({"action": "WHEEL_CLICK"}) 
+                                state["meditation_expire_time"] = 0.0
+                                state["last_buff_active_time"] = curr_time
                                 state["assigned_casts"] -= 1 
                                 state["cmd_fsm"] = "WAIT_PHYSICAL_FIRST_SHOT"
                                 state["wait_timeout"] = curr_time + 5.0 
-                                time.sleep(0.05) 
+                                time.sleep(0.05)
                             else:
                                 state["cmd_fsm"] = "WAIT_FIRST_BUFF_RESULT"
                                 state["wait_timeout"] = curr_time + 6.0 
@@ -7988,9 +8260,11 @@ def ai_commander_worker(target_pc):
                             if msg.get("action") == "PROCEED_BUFF":
                                 dprint(key, f"✅ 결제 승인! 남은 {state['assigned_casts']}방을 마저 발사합니다.")
                                 if state["assigned_casts"] > 0:
+                                    state["meditation_expire_time"] = 0.0
+                                    state["last_buff_active_time"] = curr_time
                                     for _ in range(state["assigned_casts"]):
                                         pico_queues[key].put({"action": "WAIT", "delay_min": 2.0, "delay_max": 2.2}) 
-                                        pico_queues[key].put({"action": "WHEEL_CLICK"}) 
+                                        pico_queues[key].put({"action": "WHEEL_CLICK"})
                                     
                                     # 👇👇👇 [100% 마우스 치우기] 무조건 360도 무작위 20~100px 치움 👇👇👇
                                     cur_x, cur_y = state.get("cursor_pos", [400, 300])
@@ -8039,12 +8313,16 @@ def ai_commander_worker(target_pc):
                 if pico_queues[key].empty() and not state.get("hw_busy", False):
                     dprint(key, f"✨ 할당된 임무 완수! 라우터에 최종 보고합니다.")
                     internal_router_queue.put({"action": "TASK_DONE", "mini_key": key, "char_id": state["target_char_id"]})
+                    state["last_buff_active_time"] = curr_time
+                    state["meditation_idle_delay"] = g_val(1.5, 2.2)
                     state["cmd_fsm"] = "IDLE"
                 
                 if curr_time > state.get("cast_timeout", 0):
                     dprint(key, "⚠️ 잔여 시전 타임아웃. 큐 폭파 후 강제 보고.")
                     clear_movements_only(pico_queues[key])
                     internal_router_queue.put({"action": "TASK_DONE", "mini_key": key, "char_id": state["target_char_id"]})
+                    state["last_buff_active_time"] = curr_time
+                    state["meditation_idle_delay"] = g_val(1.5, 2.2)
                     state["cmd_fsm"] = "IDLE"
 
             elapsed_loop = time.time() - curr_time
@@ -8543,12 +8821,22 @@ def sync_gui_vars():
         k = pc["key"]
         if k in gui_vars:
             blue_def_val = safe_float(gui_vars[k].get("blue_deficit", tk.StringVar(value="11")), 11.0)
+            char_cls_val = gui_vars[k].get("char_class", tk.StringVar(value="군주")).get().strip()
+            if char_cls_val not in ("군주", "마법사"):
+                char_cls_val = "군주"
+            default_max_mp = 120.0 if char_cls_val == "군주" else 240.0
+            max_mp_val = max(20.0, safe_float(gui_vars[k].get("max_mp", tk.StringVar(value=str(int(default_max_mp)))), default_max_mp))
+            medi_pct_val = max(1.0, min(99.0, safe_float(gui_vars[k].get("medi_mp_pct", tk.StringVar(value="66")), 66.0)))
             
             st = ai_states.get(k, {})  
             
             current_settings[k] = {
                 "com_port": gui_vars[k]["com_port"].get().strip(),
                 "pico_hwid": st.get("pico_hwid", saved_settings.get(k, {}).get("pico_hwid", "")),
+                "char_class": char_cls_val,
+                "max_mp": max_mp_val,
+                "use_meditation": gui_vars[k].get("use_meditation", tk.BooleanVar(value=False)).get(),
+                "medi_mp_pct": medi_pct_val,
                 "use_blue_pot": gui_vars[k].get("use_blue_pot", tk.BooleanVar(value=False)).get(), 
                 "blue_deficit": blue_def_val, # 🚀 파랭이 결손방수 실시간 동기화
                 
@@ -8596,7 +8884,16 @@ def sync_gui_vars():
                 btn_dict[k].config(text=f" 👑 [{k}] 군주 통제 패널 (상태: {fsm_status})")
 
     global _NEED_SAVE_SETTINGS
-    if _NEED_SAVE_SETTINGS:
+    gui_snapshot = {
+        k_s: {v_n: str(v_o.get()) for v_n, v_o in v_d.items() if hasattr(v_o, "get") and v_n != "test_dir_var"}
+        for k_s, v_d in gui_vars.items()
+    }
+    current_gui_str = str(gui_snapshot)
+    if not hasattr(sync_gui_vars, "last_gui_str"):
+        sync_gui_vars.last_gui_str = current_gui_str
+
+    if sync_gui_vars.last_gui_str != current_gui_str or _NEED_SAVE_SETTINGS:
+        sync_gui_vars.last_gui_str = current_gui_str
         _NEED_SAVE_SETTINGS = False
         save_settings()
 
@@ -8662,6 +8959,9 @@ def toggle_buff_bot(key):
         state["target_char_id"] = None
         state["was_manual_mode"] = True
         state["blue_pot_cd"] = 0
+        state["meditation_expire_time"] = 0.0
+        state["last_buff_active_time"] = time.time()
+        state["meditation_idle_delay"] = g_val(1.5, 2.2)
     else:
         release_central_ip_lock_async(key)
         state["abort_macro"] = True
@@ -8913,7 +9213,7 @@ root.title(f"🛡️ 커맨드 센터 (중앙 통제실)")
 
 screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()
 default_gui_x = screen_w - 860 - 20 
-default_gui_y = screen_h - 620 - 60 # 👈 30픽셀 더 늘림
+default_gui_y = screen_h - 670 - 60
 
 try: start_x = int(global_settings.get("gui_x", default_gui_x))
 except: start_x = default_gui_x
@@ -8922,7 +9222,7 @@ except: start_y = default_gui_y
 
 if start_x == 100 and start_y == 100: start_x, start_y = default_gui_x, default_gui_y
 
-root.geometry(f"860x620+{start_x}+{start_y}") # 👈 30픽셀 더 늘림
+root.geometry(f"860x670+{start_x}+{start_y}")
 root.configure(bg=BG_MAIN)
 
 debug_var = tk.BooleanVar(value=DEBUG_MODE)
@@ -9027,6 +9327,10 @@ for i, pc in enumerate(MINI_PCS):
         
     pc_saved = saved_settings.get(key, {})
     if "com_port" not in gui_vars[key]: gui_vars[key]["com_port"] = tk.StringVar(value=pc_saved.get("com_port", ""))
+    if "char_class" not in gui_vars[key]: gui_vars[key]["char_class"] = tk.StringVar(value=pc_saved.get("char_class", "군주"))
+    if "max_mp" not in gui_vars[key]: gui_vars[key]["max_mp"] = tk.StringVar(value=str(pc_saved.get("max_mp", "120" if pc_saved.get("char_class", "군주") == "군주" else "240")))
+    if "use_meditation" not in gui_vars[key]: gui_vars[key]["use_meditation"] = tk.BooleanVar(value=pc_saved.get("use_meditation", False))
+    if "medi_mp_pct" not in gui_vars[key]: gui_vars[key]["medi_mp_pct"] = tk.StringVar(value=str(pc_saved.get("medi_mp_pct", "66")))
     if "use_blue_pot" not in gui_vars[key]: gui_vars[key]["use_blue_pot"] = tk.BooleanVar(value=pc_saved.get("use_blue_pot", False))
     if "blue_deficit" not in gui_vars[key]: gui_vars[key]["blue_deficit"] = tk.StringVar(value=str(pc_saved.get("blue_deficit", "11")))
     if "win_x" not in gui_vars[key]: gui_vars[key]["win_x"] = tk.StringVar(value=str(pc_saved.get("win_x", default_x)))
@@ -9150,13 +9454,53 @@ for i, pc in enumerate(MINI_PCS):
 
     import tkinter.ttk as ttk
     ttk.Separator(tab_ctrl, orient="horizontal").pack(fill="x", padx=2, pady=2)
-    
+
+    spec_frame = tk.Frame(tab_ctrl, bg=BG_PANEL)
+    spec_frame.pack(side="top", fill="x", pady=1)
+
+    cb_cls = ttk.Combobox(spec_frame, textvariable=vars_dict["char_class"], values=["군주", "마법사"], state="readonly", width=5, font=("맑은 고딕", 8, "bold"))
+    cb_cls.pack(side="left", padx=(1, 2))
+    tk.Label(spec_frame, text="MP:", bg=BG_PANEL, fg="#81C784", font=("맑은 고딕", 8, "bold")).pack(side="left")
+    tk.Entry(spec_frame, textvariable=vars_dict["max_mp"], width=4, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
+
+    lbl_max_cast = tk.Label(spec_frame, text="(6방)", bg=BG_PANEL, fg="#FFD54F", font=("맑은 고딕", 8, "bold"))
+    lbl_max_cast.pack(side="left", padx=(1, 4))
+
+    chk_medi = tk.Checkbutton(spec_frame, text="메디(F10)", variable=vars_dict["use_meditation"], bg=BG_PANEL, fg="#CE93D8", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold"))
+    chk_medi.pack(side="left", padx=0)
+    ent_medi_pct = tk.Entry(spec_frame, textvariable=vars_dict["medi_mp_pct"], width=3, justify="center", bg="#3E3E42", fg="white", insertbackground="white")
+    ent_medi_pct.pack(side="left", padx=1)
+    tk.Label(spec_frame, text="%↓", bg=BG_PANEL, fg="#CE93D8", font=("맑은 고딕", 8)).pack(side="left")
+
+    def _make_spec_updater(v_dict, lbl_w, c_medi, e_medi):
+        def _update(*_args):
+            cls_name = v_dict["char_class"].get().strip()
+            cost = get_haste_mp_cost(cls_name)
+            try:
+                m_mp = float(v_dict["max_mp"].get().strip())
+                max_c = int(max(0.0, m_mp) // cost)
+            except Exception:
+                max_c = 0
+            lbl_w.config(text=f"({max_c}방)")
+            if cls_name == "마법사":
+                c_medi.config(state="normal")
+                e_medi.config(state="normal")
+            else:
+                c_medi.config(state="disabled")
+                e_medi.config(state="disabled")
+        return _update
+
+    _spec_upd = _make_spec_updater(vars_dict, lbl_max_cast, chk_medi, ent_medi_pct)
+    vars_dict["char_class"].trace_add("write", _spec_upd)
+    vars_dict["max_mp"].trace_add("write", _spec_upd)
+    _spec_upd()
+
     blue_frame = tk.Frame(tab_ctrl, bg=BG_PANEL)
     blue_frame.pack(side="top", fill="x", pady=1)
     tk.Checkbutton(blue_frame, text="파랭이(F7)", variable=vars_dict["use_blue_pot"], bg=BG_PANEL, fg="#4FC3F7", selectcolor="#3E3E42", font=("맑은 고딕", 8, "bold")).pack(side="left", padx=1)
     tk.Label(blue_frame, text="결손:", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left")
     tk.Entry(blue_frame, textvariable=vars_dict["blue_deficit"], width=4, justify="center", bg="#3E3E42", fg="white", insertbackground="white").pack(side="left", padx=1)
-    tk.Label(blue_frame, text="방 이상 부족 시", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left")
+    tk.Label(blue_frame, text="방 단위 (군주1순위)", bg=BG_PANEL, fg=FG_TEXT, font=("맑은 고딕", 8)).pack(side="left")
     
     if "shop_item" not in gui_vars[key]: gui_vars[key]["shop_item"] = tk.StringVar(value=pc_saved.get("shop_item", "yongi"))
     if "shop_qty" not in gui_vars[key]: gui_vars[key]["shop_qty"] = tk.StringVar(value=pc_saved.get("shop_qty", "5000"))
