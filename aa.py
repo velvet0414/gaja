@@ -757,6 +757,14 @@ MUDFISH_USERNAME = "velvet0414@gmail.com"                 # 미꾸라지 로그�
 MUDFISH_PASSWORD = "flcl1030!@"                           # 미꾸라지 비밀번호
 MUDFISH_PROXY_PORT = 18080                                # 미꾸라지 공식 HTTP 프록시 포트 (설치 불필요)
 
+# 📱 [13번컴 안드로이드폰 모바일 프록시 출구 설정] True: 13번컴 폰 사용 / False: 기존 미꾸라지 사용
+USE_MOBILE_PROXY_FOR_VPN = True
+MOBILE_PROXY_HOST = "100.73.27.56"                        # 13번컴 Tailscale IP
+MOBILE_PROXY_PORT = 31290                                 # mobile_proxy_13.py 서버 포트
+
+def _get_mobile_proxy_host():
+    return "127.0.0.1" if get_my_central_num() == "13" else MOBILE_PROXY_HOST
+
 _MUDFISH_NODES_CACHE = []
 _MUDFISH_NODES_CACHE_TIME = 0.0
 _MUDFISH_LOCK = threading.Lock()
@@ -886,12 +894,33 @@ def _get_or_assign_mudfish_node(pc_key):
     return None
 
 def request_central_ip_lock(pc_key, target_c_num, action="ACQUIRE"):
-    """내 중앙컴, 타 중앙컴, 또는 미꾸라지VPN(대기열 없이 즉시 승인) 사용권을 처리합니다."""
+    """내 중앙컴, 타 중앙컴, 13번컴 모바일폰, 또는 미꾸라지VPN 사용권을 처리합니다."""
     my_num = get_my_central_num()
     t_num = str(target_c_num or my_num).strip()
 
-    # 🐟 미꾸라지(VPN) 모드는 대기열 없이 즉시 승인!
     if t_num == "VPN":
+        if USE_MOBILE_PROXY_FOR_VPN:
+            m_host = _get_mobile_proxy_host()
+            client_id = f"{my_num}번컴-{pc_key}"
+            try:
+                s = socket.create_connection((m_host, MOBILE_PROXY_PORT), timeout=2.0)
+                s.settimeout(2.0)
+                s.sendall(f"MOBILE_LOCK {action} {client_id}\r\n\r\n".encode("utf-8"))
+                resp = s.recv(1024).decode("utf-8", errors="ignore").strip()
+                s.close()
+                if resp.startswith("GRANTED"):
+                    m_ip = resp.split("|", 1)[1].strip() if "|" in resp else ""
+                    if pc_key in ai_states and m_ip:
+                        ai_states[pc_key]["certi_mobile_ip"] = m_ip
+                    return True, f"GRANTED|{m_ip}" if m_ip else "GRANTED"
+                elif resp.startswith("RELEASED"):
+                    return True, "RELEASED"
+                elif resp:
+                    return False, resp
+                return False, "OFFLINE|13번컴 모바일 프록시 응답 없음"
+            except Exception:
+                return False, "OFFLINE|13번컴 모바일 프록시(31290) 연결 불가"
+
         if action == "RELEASE":
             return True, "RELEASED"
         node = _get_or_assign_mudfish_node(pc_key)
@@ -922,21 +951,53 @@ def request_central_ip_lock(pc_key, target_c_num, action="ACQUIRE"):
         return False, "OFFLINE|타 중앙컴 연결 불가"
 
 def release_central_ip_lock_async(pc_key):
-    """인증 종료 시 일반 중앙컴 슬롯만 반납하며, 미꾸라지 IP는 해당 미니컴에서 fail.png가 뜰 때까지 계속 유지합니다!"""
+    """인증 종료 시 중앙컴 및 13번컴 모바일 슬롯을 즉시 반납합니다. (미꾸라지 단독 모드일 때만 반납 생략)"""
     if pc_key not in ai_states:
         return
     st = ai_states[pc_key]
     locked_c = st.pop("certi_locked_central", None)
-    if locked_c == "VPN":
+    if locked_c == "VPN" and not USE_MOBILE_PROXY_FOR_VPN:
         return
     if locked_c:
         threading.Thread(target=request_central_ip_lock, args=(pc_key, locked_c, "RELEASE"), daemon=True).start()
 
 def request_vpn_server_rotate(pc_key, force_rotate=True):
     """
-    해당 미니컴(pc_key)에서 fail.png 발생 시, 그 미니컴의 상태 파일에만 현재 미꾸라지 IP를 실패 처리하고
-    다음 미꾸라지 한국 서버 IP로 즉시 교체합니다. (다른 미니컴에는 영향 없음)
+    USE_MOBILE_PROXY_FOR_VPN=True 시 13번컴 안드로이드폰의 비행기모드 IP 교체를 비동기로 요청/확인합니다.
+    False 시 기존 미꾸라지 한국 서버 교체를 그대로 수행합니다.
     """
+    if USE_MOBILE_PROXY_FOR_VPN:
+        my_num = get_my_central_num()
+        m_host = _get_mobile_proxy_host()
+        client_id = f"{my_num}번컴-{pc_key}"
+        st = ai_states.get(pc_key, {})
+        failed_ip = str(st.get("certi_mobile_ip") or "").strip()
+        if not failed_ip:
+            failed_ip = "FORCE" if force_rotate else "NONE"
+        req_id = str(st.get("certi_rot_req_id") or "").strip()
+        if not req_id:
+            req_id = f"{my_num}_{pc_key}_{int(time.time() * 1000)}"
+            if pc_key in ai_states:
+                ai_states[pc_key]["certi_rot_req_id"] = req_id
+        try:
+            s = socket.create_connection((m_host, MOBILE_PROXY_PORT), timeout=3.0)
+            s.settimeout(3.0)
+            s.sendall(f"MOBILE_ROTATE {client_id} {failed_ip} {req_id}\r\n\r\n".encode("utf-8"))
+            resp = s.recv(1024).decode("utf-8", errors="ignore").strip()
+            s.close()
+            if resp.startswith("ROTATED"):
+                new_ip = resp.split("|", 1)[1].strip() if "|" in resp else "확인불가"
+                if pc_key in ai_states:
+                    ai_states[pc_key]["certi_mobile_ip"] = new_ip
+                    ai_states[pc_key].pop("certi_rot_req_id", None)
+                print(f"📱 [{client_id} 13번컴 모바일 IP 준비 완료] 새 폰 IP: {new_ip}")
+                return True, f"13번컴 폰({new_ip})"
+            elif resp:
+                return False, resp
+            return False, "OFFLINE|13번컴 모바일 IP 교체 응답 없음"
+        except Exception as e:
+            return False, f"OFFLINE|13번컴 모바일 서버(31290) 연결 불가: {e}"
+
     if not MUDFISH_USERNAME or not MUDFISH_PASSWORD or MUDFISH_PASSWORD == "여기에_미꾸라지_비밀번호_입력":
         return False, "CONFIG|MUDFISH_PASSWORD에 미꾸라지 비밀번호를 입력해주세요!"
 
@@ -1033,8 +1094,31 @@ def _handle_proxy_client(client_sock, is_exit_server=False, pc_key=None):
                 if pc_key:
                     CURRENT_PROXY_TARGET_NUM[pc_key] = target_num
 
-            # 🐟 [미꾸라지 VPN 다이렉트 라우팅] 미니컴 크롬 요청에 Basic 인증 헤더를 자동 주입하여 18080 포트로 직결!
+            # 📱 [13번컴 안드로이드 모바일 프록시] 또는 🐟 [미꾸라지 VPN] 라우팅
             if target_num == "VPN":
+                if USE_MOBILE_PROXY_FOR_VPN:
+                    m_host = _get_mobile_proxy_host()
+                    try:
+                        remote_sock = socket.create_connection((m_host, MOBILE_PROXY_PORT), timeout=5.0)
+                    except Exception:
+                        remote_sock = None
+
+                    if remote_sock is not None:
+                        try: remote_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                        except Exception: pass
+                        if now_t - _LAST_PROXY_LOG_TIME > 3.0:
+                            m_ip_log = ai_states.get(pc_key, {}).get("certi_mobile_ip", "") if pc_key else ""
+                            print(f"📱 [모바일 프록시 연결] {pc_key} 크롬 ➔ [13번컴 폰({m_host}:{MOBILE_PROXY_PORT} / {m_ip_log or 'LTE'})] 정상 연결됨!")
+                            _LAST_PROXY_LOG_TIME = now_t
+                        client_sock.settimeout(None)
+                        remote_sock.settimeout(None)
+                        threading.Thread(target=_proxy_pipe_sockets, args=(client_sock, remote_sock), daemon=True).start()
+                        _proxy_pipe_sockets(remote_sock, client_sock)
+                    else:
+                        try: client_sock.close()
+                        except Exception: pass
+                    return
+
                 req_data = b""
                 while b"\r\n\r\n" not in req_data and len(req_data) < 16384:
                     chunk = client_sock.recv(4096)
@@ -8036,14 +8120,14 @@ def ai_commander_worker(target_pc):
                     state["certi_lock_hb_time"] = curr_time
                     threading.Thread(target=request_central_ip_lock, args=(key, state["certi_locked_central"], "ACQUIRE"), daemon=True).start()
 
-                # ⏱️ [웹 인증 타임아웃 워치독] 아이디/비번 오류 등 페이지 미전환 시 30초 대기 후 즉시 재시도!
+                # ⏱️ [웹 인증 타임아웃 워치독] 아이디/비번 오류·페이지 로딩 지연 시 단계별 제한시간 초과 후 재시도!
                 web_timeout_fsms = {
                     "CERTI_STEP_2_FIND", "CERTI_STEP_3_FIND", "CERTI_STEP_5_FIND",
                     "CERTI_STEP_7_FIND", "CERTI_STEP_8_FIND", "CERTI_STEP_8_BRANCH",
                     "CERTI_WAIT_SUC"
                 }
-                # 아이디/비번 입력 후 넘어가는 단계(5, 7, 8_BRANCH, WAIT_SUC)는 30초, 단순 버튼 탐색(2, 3, 8)은 15초 부여
-                step_limit_sec = 30.0 if current_fsm in {"CERTI_STEP_5_FIND", "CERTI_STEP_7_FIND", "CERTI_STEP_8_BRANCH", "CERTI_WAIT_SUC"} else 15.0
+                # 아이디/비번/인증 제출 후 전환 단계(5, 7, 8_BRANCH, WAIT_SUC)는 45초, 단순 페이지/버튼 로딩(2, 3, 8)은 30초 부여
+                step_limit_sec = 45.0 if current_fsm in {"CERTI_STEP_5_FIND", "CERTI_STEP_7_FIND", "CERTI_STEP_8_BRANCH", "CERTI_WAIT_SUC"} else 30.0
 
                 if current_fsm not in web_timeout_fsms or is_hw_working or state.get("certi_web_last_fsm") != current_fsm:
                     state["certi_web_last_fsm"] = current_fsm
@@ -8063,11 +8147,26 @@ def ai_commander_worker(target_pc):
                                 state["certi_vpn_enter_time"] = 0.0
                                 state["certi_failed_centrals"] = set()
                                 state["certi_busy_skipped"] = set()
-                                dprint(key, "⏰ [미꾸라지VPN 6시간 경과] 6시간이 지나 다시 내 중앙컴(1~13번) 회선부터 인증을 시도합니다!")
+                                state["certi_mobile_to_cnt"] = 0
+                                dprint(key, "⏰ [모바일/VPN 6시간 경과] 6시간이 지나 다시 내 중앙컴(1~13번) 회선부터 인증을 시도합니다!")
                             else:
                                 next_c = "VPN"
-                                next_timeout_fsm = "CERTI_REQ_VPN_ROTATE"
-                                dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 지연 초과! 다음 미꾸라지 한국 서버로 IP를 교체하여 재시도합니다.")
+                                if USE_MOBILE_PROXY_FOR_VPN:
+                                    if curr_time - state.get("certi_last_mobile_to_t", 0.0) > 120.0:
+                                        state["certi_mobile_to_cnt"] = 0
+                                    to_cnt = state.get("certi_mobile_to_cnt", 0) + 1
+                                    state["certi_last_mobile_to_t"] = curr_time
+                                    if to_cnt < 2:
+                                        state["certi_mobile_to_cnt"] = to_cnt
+                                        next_timeout_fsm = "CERTI_WAIT_IP_LOCK"
+                                        dprint(key, f"⏰ [모바일 웹 인증 {step_limit_sec:.0f}초 타임아웃 (1/2회)] '{current_fsm}' 지연 초과! IP 교체 없이 크롬만 닫고 재시도합니다.")
+                                    else:
+                                        state["certi_mobile_to_cnt"] = 0
+                                        next_timeout_fsm = "CERTI_REQ_VPN_ROTATE"
+                                        dprint(key, f"⏰ [모바일 웹 인증 {step_limit_sec:.0f}초 연속 타임아웃 (2/2회)] '{current_fsm}' 지연 반복! 13번컴 폰 IP를 교체하여 재시도합니다.")
+                                else:
+                                    next_timeout_fsm = "CERTI_REQ_VPN_ROTATE"
+                                    dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 지연 초과! 다음 미꾸라지 한국 서버로 IP를 교체하여 재시도합니다.")
                         else:
                             failed_set = state.setdefault("certi_failed_centrals", set())
                             alive_set = ({c_n for c_n, _ in ALIVE_OTHER_PROXIES} | {my_num}) if _PROXY_HEALTH_CHECKED else set(CENTRAL_ORDER)
@@ -8486,16 +8585,27 @@ def ai_commander_worker(target_pc):
                             else:
                                 state["certi_use_sub"] = True
                                 CURRENT_PROXY_TARGET_NUM[key] = target_c
-                                c_ip = CENTRAL_TAILSCALE_MAP.get(target_c, "")
-                                label_c = "미꾸라지VPN" if target_c == "VPN" else f"{target_c}번 중앙컴"
+                                if target_c == "VPN" and USE_MOBILE_PROXY_FOR_VPN:
+                                    c_ip = state.get("certi_mobile_ip") or _get_mobile_proxy_host()
+                                    label_c = "13번컴 모바일폰"
+                                else:
+                                    c_ip = CENTRAL_TAILSCALE_MAP.get(target_c, "")
+                                    label_c = "미꾸라지VPN" if target_c == "VPN" else f"{target_c}번 중앙컴"
                                 dprint(key, f"🔒 [IP 순차 승인 완료] [{label_c}({c_ip})] 프록시 IP 사용권 획득! 'sub.png' 인증을 시작합니다.")
                             state["target_fsm"] = "CERTI_STEP_1_FIND"
                             state["cooldown"] = curr_time + 0.1
                         else:
                             if target_c == "VPN":
-                                dprint(key, "⚠️ [미꾸라지 응답 지연] 다음 미꾸라지 한국 서버로 즉시 교체합니다.")
-                                state["target_fsm"] = "CERTI_REQ_VPN_ROTATE"
-                                state["cooldown"] = curr_time + 0.5
+                                if USE_MOBILE_PROXY_FOR_VPN:
+                                    reason_txt = msg.split("|", 1)[1] if "|" in msg else msg
+                                    if curr_time - state.get("certi_ip_lock_log_time", 0.0) >= 3.0:
+                                        dprint(key, f"⏳ [13번컴 모바일폰 대기] {reason_txt}")
+                                        state["certi_ip_lock_log_time"] = curr_time
+                                    state["cooldown"] = curr_time + (3.0 if msg.startswith("OFFLINE") else 1.5)
+                                else:
+                                    dprint(key, "⚠️ [미꾸라지 응답 지연] 다음 미꾸라지 한국 서버로 즉시 교체합니다.")
+                                    state["target_fsm"] = "CERTI_REQ_VPN_ROTATE"
+                                    state["cooldown"] = curr_time + 0.5
                             elif msg.startswith("COOLDOWN"):
                                 # 3슬롯 안에는 들어왔고 동시 접속 패킷 충돌 방지 시차(1~3초)만 대기 중인 상태
                                 if curr_time - state.get("certi_ip_lock_log_time", 0.0) >= 3.0:
@@ -34325,10 +34435,12 @@ for i, pc in enumerate(MINI_PCS):
         # 점유 중이던 기존 중앙컴 IP 슬롯이 있다면 반납
         release_central_ip_lock_async(target_key)
 
-        # 💡 군주컴 프로톤VPN 6시간 유지 설정 (메모리에만 저장되어 매크로 재시작 시 자동 리셋됨)
+        # 💡 13번컴 모바일폰(또는 미꾸라지VPN) 6시간 유지 설정 (메모리에만 저장되어 매크로 재시작 시 자동 리셋됨)
         st["certi_curr_central"] = "VPN"
         st["certi_vpn_enter_time"] = curr_t
         st["certi_use_sub"] = True
+        st.pop("certi_mobile_ip", None)
+        st.pop("certi_rot_req_id", None)
         CURRENT_PROXY_TARGET_NUM[target_key] = "VPN"
 
         st["certi_account_idx"] = 0
