@@ -3717,14 +3717,20 @@ def _save_buff_times_internal(states_dict):
             sub_b = {bk: max(0.0, st.get(f"buff_{bk}_time", 0) - curr_t) for bk in _BUFF_SAVE_KEYS}
             sub_b["_haste_elapsed"] = (curr_t - st["last_haste_time"]) if st.get("last_haste_time", 0.0) > 0.0 else None
             sub_b["_real_buff_elapsed"] = (curr_t - st["real_buff_time"]) if st.get("real_buff_time", 0.0) > 0.0 else None
+            sub_b["_need_full_buff"] = bool(st.get("need_full_buff", False))
+            sub_b["_buff_full_reason"] = str(st.get("buff_full_reason", ""))
             data = {"SHARED_SUB": sub_b, TARGET_PC_KEY: sub_b}
             with open(get_sub_buff_file(SUB_CHAR_SLOT), "w", encoding="utf-8") as f:
                 json.dump(data, f)
         else:
-            data = {
-                k: {bk: max(0.0, st.get(f"buff_{bk}_time", 0) - curr_t) for bk in _BUFF_SAVE_KEYS}
-                for k, st in states_dict.items()
-            }
+            data = {}
+            for k, st in states_dict.items():
+                entry = {bk: max(0.0, st.get(f"buff_{bk}_time", 0) - curr_t) for bk in _BUFF_SAVE_KEYS}
+                entry["_haste_elapsed"] = (curr_t - st["last_haste_time"]) if st.get("last_haste_time", 0.0) > 0.0 else None
+                entry["_real_buff_elapsed"] = (curr_t - st["real_buff_time"]) if st.get("real_buff_time", 0.0) > 0.0 else None
+                entry["_need_full_buff"] = bool(st.get("need_full_buff", False))
+                entry["_buff_full_reason"] = str(st.get("buff_full_reason", ""))
+                data[k] = entry
             with open(BUFF_SAVE_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f)
     except:
@@ -4558,6 +4564,9 @@ for pc in MINI_PCS:
         for bk, (r_min, r_max) in _BUFF_INIT_RANGES.items()
     }
 
+    init_last_haste = max(0.0, now_t - float(sb["_haste_elapsed"])) if sb.get("_haste_elapsed") is not None else now_t
+    init_real_buff = max(0.0, now_t - float(sb["_real_buff_elapsed"])) if sb.get("_real_buff_elapsed") is not None else now_t
+
     ai_states[k] = {
         "bot_start_time": now_t, "accum_hunt_time": 0.0,
         "fatigue_mult": 1.0, "next_fatigue_target": 0.0,
@@ -4567,7 +4576,9 @@ for pc in MINI_PCS:
         "last_chase_dist": 999.0, "stuck_start_time": time.time(), "is_paused": False, "is_hunt_active": False,
         "poison_timer": 0, "antidote_cd": 0, "heal_cd": 0, "potion_cd": 0,
         **buff_init_times,
-        "last_haste_time": now_t,
+        "last_haste_time": init_last_haste,
+        "need_full_buff": bool(sb.get("_need_full_buff", False)),
+        "buff_full_reason": str(sb.get("_buff_full_reason", "")),
         "arrow_image": None, "next_arrow_check": 0, "last_arrow_change_time": 0.0, "arrow_is_firing": False,
         "is_attacking": False, "attack_cmd_time": 0.0, "has_fired_arrow": False, "humanize_cd": 0.0,
         "exp_image": None, "next_exp_check": 0, "last_exp_time": now_t,
@@ -4584,7 +4595,7 @@ for pc in MINI_PCS:
         "dungeon_corner_idx": 0, "dungeon_going_center": False,
         "last_pause_time": 0.0, "last_mob_pos": None, "last_mob_time": 0.0, "miss_count": 0,
         "pre_target_data": None, "exp_drop_wait_timer": 0.0,
-        "is_real_buff_received": True, "real_buff_time": now_t,
+        "is_real_buff_received": True, "real_buff_time": init_real_buff,
         "in_ingame_party": False
     }
 
@@ -9327,10 +9338,20 @@ def ai_commander_worker(target_pc):
 
                     # 12-1단계: 활성화된 게임창의 인증요구 팝업에서 ok2.png 찾아 원클릭
                     elif current_fsm == "CERTI_FIND_OK2_FIRST":
+                        if state.get("certi_ok2_find_start", 0.0) <= 0.0:
+                            state["certi_ok2_find_start"] = curr_time
                         pos_ok2 = find_certi_img("ok2.png", th=0.82)
                         if pos_ok2:
+                            state["certi_ok2_find_start"] = 0.0
+                            state["certi_ok2_evaded"] = False
                             dprint(key, f"🔎 [팝업 확인] 'ok2.png' 발견({pos_ok2[0]}, {pos_ok2[1]})! 이동 후 원클릭합니다.")
                             start_certi_move_and_action(pos_ok2[0], pos_ok2[1], next_fsm="CERTI_FIND_QUIT", double=False, post_wait=0.6, desc="ok2.png 팝업 닫기")
+                        elif find_certi_img("quit.png", th=0.82) is not None:
+                            state["certi_ok2_find_start"] = 0.0
+                            state["certi_ok2_evaded"] = False
+                            dprint(key, "🔎 [팝업 이미 닫힘] 'quit.png' 감지! 종료 버튼 클릭 단계(CERTI_FIND_QUIT)로 즉시 전환합니다.")
+                            state["target_fsm"] = "CERTI_FIND_QUIT"
+                            state["cooldown"] = curr_time + 0.1
                         else:
                             elapsed_ok2 = curr_time - state.get("certi_ok2_find_start", curr_time)
                             if elapsed_ok2 >= 3.0 and not state.get("certi_ok2_evaded", False):
@@ -9342,6 +9363,19 @@ def ai_commander_worker(target_pc):
                                 state["certi_ok2_evaded"] = True
                                 state["cooldown"] = curr_time + dur_ev + 0.3
                                 dprint(key, "👀 [ok2.png 가림 방지] 커서를 옆으로 치운 뒤 확인 버튼을 다시 스캔합니다.")
+                            elif elapsed_ok2 >= 12.0:
+                                state["certi_ok2_find_start"] = 0.0
+                                state["certi_ok2_evaded"] = False
+                                if state.pop("certi_need_web_after_quit", False):
+                                    next_to_fsm = "CERTI_DELAY_WAIT" if state.get("certi_delay_until", 0.0) > curr_time else "CERTI_GOTO_DESKTOP"
+                                    dprint(key, f"⏰ [ok2.png 12초 미감지 탈출] 팝업이 이미 사라진 것으로 판단하여 {next_to_fsm}로 넘어갑니다.")
+                                    state["target_fsm"] = next_to_fsm
+                                else:
+                                    dprint(key, "⏰ [ok2.png 12초 미감지 탈출] 팝업이 이미 사라진 것으로 판단하여 바탕화면(13.png) 단계로 넘어갑니다.")
+                                    state["certi_13_wait_mode"] = "NORMAL"
+                                    state["certi_next_desktop_time"] = 0.0
+                                    state["target_fsm"] = "CERTI_STEP_13_FIND"
+                                state["cooldown"] = curr_time + 0.2
                             else:
                                 state["cooldown"] = curr_time + 0.2
 
@@ -12658,9 +12692,13 @@ def ai_commander_worker(target_pc):
                                         "buff_windwalk_time": state.get("buff_windwalk_time", 0.0),
                                         "buff_extra_f10_time": state.get("buff_extra_f10_time", 0.0),
                                         "buff_light_time": state.get("buff_light_time", 0.0),
-                                        "buff_blue_pot_time": state.get("buff_blue_pot_time", 0.0)
+                                        "buff_blue_pot_time": state.get("buff_blue_pot_time", 0.0),
+                                        "need_full_buff": state.get("need_full_buff", False),
+                                        "buff_full_reason": state.get("buff_full_reason", "")
                                     }
 
+                                    state["need_full_buff"] = True
+                                    state["buff_full_reason"] = "사망감지"
                                     state["last_haste_time"] = 0.0; state["used_gangchol"] = False; state["buff_shield_time"] = 0.0; state["buff_holy_time"] = 0.0; state["buff_enchant_time"] = 0.0; state["buff_blessed_time"] = 0.0
                                     state["buff_element_time"] = 0.0; state["buff_dex_time"] = 0.0; state["buff_decrease_time"] = 0.0; state["buff_windwalk_time"] = 0.0; state["buff_extra_f10_time"] = 0.0
                                     state["buff_light_time"] = 0.0; state["buff_blue_pot_time"] = 0.0
@@ -12862,6 +12900,8 @@ def ai_commander_worker(target_pc):
                             snap_num, snap_icon = capture_f8_escape_snapshot(img_bgr)
                             state["abs_f8_snap_num"] = snap_num
                             state["abs_f8_snap_icon"] = snap_icon
+                            state["abs_f1_confirmed"] = True
+                            state["abs_f1_retry"] = 0
                             pico_queues[key].put({"action": "ESCAPE_SPAM", "press_f1": False})
                             state["abs_esc_next_check"] = curr_time + g_time(0.22, 0.28, key)
                             state["target_fsm"] = "ABS_ESCAPE_VERIFY"
@@ -12869,6 +12909,8 @@ def ai_commander_worker(target_pc):
                             if cur_x >= 735 and cur_y >= 475:
                                 pico_queues[key].put({"action": "HOVER", "dx": -150, "dy": -150})
                                 state["cursor_pos"] = [max(400, cur_x - 150), max(245, cur_y - 150)]
+                            state["abs_f1_confirmed"] = False
+                            state["abs_f1_retry"] = 0
                             pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.06, 0.10)})
                             state["abs_f1_prep_until"] = curr_time + g_time(0.22, 0.28, key)
                             state["target_fsm"] = "ABS_ESCAPE_F1_PREP"
@@ -12876,6 +12918,30 @@ def ai_commander_worker(target_pc):
 
                 if state.get("target_fsm") == "ABS_ESCAPE_F1_PREP":
                     if not state.get("hw_busy", False) and pico_queues[key].empty() and curr_time >= state.get("abs_f1_prep_until", 0):
+                        is_f1_ok_prep = False
+                        if h >= 130 and w >= 220:
+                            q_roi_prep = img_bgr[h - 130:h, w - 220:w]
+                            for _anc in ("heal.png", "body.png", "home.png", "home2.png", "duru.png", "tel.png"):
+                                _td = loaded_models.get(f"qq/{_anc}")
+                                if _td and _td.get("color") is not None:
+                                    try:
+                                        if _td["color"].shape[0] <= q_roi_prep.shape[0] and _td["color"].shape[1] <= q_roi_prep.shape[1]:
+                                            _r = cv2.matchTemplate(q_roi_prep, _td["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([_td["mask"]] * 3)) if _td["mask"] is not None else cv2.matchTemplate(q_roi_prep, _td["color"], cv2.TM_CCOEFF_NORMED)
+                                            if cv2.minMaxLoc(_r)[1] >= 0.70:
+                                                is_f1_ok_prep = True
+                                                break
+                                    except Exception:
+                                        pass
+
+                        if not is_f1_ok_prep and state.get("abs_f1_retry", 0) < 3:
+                            state["abs_f1_retry"] = state.get("abs_f1_retry", 0) + 1
+                            dprint(key, f"🔄 [절대귀환 F1 미전환 감지] F1 페이지 재전환 시도 ({state['abs_f1_retry']}/3)")
+                            pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.06, 0.10)})
+                            state["abs_f1_prep_until"] = curr_time + g_time(0.16, 0.22, key)
+                            continue
+
+                        state["abs_f1_confirmed"] = is_f1_ok_prep
+                        state["abs_f1_retry"] = 0
                         snap_num, snap_icon = capture_f8_escape_snapshot(img_bgr)
                         state["abs_f8_snap_num"] = snap_num
                         state["abs_f8_snap_icon"] = snap_icon
@@ -12913,6 +12979,12 @@ def ai_commander_worker(target_pc):
                                 dprint(key, "⚠️ [절대귀환 재시전 한도 도달] 6.5초간 F8 주문서 잔량 변화 없음(주문서 고갈/행동불능 의심)! 1초간 타 생존기 허용 후 재시도합니다.")
                                 state["target_fsm"] = "IDLE"
                                 state["abs_return_cd"] = curr_time + 1.0
+                            elif retry_cnt % 4 == 0 and not state.get("abs_f1_confirmed", True):
+                                dprint(key, f"🔄 [절대귀환 F1 재동기화 ({retry_cnt}회차)] F1 미확정 상태 재전환 ➔ 스냅샷 갱신 후 F8 재시전!")
+                                state["abs_f1_retry"] = 0
+                                pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.06, 0.10)})
+                                state["abs_f1_prep_until"] = curr_time + g_time(0.20, 0.26, key)
+                                state["target_fsm"] = "ABS_ESCAPE_F1_PREP"
                             else:
                                 dprint(key, f"🔄 [절대귀환 미발동 ➔ 재시전 ({retry_cnt}회차)] F8 주문서 잔량 변화 없음(px:{chg_px}, diff:{max_d})! 즉시 F8을 다시 누릅니다!")
                                 pico_queues[key].put({"action": "ESCAPE_SPAM", "press_f1": (retry_cnt % 4 == 0)})
@@ -14378,6 +14450,8 @@ def ai_commander_worker(target_pc):
                                 dprint(key, "🚀 [비상 정비 완료] 강촐 처리 완료! 사냥터 복귀(RETURN) 모드로 진입합니다.")
                                 ai_states[key]["last_haste_time"] = time.time()
                                 ai_states[key]["used_gangchol"] = True
+                                ai_states[key]["need_full_buff"] = True
+                                ai_states[key]["buff_full_reason"] = "강촐후재수령"
                                 ai_states[key]["is_real_buff_received"] = True
                                 ai_states[key]["real_buff_time"] = time.time()
 
@@ -14399,6 +14473,19 @@ def ai_commander_worker(target_pc):
 
                                 failed_angles = set()
                                 cycle_count = 0
+
+                                buff_force_full = bool(ai_states.get(key, {}).get("need_full_buff", False))
+                                buff_reason_str = str(ai_states.get(key, {}).get("buff_full_reason", "") or ("풀버프요청" if buff_force_full else "일반정비"))
+                                buff_char_name = str(current_settings.get(key, {}).get("char_name", "")).strip()
+                                buff_sub_slot = int(globals().get("SUB_CHAR_SLOT", 0) or 0)
+                                buff_meta_kwargs = {
+                                    "force_full": buff_force_full,
+                                    "buff_reason": buff_reason_str,
+                                    "char_name": buff_char_name,
+                                    "sub_slot": buff_sub_slot
+                                }
+                                received_rem_sec = 7200.0
+                                received_given_casts = 6
 
                                 def check_manual_buff_chat():
                                     try:
@@ -14569,8 +14656,8 @@ def ai_commander_worker(target_pc):
 
                                     with cc_cmd_queue.mutex: cc_cmd_queue.queue.clear()
 
-                                    dprint(key, f"📡 [커맨드 송신] 통제실에 버프를 최초 요청합니다! (ID: {char_id})")
-                                    send_to_cc("REQ_BUFF", char_id=char_id, dungeon_name=dungeon_val)
+                                    dprint(key, f"📡 [커맨드 송신] 통제실에 버프를 최초 요청합니다! (ID: {char_id} | 사유: {buff_reason_str} | 풀6방강제: {buff_force_full})")
+                                    send_to_cc("REQ_BUFF", char_id=char_id, dungeon_name=dungeon_val, **buff_meta_kwargs)
 
                                     dprint(key, "⏳ [통신 대기] 통제실의 정상 수신 응답(CC_STATUS_OK)을 최대 30초간 기다립니다...")
                                     wait_standby_cmd = False
@@ -14586,7 +14673,7 @@ def ai_commander_worker(target_pc):
 
                                         if time.time() - last_req_time >= 3.0:
                                             dprint(key, f"📡 [통신 재요청] 응답 지연! 3초 간격으로 통제실에 버프를 재요청합니다...")
-                                            send_to_cc("REQ_BUFF", char_id=char_id, dungeon_name=dungeon_val)
+                                            send_to_cc("REQ_BUFF", char_id=char_id, dungeon_name=dungeon_val, **buff_meta_kwargs)
                                             last_req_time = time.time()
 
                                         try:
@@ -14639,7 +14726,7 @@ def ai_commander_worker(target_pc):
                                             if check_manual_buff_chat(): manual_buff_done = True; break
 
                                             if curr_w_time - ping_last_send >= 10.0:
-                                                send_to_cc("PING", char_id=char_id, dungeon_name=dungeon_val)
+                                                send_to_cc("PING", char_id=char_id, dungeon_name=dungeon_val, **buff_meta_kwargs)
                                                 ping_last_send = curr_w_time
                                                 dprint(key, "📡 [생존 확인 PING] 대기 지연 중... 통제실에 생존 확인(PING) 발송!")
 
@@ -14813,7 +14900,7 @@ def ai_commander_worker(target_pc):
                                         if check_manual_buff_chat(): manual_buff_done = True; break
 
                                         if curr_w_time - ping_last_send >= 10.0:
-                                            send_to_cc("PING", char_id=char_id, dungeon_name=dungeon_val)
+                                            send_to_cc("PING", char_id=char_id, dungeon_name=dungeon_val, **buff_meta_kwargs)
                                             ping_last_send = curr_w_time
                                             dprint(key, "📡 [생존 확인 PING] 통제실 생존 확인용 PING 발송!")
 
@@ -14958,7 +15045,7 @@ def ai_commander_worker(target_pc):
                                         if check_manual_buff_chat(): manual_buff_done = True; break
 
                                         if curr_w_time - ping_last_send >= 10.0:
-                                            send_to_cc("PING", char_id=char_id, dungeon_name=dungeon_val)
+                                            send_to_cc("PING", char_id=char_id, dungeon_name=dungeon_val, **buff_meta_kwargs)
                                             ping_last_send = curr_w_time
                                             dprint(key, "📡 [생존 확인 PING] 통제실 생존 확인용 PING 발송!")
 
@@ -14969,7 +15056,9 @@ def ai_commander_worker(target_pc):
 
                                             if str(msg.get("char_id")) == char_id:
                                                 if msg.get("action") == "BUFF_COMPLETE":
-                                                    dprint(key, "🎉 [최종 승인 수신] 통제실 버프 시전 종료 팩트 확인 완료!")
+                                                    received_given_casts = int(msg.get("given_casts", 6))
+                                                    received_rem_sec = float(msg.get("rem_sec", 7200.0))
+                                                    dprint(key, f"🎉 [최종 승인 수신] 통제실 버프 시전 종료 확인! ({received_given_casts}방 수령 / 누적 잔여 {received_rem_sec/60:.1f}분)")
                                                     wait_final_complete = True
                                                     break
 
@@ -15004,10 +15093,14 @@ def ai_commander_worker(target_pc):
                                 import time as builtin_time
                                 exact_now = builtin_time.time()
 
-                                ai_states[key]["last_haste_time"] = exact_now
+                                final_rem_sec = 7200.0 if manual_buff_done else max(0.0, min(7200.0, received_rem_sec))
+                                ai_states[key]["last_haste_time"] = exact_now - max(0.0, 7200.0 - final_rem_sec)
                                 ai_states[key]["used_gangchol"] = False
+                                ai_states[key]["need_full_buff"] = False
+                                ai_states[key]["buff_full_reason"] = ""
                                 ai_states[key]["is_real_buff_received"] = True
                                 ai_states[key]["real_buff_time"] = exact_now
+                                save_buff_times(ai_states)
 
                                 send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); builtin_time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
                                 ai_states[key]["target_fsm"] = "TOWN_MAINT_RETURN"
@@ -17311,6 +17404,8 @@ def ai_commander_worker(target_pc):
                                     dprint(key, f"🚨 [출발 전 팩트 검증 실패] 장부엔 {buff_threshold - haste_elapsed:.1f}초 남았다고 적혀있으나, 우측에 헤이 아이콘이 없습니다! (마을 대기 중 증발 확정) 타이머를 0으로 강제 포맷합니다!")
                                     last_haste = 0.0
                                     state["last_haste_time"] = 0.0
+                                    state["need_full_buff"] = True
+                                    state["buff_full_reason"] = "마을헤이증발"
 
                             use_cc_buff = settings.get("use_cc_buff", True)
                             if not use_cc_buff:
@@ -17870,6 +17965,8 @@ def ai_commander_worker(target_pc):
                                     state["last_haste_time"] = 0.0
                                     state["used_gangchol"] = False
                                     state["is_real_buff_received"] = False
+                                    state["need_full_buff"] = True
+                                    state["buff_full_reason"] = "헤이없음감지"
 
                                     if fsm_for_haste.startswith("TOWN_MAINT"):
                                         if curr_time > state.get("last_chat_dbg_log3", 0):
@@ -21152,11 +21249,12 @@ def ai_commander_worker(target_pc):
                                 is_yolo_free = False # 무제한 타원 시야를 강제로 끄고 원형 반경 검사로 강제 편입!
                                 
                                 gn_node = pc_graph["nodes"].get(str(pc_graph.get("next_floor_node")))
+                                curr_map_pos_yolo = state.get("dungeon_map_pos")
                                 dist_to_portal_yolo = 9999.0
-                                if gn_node and char_map_pos:
+                                if gn_node and curr_map_pos_yolo:
                                     gx_y = gn_node.get("x", 0) if isinstance(gn_node, dict) else gn_node[0]
                                     gy_y = gn_node.get("y", 0) if isinstance(gn_node, dict) else gn_node[1]
-                                    dist_to_portal_yolo = math.hypot(char_map_pos[0] - gx_y, char_map_pos[1] - gy_y)
+                                    dist_to_portal_yolo = math.hypot(curr_map_pos_yolo[0] - gx_y, curr_map_pos_yolo[1] - gy_y)
                                     
                                 portal_stop_dist_yolo = 8.0 if ("사던" in active_dungeon or "silver" in active_dungeon.lower()) else 7.2
                                 is_in_portal_fsm_yolo = fsm_for_yolo in [
@@ -31462,11 +31560,12 @@ def switch_profile_mode(target_slot=None, from_remote=False):
         for bk, (r_min, r_max) in _BUFF_INIT_RANGES.items():
             rem_v = loaded_b.get(bk, 0.0)
             st[f"buff_{bk}_time"] = (curr_t + rem_v) if rem_v > 0 else (curr_t + g_val(r_min, r_max))
-        if IS_SUB_CHAR_MODE:
-            if loaded_b.get("_haste_elapsed") is not None:
-                st["last_haste_time"] = max(0.0, curr_t - float(loaded_b["_haste_elapsed"]))
-            if loaded_b.get("_real_buff_elapsed") is not None:
-                st["real_buff_time"] = max(0.0, curr_t - float(loaded_b["_real_buff_elapsed"]))
+        if loaded_b.get("_haste_elapsed") is not None:
+            st["last_haste_time"] = max(0.0, curr_t - float(loaded_b["_haste_elapsed"]))
+        if loaded_b.get("_real_buff_elapsed") is not None:
+            st["real_buff_time"] = max(0.0, curr_t - float(loaded_b["_real_buff_elapsed"]))
+        st["need_full_buff"] = bool(loaded_b.get("_need_full_buff", False))
+        st["buff_full_reason"] = str(loaded_b.get("_buff_full_reason", ""))
         st["dungeon_map_pos"] = None
         st["dungeon_last_map_pos"] = None
         st["dungeon_global_path"] = []
@@ -32543,18 +32642,24 @@ for i, pc in enumerate(MINI_PCS):
 
                         # 현재배치 메모장에서 사냥터 칸을 건드리지 않은 예약 캐릭터는 기존 이동 예약을 그대로 유지
                         status_col = parts[4] if len(parts) >= 5 else ""
+                        planned_dng_orig = ""
                         m_res = re.search(r'현재\s*:\s*([^\s(]+).*?다음정비시\s*(?:➔|->)?\s*([0-9]+-[0-9]+)', status_col)
                         if m_res:
                             orig_short_z = m_res.group(1).replace("본던", "").strip()
                             res_short_z = m_res.group(2).strip()
                             curr_short_z = dng_val.replace("본던 ", "").strip()
+                            planned_dng_orig = f"본던 {orig_short_z}"
                             if curr_short_z == orig_short_z:
                                 dng_val = f"본던 {res_short_z}"
                             else:
                                 parts[4] = f"수동변경 ({orig_short_z} -> {curr_short_z})"
+                        else:
+                            m_move = re.search(r'(?:->|➔)\s*([0-9]+-[0-9]+)', status_col)
+                            if m_move:
+                                planned_dng_orig = f"본던 {m_move.group(1).strip()}"
 
                         zone_counts[dng_val] = zone_counts.get(dng_val, 0) + 1
-                        parsed_entries.append((line_idx, uid_norm, dng_val, fb_inv, parts))
+                        parsed_entries.append((line_idx, uid_norm, dng_val, fb_inv, parts, planned_dng_orig))
                         continue
 
                     # 2) 구형 양식 호환: 10-미니4 | 사냥터: 본던 5-1 | 초대조: 1 | ...
@@ -32571,18 +32676,31 @@ for i, pc in enumerate(MINI_PCS):
                         uid_norm = f"{c_part}-미니{m_part}" if not m_part.startswith("미니") else uid_raw
 
                         zone_counts[dng_val] = zone_counts.get(dng_val, 0) + 1
-                        parsed_entries.append((line_idx, uid_norm, dng_val, fb_inv, None))
+                        parsed_entries.append((line_idx, uid_norm, dng_val, fb_inv, None, ""))
 
                 def _pad_k(s, width):
                     s = str(s)
                     d_len = sum(2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1 for ch in s)
                     return s + (" " * max(0, width - d_len))
 
+                live_units_map = {u["uid"]: u for u in _collect_all_active_bong_units()}
                 file_updated = False
-                for line_idx, uid_norm, dng_val, fb_inv, parts in parsed_entries:
-                    # 💡 메모장에서 사냥터를 바꿨다면 새 사냥터 기준 조 번호로 자동 변환, 사냥터는 그대로인데 초대조만 수동 변경했다면 수동 변경값 존중!
+                for line_idx, uid_norm, dng_val, fb_inv, parts, planned_dng_orig in parsed_entries:
+                    # 💡 메모장에서 사냥터만 바꿨다면 새 사냥터 기준 조 번호로 자동 변환, 초대조를 직접 수정했다면 수동 변경값 존중!
+                    u_live = live_units_map.get(uid_norm)
+                    base_dng = planned_dng_orig or (u_live["curr_dng"] if u_live else "")
+                    dng_changed = bool(base_dng and dng_val != base_dng)
+                    orig_default_inv = _resolve_bong_inv_grp_by_zone(base_dng, zone_counts, fallback_inv=fb_inv) if base_dng else ""
+                    live_inv = u_live["curr_inv"] if u_live else ""
+
                     default_zone_inv = _resolve_bong_inv_grp_by_zone(dng_val, zone_counts, fallback_inv=fb_inv)
-                    auto_inv = default_zone_inv
+                    if dng_changed and (fb_inv == orig_default_inv or fb_inv == live_inv):
+                        if u_live and u_live.get("reserved_dng") == dng_val and u_live.get("reserved_inv"):
+                            auto_inv = u_live["reserved_inv"]
+                        else:
+                            auto_inv = default_zone_inv
+                    else:
+                        auto_inv = fb_inv
                     assign_map[uid_norm] = {"dng": dng_val, "inv_grp": auto_inv}
 
                     if parts is not None and len(parts) >= 5:
