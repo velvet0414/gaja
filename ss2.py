@@ -8033,7 +8033,6 @@ def ai_commander_worker(target_pc):
                 
             if state.get("was_manual_mode", False):
                 state["was_manual_mode"] = False
-                state["meditation_expire_time"] = 0.0
                 state["last_buff_active_time"] = curr_time
                 state["meditation_idle_delay"] = g_val(1.5, 2.2)
                 clear_movements_only(pico_queues[key])
