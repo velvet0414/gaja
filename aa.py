@@ -18132,6 +18132,8 @@ def ai_commander_worker(target_pc):
                         continue
 
             if raw_hp_diff < 0:
+                if raw_hp_diff <= -1.0 and state.get("tele_ext_hit_loss", 0.0) > 0.0:
+                    state["tele_ext_hit_loss"] = max(0.0, state["tele_ext_hit_loss"] + raw_hp_diff)
                 state["last_hp"] = hp
                 state["hp_drop_ticks"] = 0
                 hp_diff = 0
@@ -18145,7 +18147,10 @@ def ai_commander_worker(target_pc):
             else:
                 hp_diff = 0
 
-            # 🛡️ [순수 외부 피격 판별] 바디(홀드/단타 1초 이내) 및 독 틱을 제외한 실제 몹/PK 피격만 기록
+            # 🛡️ [순수 외부 피격 판별] 홀드 바디 중 매 프레임 시각을 갱신해 F7 해제 직후 잔여 HP 감소까지 완벽 배제
+            if state.get("body_held", False):
+                state["last_body_time"] = curr_time
+
             is_pure_external_hit = (
                 hp_diff > 0.0 and
                 not is_poisoned and
@@ -18688,6 +18693,7 @@ def ai_commander_worker(target_pc):
                         state.pop("teleport_start_time", None)
                         state["hp_danger_cd"] = curr_time + g_val(16.0, 18.0)
                         state["tele_landed_time"] = curr_time
+                        state["tele_landed_hp"] = hp
                         state["tele_ext_hit_loss"] = 0.0
                         state["last_external_hit_time"] = 0.0
                         state["danger_tele_armed_until"] = 0.0
@@ -18774,11 +18780,18 @@ def ai_commander_worker(target_pc):
                     state["tele_landed_time"] = 0.0
                     state["tele_ext_hit_loss"] = 0.0
 
-                # 🔥 [핫스팟 착지 비상 해제] 위기 텔 착지 1.5초 후부터 순수 몹 피격(바디/독 제외) 누적 10% 이상 시 16~18초 쿨타임 즉시 해제
+                # 🔥 [핫스팟 착지 비상 해제] 착지 1.5초 후부터, 착지HP 대비 15% 더 하락 + 순수 몹 피격 순손실도 15% 이상일 때 쿨타임 즉시 해제
                 tele_landed_t = state.get("tele_landed_time", 0.0)
                 if tele_landed_t > 0.0 and curr_time < state.get("hp_danger_cd", 0):
-                    if hp <= danger_pct and (curr_time - tele_landed_t >= 1.5) and state.get("tele_ext_hit_loss", 0.0) >= 10.0:
-                        dprint(key, f"🚨 [핫스팟 재텔 허용] 텔 착지 후 순수 몹 피격 누적({state['tele_ext_hit_loss']:.1f}% >= 10%)! 16~18초 쿨타임을 즉시 해제합니다!")
+                    landed_hp = state.get("tele_landed_hp", hp)
+                    net_drop_from_land = landed_hp - hp
+                    if (
+                        hp <= danger_pct and
+                        (curr_time - tele_landed_t >= 1.5) and
+                        net_drop_from_land >= 15.0 and
+                        state.get("tele_ext_hit_loss", 0.0) >= 15.0
+                    ):
+                        dprint(key, f"🚨 [핫스팟 재텔 허용] 착지HP({landed_hp:.1f}%) 대비 {net_drop_from_land:.1f}% 하락 & 순수 몹 피격({state['tele_ext_hit_loss']:.1f}% >= 15.0%)! 16~18초 쿨타임을 즉시 해제합니다!")
                         state["hp_danger_cd"] = 0.0
                         state["tele_landed_time"] = 0.0
                         state["tele_ext_hit_loss"] = 0.0
