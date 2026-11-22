@@ -10793,21 +10793,51 @@ def _load_alert_config():
                     return d
         except Exception:
             pass
-    return {"sound_enabled": True, "muted_pcs": []}
+    return {"sound_enabled": True, "muted_pcs": [], "win_x": None, "win_y": None}
 
 _alert_cfg = _load_alert_config()
 muted_central_pcs = set(str(x) for x in _alert_cfg.get("muted_pcs", []))
 alert_sound_var = tk.BooleanVar(value=bool(_alert_cfg.get("sound_enabled", True)))
+alert_win_pos = {
+    "x": _alert_cfg.get("win_x"),
+    "y": _alert_cfg.get("win_y")
+}
+_alert_pos_save_after_id = None
 
 def _save_alert_config():
+    global _alert_pos_save_after_id
+    _alert_pos_save_after_id = None
     try:
         with alert_board_lock:
             payload = {
                 "sound_enabled": bool(alert_sound_var.get()),
-                "muted_pcs": sorted(list(muted_central_pcs), key=lambda x: int(x) if x.isdigit() else 999)
+                "muted_pcs": sorted(list(muted_central_pcs), key=lambda x: int(x) if x.isdigit() else 999),
+                "win_x": alert_win_pos.get("x"),
+                "win_y": alert_win_pos.get("y")
             }
         with open(ALERT_CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def _on_alert_win_configure(event):
+    global _alert_pos_save_after_id
+    if event.widget is not alert_win or not alert_win_visible:
+        return
+    try:
+        nx, ny = alert_win.winfo_x(), alert_win.winfo_y()
+        # 윈도우 최소화(-32000) 등 비정상 좌표 오저장 차단
+        if nx <= -30000 or ny <= -30000:
+            return
+        if alert_win_pos.get("x") != nx or alert_win_pos.get("y") != ny:
+            alert_win_pos["x"] = nx
+            alert_win_pos["y"] = ny
+            if _alert_pos_save_after_id is not None:
+                try:
+                    root.after_cancel(_alert_pos_save_after_id)
+                except Exception:
+                    pass
+            _alert_pos_save_after_id = root.after(400, _save_alert_config)
     except Exception:
         pass
 
@@ -10890,7 +10920,14 @@ def _select_live_stream(pc_num, mini_key, refresh_ui=True):
         _refresh_alert_board_ui(popup_if_new=False)
 
 def _hide_alert_window():
-    global alert_win_visible
+    global alert_win_visible, _alert_pos_save_after_id
+    if _alert_pos_save_after_id is not None:
+        try:
+            root.after_cancel(_alert_pos_save_after_id)
+        except Exception:
+            pass
+        _save_alert_config()
+    alert_win_visible = False
     _stop_live_stream(clear_ui=True)
     if alert_win is None:
         return
@@ -10902,7 +10939,6 @@ def _hide_alert_window():
             alert_win.withdraw()
     else:
         alert_win.withdraw()
-    alert_win_visible = False
 
 def _show_alert_window_noactivate():
     global alert_win_visible, alert_win_hwnd
@@ -10912,17 +10948,12 @@ def _show_alert_window_noactivate():
     if alert_win_hwnd:
         try:
             win32gui.ShowWindow(alert_win_hwnd, win32con.SW_SHOWNOACTIVATE)
-            win32gui.SetWindowPos(
-                alert_win_hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
-                win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE | win32con.SWP_SHOWWINDOW
-            )
             alert_win_visible = True
             return
         except Exception:
             pass
     try:
         alert_win.deiconify()
-        alert_win.attributes("-topmost", True)
         alert_win_visible = True
     except Exception:
         pass
@@ -11026,13 +11057,27 @@ def _ensure_alert_window():
     pos_x = max(10, (sw - pop_w) // 2)
     pos_y = max(10, (sh - pop_h) // 2 - 20)
 
+    saved_x = alert_win_pos.get("x")
+    saved_y = alert_win_pos.get("y")
+    if isinstance(saved_x, int) and isinstance(saved_y, int):
+        try:
+            vx = win32api.GetSystemMetrics(76)
+            vy = win32api.GetSystemMetrics(77)
+            vw = win32api.GetSystemMetrics(78)
+            vh = win32api.GetSystemMetrics(79)
+            if (vx - pop_w + 100 <= saved_x <= vx + vw - 100) and (vy <= saved_y <= vy + vh - 60):
+                pos_x, pos_y = saved_x, saved_y
+        except Exception:
+            pos_x, pos_y = saved_x, saved_y
+
     alert_win = tk.Toplevel(root)
+    alert_win.withdraw()
     alert_win.title("🚨 사냥컴 통합 관제 보드 (15fps 실시간 모니터링)")
     alert_win.configure(bg="#1A1A1D")
-    alert_win.attributes("-topmost", True)
     alert_win.resizable(True, True)
-    alert_win.geometry(f"{pop_w}x{pop_h}+{pos_x}+{pos_y}")
+    alert_win.geometry(f"{pop_w}x{pop_h}{pos_x:+d}{pos_y:+d}")
     alert_win.protocol("WM_DELETE_WINDOW", _hide_alert_window)
+    alert_win.bind("<Configure>", _on_alert_win_configure)
 
     hdr = tk.Frame(alert_win, bg="#B71C1C", pady=6, padx=8)
     hdr.pack(fill="x")
