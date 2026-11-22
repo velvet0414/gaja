@@ -10854,6 +10854,41 @@ alert_row_widgets = {}        # a_key -> {"elapsed_lbl", "detail_lbl", "first_ti
 STREAM_VIEW_W = 800
 STREAM_VIEW_H = 600
 
+def _num_to_sino_kor(num_str):
+    s = str(num_str).strip()
+    if not s.isdigit():
+        return s
+    num = int(s)
+    if num == 0:
+        return "영"
+    if num >= 100:
+        return s
+    units = ["", "일", "이", "삼", "사", "오", "육", "칠", "팔", "구"]
+    tens = ["", "십", "이십", "삼십", "사십", "오십", "육십", "칠십", "팔십", "구십"]
+    return tens[num // 10] + units[num % 10]
+
+def _format_alert_pc_label(pc_num, mini_key):
+    pc_s = str(pc_num).strip()
+    m_s = str(mini_key).strip()
+    if m_s.startswith("미니"):
+        m_num = m_s[2:].strip()
+        if m_num:
+            return f"{pc_s}-{m_num}"
+    if m_s == "중앙PC":
+        return f"{pc_s}번-중앙PC"
+    return f"{pc_s}-{m_s}" if m_s else f"{pc_s}번"
+
+def _format_alert_pc_tts(pc_num, mini_key):
+    pc_s = str(pc_num).strip()
+    m_s = str(mini_key).strip()
+    if m_s.startswith("미니"):
+        m_num = m_s[2:].strip()
+        if m_num:
+            return f"{_num_to_sino_kor(pc_s)} 다시 {_num_to_sino_kor(m_num)}"
+    if m_s == "중앙PC":
+        return f"{pc_s}번"
+    return f"{_num_to_sino_kor(pc_s)} 다시 {_num_to_sino_kor(m_s)}" if m_s else f"{pc_s}번"
+
 def _get_toplevel_hwnd(win_obj):
     try:
         win_obj.update_idletasks()
@@ -10911,11 +10946,12 @@ def _select_live_stream(pc_num, mini_key, refresh_ui=True):
         except Exception:
             pass
 
+    pc_lbl_s = _format_alert_pc_label(pc_str, mini_str)
     if alert_video_lbl is not None:
-        alert_video_lbl.config(image="", text=f"📡 [{pc_str}번 - {mini_str}]\n15fps 실시간 영상 연결 요청 중...\n(최대 2초 소요)")
+        alert_video_lbl.config(image="", text=f"📡 [{pc_lbl_s}]\n15fps 실시간 영상 연결 요청 중...\n(최대 2초 소요)")
         alert_video_lbl._img_ref = None
     if alert_video_info_lbl is not None:
-        alert_video_info_lbl.config(text=f"📡 연결 요청 중: {pc_str}번 - {mini_str}")
+        alert_video_info_lbl.config(text=f"📡 연결 요청 중: {pc_lbl_s}")
     if refresh_ui:
         _refresh_alert_board_ui(popup_if_new=False)
 
@@ -10973,7 +11009,7 @@ def _resolve_alert(alert_key):
                 mini_heartbeats.pop(f"{pc_num}|{mini_key}", None)
             else:
                 pending_resolutions.setdefault(f"{pc_num}|{mini_key}", []).append({"code": code})
-            print(f"✅ [관제 완료] {pc_num}번 {mini_key} [{removed.get('title')}] 상황 종료 처리됨.")
+            print(f"✅ [관제 완료] {_format_alert_pc_label(pc_num, mini_key)} [{removed.get('title')}] 상황 종료 처리됨.")
 
         rem_items = sorted(active_alerts.items(), key=lambda kv: kv[1].get("first_time", 0.0))
         rem_cnt = len(rem_items)
@@ -10981,12 +11017,12 @@ def _resolve_alert(alert_key):
             cur_tid = stream_target_id
         if removed and cur_tid == f"{removed.get('pc_num')}|{removed.get('mini_key')}":
             for _, nxt in rem_items:
-                if nxt.get("mini_key") != "중앙PC":
+                if nxt.get("mini_key") != "중앙PC" and nxt.get("code") not in ("CENTRAL_OFFLINE", "MINI_OFFLINE"):
                     next_stream_cand = (nxt.get("pc_num"), nxt.get("mini_key"))
                     break
 
     if rem_cnt == 0:
-        _hide_alert_window()
+        _stop_live_stream(clear_ui=True)
         _refresh_alert_board_ui(popup_if_new=False)
     else:
         if next_stream_cand:
@@ -11013,7 +11049,7 @@ def _resolve_all_alerts():
                 pending_resolutions.setdefault(f"{pc_num}|{mini_key}", []).append({"code": code})
         active_alerts.clear()
     print("✅ [관제 전체완료] 대기 중인 모든 알림을 상황 종료 처리했습니다.")
-    _hide_alert_window()
+    _stop_live_stream(clear_ui=True)
     _refresh_alert_board_ui(popup_if_new=False)
 
 def _mute_central_pc(pc_num, alert_key=None):
@@ -11028,7 +11064,7 @@ def _mute_central_pc(pc_num, alert_key=None):
     _save_alert_config()
     print(f"🔇 [생존감시 제외] {pc_str}번 중앙PC 생존 감시를 일시 제외했습니다.")
     if rem_cnt == 0:
-        _hide_alert_window()
+        _stop_live_stream(clear_ui=True)
     _refresh_alert_board_ui(popup_if_new=False)
 
 def _clear_all_muted_pcs():
@@ -11199,7 +11235,7 @@ def _refresh_alert_board_ui(popup_if_new=False):
             em, es = divmod(elapsed_s, 60)
             elapsed_str = f"{em}분 {es}초" if em > 0 else f"{es}초"
             t_str = info.get("time_str", "")
-            pc_label = f"{p_num}번-{m_key}"
+            pc_label = _format_alert_pc_label(p_num, m_key)
             title_txt = info.get("title", info.get("code", "이상감지"))
             detail_txt = info.get("detail", "")
 
@@ -11279,10 +11315,11 @@ def _register_alert_event(pc_num, mini_key, code, title, detail, client_ip=""):
             }
 
     if is_new:
-        print(f"🚨 [관제 알림 접수] {pc_str}번 {mini_str} | {title} ({detail})")
+        pc_lbl_ev = _format_alert_pc_label(pc_str, mini_str)
+        print(f"🚨 [관제 알림 접수] {pc_lbl_ev} | {title} ({detail})")
         if alert_sound_var.get() and (now_t_ev - _alert_last_tts_time >= 2.5):
             _alert_last_tts_time = now_t_ev
-            tts_txt = f"{pc_str}번 {mini_str} {title}"
+            tts_txt = f"{_format_alert_pc_tts(pc_str, mini_str)}, {title}"
             threading.Thread(target=play_tts_alert, args=(tts_txt,), daemon=True).start()
         _GUI_TASK_QUEUE.put((_refresh_alert_board_ui, (True,)))
     else:
@@ -11545,11 +11582,11 @@ def _alert_stream_render_tick():
                 alert_video_lbl._img_ref = photo
                 p_n, m_k = tid.split("|", 1)
                 if alert_video_info_lbl is not None:
-                    alert_video_info_lbl.config(text=f"🟢 실시간 중계: {p_n}번 - {m_k} ({fps_v:.1f} FPS)")
+                    alert_video_info_lbl.config(text=f"🟢 실시간 중계: {_format_alert_pc_label(p_n, m_k)} ({fps_v:.1f} FPS)")
             elif tid is not None and f_obj is not None and (time.time() - last_rx > 3.5):
                 p_n, m_k = tid.split("|", 1)
                 if alert_video_info_lbl is not None:
-                    alert_video_info_lbl.config(text=f"🟡 신호 지연: {p_n}번 - {m_k} (재연결 대기중)")
+                    alert_video_info_lbl.config(text=f"🟡 신호 지연: {_format_alert_pc_label(p_n, m_k)} (재연결 대기중)")
     except Exception:
         pass
     root.after(55, _alert_stream_render_tick)
