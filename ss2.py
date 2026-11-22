@@ -10752,10 +10752,798 @@ def auto_recall_worker_thread():
 # =====================================================================
 
 
+# =====================================================================
+# 🚨 [통합 관제 알림 서버(9998) + 15fps 실시간 영상 뷰어 + 중앙/미니 생존 감시]
+# - 버프 통신(9999)과 완전 분리된 9998 포트 사용 (트래픽 간섭 0%)
+# - 포커스를 뺏지 않는 최상단 팝업 (군주 수동제어 방해 차단)
+# - 우측 15fps 실시간 라이브 뷰어 (선택한 1대만 On-Demand 수신, 창 닫힘 시 자동 중단)
+# =====================================================================
+ALERT_PORT = 9998
+ALERT_CONFIG_FILE = "alert_config_cc.json"
+HEARTBEAT_TIMEOUT_SEC = 90.0  # 90초 이상 생존신호 끊김 시 응답없음 알림
+
+try:
+    from PIL import Image as _PILImage, ImageTk as _PILImageTk
+    _ALERT_HAS_PIL = True
+except Exception:
+    _ALERT_HAS_PIL = False
+
+alert_board_lock = threading.Lock()
+active_alerts = {}            # key: "pc|mini|code" -> dict
+mini_heartbeats = {}          # key: "pc|mini" -> {"pc_num", "mini_key", "last_seen", "ip", "fsm", "dungeon"}
+pending_resolutions = {}      # key: "pc|mini" -> [{"code": str}, ...]
+_alert_last_tts_time = 0.0
+
+# 📺 15fps 실시간 영상 스트림 상태
+stream_lock = threading.Lock()
+stream_target_id = None       # "pc|mini" (현재 시청 중인 1대)
+stream_latest_frame = None    # PIL Image or PPM bytes
+stream_frame_seq = 0
+stream_rendered_seq = -1
+stream_fps_val = 0.0
+stream_last_rx_time = 0.0
+stream_active_sock = None
+
+def _load_alert_config():
+    if os.path.exists(ALERT_CONFIG_FILE):
+        try:
+            with open(ALERT_CONFIG_FILE, "r", encoding="utf-8") as f:
+                d = json.load(f)
+                if isinstance(d, dict):
+                    return d
+        except Exception:
+            pass
+    return {"sound_enabled": True, "muted_pcs": []}
+
+_alert_cfg = _load_alert_config()
+muted_central_pcs = set(str(x) for x in _alert_cfg.get("muted_pcs", []))
+alert_sound_var = tk.BooleanVar(value=bool(_alert_cfg.get("sound_enabled", True)))
+
+def _save_alert_config():
+    try:
+        with alert_board_lock:
+            payload = {
+                "sound_enabled": bool(alert_sound_var.get()),
+                "muted_pcs": sorted(list(muted_central_pcs), key=lambda x: int(x) if x.isdigit() else 999)
+            }
+        with open(ALERT_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+alert_win = None
+alert_win_hwnd = None
+alert_list_inner = None
+alert_canvas = None
+alert_header_lbl = None
+alert_muted_lbl = None
+alert_video_lbl = None
+alert_video_info_lbl = None
+alert_win_visible = False
+alert_row_widgets = {}        # a_key -> {"elapsed_lbl", "detail_lbl", "first_time", "time_str"}
+STREAM_VIEW_W = 800
+STREAM_VIEW_H = 600
+
+def _get_toplevel_hwnd(win_obj):
+    try:
+        win_obj.update_idletasks()
+        wid = win_obj.winfo_id()
+        hwnd = ctypes.windll.user32.GetAncestor(wid, 2)  # GA_ROOT
+        return hwnd if hwnd else wid
+    except Exception:
+        return None
+
+def _stop_live_stream(clear_ui=True):
+    global stream_target_id, stream_latest_frame, stream_fps_val, stream_active_sock
+    with stream_lock:
+        stream_target_id = None
+        stream_latest_frame = None
+        stream_fps_val = 0.0
+        sock_to_close = stream_active_sock
+        stream_active_sock = None
+    if sock_to_close:
+        try:
+            sock_to_close.close()
+        except Exception:
+            pass
+    if clear_ui and alert_video_lbl is not None:
+        try:
+            alert_video_lbl.config(image="", text="📺 좌측 목록에서 [보기]를 클릭하면\n15fps 실시간 화면이 표시됩니다.")
+            alert_video_lbl._img_ref = None
+            if alert_video_info_lbl is not None:
+                alert_video_info_lbl.config(text="📺 실시간 영상 대기 중 (미연결)")
+        except Exception:
+            pass
+
+def _select_live_stream(pc_num, mini_key, refresh_ui=True):
+    global stream_target_id, stream_latest_frame, stream_fps_val, stream_active_sock, stream_last_rx_time
+    pc_str = str(pc_num).strip()
+    mini_str = str(mini_key).strip()
+    if mini_str == "중앙PC":
+        _stop_live_stream(clear_ui=True)
+        if alert_video_info_lbl is not None:
+            alert_video_info_lbl.config(text=f"⚠️ {pc_str}번 중앙PC 응답없음 상태 (영상 수신 불가)")
+        return
+
+    new_tid = f"{pc_str}|{mini_str}"
+    with stream_lock:
+        if stream_target_id == new_tid:
+            return
+        stream_target_id = new_tid
+        stream_latest_frame = None
+        stream_fps_val = 0.0
+        stream_last_rx_time = time.time()
+        old_sock = stream_active_sock
+        stream_active_sock = None
+    if old_sock:
+        try:
+            old_sock.close()
+        except Exception:
+            pass
+
+    if alert_video_lbl is not None:
+        alert_video_lbl.config(image="", text=f"📡 [{pc_str}번 - {mini_str}]\n15fps 실시간 영상 연결 요청 중...\n(최대 2초 소요)")
+        alert_video_lbl._img_ref = None
+    if alert_video_info_lbl is not None:
+        alert_video_info_lbl.config(text=f"📡 연결 요청 중: {pc_str}번 - {mini_str}")
+    if refresh_ui:
+        _refresh_alert_board_ui(popup_if_new=False)
+
+def _hide_alert_window():
+    global alert_win_visible
+    _stop_live_stream(clear_ui=True)
+    if alert_win is None:
+        return
+    hwnd = alert_win_hwnd or _get_toplevel_hwnd(alert_win)
+    if hwnd:
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
+        except Exception:
+            alert_win.withdraw()
+    else:
+        alert_win.withdraw()
+    alert_win_visible = False
+
+def _show_alert_window_noactivate():
+    global alert_win_visible, alert_win_hwnd
+    _ensure_alert_window()
+    if alert_win_hwnd is None:
+        alert_win_hwnd = _get_toplevel_hwnd(alert_win)
+    if alert_win_hwnd:
+        try:
+            win32gui.ShowWindow(alert_win_hwnd, win32con.SW_SHOWNOACTIVATE)
+            win32gui.SetWindowPos(
+                alert_win_hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
+                win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE | win32con.SWP_SHOWWINDOW
+            )
+            alert_win_visible = True
+            return
+        except Exception:
+            pass
+    try:
+        alert_win.deiconify()
+        alert_win.attributes("-topmost", True)
+        alert_win_visible = True
+    except Exception:
+        pass
+
+def _resolve_alert(alert_key):
+    next_stream_cand = None
+    with alert_board_lock:
+        removed = active_alerts.pop(alert_key, None)
+        if removed:
+            pc_num = str(removed.get("pc_num", ""))
+            mini_key = str(removed.get("mini_key", ""))
+            code = str(removed.get("code", ""))
+            if code == "CENTRAL_OFFLINE":
+                for hk in [k for k, v in mini_heartbeats.items() if str(v.get("pc_num")) == pc_num]:
+                    mini_heartbeats.pop(hk, None)
+            elif code == "MINI_OFFLINE":
+                mini_heartbeats.pop(f"{pc_num}|{mini_key}", None)
+            else:
+                pending_resolutions.setdefault(f"{pc_num}|{mini_key}", []).append({"code": code})
+            print(f"✅ [관제 완료] {pc_num}번 {mini_key} [{removed.get('title')}] 상황 종료 처리됨.")
+
+        rem_items = sorted(active_alerts.items(), key=lambda kv: kv[1].get("first_time", 0.0))
+        rem_cnt = len(rem_items)
+        with stream_lock:
+            cur_tid = stream_target_id
+        if removed and cur_tid == f"{removed.get('pc_num')}|{removed.get('mini_key')}":
+            for _, nxt in rem_items:
+                if nxt.get("mini_key") != "중앙PC":
+                    next_stream_cand = (nxt.get("pc_num"), nxt.get("mini_key"))
+                    break
+
+    if rem_cnt == 0:
+        _hide_alert_window()
+        _refresh_alert_board_ui(popup_if_new=False)
+    else:
+        if next_stream_cand:
+            _select_live_stream(next_stream_cand[0], next_stream_cand[1])
+        elif removed:
+            with stream_lock:
+                still_same = (stream_target_id == f"{removed.get('pc_num')}|{removed.get('mini_key')}")
+            if still_same:
+                _stop_live_stream(clear_ui=True)
+        _refresh_alert_board_ui(popup_if_new=False)
+
+def _resolve_all_alerts():
+    with alert_board_lock:
+        for _, removed in list(active_alerts.items()):
+            pc_num = str(removed.get("pc_num", ""))
+            mini_key = str(removed.get("mini_key", ""))
+            code = str(removed.get("code", ""))
+            if code == "CENTRAL_OFFLINE":
+                for hk in [k for k, v in mini_heartbeats.items() if str(v.get("pc_num")) == pc_num]:
+                    mini_heartbeats.pop(hk, None)
+            elif code == "MINI_OFFLINE":
+                mini_heartbeats.pop(f"{pc_num}|{mini_key}", None)
+            else:
+                pending_resolutions.setdefault(f"{pc_num}|{mini_key}", []).append({"code": code})
+        active_alerts.clear()
+    print("✅ [관제 전체완료] 대기 중인 모든 알림을 상황 종료 처리했습니다.")
+    _hide_alert_window()
+    _refresh_alert_board_ui(popup_if_new=False)
+
+def _mute_central_pc(pc_num, alert_key=None):
+    pc_str = str(pc_num)
+    with alert_board_lock:
+        muted_central_pcs.add(pc_str)
+        for hk in [k for k, v in mini_heartbeats.items() if str(v.get("pc_num")) == pc_str]:
+            mini_heartbeats.pop(hk, None)
+        if alert_key:
+            active_alerts.pop(alert_key, None)
+        rem_cnt = len(active_alerts)
+    _save_alert_config()
+    print(f"🔇 [생존감시 제외] {pc_str}번 중앙PC 생존 감시를 일시 제외했습니다.")
+    if rem_cnt == 0:
+        _hide_alert_window()
+    _refresh_alert_board_ui(popup_if_new=False)
+
+def _clear_all_muted_pcs():
+    with alert_board_lock:
+        muted_central_pcs.clear()
+    _save_alert_config()
+    print("🔊 [생존감시 복구] 모든 중앙PC 감시 제외를 해제했습니다.")
+    _refresh_alert_board_ui(popup_if_new=False)
+
+def _ensure_alert_window():
+    global alert_win, alert_win_hwnd, alert_list_inner, alert_canvas, alert_header_lbl, alert_muted_lbl
+    global alert_video_lbl, alert_video_info_lbl, STREAM_VIEW_W, STREAM_VIEW_H
+    if alert_win is not None:
+        return
+
+    sw = root.winfo_screenwidth()
+    sh = root.winfo_screenheight()
+    if sw >= 1420 and sh >= 740:
+        STREAM_VIEW_W, STREAM_VIEW_H = 800, 600
+    else:
+        STREAM_VIEW_W, STREAM_VIEW_H = 640, 480
+
+    list_w = 500
+    pop_w = list_w + STREAM_VIEW_W + 30
+    pop_h = max(560, STREAM_VIEW_H + 115)
+    pos_x = max(10, (sw - pop_w) // 2)
+    pos_y = max(10, (sh - pop_h) // 2 - 20)
+
+    alert_win = tk.Toplevel(root)
+    alert_win.title("🚨 사냥컴 통합 관제 보드 (15fps 실시간 모니터링)")
+    alert_win.configure(bg="#1A1A1D")
+    alert_win.attributes("-topmost", True)
+    alert_win.resizable(True, True)
+    alert_win.geometry(f"{pop_w}x{pop_h}+{pos_x}+{pos_y}")
+    alert_win.protocol("WM_DELETE_WINDOW", _hide_alert_window)
+
+    hdr = tk.Frame(alert_win, bg="#B71C1C", pady=6, padx=8)
+    hdr.pack(fill="x")
+    alert_header_lbl = tk.Label(hdr, text="🚨 조치 필요 이상 상황: 0건", bg="#B71C1C", fg="white", font=("맑은 고딕", 10, "bold"))
+    alert_header_lbl.pack(side="left")
+
+    tk.Button(hdr, text="전체 완료", font=("맑은 고딕", 8, "bold"), bg="#2E7D32", fg="white", relief="flat", command=_resolve_all_alerts, padx=8).pack(side="right", padx=2)
+    tk.Button(hdr, text="창 숨기기", font=("맑은 고딕", 8), bg="#455A64", fg="white", relief="flat", command=_hide_alert_window, padx=8).pack(side="right", padx=2)
+    tk.Checkbutton(hdr, text="알림음", variable=alert_sound_var, command=_save_alert_config, bg="#B71C1C", fg="#FFF59D", selectcolor="#7F0000", activebackground="#B71C1C", font=("맑은 고딕", 8, "bold")).pack(side="right", padx=6)
+
+    sub_bar = tk.Frame(alert_win, bg="#252526", pady=3, padx=8)
+    sub_bar.pack(fill="x")
+    alert_muted_lbl = tk.Label(sub_bar, text="감시제외 중앙PC: 없음", bg="#252526", fg="#B0BEC5", font=("맑은 고딕", 8))
+    alert_muted_lbl.pack(side="left")
+    tk.Button(sub_bar, text="감시제외 모두해제", font=("맑은 고딕", 7), bg="#546E7A", fg="white", relief="flat", command=_clear_all_muted_pcs, padx=5).pack(side="right")
+
+    main_split = tk.Frame(alert_win, bg="#1A1A1D")
+    main_split.pack(fill="both", expand=True, padx=6, pady=6)
+
+    # 좌측: 이상 상황 리스트 패널
+    left_pane = tk.Frame(main_split, bg="#1A1A1D", width=list_w)
+    left_pane.pack(side="left", fill="both", expand=True, padx=(0, 6))
+
+    alert_canvas = tk.Canvas(left_pane, bg="#1A1A1D", highlightthickness=0)
+    sb = ttk.Scrollbar(left_pane, orient="vertical", command=alert_canvas.yview)
+    alert_list_inner = tk.Frame(alert_canvas, bg="#1A1A1D")
+
+    alert_list_inner.bind("<Configure>", lambda e: alert_canvas.configure(scrollregion=alert_canvas.bbox("all")))
+    inner_win_id = alert_canvas.create_window((0, 0), window=alert_list_inner, anchor="nw")
+    alert_canvas.bind("<Configure>", lambda e: alert_canvas.itemconfig(inner_win_id, width=e.width))
+    alert_canvas.configure(yscrollcommand=sb.set)
+
+    alert_canvas.pack(side="left", fill="both", expand=True)
+    sb.pack(side="right", fill="y")
+
+    # 우측: 15fps 실시간 영상 뷰어 패널 (좌측 리스트 갱신 시 깜빡임 0%)
+    right_pane = tk.Frame(main_split, bg="#111114", bd=1, relief="solid", width=STREAM_VIEW_W + 10)
+    right_pane.pack(side="right", fill="y")
+    right_pane.pack_propagate(False)
+
+    vid_top = tk.Frame(right_pane, bg="#263238", pady=4, padx=6)
+    vid_top.pack(fill="x")
+    alert_video_info_lbl = tk.Label(vid_top, text="📺 실시간 영상 대기 중 (미연결)", bg="#263238", fg="#80DEEA", font=("맑은 고딕", 9, "bold"))
+    alert_video_info_lbl.pack(side="left")
+    tk.Button(vid_top, text="⏹ 영상 끄기", font=("맑은 고딕", 8, "bold"), bg="#546E7A", fg="white", relief="flat", padx=6, command=lambda: _stop_live_stream(True)).pack(side="right")
+
+    vid_box = tk.Frame(right_pane, bg="#000000", width=STREAM_VIEW_W, height=STREAM_VIEW_H)
+    vid_box.pack(padx=4, pady=4)
+    vid_box.pack_propagate(False)
+
+    alert_video_lbl = tk.Label(
+        vid_box,
+        text="📺 좌측 목록에서 [보기]를 클릭하면\n15fps 실시간 화면이 표시됩니다.",
+        bg="#000000", fg="#90A4AE", font=("맑은 고딕", 10, "bold")
+    )
+    alert_video_lbl.pack(fill="both", expand=True)
+
+    alert_win_hwnd = _get_toplevel_hwnd(alert_win)
+    _hide_alert_window()
+
+def _update_existing_alert_detail_ui(a_key, detail_txt):
+    w_info = alert_row_widgets.get(a_key)
+    if w_info and w_info.get("detail_lbl") is not None:
+        try:
+            w_info["detail_lbl"].config(text=str(detail_txt))
+            return
+        except Exception:
+            pass
+    _refresh_alert_board_ui(popup_if_new=False)
+
+def _refresh_alert_board_ui(popup_if_new=False):
+    _ensure_alert_window()
+    now_t_ui = time.time()
+    with alert_board_lock:
+        items = sorted(active_alerts.items(), key=lambda kv: kv[1].get("first_time", 0.0))
+        muted_list = sorted(list(muted_central_pcs), key=lambda x: int(x) if x.isdigit() else 999)
+
+    cnt = len(items)
+    if popup_if_new and cnt > 0:
+        _show_alert_window_noactivate()
+        with stream_lock:
+            has_stream = (stream_target_id is not None)
+        if not has_stream:
+            for _, info in items:
+                if info.get("mini_key") != "중앙PC" and info.get("code") not in ("CENTRAL_OFFLINE", "MINI_OFFLINE"):
+                    _select_live_stream(info.get("pc_num"), info.get("mini_key"), refresh_ui=False)
+                    break
+
+    with stream_lock:
+        cur_tid = stream_target_id
+
+    if "btn_alert_board" in globals():
+        if cnt > 0:
+            btn_alert_board.config(text=f"🚨 관제보드 ({cnt})", bg="#D32F2F", fg="white")
+        else:
+            btn_alert_board.config(text="🚨 관제보드 (0)", bg="#455A64", fg="white")
+
+    alert_header_lbl.config(text=f"🚨 조치 필요 이상 상황: {cnt}건")
+    alert_muted_lbl.config(text=f"감시제외 중앙PC: {', '.join(m + '번' for m in muted_list) if muted_list else '없음'}")
+
+    alert_row_widgets.clear()
+    for child in alert_list_inner.winfo_children():
+        child.destroy()
+
+    if cnt == 0:
+        tk.Label(alert_list_inner, text="현재 이상 상황 없음 (모든 사냥컴 정상)", bg="#1A1A1D", fg="#81C784", font=("맑은 고딕", 10, "bold"), pady=40).pack(fill="x")
+    else:
+        for a_key, info in items:
+            p_num = str(info.get("pc_num", ""))
+            m_key = str(info.get("mini_key", ""))
+            is_watching = (cur_tid == f"{p_num}|{m_key}")
+            row_bg = "#1E3A4C" if is_watching else "#2B2B30"
+
+            row = tk.Frame(alert_list_inner, bg=row_bg, bd=1, relief="solid", padx=6, pady=5)
+            row.pack(fill="x", pady=3)
+
+            first_t = info.get("first_time", now_t_ui)
+            elapsed_s = max(0, int(now_t_ui - first_t))
+            em, es = divmod(elapsed_s, 60)
+            elapsed_str = f"{em}분 {es}초" if em > 0 else f"{es}초"
+            t_str = info.get("time_str", "")
+            pc_label = f"{p_num}번-{m_key}"
+            title_txt = info.get("title", info.get("code", "이상감지"))
+            detail_txt = info.get("detail", "")
+
+            left_box = tk.Frame(row, bg=row_bg)
+            left_box.pack(side="left", fill="both", expand=True)
+
+            top_line = tk.Frame(left_box, bg=row_bg)
+            top_line.pack(fill="x")
+            tk.Label(top_line, text=f"[{pc_label}]", bg=row_bg, fg="#FFD54F", font=("맑은 고딕", 9, "bold")).pack(side="left")
+            tk.Label(top_line, text=f" {title_txt}", bg=row_bg, fg="#FF5252", font=("맑은 고딕", 9, "bold")).pack(side="left", padx=(2, 4))
+            elapsed_lbl = tk.Label(top_line, text=f"({t_str} / {elapsed_str})", bg=row_bg, fg="#B0BEC5", font=("맑은 고딕", 8))
+            elapsed_lbl.pack(side="left")
+
+            detail_lbl = tk.Label(left_box, text=detail_txt, bg=row_bg, fg="#ECEFF1", font=("맑은 고딕", 8), anchor="w", justify="left", wraplength=330)
+            if detail_txt:
+                detail_lbl.pack(fill="x", pady=(2, 0))
+
+            alert_row_widgets[a_key] = {
+                "elapsed_lbl": elapsed_lbl,
+                "detail_lbl": detail_lbl if detail_txt else None,
+                "first_time": first_t,
+                "time_str": t_str
+            }
+
+            right_box = tk.Frame(row, bg=row_bg)
+            right_box.pack(side="right", padx=(4, 0))
+
+            tk.Button(
+                right_box, text="✅ 완료", font=("맑은 고딕", 8, "bold"),
+                bg="#2E7D32", fg="white", relief="flat", padx=7, pady=3,
+                command=lambda k=a_key: _resolve_alert(k)
+            ).pack(side="right", padx=2)
+
+            if info.get("code") in ("CENTRAL_OFFLINE", "MINI_OFFLINE"):
+                tk.Button(
+                    right_box, text="🔇 제외", font=("맑은 고딕", 8, "bold"),
+                    bg="#616161", fg="white", relief="flat", padx=5, pady=3,
+                    command=lambda p=p_num, k=a_key: _mute_central_pc(p, k)
+                ).pack(side="right", padx=2)
+            elif m_key != "중앙PC":
+                tk.Button(
+                    right_box,
+                    text="📺 시청중" if is_watching else "📺 보기",
+                    font=("맑은 고딕", 8, "bold"),
+                    bg="#0277BD" if is_watching else "#00838F",
+                    fg="white", relief="flat", padx=6, pady=3,
+                    command=lambda p=p_num, m=m_key: _select_live_stream(p, m)
+                ).pack(side="right", padx=2)
+
+def _register_alert_event(pc_num, mini_key, code, title, detail, client_ip=""):
+    global _alert_last_tts_time
+    now_t_ev = time.time()
+    pc_str = str(pc_num).strip()
+    mini_str = str(mini_key).strip()
+    code_str = str(code).strip()
+    a_key = f"{pc_str}|{mini_str}|{code_str}"
+
+    is_new = False
+    with alert_board_lock:
+        if a_key in active_alerts:
+            active_alerts[a_key]["last_seen"] = now_t_ev
+            active_alerts[a_key]["detail"] = str(detail)
+            active_alerts[a_key]["count"] = active_alerts[a_key].get("count", 1) + 1
+        else:
+            is_new = True
+            active_alerts[a_key] = {
+                "pc_num": pc_str,
+                "mini_key": mini_str,
+                "code": code_str,
+                "title": str(title),
+                "detail": str(detail),
+                "ip": client_ip,
+                "first_time": now_t_ev,
+                "last_seen": now_t_ev,
+                "time_str": time.strftime("%H:%M:%S"),
+                "count": 1
+            }
+
+    if is_new:
+        print(f"🚨 [관제 알림 접수] {pc_str}번 {mini_str} | {title} ({detail})")
+        if alert_sound_var.get() and (now_t_ev - _alert_last_tts_time >= 2.5):
+            _alert_last_tts_time = now_t_ev
+            tts_txt = f"{pc_str}번 {mini_str} {title}"
+            threading.Thread(target=play_tts_alert, args=(tts_txt,), daemon=True).start()
+        _GUI_TASK_QUEUE.put((_refresh_alert_board_ui, (True,)))
+    else:
+        _GUI_TASK_QUEUE.put((_update_existing_alert_detail_ui, (a_key, str(detail))))
+
+def _recv_exact_bytes(sock_obj, n_bytes, pre_buf):
+    while len(pre_buf) < n_bytes:
+        chunk = sock_obj.recv(min(65536, n_bytes - len(pre_buf)))
+        if not chunk:
+            return None
+        pre_buf.extend(chunk)
+    out = bytes(pre_buf[:n_bytes])
+    del pre_buf[:n_bytes]
+    return out
+
+def _handle_stream_push_session(c_sock, raw_buf, pc_num, mini_key):
+    global stream_latest_frame, stream_frame_seq, stream_fps_val, stream_last_rx_time, stream_active_sock
+    my_tid = f"{pc_num}|{mini_key}"
+
+    with stream_lock:
+        if stream_target_id != my_tid or not alert_win_visible:
+            return
+        old_s = stream_active_sock
+        stream_active_sock = c_sock
+    if old_s and old_s is not c_sock:
+        try:
+            old_s.close()
+        except Exception:
+            pass
+
+    rx_cnt = 0
+    fps_t0 = time.time()
+    c_sock.settimeout(6.0)
+    try:
+        while True:
+            with stream_lock:
+                if stream_target_id != my_tid or not alert_win_visible:
+                    break
+            hdr = _recv_exact_bytes(c_sock, 4, raw_buf)
+            if not hdr:
+                break
+            frame_len = struct.unpack("!I", hdr)[0]
+            if frame_len <= 0 or frame_len > 2500000:
+                break
+            jpg_bytes = _recv_exact_bytes(c_sock, frame_len, raw_buf)
+            if not jpg_bytes:
+                break
+
+            np_arr = np.frombuffer(jpg_bytes, dtype=np.uint8)
+            bgr = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if bgr is None:
+                continue
+
+            vw, vh = STREAM_VIEW_W, STREAM_VIEW_H
+            if bgr.shape[1] != vw or bgr.shape[0] != vh:
+                bgr = cv2.resize(bgr, (vw, vh), interpolation=cv2.INTER_AREA)
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            if _ALERT_HAS_PIL:
+                frame_obj = _PILImage.fromarray(rgb)
+            else:
+                frame_obj = f"P6 {vw} {vh} 255\n".encode("ascii") + rgb.tobytes()
+
+            rx_cnt += 1
+            now_s = time.time()
+            if now_s - fps_t0 >= 1.0:
+                cur_fps = rx_cnt / max(0.001, now_s - fps_t0)
+                rx_cnt = 0
+                fps_t0 = now_s
+            else:
+                cur_fps = None
+
+            with stream_lock:
+                if stream_target_id != my_tid:
+                    break
+                stream_latest_frame = frame_obj
+                stream_frame_seq += 1
+                stream_last_rx_time = now_s
+                if cur_fps is not None:
+                    stream_fps_val = cur_fps
+    except Exception:
+        pass
+    finally:
+        with stream_lock:
+            if stream_active_sock is c_sock:
+                stream_active_sock = None
+
+def alert_server_thread():
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        srv.bind(("0.0.0.0", ALERT_PORT))
+        srv.listen(128)
+        print(f"🚨 [관제 알림/영상 서버] 포트({ALERT_PORT}) 가동 완료! (15fps 실시간 중계 지원)")
+    except Exception as e:
+        print(f"⚠️ [관제 알림 서버] 포트 {ALERT_PORT} 오픈 실패: {e}")
+        return
+
+    def _handle_alert_client(c_sock, addr):
+        c_ip = addr[0]
+        raw_buf = bytearray()
+        try:
+            try:
+                c_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except Exception:
+                pass
+            c_sock.settimeout(12.0)
+            while True:
+                data = c_sock.recv(8192)
+                if not data:
+                    break
+                raw_buf.extend(data)
+                while b"\n" in raw_buf:
+                    nl_idx = raw_buf.index(b"\n")
+                    line_bytes = bytes(raw_buf[:nl_idx])
+                    del raw_buf[:nl_idx + 1]
+                    line = line_bytes.decode("utf-8", errors="ignore").strip()
+                    if not line:
+                        continue
+                    try:
+                        msg = json.loads(line)
+                    except Exception:
+                        continue
+
+                    act = str(msg.get("action", "")).upper()
+                    pc_num = str(msg.get("pc_num", "")).strip()
+                    if not pc_num:
+                        pc_num = str(TAILSCALE_IPS.get(c_ip, c_ip))
+                    mini_key = str(msg.get("mini_key", "미니1")).strip()
+
+                    if pc_num == "13":
+                        if act == "HEARTBEAT":
+                            try:
+                                c_sock.sendall((json.dumps({"status": "ok", "resolved": [], "want_stream": False}) + "\n").encode("utf-8"))
+                            except Exception:
+                                pass
+                        elif act == "ALERT":
+                            try:
+                                c_sock.sendall((json.dumps({"status": "ok", "action": "ALERT_ACK"}) + "\n").encode("utf-8"))
+                            except Exception:
+                                pass
+                        elif act == "STREAM_PUSH":
+                            return
+                        continue
+
+                    if act == "STREAM_PUSH":
+                        _handle_stream_push_session(c_sock, raw_buf, pc_num, mini_key)
+                        return
+
+                    elif act == "HEARTBEAT":
+                        now_hb = time.time()
+                        hb_id = f"{pc_num}|{mini_key}"
+                        reconnected_keys = []
+                        with alert_board_lock:
+                            mini_heartbeats[hb_id] = {
+                                "pc_num": pc_num,
+                                "mini_key": mini_key,
+                                "last_seen": now_hb,
+                                "ip": c_ip,
+                                "fsm": str(msg.get("fsm", "")),
+                                "dungeon": str(msg.get("dungeon", ""))
+                            }
+                            for off_k in (f"{pc_num}|중앙PC|CENTRAL_OFFLINE", f"{pc_num}|{mini_key}|MINI_OFFLINE"):
+                                if off_k in active_alerts:
+                                    active_alerts[off_k]["detail"] = "통신 재연결 감지됨 (정상 확인 후 [완료] 클릭)"
+                                    reconnected_keys.append(off_k)
+                            res_list = pending_resolutions.pop(hb_id, [])
+
+                        for rk in reconnected_keys:
+                            _GUI_TASK_QUEUE.put((_update_existing_alert_detail_ui, (rk, "통신 재연결 감지됨 (정상 확인 후 [완료] 클릭)")))
+
+                        with stream_lock:
+                            want_stream = bool(alert_win_visible and stream_target_id == hb_id)
+
+                        reply = {"status": "ok", "resolved": res_list, "want_stream": want_stream}
+                        try:
+                            c_sock.sendall((json.dumps(reply, ensure_ascii=False) + "\n").encode("utf-8"))
+                        except Exception:
+                            pass
+
+                    elif act == "ALERT":
+                        code = str(msg.get("code", "UNKNOWN"))
+                        title = str(msg.get("title", code))
+                        detail = str(msg.get("detail", ""))
+                        _register_alert_event(pc_num, mini_key, code, title, detail, client_ip=c_ip)
+                        try:
+                            c_sock.sendall((json.dumps({"status": "ok", "action": "ALERT_ACK"}, ensure_ascii=False) + "\n").encode("utf-8"))
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        finally:
+            try:
+                c_sock.close()
+            except Exception:
+                pass
+
+    while True:
+        try:
+            cs, ad = srv.accept()
+            threading.Thread(target=_handle_alert_client, args=(cs, ad), daemon=True).start()
+        except Exception:
+            time.sleep(0.5)
+
+def heartbeat_watchdog_thread():
+    while True:
+        try:
+            now_w = time.time()
+            pc_groups = {}
+            with alert_board_lock:
+                for hb_id, hb in list(mini_heartbeats.items()):
+                    pc_num = str(hb.get("pc_num", ""))
+                    if pc_num == "13" or pc_num in muted_central_pcs:
+                        continue
+                    pc_groups.setdefault(pc_num, []).append(hb)
+
+                to_alert = []
+                for pc_num, hb_list in pc_groups.items():
+                    offline_minis = [h for h in hb_list if (now_w - h.get("last_seen", now_w)) >= HEARTBEAT_TIMEOUT_SEC]
+                    if not offline_minis:
+                        continue
+                    # 해당 중앙PC의 등록된 미니 전체가 응답없음 -> 중앙PC 다운/프리징으로 묶어서 1건 표시
+                    if len(offline_minis) == len(hb_list):
+                        off_key = f"{pc_num}|중앙PC|CENTRAL_OFFLINE"
+                        if off_key not in active_alerts:
+                            max_gap = int(max(now_w - h.get("last_seen", now_w) for h in offline_minis))
+                            to_alert.append((pc_num, "중앙PC", "CENTRAL_OFFLINE", "중앙PC 응답없음", f"{max_gap}초 이상 전체 생존신호 끊김 (프리징/종료 의심)", offline_minis[0].get("ip", "")))
+                    else:
+                        # 일부 미니만 끊긴 경우 -> 해당 미니만 개별 알림
+                        for h in offline_minis:
+                            m_k = h.get("mini_key", "미니1")
+                            off_key = f"{pc_num}|{m_k}|MINI_OFFLINE"
+                            if off_key not in active_alerts:
+                                gap_s = int(now_w - h.get("last_seen", now_w))
+                                to_alert.append((pc_num, m_k, "MINI_OFFLINE", "매크로 응답없음", f"{gap_s}초 이상 생존신호 끊김 (해당 미니창 종료/멈춤 의심)", h.get("ip", "")))
+
+            for pc_num, m_k, code, title, detail, cip in to_alert:
+                _register_alert_event(pc_num, m_k, code, title, detail, client_ip=cip)
+        except Exception:
+            pass
+        time.sleep(5.0)
+
+def _alert_stream_render_tick():
+    global stream_rendered_seq
+    try:
+        if alert_win_visible and alert_video_lbl is not None:
+            with stream_lock:
+                tid = stream_target_id
+                seq = stream_frame_seq
+                f_obj = stream_latest_frame
+                fps_v = stream_fps_val
+                last_rx = stream_last_rx_time
+
+            if tid is not None and f_obj is not None and seq != stream_rendered_seq:
+                stream_rendered_seq = seq
+                if _ALERT_HAS_PIL:
+                    photo = _PILImageTk.PhotoImage(f_obj)
+                else:
+                    photo = tk.PhotoImage(data=f_obj)
+                alert_video_lbl.config(image=photo, text="")
+                alert_video_lbl._img_ref = photo
+                p_n, m_k = tid.split("|", 1)
+                if alert_video_info_lbl is not None:
+                    alert_video_info_lbl.config(text=f"🟢 실시간 중계: {p_n}번 - {m_k} ({fps_v:.1f} FPS)")
+            elif tid is not None and f_obj is not None and (time.time() - last_rx > 3.5):
+                p_n, m_k = tid.split("|", 1)
+                if alert_video_info_lbl is not None:
+                    alert_video_info_lbl.config(text=f"🟡 신호 지연: {p_n}번 - {m_k} (재연결 대기중)")
+    except Exception:
+        pass
+    root.after(55, _alert_stream_render_tick)
+
+def _alert_board_elapsed_tick():
+    if alert_win_visible and alert_row_widgets:
+        now_t_e = time.time()
+        for w_info in list(alert_row_widgets.values()):
+            lbl = w_info.get("elapsed_lbl")
+            if lbl is None:
+                continue
+            try:
+                elapsed_s = max(0, int(now_t_e - w_info.get("first_time", now_t_e)))
+                em, es = divmod(elapsed_s, 60)
+                elapsed_str = f"{em}분 {es}초" if em > 0 else f"{es}초"
+                lbl.config(text=f"({w_info.get('time_str', '')} / {elapsed_str})")
+            except Exception:
+                pass
+    root.after(2000, _alert_board_elapsed_tick)
+
+def _open_alert_board_manual():
+    _refresh_alert_board_ui(popup_if_new=False)
+    _show_alert_window_noactivate()
+
+btn_alert_board = tk.Button(btn_frame, text="🚨 관제보드 (0)", font=("맑은 고딕", 8, "bold"), bg="#455A64", fg="white", relief="flat", command=_open_alert_board_manual)
+btn_alert_board.pack(side="left", padx=4, ipadx=4, ipady=1)
+tk.Checkbutton(btn_frame, text="🔊알림음", variable=alert_sound_var, command=_save_alert_config, bg="#2D2D30", fg="#FFF59D", selectcolor="#3E3E42", font=("맑은 고딕", 8)).pack(side="left", padx=2)
+
+threading.Thread(target=alert_server_thread, daemon=True).start()
+threading.Thread(target=heartbeat_watchdog_thread, daemon=True).start()
+root.after(1000, _ensure_alert_window)
+root.after(1200, _alert_stream_render_tick)
+root.after(2500, _alert_board_elapsed_tick)
+# =====================================================================
+
 threading.Thread(target=auto_shop_worker_thread, daemon=True).start()
 threading.Thread(target=auto_recall_worker_thread, daemon=True).start() # 🚀 [신규 추가] 회수 봇 가동!
 
-sync_gui_vars() 
+sync_gui_vars()
 # 🚀 프로그램 시작 시 저장된 개별 위치로 전체 창 정렬 자동 실행
 root.after(500, arrange_windows)
 
