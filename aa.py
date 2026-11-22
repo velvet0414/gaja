@@ -575,6 +575,433 @@ def send_to_cc(action, **kwargs):
         return False
 
 # ==============================================================================
+# 🚨 [군주컴 9998 관제 연동: 7종 이상감지 + 생존신호 + 15fps 실시간 영상 송출기]
+# ==============================================================================
+ALERT_SERVER_PORT = 9998
+_ALERT_LOCK = threading.Lock()
+_ALERT_ACTIVE_CODES = {}       # code -> last_sent_time (군주컴 [완료] 누를 때까지 중복 도배 방지)
+_STREAM_PUSH_ACTIVE = False
+_STREAM_STOP_EVENT = threading.Event()
+
+def report_alert_to_cc(key, code, title, detail):
+    """군주컴 9998 관제 보드로 이상 알림 1회 전송 (사용자 [완료] 전까지 동일 코드 중복 억제)"""
+    pc_num = str(get_my_central_num()).strip()
+    if pc_num == "13":
+        return False
+
+    now_t = time.time()
+    code_s = str(code).strip()
+    with _ALERT_LOCK:
+        if code_s in _ALERT_ACTIVE_CODES and (now_t - _ALERT_ACTIVE_CODES[code_s] < 3600.0):
+            return False
+        _ALERT_ACTIVE_CODES[code_s] = now_t
+    payload = {
+        "action": "ALERT",
+        "pc_num": pc_num,
+        "mini_key": str(key),
+        "code": code_s,
+        "title": str(title),
+        "detail": str(detail)
+    }
+
+    def _send_async():
+        for _ in range(2):
+            s = None
+            try:
+                s = socket.create_connection((COMMAND_CENTER_IP, ALERT_SERVER_PORT), timeout=3.0)
+                s.settimeout(3.0)
+                s.sendall((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+                s.recv(512)
+                return
+            except Exception:
+                time.sleep(0.5)
+            finally:
+                if s:
+                    try: s.close()
+                    except Exception: pass
+
+    dprint(key, f"🚨 [군주컴 관제 알림 발송] [{title}] {detail}")
+    threading.Thread(target=_send_async, daemon=True).start()
+    return True
+
+def _alert_handle_resolved_codes(key, resolved_list):
+    """군주컴에서 사용자가 [완료]를 누른 코드의 잠금과 타이머를 초기화합니다."""
+    if not resolved_list or key not in ai_states:
+        return
+    st = ai_states[key]
+    for item in resolved_list:
+        c = str(item.get("code", "")).strip()
+        if not c:
+            continue
+        with _ALERT_LOCK:
+            _ALERT_ACTIVE_CODES.pop(c, None)
+        if c == "OBS_FREEZE":
+            st["obs_stuck_count"] = 0
+            st["obs_move_pending"] = False
+        elif c == "GAME_CLOSED":
+            st["alert_no_dragon_start"] = 0.0
+        elif c in ("CERTI_STUCK", "CERTI_FAIL_LOOP"):
+            st["alert_certi_ip_elapsed"] = 0.0
+            st["alert_certi_total_fails"] = 0
+        elif c == "TOWN_IDLE_WANDER":
+            st["idle_mon_active_sec"] = 0.0
+            st["idle_mon_exp_events"] = []
+            st["idle_mon_arrow_events"] = []
+            st["idle_mon_last_sword_active"] = 0.0
+        elif c == "STUCK_5TO6":
+            st["alert_5to6_elapsed"] = 0.0
+        dprint(key, f"✅ [군주컴 완료 수신] '{c}' 상황 종료 및 감지 타이머 초기화 완료.")
+
+def _alert_record_exp_event(key):
+    st = ai_states.get(key)
+    if not st:
+        return
+    now_t = time.time()
+    if now_t - st.get("idle_mon_last_exp_wall", 0.0) >= 0.25:
+        st["idle_mon_last_exp_wall"] = now_t
+        st.setdefault("idle_mon_exp_events", []).append(st.get("idle_mon_active_sec", 0.0))
+
+def _alert_record_arrow_event(key):
+    st = ai_states.get(key)
+    if not st:
+        return
+    now_t = time.time()
+    if now_t - st.get("idle_mon_last_arrow_wall", 0.0) >= 0.15:
+        st["idle_mon_last_arrow_wall"] = now_t
+        st.setdefault("idle_mon_arrow_events", []).append(st.get("idle_mon_active_sec", 0.0))
+
+def _alert_record_sword_event(key):
+    st = ai_states.get(key)
+    if not st:
+        return
+    st["idle_mon_last_sword_active"] = st.get("idle_mon_active_sec", 0.0)
+
+def _obs_mark_move_start(key, cmd_dx, cmd_dy):
+    """이동 명령 직전 커서 실제 위치 기록 (15px 이상 이동 & 화면 끝 밀기 제외)"""
+    st = ai_states.get(key)
+    if not st or active_manual_target == key or not st.get("is_hunt_active", False) or st.get("is_paused", False):
+        return None
+    if math.hypot(cmd_dx, cmd_dy) < 15.0:
+        return None
+    scr = latest_frames.get(key)
+    if scr is None:
+        return None
+    is_certi = str(st.get("target_fsm", "")).startswith("CERTI_")
+    pre_c = find_cursor_pos(scr, last_pos=st.get("cursor_pos", [400, 300]), check_circle=True, allow_full_scan=False, is_certi_mode=is_certi)
+    if pre_c is None:
+        return None
+    px, py = pre_c
+    # 화면 테두리 바깥으로 밀어내는 명령은 정상적으로 안 움직일 수 있으므로 제외
+    if (px <= 18 and cmd_dx < 0) or (px >= 782 and cmd_dx > 0) or (py <= 18 and cmd_dy < 0) or (py >= 582 and cmd_dy > 0):
+        return None
+    return (px, py)
+
+def _obs_mark_move_end(key, pre_pos):
+    st = ai_states.get(key)
+    if not st or pre_pos is None:
+        return
+    st["obs_move_pre_pos"] = pre_pos
+    st["obs_move_verify_after"] = time.time() + 0.22
+    st["obs_move_pending"] = True
+
+def _alert_stream_push_worker(pc_num, mini_key):
+    """군주컴 요청 시에만 15fps JPEG 영상을 9998 포트로 역방향 송출"""
+    global _STREAM_PUSH_ACTIVE
+    if _STREAM_PUSH_ACTIVE:
+        return
+    _STREAM_PUSH_ACTIVE = True
+    _STREAM_STOP_EVENT.clear()
+    sock = None
+    try:
+        sock = socket.create_connection((COMMAND_CENTER_IP, ALERT_SERVER_PORT), timeout=4.0)
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except Exception:
+            pass
+        sock.settimeout(4.0)
+        hdr_msg = json.dumps({"action": "STREAM_PUSH", "pc_num": pc_num, "mini_key": mini_key}, ensure_ascii=False) + "\n"
+        sock.sendall(hdr_msg.encode("utf-8"))
+        dprint(mini_key, "📺 [15fps 영상 중계 시작] 군주컴 관제 보드로 실시간 화면 송출을 시작합니다.")
+
+        frame_interval = 1.0 / 15.0
+        while not _STREAM_STOP_EVENT.is_set():
+            t0 = time.perf_counter()
+            frame = latest_frames.get(mini_key)
+            if frame is not None:
+                ok_enc, enc = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+                if ok_enc:
+                    jb = enc.tobytes()
+                    sock.sendall(struct.pack("!I", len(jb)) + jb)
+            elapsed = time.perf_counter() - t0
+            sleep_s = frame_interval - elapsed
+            if sleep_s > 0.002:
+                _STREAM_STOP_EVENT.wait(sleep_s)
+    except Exception:
+        pass
+    finally:
+        if sock:
+            try: sock.close()
+            except Exception: pass
+        _STREAM_PUSH_ACTIVE = False
+        dprint(mini_key, "⏹ [15fps 영상 중계 종료] 군주컴 실시간 화면 송출을 중단했습니다.")
+
+def alert_heartbeat_and_watchdog_thread():
+    """생존신호(2초 주기, 상시 연결 재사용) + 15fps 스트림 제어 + 5종 상시 워치독(OBS뻑/게임꺼짐/인증3분/마을IDLE/5to6)"""
+    key = TARGET_PC_KEY
+    last_tick = time.time()
+    last_hb_send = 0.0
+    hb_sock = None
+    hb_rx_buf = bytearray()
+
+    def _close_hb_sock():
+        nonlocal hb_sock
+        if hb_sock is not None:
+            try: hb_sock.close()
+            except Exception: pass
+            hb_sock = None
+        hb_rx_buf.clear()
+
+    while True:
+        time.sleep(0.5)
+        now_t = time.time()
+        dt = max(0.0, min(2.0, now_t - last_tick))
+        last_tick = now_t
+
+        pc_num = str(get_my_central_num()).strip()
+        if pc_num == "13":
+            _close_hb_sock()
+            if _STREAM_PUSH_ACTIVE:
+                _STREAM_STOP_EVENT.set()
+            continue
+
+        st = ai_states.get(key)
+        if not st:
+            continue
+
+        # ------------------------------------------------------------------
+        # 1) 2초마다 군주컴(9998)에 생존신호 송신 (단일 소켓 유지 재사용) + [완료] 수신 + 15fps 스트림 요청 확인
+        # ------------------------------------------------------------------
+        if now_t - last_hb_send >= 2.0:
+            last_hb_send = now_t
+            hb_payload = {
+                "action": "HEARTBEAT",
+                "pc_num": pc_num,
+                "mini_key": key,
+                "hunt_active": bool(st.get("backup_hunt_active", st.get("is_hunt_active", False))),
+                "fsm": str(st.get("target_fsm", "IDLE")),
+                "dungeon": str(current_settings.get(key, {}).get("dungeon_name", ""))
+            }
+            try:
+                if hb_sock is None:
+                    hb_sock = socket.create_connection((COMMAND_CENTER_IP, ALERT_SERVER_PORT), timeout=2.0)
+                    try:
+                        hb_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    except Exception:
+                        pass
+                    hb_sock.settimeout(2.0)
+                    hb_rx_buf.clear()
+
+                hb_sock.sendall((json.dumps(hb_payload, ensure_ascii=False) + "\n").encode("utf-8"))
+
+                while b"\n" not in hb_rx_buf:
+                    chunk = hb_sock.recv(4096)
+                    if not chunk:
+                        raise ConnectionError("HB_EOF")
+                    hb_rx_buf.extend(chunk)
+                    if len(hb_rx_buf) > 32768:
+                        raise ConnectionError("HB_OVERFLOW")
+
+                nl_idx = hb_rx_buf.index(b"\n")
+                resp_line = bytes(hb_rx_buf[:nl_idx]).decode("utf-8", errors="ignore").strip()
+                del hb_rx_buf[:nl_idx + 1]
+
+                if resp_line:
+                    resp = json.loads(resp_line)
+                    if resp.get("resolved"):
+                        _alert_handle_resolved_codes(key, resp["resolved"])
+                    want_stream = bool(resp.get("want_stream", False))
+                    if want_stream and not _STREAM_PUSH_ACTIVE:
+                        threading.Thread(target=_alert_stream_push_worker, args=(pc_num, key), daemon=True).start()
+                    elif not want_stream and _STREAM_PUSH_ACTIVE:
+                        _STREAM_STOP_EVENT.set()
+            except Exception:
+                _close_hb_sock()
+
+        # 사냥 정지/일시정지/수동제어 중이면 감지 워치독 일시정지
+        is_hunt_on = bool(st.get("backup_hunt_active", st.get("is_hunt_active", False)))
+        is_paused_now = bool(st.get("is_paused", False))
+        is_manual_now = (active_manual_target == key)
+        raw_fsm = str(st.get("backup_target_fsm", st.get("target_fsm", "IDLE"))) if st.get("target_fsm") == "GHOST_MODE" else str(st.get("target_fsm", "IDLE"))
+        img_bgr = latest_frames.get(key)
+
+        if not is_hunt_on or is_paused_now:
+            st["obs_stuck_count"] = 0
+            st["obs_move_pending"] = False
+            st["alert_no_dragon_start"] = 0.0
+            st["alert_5to6_elapsed"] = 0.0
+            st["alert_certi_ip_elapsed"] = 0.0
+            st["alert_certi_total_fails"] = 0
+            st["idle_mon_active_sec"] = 0.0
+            st["idle_mon_exp_events"] = []
+            st["idle_mon_arrow_events"] = []
+            st["idle_mon_last_sword_active"] = 0.0
+            continue
+
+        # ------------------------------------------------------------------
+        # 2) [조건 1] OBS 뻑 감지 (커서가 눈으로 보이지만 이동명령 후 5회 연속 안 움직임)
+        # ------------------------------------------------------------------
+        if not is_manual_now and st.get("obs_move_pending", False) and now_t >= st.get("obs_move_verify_after", 0.0) and not st.get("hw_busy", False):
+            st["obs_move_pending"] = False
+            pre_pos = st.get("obs_move_pre_pos")
+            if pre_pos is not None and img_bgr is not None:
+                is_certi_now = raw_fsm.startswith("CERTI_")
+                post_c = find_cursor_pos(img_bgr, last_pos=pre_pos, check_circle=True, allow_full_scan=False, is_certi_mode=is_certi_now)
+                if post_c is not None and math.hypot(post_c[0] - pre_pos[0], post_c[1] - pre_pos[1]) < 3.0:
+                    st["obs_stuck_count"] = st.get("obs_stuck_count", 0) + 1
+                    if st["obs_stuck_count"] >= 5:
+                        report_alert_to_cc(
+                            key, "OBS_FREEZE", "OBS 뻑/커서 고정",
+                            f"커서 보이나 이동명령 후 {st['obs_stuck_count']}회 연속 미이동 (좌표:{int(post_c[0])},{int(post_c[1])})"
+                        )
+                else:
+                    st["obs_stuck_count"] = 0
+
+        # ------------------------------------------------------------------
+        # 3) [조건 4] 게임 꺼짐 감지 (인증/사망/수동 제외, 용머리 20초 연속 미감지)
+        # ------------------------------------------------------------------
+        if not is_manual_now and not raw_fsm.startswith("CERTI_") and not raw_fsm.startswith("DEATH") and img_bgr is not None:
+            try:
+                dragon_ok = check_dragon_head_1st_stage(img_bgr)
+                chatup_ok = (not dragon_ok) and (find_chatup_in_roi(img_bgr, th=0.75) is not None)
+                if dragon_ok or chatup_ok:
+                    st["alert_no_dragon_start"] = 0.0
+                else:
+                    if st.get("alert_no_dragon_start", 0.0) == 0.0:
+                        st["alert_no_dragon_start"] = now_t
+                    elif now_t - st["alert_no_dragon_start"] >= 20.0:
+                        report_alert_to_cc(
+                            key, "GAME_CLOSED", "게임 꺼짐 의심",
+                            f"용머리(dragon.png) {int(now_t - st['alert_no_dragon_start'])}초 연속 미감지 (FSM:{raw_fsm})"
+                        )
+            except Exception:
+                pass
+        else:
+            st["alert_no_dragon_start"] = 0.0
+
+        # ------------------------------------------------------------------
+        # 4) [조건 5] 인증 오래함 (동일 IP 순수 시도 3분 초과 / IP대기·딜레이·fail교체 제외 + fail 15회 무한루프)
+        # ------------------------------------------------------------------
+        if raw_fsm.startswith("CERTI_"):
+            wait_exempt_fsms = {
+                "CERTI_DELAY_WAIT",
+                "CERTI_WAIT_IP_LOCK",
+                "CERTI_REQ_VPN_ROTATE",
+                "CERTI_STEP_13_WAIT_BEFORE_EXEC"
+            }
+            curr_c = str(st.get("certi_curr_central") or get_my_central_num()).strip()
+            if curr_c == "VPN":
+                if USE_MOBILE_PROXY_FOR_VPN:
+                    ip_sig = f"MOBILE:{st.get('certi_mobile_ip', '')}"
+                else:
+                    ip_sig = f"VPN:{CENTRAL_TAILSCALE_MAP.get('VPN', '')}"
+            else:
+                ip_sig = f"C{curr_c}"
+
+            if ip_sig != st.get("alert_certi_last_ip_sig", ""):
+                st["alert_certi_last_ip_sig"] = ip_sig
+                st["alert_certi_ip_elapsed"] = 0.0
+
+            if not is_manual_now and raw_fsm not in wait_exempt_fsms:
+                st["alert_certi_ip_elapsed"] = st.get("alert_certi_ip_elapsed", 0.0) + dt
+                if st["alert_certi_ip_elapsed"] >= 180.0:
+                    report_alert_to_cc(
+                        key, "CERTI_STUCK", "인증 3분 초과",
+                        f"동일 IP({ip_sig}) 순수 시도 {int(st['alert_certi_ip_elapsed'])}초 경과 (단계:{raw_fsm})"
+                    )
+            if st.get("alert_certi_total_fails", 0) >= 15:
+                report_alert_to_cc(
+                    key, "CERTI_FAIL_LOOP", "인증 fail 반복",
+                    f"IP 교체 누적 fail {st['alert_certi_total_fails']}회 초과 (현재:{ip_sig} / {raw_fsm})"
+                )
+        else:
+            st["alert_certi_ip_elapsed"] = 0.0
+            st["alert_certi_total_fails"] = 0
+            st["alert_certi_last_ip_sig"] = ""
+
+        # ------------------------------------------------------------------
+        # 5) [조건 7] 5to6 5분(300초) 초과 (엠탐/수동/인증 중 타이머 정지)
+        # ------------------------------------------------------------------
+        is_in_5to6 = (
+            st.get("override_dungeon_name") == "본던 5to6" and
+            not raw_fsm.startswith("TOWN_MAINT") and
+            not raw_fsm.startswith("DEATH") and
+            raw_fsm != "SHUTDOWN_WAIT"
+        )
+        if is_in_5to6:
+            is_mptam_paused = bool(st.get("is_mptam_mode", False) or st.get("mptam_standby_guard", False))
+            if not is_mptam_paused and not is_manual_now and not raw_fsm.startswith("CERTI_"):
+                st["alert_5to6_elapsed"] = st.get("alert_5to6_elapsed", 0.0) + dt
+                if st["alert_5to6_elapsed"] >= 300.0:
+                    report_alert_to_cc(
+                        key, "STUCK_5TO6", "5to6 5분 초과",
+                        f"본던 5to6 이동 누적 {int(st['alert_5to6_elapsed'])}초 경과 (엠탐 제외, FSM:{raw_fsm})"
+                    )
+        else:
+            st["alert_5to6_elapsed"] = 0.0
+
+        # ------------------------------------------------------------------
+        # 6) [조건 6] 마을 IDLE 배회 감지
+        # - 엠탐·층간이동·PK모드·정비/인증 제외 시에만 활성 타이머 누적
+        # - 최근 2분간 경험치 <= 5회 AND 화살변화 <= 5회 AND 칼커서 미감지 2분 이상
+        # ------------------------------------------------------------------
+        is_reset_idle_mon = (
+            is_manual_now or
+            raw_fsm.startswith("CERTI_") or
+            raw_fsm.startswith("TOWN_MAINT") or
+            raw_fsm.startswith("DEATH") or
+            raw_fsm.startswith("WEAPON_REPAIR") or
+            raw_fsm == "SHUTDOWN_WAIT" or
+            st.get("town_thread_running", False)
+        )
+        if is_reset_idle_mon:
+            st["idle_mon_active_sec"] = 0.0
+            st["idle_mon_exp_events"] = []
+            st["idle_mon_arrow_events"] = []
+            st["idle_mon_last_sword_active"] = 0.0
+        else:
+            is_floor_moving = (
+                st.get("override_dungeon_name") in ("본던 5to6", "사던 3to4") or
+                raw_fsm.startswith("PORTAL_") or
+                raw_fsm.startswith("SADEON_PORTAL_")
+            )
+            is_mptam_now = bool(st.get("is_mptam_mode", False) or st.get("mptam_standby_guard", False))
+            is_pvp_on_now = bool(img_bgr is not None and check_pvp_mode(img_bgr))
+            is_pb_wait = (
+                raw_fsm.startswith(("PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY", "PARTY_BUFF_")) or
+                bool(st.get("req_party_buff", False)) or
+                (st.get("party_buff_status") in ("MOVING", "ARRIVED"))
+            )
+            is_ui_temp = raw_fsm.startswith(("INV_CLEAN", "HK_HEAL", "BUFFING", "CHAT_RECOVER", "F1_INIT")) or is_pb_wait
+
+            if not is_mptam_now and not is_floor_moving and not is_pvp_on_now and not is_ui_temp:
+                act_sec = st.get("idle_mon_active_sec", 0.0) + dt
+                st["idle_mon_active_sec"] = act_sec
+
+                exp_ev = [t for t in st.get("idle_mon_exp_events", []) if act_sec - t <= 120.0]
+                arr_ev = [t for t in st.get("idle_mon_arrow_events", []) if act_sec - t <= 120.0]
+                st["idle_mon_exp_events"] = exp_ev
+                st["idle_mon_arrow_events"] = arr_ev
+
+                no_sword_sec = act_sec - st.get("idle_mon_last_sword_active", 0.0)
+                if act_sec >= 120.0 and len(exp_ev) <= 5 and len(arr_ev) <= 5 and no_sword_sec >= 120.0:
+                    map_note = "미니맵 미매칭(마을 유력)" if st.get("dungeon_map_pos") is None else "미니맵 매칭됨(사냥터 끼임/배회)"
+                    report_alert_to_cc(
+                        key, "TOWN_IDLE_WANDER", "마을 IDLE 배회 의심",
+                        f"최근 2분 경험치:{len(exp_ev)}회 / 화살:{len(arr_ev)}회 / 칼커서 미감지:{int(no_sword_sec)}초 ({map_note})"
+                    )
+# ==============================================================================
+
+# ==============================================================================
 # 🌐 [12대 중앙컴 테일스케일 프록시 풀] 내 중앙컴은 자동 패스 & 타 중앙컴 회선 자동 로테이션
 # ==============================================================================
 CENTRAL_TAILSCALE_MAP = {
@@ -5268,10 +5695,13 @@ def record_physical_release(p_serial, dev_type, code):
 def send_macro_buffer(p_serial, p_lock, deltas, key):
     if not p_serial or not deltas: return
     chunk_size = 10
+    obs_pre_pos = _obs_mark_move_start(key, sum(d[0] for d in deltas), sum(d[1] for d in deltas))
+    was_aborted = False
     next_tick = time.perf_counter()
 
     for i in range(0, len(deltas), chunk_size):
         if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+            was_aborted = True
             try:
                 last_dx = deltas[max(0, i-1)][0] if i > 0 else deltas[0][0]
                 last_dy = deltas[max(0, i-1)][1] if i > 0 else deltas[0][1]
@@ -5311,14 +5741,20 @@ def send_macro_buffer(p_serial, p_lock, deltas, key):
             if rem > 0.002: time.sleep(0.001)
             elif rem > 0.0005: time.sleep(0)
 
+    if not was_aborted and obs_pre_pos is not None:
+        _obs_mark_move_end(key, obs_pre_pos)
+
 def send_super_packet_buffer(p_serial, p_lock, deltas, key):
     """🚀 [0ms 동기화 엔진] 이동(X,Y)과 클릭 상태를 3바이트(0xB1) 캡슐로 묶어 전송"""
     if not p_serial or not deltas: return
     chunk_size = 10
+    obs_pre_pos = _obs_mark_move_start(key, sum(d[0] for d in deltas), sum(d[1] for d in deltas))
+    was_aborted = False
     next_tick = time.perf_counter()
 
     for i in range(0, len(deltas), chunk_size):
         if active_manual_target == key or ai_states[key].get("is_paused") or ai_states[key].get("abort_macro", False):
+            was_aborted = True
             try:
                 last_dx = deltas[max(0, i-1)][0] if i > 0 else deltas[0][0]
                 last_dy = deltas[max(0, i-1)][1] if i > 0 else deltas[0][1]
@@ -5366,6 +5802,9 @@ def send_super_packet_buffer(p_serial, p_lock, deltas, key):
             if rem <= 0: break
             if rem > 0.002: time.sleep(0.001)
             elif rem > 0.0005: time.sleep(0)
+
+    if not was_aborted and obs_pre_pos is not None:
+        _obs_mark_move_end(key, obs_pre_pos)
 
 def send_immediate_delta(p_serial, p_lock, dx, dy):
     if not p_serial: return
@@ -6940,6 +7379,8 @@ def check_exp_changed(key, img_bgr):
         _, thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
         if cv2.countNonZero(thresh) > 10: changed = True
     state["exp_image"] = gray
+    if changed:
+        _alert_record_exp_event(key)
     return changed
 
 def check_weight_changed(key, img_bgr):
@@ -6990,6 +7431,7 @@ def update_arrow_status(key, img_bgr, curr_time):
             state["last_arrow_change_time"] = curr_time
             state["arrow_is_firing"] = True
             state["arrow_fire_count"] = state.get("arrow_fire_count", 0) + 1
+            _alert_record_arrow_event(key)
         else:
             if curr_time - state.get("last_arrow_change_time", curr_time) >= ARROW_STOP_TIMEOUT:
                 state["arrow_is_firing"] = False
@@ -7529,10 +7971,12 @@ def patched_check_attack_cursor(img_bgr, cx, cy, check_maintain=False, pc_key=No
     # 👆👆 -------------------------------------------------------------
 
     if is_sword:
+        if pc_key: _alert_record_sword_event(pc_key)
         return True
 
     # 기존 일반 칼 확인 실패 시, 부러진 칼 매칭 시도 (연산 낭비 방지)
     if check_broken_weapon(img_bgr, cx, cy):
+        if pc_key: _alert_record_sword_event(pc_key)
         return True
 
     return False
@@ -8925,6 +9369,8 @@ def ai_commander_worker(target_pc):
                         if fail_pos:
                             # 🚨 fail.png 감지 -> 다른 미니컴은 계속 쓸 수 있도록 슬롯만 정상 반납하고, 내 미니컴 장부에만 실패 기록!
                             release_central_ip_lock_async(key)
+                            state["alert_certi_ip_elapsed"] = 0.0
+                            state["alert_certi_total_fails"] = state.get("alert_certi_total_fails", 0) + 1
                             pico_queues[key].put({"action": "WAIT", "delay_min": 0.2, "delay_max": 0.35})
                             pico_queues[key].put({"action": "CLOSE_TAB"})
 
@@ -14130,6 +14576,9 @@ def ai_commander_worker(target_pc):
                                         missing_items = [k for k in pick_targets.keys() if k not in found_items]
                                         dprint(key, f"🚨 [탐색 2회 완료] 2번 창고 바닥을 긁었지만 일부 템을 찾지 못했습니다! (누락: {missing_items})")
 
+                                        if "ent" in missing_items:
+                                            report_alert_to_cc(key, "NO_ENT", "엔줄 오링", "창고 2회 탐색 완료했으나 ent.png(엔줄) 미발견")
+
                                         if "arrow" in missing_items:
                                             dprint(key, "🏹 [비상 화살 조달] 은화살이 창고에 없습니다! 무기 상인으로 달려가 999개를 비상 구매합니다.")
                                             ai_states[key]["pick_retry_cnt"] = 0
@@ -15769,11 +16218,44 @@ def ai_commander_worker(target_pc):
                                 elif "본던" in dungeon_name or "gludio" in dungeon_name.lower():
                                     ensure_minimap_open(check_time=1.5, pre_teleport=True)
 
-                                    dprint(key, f"▶ [사냥터 복귀] F3 -> F8 (던전책) 눌러 '{dungeon_name}' 기억 장소를 엽니다.")
-                                    send_keyboard_key(p_serial, p_lock, 196, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 196, 0, is_manual=True)
-                                    wait_with_heal(g_val(0.2, 0.3))
-                                    send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
-                                    wait_with_heal(g_val(0.8, 1.2))
+                                    book_opened = False
+                                    for bk_try in range(2):
+                                        scr_bk_pre = latest_frames.get(key)
+                                        bk_pre_gray = cv2.cvtColor(scr_bk_pre[130:355, 15:250], cv2.COLOR_BGR2GRAY) if (scr_bk_pre is not None and scr_bk_pre.shape[0] >= 355 and scr_bk_pre.shape[1] >= 250) else None
+                                        dprint(key, f"▶ [사냥터 복귀] F3 -> F8 (던전책) 눌러 '{dungeon_name}' 기억 장소를 엽니다. ({bk_try+1}/2)")
+                                        send_keyboard_key(p_serial, p_lock, 196, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 196, 0, is_manual=True)
+                                        wait_with_heal(g_val(0.2, 0.3))
+                                        send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
+
+                                        bk_wait_end = time.time() + 2.0
+                                        while time.time() < bk_wait_end:
+                                            wait_with_heal(0.1)
+                                            scr_bk = latest_frames.get(key)
+                                            if scr_bk is None:
+                                                continue
+                                            # 1) 좌측 상단 닫기 버튼(qq/close.png) 출현 체크
+                                            ic_img = globals().get("img_close")
+                                            ic_mask = globals().get("img_close_mask")
+                                            if ic_img is not None and scr_bk.shape[1] >= 300 and scr_bk.shape[0] >= 50:
+                                                try:
+                                                    c_roi_bk = scr_bk[0:50, 215:300]
+                                                    if c_roi_bk.shape[0] >= ic_img.shape[0] and c_roi_bk.shape[1] >= ic_img.shape[1]:
+                                                        res_bk = cv2.matchTemplate(c_roi_bk, ic_img, cv2.TM_CCORR_NORMED, mask=cv2.merge([ic_mask]*3)) if ic_mask is not None else cv2.matchTemplate(c_roi_bk, ic_img, cv2.TM_CCOEFF_NORMED)
+                                                        if cv2.minMaxLoc(res_bk)[1] >= 0.78:
+                                                            book_opened = True
+                                                            break
+                                                except Exception:
+                                                    pass
+                                            # 2) 좌측 리스트 영역(미니맵 외 구간) 대형 UI 팝업 픽셀 변화 체크
+                                            if bk_pre_gray is not None and scr_bk.shape[0] >= 355 and scr_bk.shape[1] >= 250:
+                                                bk_cur_gray = cv2.cvtColor(scr_bk[130:355, 15:250], cv2.COLOR_BGR2GRAY)
+                                                diff_bk = cv2.absdiff(bk_pre_gray, bk_cur_gray)
+                                                if cv2.countNonZero(cv2.threshold(diff_bk, 22, 255, cv2.THRESH_BINARY)[1]) >= 10000:
+                                                    book_opened = True
+                                                    break
+                                        if book_opened:
+                                            wait_with_heal(g_val(0.3, 0.5))
+                                            break
 
                                     is_bondon_2f = ("2-" in dungeon_name or "2층" in dungeon_name)
                                     if is_bondon_2f:
@@ -16104,19 +16586,56 @@ def ai_commander_worker(target_pc):
                                         dprint(key, f"❌ 던전책에서 '{dungeon_name}'({book_img_list})을 찾지 못했습니다.")
                                         send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
                                         send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
-                                        retry_cnt = ai_states.get(key, {}).get("reentry_retry_cnt", 0) + 1
-                                        ai_states[key]["reentry_retry_cnt"] = retry_cnt
-                                        if retry_cnt > 3:
-                                            ai_states[key].update({"reentry_retry_cnt": 0, "target_fsm": "SHUTDOWN_WAIT", "shutdown_timer": builtin_time.time() + 2.0})
+                                        if not book_opened:
+                                            report_alert_to_cc(key, "NO_BOOK", "던전기억책 없음", f"{dungeon_name} F3->F8 2회 시도 후 기억창/목록 미출현 (축순 보호 일시정지)")
+                                            dprint(key, "🛑 [던전기억책 없음 확정] 축순 소모 뺑뺑이 방지를 위해 마을에서 일시정지합니다. (책 보충 후 재가동 필요)")
+                                            ai_states[key].update({"reentry_retry_cnt": 0, "is_paused": True, "target_fsm": "IDLE"})
                                         else:
-                                            ai_states[key].update({"target_fsm": "TOWN_MAINT_REENTRY_WAIT", "reentry_wait_start": builtin_time.time()})
+                                            retry_cnt = ai_states.get(key, {}).get("reentry_retry_cnt", 0) + 1
+                                            ai_states[key]["reentry_retry_cnt"] = retry_cnt
+                                            if retry_cnt > 3:
+                                                ai_states[key].update({"reentry_retry_cnt": 0, "target_fsm": "SHUTDOWN_WAIT", "shutdown_timer": builtin_time.time() + 2.0})
+                                            else:
+                                                ai_states[key].update({"target_fsm": "TOWN_MAINT_REENTRY_WAIT", "reentry_wait_start": builtin_time.time()})
 
                                 elif "수던" in dungeon_name or "heine" in dungeon_name.lower():
                                     ensure_minimap_open(check_time=1.5, pre_teleport=True)
-                                    dprint(key, f"▶ [사냥터 복귀] F3 -> F8 (던전책) 눌러 '{dungeon_name}' 기억 장소를 엽니다.")
-                                    for k_c, w_a, w_b in [(196, 0.2, 0.3), (201, 0.8, 1.2)]:
-                                        send_keyboard_key(p_serial, p_lock, k_c, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, k_c, 0, is_manual=True)
-                                        wait_with_heal(g_val(w_a, w_b))
+                                    book_opened = False
+                                    for bk_try in range(2):
+                                        scr_bk_pre = latest_frames.get(key)
+                                        bk_pre_gray = cv2.cvtColor(scr_bk_pre[130:355, 15:250], cv2.COLOR_BGR2GRAY) if (scr_bk_pre is not None and scr_bk_pre.shape[0] >= 355 and scr_bk_pre.shape[1] >= 250) else None
+                                        dprint(key, f"▶ [사냥터 복귀] F3 -> F8 (던전책) 눌러 '{dungeon_name}' 기억 장소를 엽니다. ({bk_try+1}/2)")
+                                        send_keyboard_key(p_serial, p_lock, 196, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 196, 0, is_manual=True)
+                                        wait_with_heal(g_val(0.2, 0.3))
+                                        send_keyboard_key(p_serial, p_lock, 201, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 201, 0, is_manual=True)
+
+                                        bk_wait_end = time.time() + 2.0
+                                        while time.time() < bk_wait_end:
+                                            wait_with_heal(0.1)
+                                            scr_bk = latest_frames.get(key)
+                                            if scr_bk is None:
+                                                continue
+                                            ic_img = globals().get("img_close")
+                                            ic_mask = globals().get("img_close_mask")
+                                            if ic_img is not None and scr_bk.shape[1] >= 300 and scr_bk.shape[0] >= 50:
+                                                try:
+                                                    c_roi_bk = scr_bk[0:50, 215:300]
+                                                    if c_roi_bk.shape[0] >= ic_img.shape[0] and c_roi_bk.shape[1] >= ic_img.shape[1]:
+                                                        res_bk = cv2.matchTemplate(c_roi_bk, ic_img, cv2.TM_CCORR_NORMED, mask=cv2.merge([ic_mask]*3)) if ic_mask is not None else cv2.matchTemplate(c_roi_bk, ic_img, cv2.TM_CCOEFF_NORMED)
+                                                        if cv2.minMaxLoc(res_bk)[1] >= 0.78:
+                                                            book_opened = True
+                                                            break
+                                                except Exception:
+                                                    pass
+                                            if bk_pre_gray is not None and scr_bk.shape[0] >= 355 and scr_bk.shape[1] >= 250:
+                                                bk_cur_gray = cv2.cvtColor(scr_bk[130:355, 15:250], cv2.COLOR_BGR2GRAY)
+                                                diff_bk = cv2.absdiff(bk_pre_gray, bk_cur_gray)
+                                                if cv2.countNonZero(cv2.threshold(diff_bk, 22, 255, cv2.THRESH_BINARY)[1]) >= 10000:
+                                                    book_opened = True
+                                                    break
+                                        if book_opened:
+                                            wait_with_heal(g_val(0.3, 0.5))
+                                            break
 
                                     cur_x, cur_y = ai_states.get(key, {}).get("cursor_pos", [400, 300])
                                     dx, dy = 150 - cur_x, 250 - cur_y
@@ -16290,15 +16809,20 @@ def ai_commander_worker(target_pc):
                                                 ai_states[key].update({"target_fsm": "TOWN_MAINT_REENTRY_WAIT", "reentry_wait_start": time.time()})
                                                 send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
                                     else:
-                                        dprint(key, "❌ 북마크/던전책 목적지를 찾지 못했습니다. 복구를 위해 재시도 큐로 넘깁니다.")
+                                        dprint(key, "❌ 북마크/던전책 목적지를 찾지 못했습니다.")
                                         send_keyboard_key(p_serial, p_lock, 177, 1, is_manual=True); time.sleep(0.05); send_keyboard_key(p_serial, p_lock, 177, 0, is_manual=True)
                                         send_keyboard_key(p_serial, p_lock, 194, 1, is_manual=True); time.sleep(g_val(0.04, 0.08)); send_keyboard_key(p_serial, p_lock, 194, 0, is_manual=True)
-                                        retry_cnt = ai_states.get(key, {}).get("reentry_retry_cnt", 0) + 1
-                                        ai_states[key]["reentry_retry_cnt"] = retry_cnt
-                                        if retry_cnt > 3:
-                                            ai_states[key].update({"reentry_retry_cnt": 0, "target_fsm": "SHUTDOWN_WAIT", "shutdown_timer": builtin_time.time() + 2.0})
+                                        if not book_opened:
+                                            report_alert_to_cc(key, "NO_BOOK", "던전기억책 없음", f"{dungeon_name} F3->F8 2회 시도 후 기억창/목록 미출현 (축순 보호 일시정지)")
+                                            dprint(key, "🛑 [던전기억책 없음 확정] 축순 소모 뺑뺑이 방지를 위해 마을에서 일시정지합니다. (책 보충 후 재가동 필요)")
+                                            ai_states[key].update({"reentry_retry_cnt": 0, "is_paused": True, "target_fsm": "IDLE"})
                                         else:
-                                            ai_states[key].update({"target_fsm": "TOWN_MAINT_REENTRY_WAIT", "reentry_wait_start": builtin_time.time()})
+                                            retry_cnt = ai_states.get(key, {}).get("reentry_retry_cnt", 0) + 1
+                                            ai_states[key]["reentry_retry_cnt"] = retry_cnt
+                                            if retry_cnt > 3:
+                                                ai_states[key].update({"reentry_retry_cnt": 0, "target_fsm": "SHUTDOWN_WAIT", "shutdown_timer": builtin_time.time() + 2.0})
+                                            else:
+                                                ai_states[key].update({"target_fsm": "TOWN_MAINT_REENTRY_WAIT", "reentry_wait_start": builtin_time.time()})
 
                                 elif "오땅" in dungeon_name:
                                     ensure_minimap_open(check_time=1.5, pre_teleport=True)
@@ -34900,6 +35424,7 @@ threading.Thread(target=debug_render_thread, daemon=True).start()
 if TARGET_PC_KEY:
     threading.Thread(target=local_ipc_listener_thread, args=(TARGET_PC_KEY,), daemon=True).start()
     threading.Thread(target=local_ipc_broadcaster_thread, args=(TARGET_PC_KEY,), daemon=True).start()
+    threading.Thread(target=alert_heartbeat_and_watchdog_thread, daemon=True).start()
 
 def auto_arrange_terminal():
     """🚀 터미널(도스창) 자동 최소화 및 빠른 편집 모드 프리징 완벽 차단!"""
