@@ -11651,6 +11651,10 @@ def ai_commander_worker(target_pc):
                 state["perc_danger"] = 0.0
                 state["perc_pk"] = 0.0
                 state["danger_mp_low_ticks"] = 0
+                state["last_external_hit_time"] = 0.0
+                state["tele_landed_time"] = 0.0
+                state["tele_ext_hit_loss"] = 0.0
+                state["danger_tele_armed_until"] = 0.0
 
                 current_fsm_safe = str(state.get("target_fsm", ""))
 
@@ -12467,79 +12471,10 @@ def ai_commander_worker(target_pc):
             else:
                 state["mp_empty_start"] = 0
 
-            # 💡 [쿨타임 핵심 픽스] 텔레포트 후 40초 동안은 마나 고갈 40초 타이머가 오르지 않도록 묶어둠
-            if curr_time < state.get("mp_empty_tele_cd", 0):
-                if state.get("mp_empty_start", 0) > 0:
-                    state["mp_empty_start"] = curr_time
-
-            # 💡 사냥터 판별하여 3초/40초 로직 완벽 분리
+            # 💡 특수 던전(오땅/이벤트) 전용 3초 연속 마나 고갈 감지 (일반 사냥터 40초 강제 텔포는 제거)
             dng_mp_chk = settings.get("dungeon_name", "")
             is_special_dng_mp = "event" in dng_mp_chk.lower() or "오땅" in dng_mp_chk
-
-            # 1. 특수 던전(오땅/이벤트)은 기존과 완벽히 동일하게 3초 유지 시 플래그 ON -> 기존 로직이 귀환(F9) 발동
             is_mp_empty_3sec = (is_special_dng_mp and state.get("mp_empty_start", 0) > 0 and curr_time - state["mp_empty_start"] >= 3.0)
-
-            # 2. 일반 사냥터(본던 등)는 40초 유지 시 플래그 ON
-            is_mp_empty_40sec = (not is_special_dng_mp and state.get("mp_empty_start", 0) > 0 and curr_time - state["mp_empty_start"] >= 40.0)
-
-            # 💡 일반 사냥터에서 40초 연속 마나 고갈 시 텔레포트(F11) 단독 발동 (저마나 시 바디 먼저 시전 후 텔포)
-            if is_mp_empty_40sec and state.get("is_hunt_active", False) and not state.get("is_paused", False):
-                fsm_for_mp_check = str(state.get("target_fsm", ""))
-                is_mp_tele_blocked_fsm = (
-                    fsm_for_mp_check.startswith(("TOWN_MAINT", "DEATH", "CERTI_", "BUFFING", "INV_CLEAN", "HK_HEAL_", "CHAT_RECOVER")) or
-                    fsm_for_mp_check in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "ABS_ESCAPE_VERIFY", "ABS_ESCAPE_F1_PREP"]
-                )
-                if not is_mp_tele_blocked_fsm:
-                    if mp <= 2.5:
-                        # 헛텔포 방지: MP 2.5% 이하일 때는 바디(F7)로 마나부터 확보한 뒤 다음 턴에 텔포 발동
-                        try: abs_hp_mp40 = float(settings.get("abs_return_pct", 15.0))
-                        except: abs_hp_mp40 = 15.0
-                        min_hp_mp40 = abs_hp_mp40 if settings.get("abs_return_use", False) else max(abs_hp_mp40, 15.0)
-                        if hp >= min_hp_mp40 and curr_time >= state.get("body_cd", 0):
-                            with pico_queues[key].mutex:
-                                has_body_q_40 = any(item.get("action") == "BODY_TO_MIND" for item in pico_queues[key].queue)
-                            if not has_body_q_40:
-                                if state.get("body_held", False):
-                                    if picos.get(key) and pico_locks.get(key):
-                                        send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
-                                    state["body_held"] = False
-                                dprint(key, f"🚨 [마나 고갈 40초 - 저마나 바디] MP({mp:.1f}% <= 2.5%) 부족으로 헛텔포 대신 바디(F7)를 먼저 시전합니다!")
-                                pico_queues[key].put({"action": "BODY_TO_MIND"})
-                                state["last_body_time"] = curr_time
-                                state["body_cd"] = curr_time + g_time(0.8, 1.1, key)
-                    else:
-                        state["mp_empty_tele_cd"] = curr_time + 40.0
-                        state["mp_empty_start"] = 0
-
-                        dprint(key, f"🚨 [마나 고갈] 40초 연속 MP 6% 이하 지속(현재 MP:{mp:.1f}%)! 텔레포트(F11) 발동 (재발동 쿨타임 40초 적용)")
-
-                        state["abort_macro"] = True
-                        with pico_queues[key].mutex: pico_queues[key].queue.clear()
-                        clear_movements_only(pico_queues[key])
-                        if state.get("sweep_active", False):
-                            pico_queues[key].put({"action": "SWEEP_STOP"})
-                            state["sweep_active"] = False
-
-                        pico_queues[key].put({"action": "TELEPORT"})
-                        state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
-                        state["teleport_start_mp"] = mp
-                        state["teleport_start_time"] = curr_time
-
-                        if h >= 200 and w >= 200:
-                            state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY)
-                        else:
-                            state["tele_snapshot"] = None
-
-                        state["teleport_verify_time"] = curr_time + g_time(0.8, 1.1, key)
-                        state["tele_retry_cnt"] = 0
-
-                        state["dungeon_global_path"] = []
-                        state["is_pulling"] = False
-                        state["is_attacking"] = False
-                        state["arrow_is_firing"] = False
-                        state["has_fired_arrow"] = False
-                        state["cooldown"] = curr_time + 0.5
-                        continue
 
             if "poison_history" not in state: state["poison_history"] = []
             state["poison_history"].append((curr_time, raw_poison))
@@ -18210,6 +18145,19 @@ def ai_commander_worker(target_pc):
             else:
                 hp_diff = 0
 
+            # 🛡️ [순수 외부 피격 판별] 바디(홀드/단타 1초 이내) 및 독 틱을 제외한 실제 몹/PK 피격만 기록
+            is_pure_external_hit = (
+                hp_diff > 0.0 and
+                not is_poisoned and
+                not state.get("body_held", False) and
+                (curr_time - state.get("last_body_time", 0.0) > 1.0)
+            )
+            if is_pure_external_hit:
+                state["last_external_hit_time"] = curr_time
+                tele_landed_t_chk = state.get("tele_landed_time", 0.0)
+                if tele_landed_t_chk > 0.0 and (curr_time - tele_landed_t_chk >= 0.3) and curr_time < state.get("hp_danger_cd", 0):
+                    state["tele_ext_hit_loss"] = state.get("tele_ext_hit_loss", 0.0) + hp_diff
+
             if state.get("is_mptam_mode", False):
                 drop_hist = [item for item in state.get("mptam_hp_drop_hist", []) if curr_time - item[0] <= 0.50]
                 if hp_diff > 0:
@@ -18738,7 +18686,13 @@ def ai_commander_worker(target_pc):
                         state["target_fsm"] = "IDLE"
                         state.pop("teleport_start_pos", None)
                         state.pop("teleport_start_time", None)
-                        state["hp_danger_cd"] = curr_time + g_val(10.0, 12.0)
+                        state["hp_danger_cd"] = curr_time + g_val(16.0, 18.0)
+                        state["tele_landed_time"] = curr_time
+                        state["tele_ext_hit_loss"] = 0.0
+                        state["last_external_hit_time"] = 0.0
+                        state["danger_tele_armed_until"] = 0.0
+                        state["cached_mobs"] = []
+                        mobs = []
 
                         state["is_attacking"] = False
                         state["arrow_is_firing"] = False
@@ -18776,6 +18730,9 @@ def ai_commander_worker(target_pc):
                                     state.pop("teleport_start_pos", None)
                                     state.pop("teleport_start_time", None)
                                     state["hp_danger_cd"] = 0.0
+                                    state["tele_landed_time"] = 0.0
+                                    state["tele_ext_hit_loss"] = 0.0
+                                    state["danger_tele_armed_until"] = curr_time + 2.5
                                     state["cooldown"] = curr_time + 0.05
                                     continue
                             else:
@@ -18797,6 +18754,9 @@ def ai_commander_worker(target_pc):
                             state.pop("teleport_start_time", None)
 
                             state["hp_danger_cd"] = curr_time + 3.0
+                            state["tele_landed_time"] = 0.0
+                            state["tele_ext_hit_loss"] = 0.0
+                            state["danger_tele_armed_until"] = 0.0
 
                             state["cooldown"] = curr_time + 1.0
                             state["astar_fail_count"] = 0
@@ -18808,10 +18768,39 @@ def ai_commander_worker(target_pc):
                     if state.get("target_fsm") == "EMERGENCY_TELEPORT_VERIFY":
                         continue
 
-                if hp > danger_pct and state.get("hp_danger_cd", 0) > curr_time + 1.5:
+                safe_hp_reset = min(95.0, max(danger_pct + 10.0, float(settings.get("heal_percent", 70.0))))
+                if hp >= safe_hp_reset and state.get("hp_danger_cd", 0) > curr_time + 1.5:
                     state["hp_danger_cd"] = 0.0
+                    state["tele_landed_time"] = 0.0
+                    state["tele_ext_hit_loss"] = 0.0
 
-                if hp > 0.0 and hp <= danger_pct and curr_time > state.get("hp_danger_cd", 0):
+                # 🔥 [핫스팟 착지 비상 해제] 위기 텔 착지 1.5초 후부터 순수 몹 피격(바디/독 제외) 누적 10% 이상 시 16~18초 쿨타임 즉시 해제
+                tele_landed_t = state.get("tele_landed_time", 0.0)
+                if tele_landed_t > 0.0 and curr_time < state.get("hp_danger_cd", 0):
+                    if hp <= danger_pct and (curr_time - tele_landed_t >= 1.5) and state.get("tele_ext_hit_loss", 0.0) >= 10.0:
+                        dprint(key, f"🚨 [핫스팟 재텔 허용] 텔 착지 후 순수 몹 피격 누적({state['tele_ext_hit_loss']:.1f}% >= 10%)! 16~18초 쿨타임을 즉시 해제합니다!")
+                        state["hp_danger_cd"] = 0.0
+                        state["tele_landed_time"] = 0.0
+                        state["tele_ext_hit_loss"] = 0.0
+                elif tele_landed_t > 0.0 and curr_time >= state.get("hp_danger_cd", 0):
+                    state["tele_landed_time"] = 0.0
+                    state["tele_ext_hit_loss"] = 0.0
+
+                fsm_danger_chk = str(state.get("target_fsm", ""))
+                is_combat_or_aim_danger = (
+                    state.get("is_attacking", False) or
+                    state.get("arrow_is_firing", False) or
+                    fsm_danger_chk in [
+                        "COMBAT", "COMBAT_PARK_VERIFY", "HOVER_WAIT", "SNAP_WAIT",
+                        "TARGET_AIMING", "HOVER_RETRY_WAIT", "HEINE_GMOB_VERIFY",
+                        "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD"
+                    ]
+                )
+                has_recent_ext_hit = (curr_time - state.get("last_external_hit_time", 0.0) <= 2.0)
+                is_danger_armed = (curr_time < state.get("danger_tele_armed_until", 0.0))
+                has_danger_threat = is_combat_or_aim_danger or bool(mobs) or has_recent_ext_hit or is_danger_armed
+
+                if hp > 0.0 and hp <= danger_pct and curr_time > state.get("hp_danger_cd", 0) and has_danger_threat:
                     danger_action = settings.get("hp_20_action", "귀환 (F8)")
                     state["danger_mp_low_ticks"] = 0
 
@@ -18910,11 +18899,13 @@ def ai_commander_worker(target_pc):
                                 state["last_body_time"] = curr_time
                                 state["body_cd"] = curr_time + g_time(0.8, 1.1, key)
 
+                        state["danger_tele_armed_until"] = curr_time + 2.5
                         state["perc_danger"] = 0.0
                         state["cooldown"] = curr_time + 0.05
                         continue
 
                     # 정상 위기 텔포(mp > 2.5%) 또는 위기 귀환(F8/F9) 시에만 큐 전체 초기화 후 즉시 실행
+                    state["danger_tele_armed_until"] = 0.0
                     state["abort_macro"] = True
                     with pico_queues[key].mutex: pico_queues[key].queue.clear()
                     pico_queues[key].put({"action": "FORCE_RELEASE"})
@@ -18995,6 +18986,8 @@ def ai_commander_worker(target_pc):
                     state["perc_danger"] = 0.0
                     continue
                 else:
+                    if hp > danger_pct:
+                        state["danger_tele_armed_until"] = 0.0
                     state["perc_danger"] = 0.0
                     state["danger_mp_low_ticks"] = 0
 
@@ -30204,21 +30197,19 @@ def ai_commander_worker(target_pc):
                 if state.pop("nav_standby_parked", False):
                     action_taken = False
 
-                # 👇👇 [전투 중 노포션 저마나 바디 단타] 약 없음 + GUI 힐 MP 이하 + HP > 위기HP+5% 일 때 3~4초 간격 사전 마나 확보 👇👇
+                # 👇👇 [전투 중 노포션 저마나 바디 단타] 약 없음 + MP 15%(또는 GUI 힐MP) 이하 + HP > 위기HP+5% 일 때 F4 줍기 유지하며 3~4초 간격 사전 마나 확보 👇👇
                 if (
                     settings.get("use_body", False) and
                     state.get("cached_nopotion", False) and
-                    state.get("target_fsm") == "COMBAT" and
+                    state.get("target_fsm") in ["COMBAT", "COMBAT_PARK_VERIFY"] and
                     state.get("has_fired_arrow", False) and
-                    not state.get("sweep_active", False) and
-                    state.get("party_blind_sweep_start", 0.0) == 0.0 and
                     not is_buffing and
                     not state.get("current_is_m_elf", False) and
                     not is_manual_mode and
                     not is_in_town_or_death and
                     not survival_action_taken
                 ):
-                    gui_heal_mp_limit = settings.get("heal_mp_percent", 30.0)
+                    combat_body_mp_limit = max(float(settings.get("heal_mp_percent", 15.0)), 15.0)
                     try: abs_ret_hp_c = float(settings.get("abs_return_pct", 15.0))
                     except: abs_ret_hp_c = 15.0
                     base_abs_hp_c = abs_ret_hp_c if settings.get("abs_return_use", False) else max(abs_ret_hp_c, 15.0)
@@ -30227,7 +30218,7 @@ def ai_commander_worker(target_pc):
                     need_heal_now_c = settings.get("heal_use", False) and hp <= settings.get("heal_percent", 70.0) and mp >= 5.0
 
                     if (
-                        mp <= gui_heal_mp_limit and
+                        mp <= combat_body_mp_limit and
                         hp > combat_body_min_hp and
                         not need_heal_now_c and
                         curr_time >= state.get("combat_body_cd", 0.0) and
@@ -30246,7 +30237,7 @@ def ai_commander_worker(target_pc):
                             state["last_body_time"] = curr_time
                             state["body_cd"] = curr_time + g_time(0.8, 1.2, key)
                             state["combat_body_cd"] = curr_time + g_time(3.0, 4.0, key)
-                            dprint(key, f"🩸 [전투 노포션 바디] 약 없음 & MP({mp:.1f}% <= {gui_heal_mp_limit:.0f}%) & HP({hp:.1f}% > {combat_body_min_hp:.0f}%)! 단타 바디로 힐/텔 마나를 사전 확보합니다.")
+                            dprint(key, f"🩸 [전투 노포션 바디] 약 없음 & MP({mp:.1f}% <= {combat_body_mp_limit:.0f}%) & HP({hp:.1f}% > {combat_body_min_hp:.0f}%)! 단타 바디로 힐/텔 마나를 사전 확보합니다.")
                 # 👆👆 ------------------------------------------------------------------------- 👆👆
 
                 # 👇👇 [추가] 잉여 체력 바디 투 마인드 (패시브 단타) 👇👇
