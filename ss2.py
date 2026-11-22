@@ -1683,10 +1683,13 @@ def dispatcher_thread():
                         del reserved_servers[target_server]
                         print(f"🔓 [보안] {char_id} 복귀 완료. {target_server} 예약석 해제.")
 
-                # 💡 인증(CERTI_) 진행 중인 군주는 가용 버퍼 명단에서 즉시 열외하여 사냥컴 대기열 병목 원천 차단!
+                # 💡 인증(CERTI_)·수동제어·일시정지 중인 버퍼는 가용 명단에서 즉시 열외하여 사냥컴 대기열 병목 원천 차단!
+                curr_manual_key = globals().get("active_manual_target")
                 active_minis = [
                     m for m in SERVER_ASSIGNMENTS.get(target_server, []) 
-                    if ai_states.get(m, {}).get("is_hunt_active", False)
+                    if m != curr_manual_key
+                    and ai_states.get(m, {}).get("is_hunt_active", False)
+                    and not ai_states.get(m, {}).get("is_paused", False)
                     and ai_states.get(m, {}).get("cmd_fsm") == "IDLE"
                     and not str(ai_states.get(m, {}).get("target_fsm", "")).startswith("CERTI_")
                 ]
@@ -1967,7 +1970,12 @@ def dispatcher_thread():
                     with global_req_queue.mutex:
                         del global_req_queue.queue[req_index]
                         
-                    first_shooter = list(alloc.keys())[0] 
+                    alloc_keys = list(alloc.keys())
+                    # 👑 1타 삑사리 MP 손실 최소화: 배분된 버퍼 중 군주(20MP) 1순위, 법사(40MP) 2순위로 1타 대장 선정
+                    first_shooter = min(
+                        alloc_keys,
+                        key=lambda m: (0 if buffers_meta.get(m, {}).get("char_class", "군주") == "군주" else 1, alloc_keys.index(m))
+                    )
                     
                     with task_lock:
                         active_group_tasks[char_id] = {
@@ -1984,7 +1992,9 @@ def dispatcher_thread():
                     print(f"🧮 [{target_server}] 사냥컴({char_id}) {dungeon_name}({mode_str}) {target_casts}방 배분 완료! ➔ " + ", ".join([f"{k}({v}방)" for k, v in alloc.items()]) + f" | ★1타 대장: {first_shooter}")
                     
                     for mini_key in alloc.keys():
-                        if mini_key in ai_states: ai_states[mini_key]["cmd_fsm"] = "ASSIGNED"
+                        if mini_key in ai_states:
+                            ai_states[mini_key]["cmd_fsm"] = "ASSIGNED"
+                            ai_states[mini_key]["target_char_id"] = char_id
                     
                     send_to_central_pc(client_id, {"action": "CMD_MOVE_1CELL", "char_id": char_id, "commander_pc": first_shooter})
                         
@@ -8028,6 +8038,15 @@ def ai_commander_worker(target_pc):
                 except Exception: pass
 
             if active_manual_target == key or state.get("is_paused", False):
+                if state.get("cmd_fsm", "IDLE") != "IDLE":
+                    abort_cid = state.get("target_char_id")
+                    if abort_cid:
+                        internal_router_queue.put({"action": "TASK_ABORTED", "mini_key": key, "char_id": abort_cid})
+                    state["cmd_fsm"] = "IDLE"
+                    state["target_char_id"] = None
+                    if my_direct_queue:
+                        with my_direct_queue.mutex: my_direct_queue.queue.clear()
+                    dprint(key, "🖐️ [수동 개입 ➔ 임무 반납] 진행 중이던 버프 임무를 즉시 취소하고 타 버퍼가 이어받도록 보고합니다.")
                 state["was_manual_mode"] = True
                 time.sleep(0.05); continue
                 
