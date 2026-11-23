@@ -2128,6 +2128,20 @@ def command_server_thread():
                             if char_id in active_group_tasks:
                                 print(f"🚨 [통제실] {char_id} 1타 삑사리 감지 (FAIL)! 즉각 사격 중지 및 예약 장부 가동.")
                                 internal_router_queue.put({"action": "TASK_ABORTED", "mini_key": "ALL", "char_id": char_id})
+
+                    elif action == "QUERY_BUFF_TIME":
+                        needed_c, rem_s, reason_s, _ = calc_needed_casts_from_ledger(msg, time.time())
+                        reply_q = {
+                            "action": "BUFF_TIME_INFO",
+                            "char_id": char_id,
+                            "rem_sec": round(rem_s, 1),
+                            "needed_casts": int(needed_c),
+                            "reason": reason_s
+                        }
+                        try:
+                            client_socket.send((json.dumps(reply_q, ensure_ascii=False) + "\n").encode('utf-8'))
+                        except Exception:
+                            pass
                                 
                     elif action == "PING":
                         with global_req_queue.mutex:
