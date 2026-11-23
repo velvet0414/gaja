@@ -2801,6 +2801,21 @@ def is_in_bondon_5f_stuck_zone(map_pos):
             return True
     return False
 
+BONDON_6F_CHOKE_COORD = (253, 237)
+BONDON_6F_CHOKE_RADIUS_SQ = 1.5 * 1.5
+BONDON_6F_CHOKE_EXIT_DIST = 2.2
+BONDON_6F_CHOKE_HOLD_FRAMES = 2
+BONDON_6F_CHOKE_DIRS = (
+    ("6시", 92.0), ("7시", 150.0), ("9시", 181.0),
+    ("12시", 268.0), ("1시", 330.0), ("3시", 359.0),
+)
+
+def is_in_bondon_6f_choke_zone(map_pos):
+    if map_pos is None:
+        return False
+    mx, my = float(map_pos[0]), float(map_pos[1])
+    return (mx - BONDON_6F_CHOKE_COORD[0]) ** 2 + (my - BONDON_6F_CHOKE_COORD[1]) ** 2 <= BONDON_6F_CHOKE_RADIUS_SQ
+
 loaded_models = {}
 loaded_maps = {}
 asset_lock = threading.Lock()
@@ -12057,6 +12072,10 @@ def ai_commander_worker(target_pc):
                                         vsx, vsy = int(sx_5f) - x1_map, int(sy_5f) - y1_map
                                         if 0 <= vsx < crop_size * 2 and 0 <= vsy < crop_size * 2:
                                             cv2.circle(raycast_vis, (vsx, vsy), 2, (0, 0, 255), -1)
+                                elif DUNGEON_ASSETS.get(active_dungeon, {}).get("map") == "gludio/gludio6.png":
+                                    vsx6, vsy6 = int(BONDON_6F_CHOKE_COORD[0]) - x1_map, int(BONDON_6F_CHOKE_COORD[1]) - y1_map
+                                    if 0 <= vsx6 < crop_size * 2 and 0 <= vsy6 < crop_size * 2:
+                                        cv2.circle(raycast_vis, (vsx6, vsy6), 2, (0, 165, 255), -1)
 
                                 cv2.circle(raycast_vis, (vis_cx, vis_cy), 5, (0, 255, 255), -1)
 
@@ -12157,6 +12176,7 @@ def ai_commander_worker(target_pc):
                 state["tele_ext_hit_loss"] = 0.0
                 state["danger_tele_armed_until"] = 0.0
                 state["bondon5f_stuck_frames"] = 0
+                state["bondon6f_choke_frames"] = 0
                 state["tele_skip_danger_cd"] = False
 
                 current_fsm_safe = str(state.get("target_fsm", ""))
@@ -12931,7 +12951,7 @@ def ai_commander_worker(target_pc):
                             state["current_target_node"] = best_zone_node
                             state["dungeon_global_path"] = []
 
-                            if state.get("target_fsm") not in ["IDLE", "PARTY_WAIT"]:
+                            if state.get("target_fsm") not in ["IDLE", "PARTY_WAIT"] and not str(state.get("target_fsm", "")).startswith("BONDON6F_CHOKE"):
                                 state["target_fsm"] = "IDLE"
 
                             new_path = calculate_graph_astar_path(pc_graph, curr_map_pos, best_zone_node, pc_map_gray, set(), is_blind=True)
@@ -18582,7 +18602,7 @@ def ai_commander_worker(target_pc):
 
                 fsm_for_pk = str(state.get("target_fsm", ""))
                 is_currently_looting = (state.get("loot_state") != "IDLE") or fsm_for_pk.startswith("LOOT") or state.get("sweep_active", False)
-                is_currently_combat = (fsm_for_pk == "COMBAT") or state.get("is_attacking", False) or state.get("arrow_is_firing", False) or state.get("current_is_m_elf", False) or state.get("next_is_m_elf", False)
+                is_currently_combat = (fsm_for_pk == "COMBAT") or fsm_for_pk.startswith("BONDON6F_CHOKE") or state.get("is_attacking", False) or state.get("arrow_is_firing", False) or state.get("current_is_m_elf", False) or state.get("next_is_m_elf", False)
 
                 if is_currently_combat:
                     active_pk_threshold = 999.0
@@ -19722,6 +19742,58 @@ def ai_commander_worker(target_pc):
                             continue
                 else:
                     state["bondon5f_stuck_frames"] = 0
+
+                # ------------------------------------------------------------------
+                # 🚪 [본던 6층 (253, 237) 1칸 골목 COMBAT 길막 방지 ➔ 6/7/9시 ➔ 12/1/3시 탈출]
+                # ------------------------------------------------------------------
+                is_gludio_6f_now = (DUNGEON_ASSETS.get(active_dungeon, {}).get("map") == "gludio/gludio6.png")
+                fsm_choke6f = str(state.get("target_fsm", ""))
+                is_choke6f_combat = (
+                    fsm_choke6f in ["COMBAT", "COMBAT_PARK_VERIFY"] or
+                    (
+                        (state.get("is_attacking", False) or state.get("arrow_is_firing", False)) and
+                        not fsm_choke6f.startswith(("BUFFING", "F1_INIT", "TOWN_MAINT", "DEATH", "CERTI_", "INV_CLEAN", "HK_HEAL_", "WEAPON_REPAIR", "CHAT_RECOVER", "LOOT", "BONDON6F_CHOKE")) and
+                        fsm_choke6f not in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "ABS_ESCAPE_VERIFY", "ABS_ESCAPE_F1_PREP"]
+                    )
+                )
+
+                if is_gludio_6f_now and is_choke6f_combat and curr_pos_5f is not None and is_in_bondon_6f_choke_zone(curr_pos_5f) and curr_time >= state.get("bondon6f_choke_cd", 0.0):
+                    state["bondon6f_choke_frames"] = state.get("bondon6f_choke_frames", 0) + 1
+                    if state["bondon6f_choke_frames"] >= BONDON_6F_CHOKE_HOLD_FRAMES:
+                        dprint(key, f"🚪 [본던6층 골목 탈출 발동] ({curr_pos_5f[0]:.0f},{curr_pos_5f[1]:.0f}) COMBAT 감지! 공격을 취소하고 6/7/9시 방향으로 빠져나옵니다.")
+                        state["bondon6f_choke_frames"] = 0
+                        state["abort_macro"] = True
+                        clear_movements_only(pico_queues[key])
+                        if state.get("sweep_active", False):
+                            pico_queues[key].put({"action": "SWEEP_STOP"})
+                            state["sweep_active"] = False
+                        if state.get("body_held", False):
+                            if picos.get(key) and pico_locks.get(key):
+                                send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                            state["body_held"] = False
+
+                        state["is_attacking"] = False
+                        state["arrow_is_firing"] = False
+                        state["has_fired_arrow"] = False
+                        state["is_pulling"] = False
+                        state["current_is_g_mob"] = False
+                        state["current_is_avoid"] = False
+                        state["current_is_m_elf"] = False
+                        state["next_is_m_elf"] = False
+                        state["is_evade_combat"] = False
+                        state["hover_start_time"] = 0
+                        state["sword_verify_active"] = False
+                        state["special_ack_arrived"] = False
+                        state["party_blind_sweep_start"] = 0.0
+                        state["party_blind_sweep_end"] = 0.0
+                        state["dungeon_global_path"] = []
+
+                        state["choke6f_dir_idx"] = 0
+                        state["choke6f_probe_idx"] = 0
+                        state["target_fsm"] = "BONDON6F_CHOKE_CALC"
+                        state["cooldown"] = curr_time
+                else:
+                    state["bondon6f_choke_frames"] = 0
 
                 fsm_ui_watch = str(state.get("target_fsm", ""))
                 if not fsm_ui_watch.startswith(("INV_CLEAN", "HK_HEAL_", "WEAPON_REPAIR", "TOWN_MAINT", "CHAT_RECOVER")) and curr_time > state.get("inv_close_grace_time", 0):
@@ -24280,6 +24352,12 @@ def ai_commander_worker(target_pc):
                             pico_queues[key].put({"action": "SWEEP_STOP"})
                             state["sweep_active"] = False
 
+                    elif fsm_current.startswith("BONDON6F_CHOKE"):
+                        raw_item_boxes = []
+                        if state.get("sweep_active", False):
+                            pico_queues[key].put({"action": "SWEEP_STOP"})
+                            state["sweep_active"] = False
+
                     elif fsm_current in ["PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV"] or state.get("party_buff_status") == "MOVING":
                         raw_item_boxes = []
                         if state.get("sweep_active", False):
@@ -27099,6 +27177,126 @@ def ai_commander_worker(target_pc):
                             pico_queues[key].put({"action": "SINGLE_ATTACK"})
                             state["evade_spam_next_click"] = curr_time + g_val(0.12, 0.18)
                         state["cooldown"] = curr_time + 0.02
+                    action_taken = True
+
+                elif not action_taken and state.get("target_fsm") == "BONDON6F_CHOKE_CALC":
+                    curr_pos_c6 = state.get("dungeon_map_pos")
+                    if curr_pos_c6 is not None and math.hypot(curr_pos_c6[0] - BONDON_6F_CHOKE_COORD[0], curr_pos_c6[1] - BONDON_6F_CHOKE_COORD[1]) >= BONDON_6F_CHOKE_EXIT_DIST:
+                        dprint(key, f"✅ [본던6층 골목 탈출 완료] 좌표 이동 확인({curr_pos_c6[0]:.0f},{curr_pos_c6[1]:.0f})! IDLE로 복귀합니다. (5초 쿨타임)")
+                        clear_movements_only(pico_queues[key])
+                        state["bondon6f_choke_cd"] = curr_time + 5.0
+                        state["bondon6f_choke_frames"] = 0
+                        state["target_fsm"] = "IDLE"
+                        state["cooldown"] = curr_time + 0.05
+                    else:
+                        d_idx = state.get("choke6f_dir_idx", 0)
+                        p_idx = state.get("choke6f_probe_idx", 0)
+
+                        if d_idx >= len(BONDON_6F_CHOKE_DIRS):
+                            dprint(key, "🚧 [본던6층 골목 탈출 실패] 6/7/9시 및 12/1/3시 모두 막힘! IDLE로 복귀하여 현재 몹 교전을 속행합니다. (5초 쿨타임)")
+                            clear_movements_only(pico_queues[key])
+                            state["bondon6f_choke_cd"] = curr_time + 5.0
+                            state["bondon6f_choke_frames"] = 0
+                            state["target_fsm"] = "IDLE"
+                            state["cooldown"] = curr_time + 0.05
+                        else:
+                            if d_idx == 3 and p_idx == 0:
+                                dprint(key, "🔄 [본던6층 골목 2차 전환] 6/7/9시 모두 막힘! 12/1/3시 방향으로 탈출을 시도합니다.")
+
+                            if d_idx == 0 and p_idx == 0:
+                                real_c6 = find_cursor_pos(img_bgr, last_pos=(cur_x, cur_y), check_circle=False, allow_full_scan=True)
+                                if real_c6:
+                                    cur_x, cur_y = real_c6[0], real_c6[1]
+                                    state["cursor_pos"] = [cur_x, cur_y]
+
+                            dir_name_c6, angle_deg_c6 = BONDON_6F_CHOKE_DIRS[d_idx]
+                            final_rad_c6 = math.radians(angle_deg_c6 + random.gauss(0, 1.5))
+                            move_dist_c6 = g_val(95.0, 115.0) if p_idx == 0 else g_val(55.0, 70.0)
+
+                            tx = int(max(10, min(740, char_screen_cx + math.cos(final_rad_c6) * move_dist_c6)))
+                            ty = int(max(5, min(int(h * 0.68), char_screen_cy + math.sin(final_rad_c6) * (move_dist_c6 * 0.85))))
+                            if tx < 165 and ty < 150:
+                                if (165 - tx) < (150 - ty): tx = 165
+                                else: ty = 150
+
+                            pico_queues[key].put({"action": "HOVER", "dx": tx - cur_x, "dy": ty - cur_y})
+                            pico_queues[key].put({"action": "SPECIAL_ACK"})
+                            state["special_ack_arrived"] = False
+                            state["pico_arrived"] = False
+                            state["cursor_pos"] = [tx, ty]
+                            state["choke6f_ack_timeout"] = curr_time + 1.2
+                            state["target_fsm"] = "BONDON6F_CHOKE_ACK_WAIT"
+                            state["cooldown"] = curr_time + 0.03
+                    action_taken = True
+
+                elif not action_taken and state.get("target_fsm") == "BONDON6F_CHOKE_ACK_WAIT":
+                    curr_pos_c6 = state.get("dungeon_map_pos")
+                    if curr_pos_c6 is not None and math.hypot(curr_pos_c6[0] - BONDON_6F_CHOKE_COORD[0], curr_pos_c6[1] - BONDON_6F_CHOKE_COORD[1]) >= BONDON_6F_CHOKE_EXIT_DIST:
+                        dprint(key, f"✅ [본던6층 골목 탈출 완료] 좌표 이동 확인({curr_pos_c6[0]:.0f},{curr_pos_c6[1]:.0f})! IDLE로 복귀합니다. (5초 쿨타임)")
+                        clear_movements_only(pico_queues[key])
+                        state["bondon6f_choke_cd"] = curr_time + 5.0
+                        state["bondon6f_choke_frames"] = 0
+                        state["target_fsm"] = "IDLE"
+                        state["cooldown"] = curr_time + 0.05
+                    elif state.pop("special_ack_arrived", False) or curr_time > state.get("choke6f_ack_timeout", 0):
+                        real_c6 = find_cursor_pos(img_bgr, last_pos=(cur_x, cur_y), check_circle=False, allow_full_scan=False)
+                        if real_c6:
+                            cur_x, cur_y = real_c6[0], real_c6[1]
+                            state["cursor_pos"] = [cur_x, cur_y]
+
+                        d_idx = state.get("choke6f_dir_idx", 0)
+                        p_idx = state.get("choke6f_probe_idx", 0)
+                        dir_name_c6 = BONDON_6F_CHOKE_DIRS[d_idx][0] if d_idx < len(BONDON_6F_CHOKE_DIRS) else "?"
+
+                        if check_attack_cursor(img_bgr, cur_x, cur_y, pc_key=key) or check_purple_name(img_bgr, cur_x, cur_y):
+                            if p_idx == 0:
+                                state["choke6f_probe_idx"] = 1
+                            else:
+                                state["choke6f_dir_idx"] = d_idx + 1
+                                state["choke6f_probe_idx"] = 0
+                            state["target_fsm"] = "BONDON6F_CHOKE_CALC"
+                            state["cooldown"] = curr_time + 0.02
+                        else:
+                            state["move_sensor_state"] = "STOPPED"
+                            state["is_char_moving"] = False
+                            pico_queues[key].put({"action": "SINGLE_ATTACK"})
+                            state["choke6f_moved_detected"] = False
+                            state["choke6f_next_click"] = curr_time + g_val(0.11, 0.15)
+                            state["choke6f_move_deadline"] = curr_time + 0.35
+                            state["target_fsm"] = "BONDON6F_CHOKE_MOVE_WAIT"
+                            state["cooldown"] = curr_time + 0.02
+                    else:
+                        state["cooldown"] = curr_time + 0.02
+                    action_taken = True
+
+                elif not action_taken and state.get("target_fsm") == "BONDON6F_CHOKE_MOVE_WAIT":
+                    curr_pos_c6 = state.get("dungeon_map_pos")
+                    d_idx = state.get("choke6f_dir_idx", 0)
+                    dir_name_c6 = BONDON_6F_CHOKE_DIRS[d_idx][0] if d_idx < len(BONDON_6F_CHOKE_DIRS) else "?"
+
+                    if curr_pos_c6 is not None and math.hypot(curr_pos_c6[0] - BONDON_6F_CHOKE_COORD[0], curr_pos_c6[1] - BONDON_6F_CHOKE_COORD[1]) >= BONDON_6F_CHOKE_EXIT_DIST:
+                        dprint(key, f"✅ [본던6층 골목 탈출 성공] {dir_name_c6} 이동 완료(좌표:{curr_pos_c6[0]:.0f},{curr_pos_c6[1]:.0f})! IDLE 복귀합니다. (5초 쿨타임)")
+                        clear_movements_only(pico_queues[key])
+                        state["bondon6f_choke_cd"] = curr_time + 5.0
+                        state["bondon6f_choke_frames"] = 0
+                        state["target_fsm"] = "IDLE"
+                        state["cooldown"] = curr_time + 0.05
+                    else:
+                        if state.get("is_char_moving", False) and not state.get("choke6f_moved_detected", False):
+                            state["choke6f_moved_detected"] = True
+                            state["choke6f_move_deadline"] = max(state.get("choke6f_move_deadline", 0), curr_time + 0.40)
+
+                        if curr_time >= state.get("choke6f_move_deadline", 0):
+                            clear_movements_only(pico_queues[key])
+                            state["choke6f_dir_idx"] = d_idx + 1
+                            state["choke6f_probe_idx"] = 0
+                            state["target_fsm"] = "BONDON6F_CHOKE_CALC"
+                            state["cooldown"] = curr_time + 0.02
+                        else:
+                            if curr_time >= state.get("choke6f_next_click", 0):
+                                pico_queues[key].put({"action": "SINGLE_ATTACK"})
+                                state["choke6f_next_click"] = curr_time + g_val(0.11, 0.15)
+                            state["cooldown"] = curr_time + 0.02
                     action_taken = True
 
 
@@ -30154,7 +30352,7 @@ def ai_commander_worker(target_pc):
                                     is_already_processing = False
 
                                 if not is_already_processing and not state.get("party_buff_done", False) and curr_time >= state.get("pb_caster_retry_cd", 0.0):
-                                    is_ui_busy_pb = fsm_retreat.startswith("INV_CLEAN") or fsm_retreat.startswith("HK_HEAL") or fsm_retreat.startswith("WEAPON_REPAIR") or fsm_retreat.startswith("BUFFING") or fsm_retreat.startswith("F1_INIT") or fsm_retreat.startswith("CHAT_RECOVER") or (fsm_retreat == "BONDON5F_ESCAPE")
+                                    is_ui_busy_pb = fsm_retreat.startswith("INV_CLEAN") or fsm_retreat.startswith("HK_HEAL") or fsm_retreat.startswith("WEAPON_REPAIR") or fsm_retreat.startswith("BUFFING") or fsm_retreat.startswith("F1_INIT") or fsm_retreat.startswith("CHAT_RECOVER") or (fsm_retreat == "BONDON5F_ESCAPE") or fsm_retreat.startswith("BONDON6F_CHOKE")
                                     # 💡 시전자가 본인 엠탐(예약 엠탐/동반 엠탐 포함) 중일 때는 엠탐이 완전히 종료된 후에 소집하도록 대기!
                                     is_caster_mptam = (
                                         state.get("is_mptam_mode", False) or
