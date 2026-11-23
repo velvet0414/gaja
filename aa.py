@@ -650,6 +650,8 @@ def _alert_handle_resolved_codes(key, resolved_list):
             st["idle_mon_last_sword_active"] = 0.0
         elif c == "STUCK_5TO6":
             st["alert_5to6_elapsed"] = 0.0
+        elif c == "ZONE_OUT_TIMEOUT":
+            st["alert_zone_out_elapsed"] = 0.0
         dprint(key, f"✅ [군주컴 완료 수신] '{c}' 상황 종료 및 감지 타이머 초기화 완료.")
 
 def _alert_record_exp_event(key):
@@ -839,6 +841,7 @@ def alert_heartbeat_and_watchdog_thread():
             st["obs_move_pending"] = False
             st["alert_no_dragon_start"] = 0.0
             st["alert_5to6_elapsed"] = 0.0
+            st["alert_zone_out_elapsed"] = 0.0
             st["alert_certi_ip_elapsed"] = 0.0
             st["alert_certi_total_fails"] = 0
             st["idle_mon_active_sec"] = 0.0
@@ -948,6 +951,35 @@ def alert_heartbeat_and_watchdog_thread():
                     )
         else:
             st["alert_5to6_elapsed"] = 0.0
+
+        # ------------------------------------------------------------------
+        # 5-1) [조건 8] 자기 존(Zone) 이탈 후 5분(300초) 미복귀 (엠탐 시간 포함)
+        # - 대상: 파티모드(이동식/고정식) 또는 솔플 Zone 사냥터(본던 2/4/5/6/7층, 사던 4층)
+        # - 마을/정비/사망/층간이동(5to6·3to4)/존 복귀 시 리셋, 수동/인증 중에는 타이머 일시정지
+        # ------------------------------------------------------------------
+        cfg_zone = current_settings.get(key, {})
+        is_party_zone_al = bool(cfg_zone.get("use_party_hunt", False) or cfg_zone.get("use_party_fixed", False))
+        dng_zone_al = str(cfg_zone.get("party_dungeon_name", "") if is_party_zone_al else cfg_zone.get("dungeon_name", ""))
+        is_solo_zone_al = (not is_party_zone_al) and any(
+            kw in dng_zone_al for kw in ("본던 2-", "본던 4-", "본던 5-", "본던 6-", "본던 7-", "사던 4-")
+        )
+        is_zone_reset_state = (
+            raw_fsm.startswith(("TOWN_MAINT", "DEATH", "WEAPON_REPAIR")) or
+            raw_fsm == "SHUTDOWN_WAIT" or
+            st.get("town_thread_running", False) or
+            st.get("override_dungeon_name") in ("본던 5to6", "사던 3to4")
+        )
+        if (is_party_zone_al or is_solo_zone_al) and not is_zone_reset_state and st.get("is_out_of_zone", False):
+            if not is_manual_now and not raw_fsm.startswith("CERTI_"):
+                st["alert_zone_out_elapsed"] = st.get("alert_zone_out_elapsed", 0.0) + dt
+                if st["alert_zone_out_elapsed"] >= 300.0:
+                    mptam_tag = "엠탐중" if (st.get("is_mptam_mode", False) or st.get("mptam_standby_guard", False)) else "이동/교전중"
+                    report_alert_to_cc(
+                        key, "ZONE_OUT_TIMEOUT", "존 미복귀 5분 초과",
+                        f"[{dng_zone_al}] 존 이탈 후 {int(st['alert_zone_out_elapsed'])}초 미복귀 (엠탐포함 / {mptam_tag} / FSM:{raw_fsm})"
+                    )
+        else:
+            st["alert_zone_out_elapsed"] = 0.0
 
         # ------------------------------------------------------------------
         # 6) [조건 6] 마을 IDLE 배회 감지
@@ -2752,6 +2784,22 @@ DUNGEON_ASSETS = {
     **{f"오땅-{s}": {"map": "oak.png", "graph": "oak.json", "model": "oak.pt"} for s in ["봄", "여름", "가을", "겨울"]},
     **{f"수던{i}-{j}": {"map": "heine/heine3.png", "graph": f"heine/heines{i}.json", "model": "heine/heine.pt"} for i in range(1, 17) for j in (1, 2)}
 }
+
+BONDON_5F_STUCK_COORDS = (
+    (257, 161), (260, 163), (262, 164),
+    (264, 165), (267, 166),
+)
+BONDON_5F_STUCK_RADIUS_SQ = 1.5 * 1.5
+BONDON_5F_STUCK_HOLD_FRAMES = 2
+
+def is_in_bondon_5f_stuck_zone(map_pos):
+    if map_pos is None:
+        return False
+    mx, my = float(map_pos[0]), float(map_pos[1])
+    for sx, sy in BONDON_5F_STUCK_COORDS:
+        if (mx - sx) ** 2 + (my - sy) ** 2 <= BONDON_5F_STUCK_RADIUS_SQ:
+            return True
+    return False
 
 loaded_models = {}
 loaded_maps = {}
@@ -10630,7 +10678,7 @@ def ai_commander_worker(target_pc):
                 fsm_inv_chk.startswith("DEATH") or
                 fsm_inv_chk.startswith("BUFFING") or
                 fsm_inv_chk.startswith("F1_INIT") or
-                fsm_inv_chk in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "ABS_ESCAPE_VERIFY", "ABS_ESCAPE_F1_PREP", "PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY", "PARTY_BUFF_L_DONE"] or
+                fsm_inv_chk in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "ABS_ESCAPE_VERIFY", "ABS_ESCAPE_F1_PREP", "PARTY_RETREAT_NAV", "PARTY_ACTIVE_STANDBY", "PARTY_BUFF_L_DONE", "BONDON5F_ESCAPE"] or
                 state.get("req_party_buff", False) or
                 state.get("party_buff_status") in ["MOVING", "ARRIVED"] or
                 state.get("town_thread_running", False)
@@ -11649,9 +11697,11 @@ def ai_commander_worker(target_pc):
                                 is_sudeon_bondon = ("수던" in dng_name or "본던" in dng_name or "사던" in dng_name or "silver" in dng_name.lower())
 
                                 if is_sudeon_bondon:
+                                    curr_fsm_portal = str(state.get("target_fsm", ""))
+                                    is_6f_rush_active = curr_fsm_portal in ["PORTAL_DIVE_6F_RUSH", "PORTAL_DIVE_6F_RUSH_WAIT"]
 
                                     if min_portal_dist <= 10.0:
-                                        if not state.get("portal_blind_mode", False):
+                                        if not state.get("portal_blind_mode", False) and not is_6f_rush_active:
                                             dprint(key, "🚨 [포탈 하차 감지] P노드 10px 이내 진입! 몹을 무시하고(눈 감기) 목적지를 향해 이탈합니다.")
                                             state["portal_blind_mode"] = True
 
@@ -11661,8 +11711,7 @@ def ai_commander_worker(target_pc):
                                             state["is_pulling"] = False
                                             state["hidden_track_node"] = None
 
-                                            curr_fsm_portal = str(state.get("target_fsm", ""))
-                                            is_safe_from_portal_fsm = state.get("town_thread_running", False) or curr_fsm_portal.startswith("TOWN_MAINT") or curr_fsm_portal.startswith("DEATH") or curr_fsm_portal.startswith("F1_INIT") or curr_fsm_portal in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV"]
+                                            is_safe_from_portal_fsm = state.get("town_thread_running", False) or curr_fsm_portal.startswith("TOWN_MAINT") or curr_fsm_portal.startswith("DEATH") or curr_fsm_portal.startswith("F1_INIT") or curr_fsm_portal in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV", "PORTAL_DIVE_6F_RUSH", "PORTAL_DIVE_6F_RUSH_WAIT"]
 
                                             if not is_safe_from_portal_fsm:
                                                 state["target_fsm"] = "IDLE"
@@ -11690,7 +11739,7 @@ def ai_commander_worker(target_pc):
                                     curr_fsm_back.startswith("DEATH") or
                                     curr_fsm_back.startswith("CERTI_") or
                                     curr_fsm_back.startswith("F1_INIT") or
-                                    curr_fsm_back in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"]
+                                    curr_fsm_back in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "BONDON5F_ESCAPE", "PORTAL_DIVE_6F_RUSH", "PORTAL_DIVE_6F_RUSH_WAIT"]
                                 )
 
                                 if not is_safe_from_back_fsm:
@@ -11857,11 +11906,11 @@ def ai_commander_worker(target_pc):
 
                                 fsm_for_portal = str(state.get("target_fsm", ""))
 
-                                is_safe_from_portal = state.get("town_thread_running", False) or fsm_for_portal.startswith("TOWN_MAINT") or fsm_for_portal.startswith("DEATH") or fsm_for_portal.startswith("F1_INIT") or fsm_for_portal in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"]
+                                is_safe_from_portal = state.get("town_thread_running", False) or fsm_for_portal.startswith("TOWN_MAINT") or fsm_for_portal.startswith("DEATH") or fsm_for_portal.startswith("F1_INIT") or fsm_for_portal in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "PORTAL_DIVE_6F_RUSH", "PORTAL_DIVE_6F_RUSH_WAIT"]
 
                                 if is_safe_from_portal:
-
-                                    state["portal_tele_grace_time"] = curr_time + 10.0
+                                    grace_sec = 3.0 if fsm_for_portal in ["PORTAL_DIVE_6F_RUSH", "PORTAL_DIVE_6F_RUSH_WAIT"] else 10.0
+                                    state["portal_tele_grace_time"] = max(state.get("portal_tele_grace_time", 0.0), curr_time + grace_sec)
 
                                 is_grace_period = curr_time < state.get("portal_tele_grace_time", 0)
 
@@ -12003,6 +12052,12 @@ def ai_commander_worker(target_pc):
 
                                             cv2.circle(raycast_vis, (vis_bx, vis_by), 2, (0, 0, 255), -1)
 
+                                if DUNGEON_ASSETS.get(active_dungeon, {}).get("map") == "gludio/gludio5.png":
+                                    for sx_5f, sy_5f in BONDON_5F_STUCK_COORDS:
+                                        vsx, vsy = int(sx_5f) - x1_map, int(sy_5f) - y1_map
+                                        if 0 <= vsx < crop_size * 2 and 0 <= vsy < crop_size * 2:
+                                            cv2.circle(raycast_vis, (vsx, vsy), 2, (0, 0, 255), -1)
+
                                 cv2.circle(raycast_vis, (vis_cx, vis_cy), 5, (0, 255, 255), -1)
 
                                 if global_path and not (active_manual_target == key):
@@ -12101,6 +12156,8 @@ def ai_commander_worker(target_pc):
                 state["tele_landed_time"] = 0.0
                 state["tele_ext_hit_loss"] = 0.0
                 state["danger_tele_armed_until"] = 0.0
+                state["bondon5f_stuck_frames"] = 0
+                state["tele_skip_danger_cd"] = False
 
                 current_fsm_safe = str(state.get("target_fsm", ""))
 
@@ -12578,7 +12635,7 @@ def ai_commander_worker(target_pc):
                             state["is_mptam_mode"] = False
 
                     if is_p_mptam and not is_m_out_of_zone and not is_p_out_of_zone and p_pos and curr_map_pos:
-                        if not my_fsm.startswith("TOWN_MAINT") and my_fsm not in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"] and not my_fsm.startswith("DEATH") and not my_fsm.startswith("PARTY_"):
+                        if not my_fsm.startswith("TOWN_MAINT") and my_fsm not in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "BONDON5F_ESCAPE"] and not my_fsm.startswith("DEATH") and not my_fsm.startswith("PARTY_"):
                             i_am_combat_mptam = my_fsm in ["COMBAT", "TARGET_AIMING", "HOVER_WAIT", "SNAP_WAIT", "MOTION_SNAP_CHECK_SWORD", "HEINE_GMOB_VERIFY"] or state.get("is_attacking", False) or state.get("arrow_is_firing", False) or my_fsm.startswith("LOOT") or state.get("sweep_active", False)
 
                             state["moving_to_mptam_partner"] = False
@@ -12796,7 +12853,7 @@ def ai_commander_worker(target_pc):
             dng_zone_chk_early = settings.get("dungeon_name", "")
             is_solo_zone_mode = ("본던 2-" in dng_zone_chk_early or "본던 4-" in dng_zone_chk_early or "본던 5-" in dng_zone_chk_early or "본던 6-" in dng_zone_chk_early or "본던 7-" in dng_zone_chk_early or "사던 4-" in dng_zone_chk_early) and not is_party_zone_chk2
 
-            if state.get("is_hunt_active", False) and not state.get("is_paused", False) and not is_in_town_or_death and not my_fsm_zone.startswith(("TOWN_MAINT", "DEATH", "BUFFING", "INV_CLEAN", "HK_HEAL", "CHAT_RECOVER")) and my_fsm_zone not in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY"] and (is_party_zone_chk2 or is_solo_zone_mode) and is_m_out_of_zone and curr_map_pos and pc_graph and pc_graph.get("nodes"):
+            if state.get("is_hunt_active", False) and not state.get("is_paused", False) and not is_in_town_or_death and not my_fsm_zone.startswith(("TOWN_MAINT", "DEATH", "BUFFING", "INV_CLEAN", "HK_HEAL", "CHAT_RECOVER")) and my_fsm_zone not in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY", "BONDON5F_ESCAPE", "PORTAL_DIVE_6F_RUSH", "PORTAL_DIVE_6F_RUSH_WAIT"] and (is_party_zone_chk2 or is_solo_zone_mode) and is_m_out_of_zone and curr_map_pos and pc_graph and pc_graph.get("nodes"):
                 curr_target_str = str(state.get("current_target_node", ""))
                 is_curr_target_valid_zone = False
                 raw_sp_set_early = {str(s) for s in pc_graph.get("special_nodes", [])}
@@ -16590,6 +16647,7 @@ def ai_commander_worker(target_pc):
                                             report_alert_to_cc(key, "NO_BOOK", "던전기억책 없음", f"{dungeon_name} F3->F8 2회 시도 후 기억창/목록 미출현 (축순 보호 일시정지)")
                                             dprint(key, "🛑 [던전기억책 없음 확정] 축순 소모 뺑뺑이 방지를 위해 마을에서 일시정지합니다. (책 보충 후 재가동 필요)")
                                             ai_states[key].update({"reentry_retry_cnt": 0, "is_paused": True, "target_fsm": "IDLE"})
+                                            return
                                         else:
                                             retry_cnt = ai_states.get(key, {}).get("reentry_retry_cnt", 0) + 1
                                             ai_states[key]["reentry_retry_cnt"] = retry_cnt
@@ -16816,6 +16874,7 @@ def ai_commander_worker(target_pc):
                                             report_alert_to_cc(key, "NO_BOOK", "던전기억책 없음", f"{dungeon_name} F3->F8 2회 시도 후 기억창/목록 미출현 (축순 보호 일시정지)")
                                             dprint(key, "🛑 [던전기억책 없음 확정] 축순 소모 뺑뺑이 방지를 위해 마을에서 일시정지합니다. (책 보충 후 재가동 필요)")
                                             ai_states[key].update({"reentry_retry_cnt": 0, "is_paused": True, "target_fsm": "IDLE"})
+                                            return
                                         else:
                                             retry_cnt = ai_states.get(key, {}).get("reentry_retry_cnt", 0) + 1
                                             ai_states[key]["reentry_retry_cnt"] = retry_cnt
@@ -17811,82 +17870,106 @@ def ai_commander_worker(target_pc):
                         elif fsm_town == "TOWN_MAINT_ROUTE_CHECK":
                             last_haste = state.get("last_haste_time", 0)
                             haste_elapsed = curr_time - last_haste
+                            need_full = bool(state.get("need_full_buff", False))
 
                             dng_name_for_buff = settings.get("dungeon_name", "")
                             if "수던" in dng_name_for_buff or "heine" in dng_name_for_buff.lower() or "본던" in dng_name_for_buff or "gludio" in dng_name_for_buff.lower() or "사던" in dng_name_for_buff or "silver" in dng_name_for_buff.lower():
-                                buff_threshold = 2400.0
-                                threshold_str = "40분(수던/본던/사던)"
+                                buff_threshold = 1200.0
+                                threshold_str = "20분(수던/본던/사던)"
                             else:
                                 buff_threshold = 6600.0
                                 threshold_str = "1시간 50분(일반)"
 
-                            if last_haste > 0 and haste_elapsed < buff_threshold:
-                                haste_found_fact = False
-                                if w >= 60 and h >= 350:
-                                    buff_roi_x1 = max(0, w - 60)
-                                    buff_roi_y1 = 0
-                                    buff_roi_x2 = w
-                                    buff_roi_y2 = min(h, 350)
-                                    buff_roi = img_bgr[buff_roi_y1:buff_roi_y2, buff_roi_x1:buff_roi_x2]
-
-                                    import os
-                                    ha_imgs = [f"qq/ha{i}.png" for i in range(1, 11)]
-                                    for img_path in ha_imgs:
-                                        tmpl = loaded_models.get(img_path)
-                                        if tmpl and tmpl["color"] is not None:
-                                            try:
-                                                if tmpl["mask"] is not None: res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl["mask"]]*3))
-                                                else: res_haste = cv2.matchTemplate(buff_roi, tmpl["color"], cv2.TM_CCOEFF_NORMED)
-                                                _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
-                                                if max_val_haste >= (settings.get("haste_match_rate", 92.0) / 100.0):
-                                                    haste_found_fact = True
-                                                    break
-                                            except: pass
-
-                                    if not haste_found_fact and globals().get("img_haste") is not None:
-                                        try:
-                                            if globals().get("img_haste_mask") is not None: res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste_mask")]*3))
-                                            else: res_haste = cv2.matchTemplate(buff_roi, globals().get("img_haste"), cv2.TM_CCOEFF_NORMED)
-                                            _, max_val_haste, _, _ = cv2.minMaxLoc(res_haste)
-                                            if max_val_haste >= (settings.get("haste_match_rate", 92.0) / 100.0): haste_found_fact = True
-                                        except: pass
-
-                                    if not haste_found_fact and globals().get("img_haste2") is not None:
-                                        try:
-                                            if globals().get("img_haste2_mask") is not None: res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCORR_NORMED, mask=cv2.merge([globals().get("img_haste2_mask")]*3))
-                                            else: res_haste2 = cv2.matchTemplate(buff_roi, globals().get("img_haste2"), cv2.TM_CCOEFF_NORMED)
-                                            _, max_val_haste2, _, _ = cv2.minMaxLoc(res_haste2)
-                                            if max_val_haste2 >= (settings.get("haste_match_rate", 92.0) / 100.0): haste_found_fact = True
-                                        except: pass
-
-                                if not haste_found_fact:
-                                    dprint(key, f"🚨 [출발 전 팩트 검증 실패] 장부엔 {buff_threshold - haste_elapsed:.1f}초 남았다고 적혀있으나, 우측에 헤이 아이콘이 없습니다! (마을 대기 중 증발 확정) 타이머를 0으로 강제 포맷합니다!")
-                                    last_haste = 0.0
-                                    state["last_haste_time"] = 0.0
-                                    state["need_full_buff"] = True
-                                    state["buff_full_reason"] = "마을헤이증발"
-
                             use_cc_buff = settings.get("use_cc_buff", True)
                             if not use_cc_buff:
-                                if last_haste == 0:
-
-                                    dprint(key, "🛑 [CC연동 OFF] 헤이스트 증발 팩트 확인! 버프 대기를 생략하고 창고 '강촐 섭취' 로직으로 진입합니다!")
+                                state["cc_time_query_sent"] = 0.0
+                                if need_full or last_haste == 0:
+                                    dprint(key, "🛑 [CC연동 OFF] 헤이스트 리필 필요 확인! 버프 대기를 생략하고 창고 '강촐 섭취' 로직으로 진입합니다!")
                                     state["target_fsm"] = "TOWN_MAINT_CHOLGI_STEAL"
                                     state["cooldown"] = curr_time + 0.1
                                 else:
-
                                     dprint(key, f"🏃 [CC연동 OFF] 버프 연동이 꺼져 있습니다. 멍때림 방지를 위해 타이머를 강제로 풀충전하고 사냥터로 직행합니다!")
                                     state["last_haste_time"] = curr_time
                                     state["target_fsm"] = "TOWN_MAINT_RETURN"
                                     state["cooldown"] = curr_time + 0.1
                                 continue
 
-                            if last_haste == 0 or haste_elapsed >= buff_threshold:
-                                dprint(key, f"🪄 [버프 루트] 헤이/강촐 받은지 {haste_elapsed/60:.1f}분 경과. [{threshold_str} 기준 초과] 새로 리필하러 갑니다!")
+                            # 1) 사망/채팅창 헤이풀림/강촐/풀정비 버튼으로 이미 버프 수령이 확정된 경우 즉시 버프장소로 이동
+                            if need_full or last_haste == 0:
+                                state["cc_time_query_sent"] = 0.0
+                                reason_lbl = state.get("buff_full_reason", "타이머초기화") if need_full else "버퍼장부확인"
+                                dprint(key, f"🪄 [버프 루트] 사유({reason_lbl}) 확인! 버퍼 시간 기준으로 헤이 리필하러 갑니다.")
+                                state["target_fsm"] = "TOWN_MAINT_BUFF"
+                                state["cooldown"] = curr_time + 0.1
+                                continue
+
+                            # 2) 버퍼(ss2)의 char_buff_ledger 시간 직접 조회 (최대 1.5초 비동기 대기 후 미응답 시 로컬 시간 폴백)
+                            c_num_q = str(current_pc_num).strip() if current_pc_num else "1"
+                            m_num_q = key.replace("미니", "").strip()
+                            q_char_id = f"{c_num_q}-{m_num_q}"
+
+                            sent_t = state.get("cc_time_query_sent", 0.0)
+                            if sent_t > 0.0 and (curr_time - sent_t > 5.0):
+                                sent_t = 0.0
+                                state["cc_time_query_sent"] = 0.0
+
+                            if sent_t == 0.0:
+                                with cc_cmd_queue.mutex:
+                                    cc_cmd_queue.queue.clear()
+                                q_ok = send_to_cc(
+                                    "QUERY_BUFF_TIME",
+                                    char_id=q_char_id,
+                                    char_name=str(settings.get("char_name", "")).strip(),
+                                    sub_slot=int(globals().get("SUB_CHAR_SLOT", 0) or 0),
+                                    force_full=False,
+                                    buff_reason="마을경로조회"
+                                )
+                                if q_ok:
+                                    state["cc_time_query_sent"] = curr_time
+                                    state["cooldown"] = curr_time + 0.05
+                                    continue
+                                else:
+                                    dprint(key, "⚠️ [버퍼 장부 조회 불가] 통제실 미연결 상태 ➔ 로컬 타이머 기준으로 판단합니다.")
+                            else:
+                                ledger_reply = None
+                                while True:
+                                    try:
+                                        m_q = cc_cmd_queue.get_nowait()
+                                        if m_q.get("action") == "BUFF_TIME_INFO" and str(m_q.get("char_id")) == q_char_id:
+                                            ledger_reply = m_q
+                                            break
+                                    except queue.Empty:
+                                        break
+
+                                if ledger_reply is not None:
+                                    state["cc_time_query_sent"] = 0.0
+                                    rem_sec_cc = float(ledger_reply.get("rem_sec", 0.0))
+                                    needed_cc = int(ledger_reply.get("needed_casts", 6))
+                                    reason_cc = str(ledger_reply.get("reason", ""))
+                                    haste_elapsed = max(0.0, 7200.0 - rem_sec_cc)
+                                    state["last_haste_time"] = curr_time - haste_elapsed
+
+                                    if rem_sec_cc <= 0.0 or haste_elapsed >= buff_threshold:
+                                        dprint(key, f"🪄 [버프 루트 - 버퍼장부] 잔여 {rem_sec_cc/60:.1f}분 (경과 {haste_elapsed/60:.1f}분 >= {threshold_str} / {reason_cc}, 예상 {needed_cc}방) ➔ 리필하러 갑니다!")
+                                        state["target_fsm"] = "TOWN_MAINT_BUFF"
+                                    else:
+                                        dprint(key, f"🏃 [사냥터 직행 - 버퍼장부] 잔여 {rem_sec_cc/60:.1f}분 (경과 {haste_elapsed/60:.1f}분 < {threshold_str}) ➔ 리필 스킵, 사냥터로 직행!")
+                                        state["target_fsm"] = "TOWN_MAINT_RETURN"
+                                    state["cooldown"] = curr_time + 0.1
+                                    continue
+                                elif curr_time - sent_t < 1.5:
+                                    state["cooldown"] = curr_time + 0.05
+                                    continue
+                                else:
+                                    state["cc_time_query_sent"] = 0.0
+                                    dprint(key, "⚠️ [버퍼 장부 응답 지연] 1.5초 초과 ➔ 로컬 타이머 기준으로 판단합니다.")
+
+                            if haste_elapsed >= buff_threshold:
+                                dprint(key, f"🪄 [버프 루트 - 로컬] 헤이 받은지 {haste_elapsed/60:.1f}분 경과. [{threshold_str} 기준 초과] 리필하러 갑니다!")
                                 state["target_fsm"] = "TOWN_MAINT_BUFF"
                                 state["cooldown"] = curr_time + 0.1
                             else:
-                                dprint(key, f"🏃 [사냥터 직행] 헤이/강촐 받은지 {haste_elapsed/60:.1f}분 경과. [{threshold_str} 기준 미달 및 팩트 정상] 리필 스킵, 사냥터로 직행!")
+                                dprint(key, f"🏃 [사냥터 직행 - 로컬] 헤이 받은지 {haste_elapsed/60:.1f}분 경과. [{threshold_str} 기준 미달] 리필 스킵, 사냥터로 직행!")
                                 state["target_fsm"] = "TOWN_MAINT_RETURN"
                                 state["cooldown"] = curr_time + 0.1
 
@@ -19208,17 +19291,31 @@ def ai_commander_worker(target_pc):
                         pos_changed = True
 
                     if pos_changed or screen_changed:
-                        dprint(key, f"✅ [생존 확정] 텔레포트 완료(화면/좌표 변동)! 사냥 복귀!")
+                        is_stuck_tele_5f = state.pop("tele_skip_danger_cd", False)
+                        if is_stuck_tele_5f:
+                            dprint(key, "✅ [5층 끼임 탈출 확정] 텔레포트 완료(화면/좌표 변동)! 새 위치 재스캔 후 사냥 복귀!")
+                        else:
+                            dprint(key, f"✅ [생존 확정] 텔레포트 완료(화면/좌표 변동)! 사냥 복귀!")
 
                         with pico_queues[key].mutex: pico_queues[key].queue.clear()
 
                         state["target_fsm"] = "IDLE"
                         state.pop("teleport_start_pos", None)
                         state.pop("teleport_start_time", None)
-                        state["hp_danger_cd"] = curr_time + g_val(16.0, 18.0)
-                        state["tele_landed_time"] = curr_time
-                        state["tele_landed_hp"] = hp
-                        state["tele_ext_hit_loss"] = 0.0
+                        if is_stuck_tele_5f:
+                            state["dungeon_map_pos"] = None
+                            state["dungeon_last_map_pos"] = None
+                            state["last_full_scan_time"] = 0.0
+                            state["zone_check_time"] = 0.0
+                            state["bondon5f_stuck_frames"] = 0
+                            state["bondon5f_stuck_cd"] = curr_time + 2.5
+                            state["tele_landed_time"] = 0.0
+                            state["tele_ext_hit_loss"] = 0.0
+                        else:
+                            state["hp_danger_cd"] = curr_time + g_val(16.0, 18.0)
+                            state["tele_landed_time"] = curr_time
+                            state["tele_landed_hp"] = hp
+                            state["tele_ext_hit_loss"] = 0.0
                         state["last_external_hit_time"] = 0.0
                         state["danger_tele_armed_until"] = 0.0
                         state["cached_mobs"] = []
@@ -19259,10 +19356,14 @@ def ai_commander_worker(target_pc):
                                     state["is_pulling"] = False
                                     state.pop("teleport_start_pos", None)
                                     state.pop("teleport_start_time", None)
-                                    state["hp_danger_cd"] = 0.0
+                                    is_stuck_tele_5f = state.pop("tele_skip_danger_cd", False)
+                                    if is_stuck_tele_5f:
+                                        state["bondon5f_stuck_cd"] = curr_time + 1.0
+                                    else:
+                                        state["hp_danger_cd"] = 0.0
+                                        state["danger_tele_armed_until"] = curr_time + 2.5
                                     state["tele_landed_time"] = 0.0
                                     state["tele_ext_hit_loss"] = 0.0
-                                    state["danger_tele_armed_until"] = curr_time + 2.5
                                     state["cooldown"] = curr_time + 0.05
                                     continue
                             else:
@@ -19283,7 +19384,11 @@ def ai_commander_worker(target_pc):
                             state.pop("teleport_start_pos", None)
                             state.pop("teleport_start_time", None)
 
-                            state["hp_danger_cd"] = curr_time + 3.0
+                            is_stuck_tele_5f = state.pop("tele_skip_danger_cd", False)
+                            if is_stuck_tele_5f:
+                                state["bondon5f_stuck_cd"] = curr_time + 1.0
+                            else:
+                                state["hp_danger_cd"] = curr_time + 3.0
                             state["tele_landed_time"] = 0.0
                             state["tele_ext_hit_loss"] = 0.0
                             state["danger_tele_armed_until"] = 0.0
@@ -19528,6 +19633,96 @@ def ai_commander_worker(target_pc):
                     state["perc_danger"] = 0.0
                     state["danger_mp_low_ticks"] = 0
 
+                # ------------------------------------------------------------------
+                # 🌀 [본던 5층 상습 끼임 블랙리스트 5좌표 2프레임 감지 ➔ 즉시 텔레포트(F11)]
+                # - 본던 5층 사냥(5-1~15) 및 6층 경유(본던 5to6) 공통 적용
+                # ------------------------------------------------------------------
+                is_gludio_5f_now = (DUNGEON_ASSETS.get(active_dungeon, {}).get("map") == "gludio/gludio5.png")
+                fsm_stuck5f = str(state.get("target_fsm", ""))
+                is_ui_block_5f = fsm_stuck5f.startswith(("INV_CLEAN", "HK_HEAL_", "WEAPON_REPAIR", "TOWN_MAINT", "DEATH", "CERTI_")) or fsm_stuck5f in ["EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT"]
+                curr_pos_5f = state.get("dungeon_map_pos")
+
+                if is_gludio_5f_now and not is_ui_block_5f and curr_pos_5f is not None and is_in_bondon_5f_stuck_zone(curr_pos_5f):
+                    state["bondon5f_stuck_frames"] = state.get("bondon5f_stuck_frames", 0) + 1
+                    if state["bondon5f_stuck_frames"] >= BONDON_5F_STUCK_HOLD_FRAMES and curr_time >= state.get("bondon5f_stuck_cd", 0.0):
+                        if mp <= 2.5:
+                            try: abs_hp_5f = float(settings.get("abs_return_pct", 15.0))
+                            except: abs_hp_5f = 15.0
+                            min_body_hp_5f = abs_hp_5f if settings.get("abs_return_use", False) else max(abs_hp_5f, 15.0)
+                            if hp >= min_body_hp_5f and curr_time >= state.get("body_cd", 0):
+                                if state.get("body_held", False):
+                                    if picos.get(key) and pico_locks.get(key):
+                                        send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                                    state["body_held"] = False
+                                with pico_queues[key].mutex:
+                                    has_body_q_5f = any(item.get("action") == "BODY_TO_MIND" for item in pico_queues[key].queue)
+                                if not has_body_q_5f:
+                                    dprint(key, f"🩸 [5층 끼임 저마나 바디] 블랙리스트({curr_pos_5f[0]:.0f},{curr_pos_5f[1]:.0f}) 2프레임 감지했으나 MP({mp:.1f}% <= 2.5%) 부족! 바디(F7) 후 즉시 텔포합니다!")
+                                    pico_queues[key].put({"action": "BODY_TO_MIND"})
+                                    state["last_body_time"] = curr_time
+                                    state["body_cd"] = curr_time + g_time(0.8, 1.1, key)
+                        else:
+                            dprint(key, f"🌀 [5층 끼임 텔레포트 발동] 블랙리스트({curr_pos_5f[0]:.0f},{curr_pos_5f[1]:.0f}) 2프레임 감지! ({active_dungeon}) ➔ 즉시 텔레포트(F11) 탈출합니다!")
+                            state["abort_macro"] = True
+                            with pico_queues[key].mutex: pico_queues[key].queue.clear()
+                            pico_queues[key].put({"action": "FORCE_RELEASE"})
+
+                            if fsm_stuck5f.startswith("BUFFING"):
+                                pico_queues[key].put({"action": "HOLD_KEY", "keycode": KEY_F1, "duration": g_val(0.08, 0.15)})
+                                b_info_5f = state.get("current_buff")
+                                is_mp_used_5f = bool(
+                                    state.get("buff_mp_consumed", False) or
+                                    (state.get("buff_cast_sent", False) and fsm_stuck5f in ["BUFFING_MP_CHECK", "BUFFING_RETURN_F1", "BUFFING_WAIT_F1"] and mp <= state.get("buff_start_mp", 100.0) - 0.001)
+                                )
+                                if b_info_5f and b_info_5f["name"] != "cure_fallback":
+                                    if is_mp_used_5f:
+                                        state["buff_mp_consumed"] = True
+                                        state[f"buff_{b_info_5f['name']}_time"] = curr_time + b_info_5f["dur"] + g_val(-10, 10)
+                                    else:
+                                        state[f"buff_{b_info_5f['name']}_time"] = curr_time + 15.0
+                                    save_buff_times(ai_states)
+                                state["buff_aborted"] = True
+                                state["is_combat_emergency_buff"] = False
+
+                            if state.get("sweep_active", False):
+                                pico_queues[key].put({"action": "SWEEP_STOP"})
+                                state["sweep_active"] = False
+                            if state.get("body_held", False):
+                                if picos.get(key) and pico_locks.get(key):
+                                    send_keyboard_key(picos[key], pico_locks[key], KEY_F7, 0, is_manual=True)
+                                state["body_held"] = False
+
+                            state["is_mptam_mode"] = False
+                            state["pending_mptam"] = False
+                            state["is_pulling"] = False
+                            state["is_attacking"] = False
+                            state["arrow_is_firing"] = False
+                            state["has_fired_arrow"] = False
+                            state["loot_state"] = "IDLE"
+                            state["hidden_track_node"] = None
+                            state["current_target_node"] = None
+                            state["dungeon_global_path"] = []
+
+                            pico_queues[key].put({"action": "TELEPORT"})
+                            state["target_fsm"] = "EMERGENCY_TELEPORT_VERIFY"
+                            state["tele_skip_danger_cd"] = True
+                            state["teleport_start_pos"] = curr_pos_5f
+                            state["teleport_start_mp"] = mp
+                            state["teleport_start_time"] = curr_time
+                            state["teleport_timeout"] = curr_time + 4.0
+                            state["teleport_next_spam"] = curr_time + g_val(0.75, 0.85)
+                            if h >= 200 and w >= 200:
+                                state["tele_snapshot"] = cv2.cvtColor(img_bgr[100:200, 100:200], cv2.COLOR_BGR2GRAY)
+                            else:
+                                state["tele_snapshot"] = None
+                            state["teleport_verify_time"] = curr_time + 0.4
+                            state["tele_retry_cnt"] = 0
+                            state["bondon5f_stuck_frames"] = 0
+                            state["bondon5f_stuck_cd"] = curr_time + 3.0
+                            continue
+                else:
+                    state["bondon5f_stuck_frames"] = 0
+
                 fsm_ui_watch = str(state.get("target_fsm", ""))
                 if not fsm_ui_watch.startswith(("INV_CLEAN", "HK_HEAL_", "WEAPON_REPAIR", "TOWN_MAINT", "CHAT_RECOVER")) and curr_time > state.get("inv_close_grace_time", 0):
                     if curr_time > state.get("next_inv_watchdog_time", 0):
@@ -19770,7 +19965,7 @@ def ai_commander_worker(target_pc):
                     # ==============================================================================
                     is_weight_emergency = (weight_status == 2)
                     
-                    if not state.get("inv_clean_done", False) and (not is_busy or is_weight_emergency) and not is_poisoned and not is_already_cleaning:
+                    if not state.get("inv_clean_done", False) and (not is_busy or is_weight_emergency) and not is_poisoned and not is_already_cleaning and state.get("target_fsm") != "BONDON5F_ESCAPE":
                         if state.get("perc_trash", 0) == 0:
                             if is_weight_emergency:
                                 dprint(key, "🚨 [무게 82% 초과 비상] 전투/이동 강제 중단 및 즉각 가방 비우기 돌입!")
@@ -20968,7 +21163,8 @@ def ai_commander_worker(target_pc):
 
                     is_fighting_for_exp = (
                         (state.get("target_fsm") in active_combat_fsms or state.get("is_attacking", False) or state.get("arrow_is_firing", False)) and
-                        not str(state.get("target_fsm", "")).startswith("BUFFING")
+                        not str(state.get("target_fsm", "")).startswith("BUFFING") and
+                        str(state.get("target_fsm", "")) != "BONDON5F_ESCAPE"
                     )
 
                     if is_fighting_for_exp and exp_did_change and not state.get("current_is_m_elf", False):
@@ -21376,7 +21572,7 @@ def ai_commander_worker(target_pc):
             is_solo_zone_mode = ("본던 2-" in dng_zone_chk or "본던 4-" in dng_zone_chk or "본던 5-" in dng_zone_chk or "본던 6-" in dng_zone_chk or "본던 7-" in dng_zone_chk or "사던 4-" in dng_zone_chk) and not is_party_any_zone
 
             if (is_party_any_zone or is_solo_zone_mode) and state.get("dungeon_map_pos") and pc_graph and pc_graph.get("nodes"):
-                if curr_time - state.get("zone_check_time", 0) > 1.0:
+                if state.get("target_fsm") != "BONDON5F_ESCAPE" and curr_time - state.get("zone_check_time", 0) > 1.0:
                     char_map_pos_for_zone = state.get("dungeon_map_pos")
                     my_zone_nodes = []
                     buff_zone_nodes = []
@@ -21464,7 +21660,7 @@ def ai_commander_worker(target_pc):
                                         is_out_of_zone = True
 
                     if is_out_of_zone and not was_out:
-                        dprint(key, f"🚨 [존 이탈 감지] 할당 구역({active_dungeon}) 밖으로 이탈! 시야를 120px로 좁히고 복귀 모드 가동!")
+                        dprint(key, f"🚨 [존 이탈 감지] 할당 구역({active_dungeon}) 밖으로 이탈! 시야를 100px로 좁히고 복귀 모드 가동!")
                     elif not is_out_of_zone and was_out:
                         dprint(key, f"🎯 [존 진입 완료] 할당 구역({active_dungeon}) 안착 완료! 족쇄를 풀고 정상 사냥 모드 복구!")
                         
@@ -21761,19 +21957,19 @@ def ai_commander_worker(target_pc):
                             elif state.get("is_assisting", False):
                                 yolo_radius = 9999
                             elif state.get("is_out_of_zone", False):
-                                yolo_radius = 120
+                                yolo_radius = 100
                             elif fsm_for_yolo == "PARTY_WAIT" and not is_yolo_free:
                                 yolo_radius = 200
                             elif is_any_party and not is_yolo_free:
                                 yolo_radius = 250
                             elif is_bondon_zone_solo and not is_yolo_free:
-                                yolo_radius = 120  # 솔플 이탈 시 반경 제한 적용
+                                yolo_radius = 100  # 솔플 이탈 시 반경 제한 적용
                             elif is_close_combat:
                                 yolo_radius = 150 if is_sudeon_or_party else 70
                             else:
                                 yolo_radius = 9999
 
-                            # 👇👇 [핵심 픽스] 거리에 따른 시야(YOLO) 개방 제어 (120px / 진입 시 0px)
+                            # 👇👇 [핵심 픽스] 거리에 따른 시야(YOLO) 개방 제어 (100px / 진입 시 0px)
                             is_next_floor_yolo = pc_graph and pc_graph.get("next_floor_node")
                             if is_next_floor_yolo:
                                 is_yolo_free = False # 무제한 타원 시야를 강제로 끄고 원형 반경 검사로 강제 편입!
@@ -21794,18 +21990,18 @@ def ai_commander_worker(target_pc):
                                     "SADEON_PORTAL_STEP_WALK_WAIT", "SADEON_PORTAL_DIRECT_SEARCH",
                                     "SADEON_PORTAL_DIRECT_HOVER_WAIT"
                                 ]
-                                # 💡 재시도 모드(후퇴) 중일 때는 주변 몹 사냥을 위해 120px 오픈
+                                # 💡 재시도 모드(후퇴) 중일 때는 주변 몹 사냥을 위해 100px 오픈
                                 if state.get("portal_retry_mode", False):
-                                    yolo_radius = min(yolo_radius, 120)
+                                    yolo_radius = min(yolo_radius, 100)
                                 # 💡 포탈 도착 반경 이내이거나 포탈 정밀 진입/돌격 FSM 진행 중일 때는 몹에 막히지 않게 0px!
                                 elif dist_to_portal_yolo <= portal_stop_dist_yolo or is_in_portal_fsm_yolo:
                                     yolo_radius = 0
                                 # 50픽셀(약 10칸) 초과로 멀 때는 눈 감고 달리기 (0px)
                                 elif dist_to_portal_yolo > 50.0:
                                     yolo_radius = 0
-                                # 50픽셀 안으로 들어오면 120px 반경 오픈하여 주변 몹 사냥 허용
+                                # 50픽셀 안으로 들어오면 100px 반경 오픈하여 주변 몹 사냥 허용
                                 else:
-                                    yolo_radius = min(yolo_radius, 120)
+                                    yolo_radius = min(yolo_radius, 100)
                             # 👆👆 -------------------------------------------------------------
 
                             for m in temp_mobs:
@@ -21899,8 +22095,8 @@ def ai_commander_worker(target_pc):
                             cv2.circle(debug_img, (char_screen_cx, char_screen_cy), 20, (0, 0, 255), -1)
                             cv2.putText(debug_img, "BLIND RUSH (0px)", (char_screen_cx - 60, char_screen_cy - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 2)
                         else:
-                            cv2.circle(debug_img, (char_screen_cx, char_screen_cy), 120, (0, 165, 255), 2)
-                            cv2.putText(debug_img, "PORTAL APPROACH (120px)", (char_screen_cx - 85, char_screen_cy - 125), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 2)
+                            cv2.circle(debug_img, (char_screen_cx, char_screen_cy), 100, (0, 165, 255), 2)
+                            cv2.putText(debug_img, "PORTAL APPROACH (100px)", (char_screen_cx - 85, char_screen_cy - 105), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 2)
                     # 👆👆 ---------------------------------------------------------------------------------
                     elif not state.get("is_out_of_zone", False):
                         if is_any_party_dbg:
@@ -21909,8 +22105,8 @@ def ai_commander_worker(target_pc):
                             cv2.ellipse(debug_img, (char_screen_cx, char_screen_cy), (DBG_ELLIPSE_RX, DBG_ELLIPSE_RY), 0, 0, 360, (255, 105, 180), 1, cv2.LINE_AA)
                             cv2.putText(debug_img, f"FIXED RANGE ({DBG_ELLIPSE_RX}x{DBG_ELLIPSE_RY})", (char_screen_cx - 80, char_screen_cy - DBG_ELLIPSE_RY - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 105, 180), 1)
                     else:
-                        cv2.circle(debug_img, (char_screen_cx, char_screen_cy), 120, (0, 165, 255), 2)
-                        cv2.putText(debug_img, "OUT OF ZONE YOLO (120px)", (char_screen_cx - 80, char_screen_cy - 125), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 2)
+                        cv2.circle(debug_img, (char_screen_cx, char_screen_cy), 100, (0, 165, 255), 2)
+                        cv2.putText(debug_img, "OUT OF ZONE YOLO (100px)", (char_screen_cx - 80, char_screen_cy - 105), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 2)
 
                 if curr_time < state.get("close_combat_timer", 0):
                     dng_name_chk = settings.get("dungeon_name", "")
@@ -22085,7 +22281,7 @@ def ai_commander_worker(target_pc):
                 active_nav_fsms = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_LOCKED", "HOVER_RETRY_WAIT", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD", "MOB_DEATH_WAIT", "TARGET_AIMING", "WAIT_FOR_STOP"]
 
                 fsm_nav_chk = str(state.get("target_fsm", ""))
-                is_tracking_busy = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or (fsm_nav_chk in active_nav_fsms) or fsm_nav_chk.startswith("LOOT") or fsm_nav_chk.startswith("BUFFING") or fsm_nav_chk.startswith("F1_INIT")
+                is_tracking_busy = state.get("is_attacking", False) or state.get("arrow_is_firing", False) or (fsm_nav_chk in active_nav_fsms) or fsm_nav_chk.startswith("LOOT") or fsm_nav_chk.startswith("BUFFING") or fsm_nav_chk.startswith("F1_INIT") or (fsm_nav_chk == "BONDON5F_ESCAPE")
 
                 if not is_tracking_busy and not mobs and pc_graph and pc_graph.get("nodes") and not state.get("is_mptam_mode", False):
 
@@ -22281,7 +22477,7 @@ def ai_commander_worker(target_pc):
 
             active_fsms = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_LOCKED", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD", "TARGET_AIMING", "WAIT_FOR_STOP", "CURSE_AIM_SEARCH", "CURSE_AIM_VERIFY", "CURSE_STANDBY"]
 
-            if state.get("target_fsm") in ["IDLE", "PATROL"]:
+            if state.get("target_fsm") in ["IDLE", "PATROL", "BONDON5F_ESCAPE"]:
                 is_fighting = False
                 state["is_attacking"] = False
                 state["arrow_is_firing"] = False
@@ -23255,22 +23451,52 @@ def ai_commander_worker(target_pc):
                 is_buffing = True
                 action_taken = True  # <--- [핵심 수정] 버프 중 네비게이션(길막) 로직이 끼어들지 못하게 강제 방어막 전개!
 
-                if "img_heal" not in loaded_models:
-
-                    try: loaded_models["img_heal"] = cv2.imread("qq/heal.png", cv2.IMREAD_GRAYSCALE)
-                    except: loaded_models["img_heal"] = None
-
-                has_heal_img = loaded_models.get("img_heal") is not None
+                f1_anchor_groups = [
+                    ["heal.png"],
+                    ["body.png"],
+                    ["home.png", "home2.png"],
+                    ["duru.png", "duru2.png", "duru3.png"],
+                    ["ent.png", "ent2.png"],
+                    ["tel.png"]
+                ]
+                loaded_anchor_slots = sum(
+                    1 for grp in f1_anchor_groups
+                    if any(loaded_models.get(f"qq/{fn}") and loaded_models[f"qq/{fn}"].get("color") is not None for fn in grp)
+                )
+                has_heal_img = (loaded_anchor_slots > 0)
                 is_f1_active = True
 
+                sx1 = max(0, int(SLOT_F6_CX - SLOT_SIZE * 1.5))
+                sy1 = max(0, int(SLOT_F6_CY - SLOT_SIZE * 0.5))
+                sx2 = min(w, int(SLOT_F6_CX + SLOT_SIZE * 2.5))
+                sy2 = min(h, int(SLOT_F6_CY + SLOT_SIZE * 1.5))
+
                 if has_heal_img and h >= 130 and w >= 220:
-
-                    quick_roi = curr_gray[h-130:h, w-220:w]
-                    try:
-
-                        _, val_heal, _, _ = cv2.minMaxLoc(cv2.matchTemplate(quick_roi, loaded_models["img_heal"], cv2.TM_CCOEFF_NORMED))
-                        is_f1_active = (val_heal >= 0.85)
-                    except: pass
+                    quick_roi_bgr = img_bgr[h-130:h, w-220:w]
+                    f1_matched_slots = 0
+                    for grp in f1_anchor_groups:
+                        slot_matched = False
+                        for fn in grp:
+                            td = loaded_models.get(f"qq/{fn}")
+                            if td and td.get("color") is not None:
+                                try:
+                                    tmpl_c = td["color"]
+                                    tmpl_m = td["mask"]
+                                    if tmpl_c.shape[0] <= quick_roi_bgr.shape[0] and tmpl_c.shape[1] <= quick_roi_bgr.shape[1]:
+                                        if tmpl_m is not None:
+                                            res_f1 = cv2.matchTemplate(quick_roi_bgr, tmpl_c, cv2.TM_CCORR_NORMED, mask=cv2.merge([tmpl_m]*3))
+                                        else:
+                                            res_f1 = cv2.matchTemplate(quick_roi_bgr, tmpl_c, cv2.TM_CCOEFF_NORMED)
+                                        _, val_f1, _, _ = cv2.minMaxLoc(res_f1)
+                                        if not (np.isnan(val_f1) or np.isinf(val_f1)) and val_f1 >= 0.80:
+                                            slot_matched = True
+                                            break
+                                except Exception:
+                                    pass
+                        if slot_matched:
+                            f1_matched_slots += 1
+                    need_f1_slots = 2 if loaded_anchor_slots >= 2 else 1
+                    is_f1_active = (f1_matched_slots >= need_f1_slots)
 
                 if curr_time >= state.get("cooldown", 0):
 
@@ -23312,6 +23538,7 @@ def ai_commander_worker(target_pc):
                         if state.get("buff_retry_cnt", 0) == 0:
                             state["buff_mp_consumed"] = False
                             state["buff_cast_sent"] = False
+                            state["buff_f8_home_block_cnt"] = 0
 
                         if not b_info:
                             state["target_fsm"] = "BUFFING_RETURN_F1"
@@ -23321,9 +23548,14 @@ def ai_commander_worker(target_pc):
                             state["buff_is_0mp"] = b_info["name"] in ["extra_f10", "blue_pot"]
 
                             if target_page == 1:
+                                state["buff_page_snap"] = None
                                 state["target_fsm"] = "BUFFING_CAST_AND_VERIFY"
                                 state["cooldown"] = curr_time
                             else:
+                                if is_f1_active and sy2 > sy1 and sx2 > sx1:
+                                    state["buff_page_snap"] = curr_gray[sy1:sy2, sx1:sx2].copy()
+                                else:
+                                    state["buff_page_snap"] = None
                                 page_key = KEY_F2 if target_page == 2 else KEY_F3
                                 pico_queues[key].put({"action": "HOLD_KEY", "keycode": page_key, "duration": g_val(0.08, 0.15)})
                                 state["target_fsm"] = "BUFFING_WAIT_PAGE"
@@ -23339,14 +23571,27 @@ def ai_commander_worker(target_pc):
                         is_test = state.get("is_buff_testing", False)
                         target_page = b_info["page"] if b_info else 1
 
-                        if not has_heal_img: is_success = True
-                        else: is_success = (not is_f1_active) if target_page in [2, 3] else is_f1_active
+                        if not has_heal_img:
+                            is_success = True
+                        elif target_page in [2, 3]:
+                            slot_changed = True
+                            page_snap = state.get("buff_page_snap")
+                            if page_snap is not None and sy2 > sy1 and sx2 > sx1:
+                                curr_slot_gray = curr_gray[sy1:sy2, sx1:sx2]
+                                if curr_slot_gray.shape == page_snap.shape:
+                                    diff_slot = cv2.absdiff(page_snap, curr_slot_gray)
+                                    _, th_slot = cv2.threshold(diff_slot, 25, 255, cv2.THRESH_BINARY)
+                                    slot_changed = (cv2.countNonZero(th_slot) >= 500)
+                            is_success = (not is_f1_active) and slot_changed
+                        else:
+                            is_success = is_f1_active
 
                         if is_success:
+                            state["buff_page_snap"] = None
                             if is_test:
                                 import datetime
                                 t_ms = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                                dprint(key, f"[{t_ms}] ⏱️ [2. 안착] 힐 아이콘 증발 확인! F{target_page} 안착 성공! (0.1초 뒤 시전)")
+                                dprint(key, f"[{t_ms}] ⏱️ [2. 안착] F1 앵커 소멸 및 퀵슬롯 변화 확인! F{target_page} 안착 성공! (0.1초 뒤 시전)")
                             state["target_fsm"] = "BUFFING_CAST_AND_VERIFY"
                             state["cooldown"] = curr_time + 0.1
                         else:
@@ -23364,6 +23609,51 @@ def ai_commander_worker(target_pc):
                             state["target_fsm"] = "BUFFING_RETURN_F1"
                             state["cooldown"] = curr_time
                         else:
+                            # 🛡️ [2중 안전장치] F2/F3 페이지의 F8(blessed 등) 시전 직전, F8 슬롯에 귀환 주문서(home/home2)가 보이면 즉시 발사 차단!
+                            f8_home_detected = False
+                            f8_home_info = ""
+                            if b_info["key"] == KEY_F8 and b_info.get("page", 1) != 1:
+                                f8_x1 = max(0, int(SLOT_F6_CX + SLOT_SIZE * 2 - 30))
+                                f8_y1 = max(0, int(SLOT_F6_CY - 30))
+                                f8_x2 = min(w, int(SLOT_F6_CX + SLOT_SIZE * 2 + 30))
+                                f8_y2 = min(h, int(SLOT_F6_CY + 30))
+                                if f8_x2 > f8_x1 and f8_y2 > f8_y1:
+                                    f8_roi_bgr = img_bgr[f8_y1:f8_y2, f8_x1:f8_x2]
+                                    for h_fn in ("home.png", "home2.png"):
+                                        td_h = loaded_models.get(f"qq/{h_fn}")
+                                        if td_h and td_h.get("color") is not None:
+                                            try:
+                                                hc, hm = td_h["color"], td_h["mask"]
+                                                if hc.shape[0] <= f8_roi_bgr.shape[0] and hc.shape[1] <= f8_roi_bgr.shape[1]:
+                                                    if hm is not None:
+                                                        res_h = cv2.matchTemplate(f8_roi_bgr, hc, cv2.TM_CCORR_NORMED, mask=cv2.merge([hm]*3))
+                                                    else:
+                                                        res_h = cv2.matchTemplate(f8_roi_bgr, hc, cv2.TM_CCOEFF_NORMED)
+                                                    _, val_h, _, _ = cv2.minMaxLoc(res_h)
+                                                    if not (np.isnan(val_h) or np.isinf(val_h)) and val_h >= 0.75:
+                                                        f8_home_detected = True
+                                                        f8_home_info = f"{h_fn}:{val_h*100:.1f}%"
+                                                        break
+                                            except Exception:
+                                                pass
+
+                            if f8_home_detected:
+                                blk_cnt = state.get("buff_f8_home_block_cnt", 0) + 1
+                                state["buff_f8_home_block_cnt"] = blk_cnt
+                                if blk_cnt >= 3:
+                                    dprint(key, f"🛡️ [F8 오귀환 3회 연속 차단] {f8_home_info} 잔류 확인! 무한루프 방지를 위해 15초 뒤 재시도 예약 후 F1 복귀합니다.")
+                                    if b_info["name"] != "cure_fallback" and not is_test:
+                                        state[f"buff_{b_info['name']}_time"] = curr_time + 15.0
+                                        save_buff_times(ai_states)
+                                    state["target_fsm"] = "BUFFING_RETURN_F1"
+                                    state["cooldown"] = curr_time + 0.1
+                                else:
+                                    dprint(key, f"🛡️ [F8 오귀환 차단 ({blk_cnt}/3)] F8 슬롯에 귀환 주문서({f8_home_info}) 감지! F{b_info['page']} 페이지 재전환을 시도합니다.")
+                                    state["target_fsm"] = "BUFFING_START_PAGE"
+                                    state["cooldown"] = curr_time + 0.15
+                                continue
+
+                            state["buff_f8_home_block_cnt"] = 0
 
                             if state.get("buff_retry_cnt", 0) > 0:
                                 with pico_queues[key].mutex: pico_queues[key].queue.clear()
@@ -23983,6 +24273,12 @@ def ai_commander_worker(target_pc):
                             state["yolo_blind_active"] = False
                             state["cooldown"] = curr_time
                         raw_item_boxes = []
+
+                    elif fsm_current in ["BONDON5F_ESCAPE", "PORTAL_DIVE_6F_RUSH", "PORTAL_DIVE_6F_RUSH_WAIT"]:
+                        raw_item_boxes = []
+                        if state.get("sweep_active", False):
+                            pico_queues[key].put({"action": "SWEEP_STOP"})
+                            state["sweep_active"] = False
 
                     elif fsm_current in ["PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV"] or state.get("party_buff_status") == "MOVING":
                         raw_item_boxes = []
@@ -26805,6 +27101,7 @@ def ai_commander_worker(target_pc):
                         state["cooldown"] = curr_time + 0.02
                     action_taken = True
 
+
                 active_fsms = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_LOCKED", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD"]
                 is_recent_attack = (curr_time - state.get("attack_cmd_time", 0)) < 4.0
                 is_fighting_archer = (state.get("is_attacking", False) or state.get("arrow_is_firing", False) or state.get("target_fsm") in active_fsms) and is_recent_attack
@@ -27308,7 +27605,7 @@ def ai_commander_worker(target_pc):
 
                 target_fsm_nav = state.get("target_fsm")
 
-                portal_nav_fsms = ["PORTAL_DIVE_BRAKE_WAIT", "PORTAL_DIVE_SEARCH", "PORTAL_DIVE_HOVER_WAIT", "PORTAL_ENTER_STEP1", "PORTAL_ENTER_STEP2", "PORTAL_DIVE_STEP1", "PORTAL_DIVE_STEP2", "PORTAL_DIVE_6F_RUSH", "SADEON_PORTAL_STEP_CHECK", "SADEON_PORTAL_STEP_HOVER_WAIT", "SADEON_PORTAL_STEP_WALK_WAIT", "SADEON_PORTAL_DIRECT_SEARCH", "SADEON_PORTAL_DIRECT_HOVER_WAIT"]
+                portal_nav_fsms = ["PORTAL_DIVE_BRAKE_WAIT", "PORTAL_DIVE_SEARCH", "PORTAL_DIVE_HOVER_WAIT", "PORTAL_ENTER_STEP1", "PORTAL_ENTER_STEP2", "PORTAL_DIVE_STEP1", "PORTAL_DIVE_STEP2", "PORTAL_DIVE_6F_RUSH", "PORTAL_DIVE_6F_RUSH_WAIT", "SADEON_PORTAL_STEP_CHECK", "SADEON_PORTAL_STEP_HOVER_WAIT", "SADEON_PORTAL_STEP_WALK_WAIT", "SADEON_PORTAL_DIRECT_SEARCH", "SADEON_PORTAL_DIRECT_HOVER_WAIT"]
                 allow_nav_fsm = target_fsm_nav in (["IDLE", "PARTY_WAIT", "PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV", "PARTY_ACTIVE_STANDBY", "SQUAD_WAIT"] + portal_nav_fsms)
 
                 is_fleeing_state = target_fsm_nav in (["PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV"] + portal_nav_fsms)
@@ -27680,9 +27977,14 @@ def ai_commander_worker(target_pc):
                     is_rendezvous_mode = False
                     state["is_rendezvous_mode"] = False
 
-                    # 🏃‍♂️ [층간 진입 0순위 돌격] 본던 6층 / 사던 4층 진입 직후 미니맵 스캔이나 텔포보다 먼저 1초간 입구를 벗어납니다! (사던 4-1은 3시, 나머지는 6시)
+                    # 🏃‍♂️ [층간 진입 0순위 돌격] 본던 6층 / 사던 4층 진입 직후 포탈 방어/텔포보다 먼저 1초간 입구를 벗어납니다! (사던 4-1은 3시, 나머지는 6시)
                     if not action_taken and state.get("target_fsm") == "PORTAL_DIVE_6F_RUSH":
                         if curr_time >= state.get("cooldown", 0):
+                            real_c_rush = find_cursor_pos(img_bgr, last_pos=(cur_x, cur_y), allow_full_scan=True)
+                            if real_c_rush:
+                                cur_x, cur_y = real_c_rush[0], real_c_rush[1]
+                                state["cursor_pos"] = [cur_x, cur_y]
+
                             gui_dng_rush = str(settings.get("party_dungeon_name", "") if is_party_on else settings.get("dungeon_name", "")).strip()
                             if gui_dng_rush == "사던 4-1" or str(active_dungeon).strip() == "사던 4-1":
                                 rush_angle_deg = 359.0  # 3시 방향
@@ -27691,7 +27993,7 @@ def ai_commander_worker(target_pc):
                                 rush_angle_deg = 92.0   # 6시 방향 (사던 4-2~15 및 본던 6층)
                                 rush_dir_str = "6시"
 
-                            dprint(key, f"🏃‍♂️ [층간 진입 돌격] '{gui_dng_rush}' 포탈 재진입 방지를 위해 캐릭터 {rush_dir_str} 방향으로 1초간 이동합니다!")
+                            dprint(key, f"🏃‍♂️ [층간 진입 돌격] '{gui_dng_rush}' 포탈 방어 유예 후 캐릭터 {rush_dir_str} 방향으로 1초간 선이동합니다!")
                             rad = math.radians(rush_angle_deg)
                             dist = random.randint(100, 150)
                             tx = int(max(10, min(740, char_screen_cx + math.cos(rad) * dist)))
@@ -27704,20 +28006,33 @@ def ai_commander_worker(target_pc):
                             with pico_queues[key].mutex: pico_queues[key].queue.clear()
                             if deltas:
                                 pico_queues[key].put({"action": "CUSTOM_MOVE", "deltas": deltas})
-                                click_cnt = random.randint(3, 4)
-                                interval = 1.0 / click_cnt
-                                for _ in range(click_cnt):
-                                    pico_queues[key].put({"action": "SINGLE_ATTACK"})
-                                    pico_queues[key].put({"action": "WAIT", "delay_min": interval - 0.06, "delay_max": interval - 0.04})
-                                if key in ai_states: ai_states[key]["cursor_pos"] = [tx, ty]
+                            click_cnt = random.randint(3, 4)
+                            interval = 1.0 / click_cnt
+                            for _ in range(click_cnt):
+                                pico_queues[key].put({"action": "SINGLE_ATTACK"})
+                                pico_queues[key].put({"action": "WAIT", "delay_min": interval - 0.06, "delay_max": interval - 0.04})
+                            if key in ai_states: ai_states[key]["cursor_pos"] = [tx, ty]
 
-                            # 6시 이동이 끝난 직후 새 위치에서 4층 미니맵을 풀스캔하도록 예약
+                            state["rush_6f_end_time"] = curr_time + dur + 1.15
+                            state["portal_tele_grace_time"] = max(state.get("portal_tele_grace_time", 0.0), curr_time + dur + 4.0)
+                            state["target_fsm"] = "PORTAL_DIVE_6F_RUSH_WAIT"
+                            state["cooldown"] = curr_time + 0.05
+                        action_taken = True
+
+                    elif not action_taken and state.get("target_fsm") == "PORTAL_DIVE_6F_RUSH_WAIT":
+                        rush_end_t = state.get("rush_6f_end_time", 0.0)
+                        is_hw_done_rush = (not state.get("hw_busy", False)) and pico_queues[key].empty()
+                        if (curr_time >= rush_end_t and is_hw_done_rush) or (curr_time >= rush_end_t + 1.5):
+                            dprint(key, "✅ [층간 진입 돌격 완료] 6시 선이동 완료! 새 위치 미니맵 재스캔 후 내 Zone으로 이동합니다.")
                             state["dungeon_map_pos"] = None
+                            state["dungeon_last_map_pos"] = None
                             state["last_full_scan_time"] = 0.0
                             state["dungeon_global_path"] = []
                             state["current_target_node"] = None
+                            state["zone_check_time"] = 0.0
+                            state["portal_tele_grace_time"] = max(state.get("portal_tele_grace_time", 0.0), curr_time + 2.5)
                             state["target_fsm"] = "IDLE"
-                            state["cooldown"] = curr_time + dur + 1.1
+                            state["cooldown"] = curr_time + 0.1
                         action_taken = True
 
                     if not action_taken and role == "DUNGEON":
@@ -29274,8 +29589,9 @@ def ai_commander_worker(target_pc):
                                         state["portal_retry_mode"] = False
                                         state["portal_entry_start_time"] = 0
 
+                                        state["portal_tele_grace_time"] = max(state.get("portal_tele_grace_time", 0.0), curr_time + 5.0)
                                         state["target_fsm"] = "PORTAL_DIVE_6F_RUSH"
-                                        state["cooldown"] = curr_time + 0.1
+                                        state["cooldown"] = curr_time + 0.25
                                         action_taken = True
                                         continue
 
@@ -29838,7 +30154,7 @@ def ai_commander_worker(target_pc):
                                     is_already_processing = False
 
                                 if not is_already_processing and not state.get("party_buff_done", False) and curr_time >= state.get("pb_caster_retry_cd", 0.0):
-                                    is_ui_busy_pb = fsm_retreat.startswith("INV_CLEAN") or fsm_retreat.startswith("HK_HEAL") or fsm_retreat.startswith("WEAPON_REPAIR") or fsm_retreat.startswith("BUFFING") or fsm_retreat.startswith("F1_INIT") or fsm_retreat.startswith("CHAT_RECOVER")
+                                    is_ui_busy_pb = fsm_retreat.startswith("INV_CLEAN") or fsm_retreat.startswith("HK_HEAL") or fsm_retreat.startswith("WEAPON_REPAIR") or fsm_retreat.startswith("BUFFING") or fsm_retreat.startswith("F1_INIT") or fsm_retreat.startswith("CHAT_RECOVER") or (fsm_retreat == "BONDON5F_ESCAPE")
                                     # 💡 시전자가 본인 엠탐(예약 엠탐/동반 엠탐 포함) 중일 때는 엠탐이 완전히 종료된 후에 소집하도록 대기!
                                     is_caster_mptam = (
                                         state.get("is_mptam_mode", False) or
@@ -30083,7 +30399,9 @@ def ai_commander_worker(target_pc):
                                 has_b_node_m = bool(pc_graph and (pc_graph.get("buff_spot_nodes") or (leader_base_node and str(leader_base_node) in pc_graph.get("nodes", {}))))
 
                                 # 이미 이번 호출(active_call_id)에서 영구 불참(마을/인증/Zone이탈/10초길막/45초타임아웃)으로 분류된 경우 불참 유지
-                                if active_call_id != 0 and state.get("pb_excluded_call_id") == active_call_id:
+                                if fsm_retreat == "BONDON5F_ESCAPE":
+                                    pass
+                                elif active_call_id != 0 and state.get("pb_excluded_call_id") == active_call_id:
                                     state["party_buff_status"] = "EXCLUDED"
                                 elif state.get("pb_joined_call_id") != active_call_id or state.get("party_buff_status") not in ["MOVING", "ARRIVED"]:
                                     if is_in_crisis_m or is_not_in_party_m or is_out_zone_m or (char_pos_m is None) or (not has_b_node_m):
@@ -30187,7 +30505,7 @@ def ai_commander_worker(target_pc):
 
                 if is_party_hunt_active and my_team_group != "선택안함":
                     fsm_retreat = str(state.get("target_fsm", ""))
-                    safe_fsms = ["PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV", "TOWN_MAINT", "EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "DEATH_RESTART", "PARTY_BUFF_"]
+                    safe_fsms = ["PARTY_RETREAT_NAV", "PARTY_MPTAM_FLEE_NAV", "TOWN_MAINT", "EMERGENCY_TELEPORT_VERIFY", "SHUTDOWN_WAIT", "DEATH_RESTART", "PARTY_BUFF_", "BONDON5F_ESCAPE"]
                     is_mptam_blocking = state.get("is_mptam_mode", False)
                     is_active_standby_now = state.get("is_active_standby", False)
 
@@ -30509,7 +30827,7 @@ def ai_commander_worker(target_pc):
                 fsm_mptam_chk = str(state.get("target_fsm", ""))
 
                 # 💡 [버그 픽스] 마을 귀환/정비 중이거나 비상 텔포/사망 대기 및 팟바람 진행 중일 때는 들판 엠탐 로직이 개입하지 못하게 완벽 차단!
-                is_mptam_invalid_fsm = fsm_mptam_chk.startswith("TOWN_MAINT") or fsm_mptam_chk in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY", "PARTY_BUFF_L_DONE"] or fsm_mptam_chk.startswith("DEATH") or fsm_mptam_chk.startswith("BUFFING") or is_pb_busy_for_mptam
+                is_mptam_invalid_fsm = fsm_mptam_chk.startswith("TOWN_MAINT") or fsm_mptam_chk in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY", "PARTY_BUFF_L_DONE", "PORTAL_DIVE_6F_RUSH", "PORTAL_DIVE_6F_RUSH_WAIT"] or fsm_mptam_chk.startswith("DEATH") or fsm_mptam_chk.startswith("BUFFING") or is_pb_busy_for_mptam
 
                 if not action_taken and use_mptam and not state.get("is_mptam_mode", False) and mp <= mptam_start_mp and not is_help_busy and allow_mptam_block and not is_mptam_invalid_fsm and not state.get("moving_to_mptam_partner", False):
                     active_combat_fsms_local = ["COMBAT", "HOVER_WAIT", "SNAP_WAIT", "PRE_TARGET_YOLO_WAIT", "PRE_TARGET_MOTION_CHECK", "PRE_TARGET_LOCKED", "MOTION_SNAP_BRAKE_WAIT", "MOTION_SNAP_SCANNING", "MOTION_SNAP_CHECK_SWORD", "TARGET_AIMING", "WAIT_FOR_STOP"]
@@ -30781,7 +31099,7 @@ def ai_commander_worker(target_pc):
                 if not action_taken:
                     fsm_for_passive = str(state.get("target_fsm", ""))
                     is_ui_open_passive = fsm_for_passive.startswith("INV_CLEAN") or fsm_for_passive.startswith("HK_HEAL_")
-                    is_safe_state = not fsm_for_passive.startswith("TOWN_MAINT") and not fsm_for_passive.startswith("DEATH") and fsm_for_passive not in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY"]
+                    is_safe_state = not fsm_for_passive.startswith("TOWN_MAINT") and not fsm_for_passive.startswith("DEATH") and fsm_for_passive not in ["SHUTDOWN_WAIT", "EMERGENCY_TELEPORT_VERIFY", "PORTAL_DIVE_6F_RUSH", "PORTAL_DIVE_6F_RUSH_WAIT"]
                     
                     if is_safe_state and not is_ui_open_passive and not is_fighting and not is_looting and not state.get("is_pulling", False) and not is_manual_mode:
                         if hp >= 95.0 and mp < 100.0 and curr_time > state.get("passive_body_cd", 0) and curr_time >= state.get("body_cd", 0):
