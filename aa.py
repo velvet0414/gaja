@@ -21704,7 +21704,7 @@ def ai_commander_worker(target_pc):
                                     min_d_sq_any = d_sq
                                     closest_zn_any = zn
                                 # 💡 벽 너머 방의 노드를 잘못 고르지 않도록 시야(LOS)가 뚫린 같은 방 존 노드를 최우선 탐색
-                                if d_sq <= 6400 and pc_map_gray_los is not None:
+                                if d_sq <= 8100 and pc_map_gray_los is not None:
                                     if check_line_of_sight(pc_map_gray_los, char_map_pos_for_zone, (zx, zy), margin_steps=1):
                                         if d_sq < min_d_sq_los:
                                             min_d_sq_los = d_sq
@@ -21723,8 +21723,8 @@ def ai_commander_worker(target_pc):
                                     if not z_path or len(z_path) > 5: # 5노드 초과면 이탈 유지
                                         is_out_of_zone = True
                             else:
-                                # 💡 정상 상태에서는 기존과 동일하게 직선 80px(6400) 초과 또는 A* 16노드 초과 시 이탈 판정
-                                if min_d_sq > 6400:
+                                # 💡 정상 상태에서는 직선 90px(8100) 초과 또는 A* 25노드 초과 시 이탈 판정
+                                if min_d_sq > 8100:
                                     is_out_of_zone = True
                                 else:
                                     z_path = calculate_graph_astar_path(pc_graph, char_map_pos_for_zone, closest_zn, pc_map_gray, set(), is_blind=state.get("portal_blind_mode", False))
