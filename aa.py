@@ -652,6 +652,10 @@ def _alert_handle_resolved_codes(key, resolved_list):
             st["alert_5to6_elapsed"] = 0.0
         elif c == "ZONE_OUT_TIMEOUT":
             st["alert_zone_out_elapsed"] = 0.0
+        elif c == "WEAPON_BROKEN":
+            st["alert_weapon_broken_events"] = []
+            st["alert_weapon_normal_streak"] = 0
+            st["alert_weapon_last_broken_t"] = 0.0
         dprint(key, f"✅ [군주컴 완료 수신] '{c}' 상황 종료 및 감지 타이머 초기화 완료.")
 
 def _alert_record_exp_event(key):
@@ -677,6 +681,46 @@ def _alert_record_sword_event(key):
     if not st:
         return
     st["idle_mon_last_sword_active"] = st.get("idle_mon_active_sec", 0.0)
+
+def _alert_record_weapon_normal(key):
+    st = ai_states.get(key)
+    if not st or not st.get("alert_weapon_broken_events"):
+        return
+    now_t = time.time()
+    if now_t - st.get("alert_weapon_last_normal_t", 0.0) < 0.5:
+        return
+    st["alert_weapon_last_normal_t"] = now_t
+    st["alert_weapon_normal_streak"] = st.get("alert_weapon_normal_streak", 0) + 1
+    if st["alert_weapon_normal_streak"] >= 2:
+        st["alert_weapon_broken_events"] = []
+        st["alert_weapon_normal_streak"] = 0
+
+def _alert_record_weapon_broken(key, cx=0, cy=0):
+    st = ai_states.get(key)
+    if not st:
+        return
+    if active_manual_target == key or not st.get("is_hunt_active", False) or st.get("is_paused", False):
+        return
+    raw_fsm = str(st.get("target_fsm", "IDLE"))
+    if raw_fsm.startswith(("TOWN_MAINT", "CERTI_", "DEATH", "WEAPON_REPAIR")) or raw_fsm in ("SHUTDOWN_WAIT", "GHOST_MODE") or st.get("town_thread_running", False):
+        return
+
+    now_t = time.time()
+    if now_t - st.get("alert_weapon_last_broken_t", 0.0) < 0.5:
+        return
+    st["alert_weapon_last_broken_t"] = now_t
+    st["alert_weapon_normal_streak"] = 0
+
+    ev_list = [t for t in st.get("alert_weapon_broken_events", []) if now_t - t <= 60.0]
+    ev_list.append(now_t)
+    st["alert_weapon_broken_events"] = ev_list
+
+    if len(ev_list) >= 3:
+        dng_n = str(st.get("override_dungeon_name") or current_settings.get(key, {}).get("dungeon_name", ""))
+        report_alert_to_cc(
+            key, "WEAPON_BROKEN", "무기(칼) 손상",
+            f"[{dng_n}] 사냥 중 손상된 칼(sword_break.png) 60초 내 {len(ev_list)}회 감지 (커서:{int(cx)},{int(cy)} / FSM:{raw_fsm})"
+        )
 
 def _obs_mark_move_start(key, cmd_dx, cmd_dy):
     """이동 명령 직전 커서 실제 위치 기록 (15px 이상 이동 & 화면 끝 밀기 제외)"""
@@ -848,6 +892,9 @@ def alert_heartbeat_and_watchdog_thread():
             st["idle_mon_exp_events"] = []
             st["idle_mon_arrow_events"] = []
             st["idle_mon_last_sword_active"] = 0.0
+            st["alert_weapon_broken_events"] = []
+            st["alert_weapon_normal_streak"] = 0
+            st["alert_weapon_last_broken_t"] = 0.0
             continue
 
         # ------------------------------------------------------------------
@@ -7783,7 +7830,7 @@ def check_broken_weapon(img_bgr, cx, cy):
                         res = cv2.matchTemplate(roi, tmpl["color"], cv2.TM_CCOEFF_NORMED)
                     _, max_val, _, _ = cv2.minMaxLoc(res)
 
-                    if max_val >= 0.80:
+                    if not (np.isnan(max_val) or np.isinf(max_val)) and max_val >= 0.80:
                         return True
                 except Exception:
                     pass
@@ -8034,12 +8081,16 @@ def patched_check_attack_cursor(img_bgr, cx, cy, check_maintain=False, pc_key=No
     # 👆👆 -------------------------------------------------------------
 
     if is_sword:
-        if pc_key: _alert_record_sword_event(pc_key)
+        if pc_key:
+            _alert_record_sword_event(pc_key)
+            _alert_record_weapon_normal(pc_key)
         return True
 
     # 기존 일반 칼 확인 실패 시, 부러진 칼 매칭 시도 (연산 낭비 방지)
     if check_broken_weapon(img_bgr, cx, cy):
-        if pc_key: _alert_record_sword_event(pc_key)
+        if pc_key:
+            _alert_record_sword_event(pc_key)
+            _alert_record_weapon_broken(pc_key, cx, cy)
         return True
 
     return False
@@ -12177,6 +12228,9 @@ def ai_commander_worker(target_pc):
                 state["danger_tele_armed_until"] = 0.0
                 state["bondon5f_stuck_frames"] = 0
                 state["bondon6f_choke_frames"] = 0
+                state["alert_weapon_broken_events"] = []
+                state["alert_weapon_normal_streak"] = 0
+                state["alert_weapon_last_broken_t"] = 0.0
                 state["tele_skip_danger_cd"] = False
 
                 current_fsm_safe = str(state.get("target_fsm", ""))
