@@ -1314,7 +1314,7 @@ connected_clients = {}
 
 # 🚀 1. 테일스케일 IP ➔ 중앙컴(사냥컴) 번호 맵핑
 TAILSCALE_IPS = {
-    "100.73.27.56": 1, "100.102.199.44": 2, "100.102.229.12": 3, "100.117.6.55": 4,
+    "100.106.98.27": 1, "100.102.199.44": 2, "100.102.229.12": 3, "100.117.6.55": 4,
     "100.82.40.120": 5, "100.111.124.91": 6, "100.118.150.90": 7,
     "100.99.116.37": 8, "100.110.17.117": 9, "100.93.134.45": 10,
     "100.66.194.109": 11, "100.74.191.120": 12
@@ -11511,7 +11511,9 @@ def alert_server_thread():
                         try:
                             c_sock.sendall((json.dumps(reply, ensure_ascii=False) + "\n").encode("utf-8"))
                         except Exception:
-                            pass
+                            if res_list:
+                                with alert_board_lock:
+                                    pending_resolutions[hb_id] = res_list + pending_resolutions.get(hb_id, [])
 
                     elif act == "ALERT":
                         code = str(msg.get("code", "UNKNOWN"))
