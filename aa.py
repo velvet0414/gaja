@@ -1176,7 +1176,7 @@ def get_next_central_in_order(curr_c_num, pc_key=None):
         cand_num = CENTRAL_ORDER[(start_idx + step) % total_cnt]
         if cand_num == my_num:
             return my_num
-        if not alive_nums or cand_num in alive_nums:
+        if (not _PROXY_HEALTH_CHECKED) or (cand_num in alive_nums):
             return cand_num
 
     return my_num
@@ -8706,56 +8706,54 @@ def ai_commander_worker(target_pc):
                     release_central_ip_lock_async(key)
                     next_timeout_fsm = "CERTI_WAIT_IP_LOCK"
 
-                    if state.get("certi_use_sub", False):
-                        my_num = get_my_central_num()
-                        prev_c = str(state.get("certi_curr_central") or my_num).strip()
-                        if prev_c == "VPN":
-                            vpn_enter_t = state.get("certi_vpn_enter_time", 0.0)
-                            if vpn_enter_t > 0.0 and (curr_time - vpn_enter_t >= 21600.0):
-                                next_c = my_num
-                                state["certi_vpn_enter_time"] = 0.0
-                                state["certi_failed_centrals"] = set()
-                                state["certi_busy_skipped"] = set()
-                                state["certi_mobile_to_cnt"] = 0
-                                dprint(key, "⏰ [모바일/VPN 6시간 경과] 6시간이 지나 다시 내 중앙컴(1~13번) 회선부터 인증을 시도합니다!")
-                            else:
-                                next_c = "VPN"
-                                if USE_MOBILE_PROXY_FOR_VPN:
-                                    if curr_time - state.get("certi_last_mobile_to_t", 0.0) > 120.0:
-                                        state["certi_mobile_to_cnt"] = 0
-                                    to_cnt = state.get("certi_mobile_to_cnt", 0) + 1
-                                    state["certi_last_mobile_to_t"] = curr_time
-                                    if to_cnt < 2:
-                                        state["certi_mobile_to_cnt"] = to_cnt
-                                        next_timeout_fsm = "CERTI_WAIT_IP_LOCK"
-                                        dprint(key, f"⏰ [모바일 웹 인증 {step_limit_sec:.0f}초 타임아웃 (1/2회)] '{current_fsm}' 지연 초과! IP 교체 없이 크롬만 닫고 재시도합니다.")
-                                    else:
-                                        state["certi_mobile_to_cnt"] = 0
-                                        next_timeout_fsm = "CERTI_REQ_VPN_ROTATE"
-                                        dprint(key, f"⏰ [모바일 웹 인증 {step_limit_sec:.0f}초 연속 타임아웃 (2/2회)] '{current_fsm}' 지연 반복! 13번컴 폰 IP를 교체하여 재시도합니다.")
+                    my_num = get_my_central_num()
+                    prev_c = str(state.get("certi_curr_central") or my_num).strip()
+                    state["certi_web_used_central"] = None
+                    if prev_c == "VPN":
+                        vpn_enter_t = state.get("certi_vpn_enter_time", 0.0)
+                        if vpn_enter_t > 0.0 and (curr_time - vpn_enter_t >= 21600.0):
+                            next_c = my_num
+                            state["certi_vpn_enter_time"] = 0.0
+                            state["certi_failed_centrals"] = set()
+                            state["certi_busy_skipped"] = set()
+                            state["certi_mobile_to_cnt"] = 0
+                            dprint(key, "⏰ [모바일/VPN 6시간 경과] 6시간이 지나 다시 내 중앙컴(1~13번) 회선부터 인증을 시도합니다!")
+                        else:
+                            next_c = "VPN"
+                            if USE_MOBILE_PROXY_FOR_VPN:
+                                if curr_time - state.get("certi_last_mobile_to_t", 0.0) > 120.0:
+                                    state["certi_mobile_to_cnt"] = 0
+                                to_cnt = state.get("certi_mobile_to_cnt", 0) + 1
+                                state["certi_last_mobile_to_t"] = curr_time
+                                if to_cnt < 2:
+                                    state["certi_mobile_to_cnt"] = to_cnt
+                                    next_timeout_fsm = "CERTI_WAIT_IP_LOCK"
+                                    dprint(key, f"⏰ [모바일 웹 인증 {step_limit_sec:.0f}초 타임아웃 (1/2회)] '{current_fsm}' 지연 초과! IP 교체 없이 크롬만 닫고 재시도합니다.")
                                 else:
+                                    state["certi_mobile_to_cnt"] = 0
                                     next_timeout_fsm = "CERTI_REQ_VPN_ROTATE"
-                                    dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 지연 초과! 다음 미꾸라지 한국 서버로 IP를 교체하여 재시도합니다.")
-                        else:
-                            failed_set = state.setdefault("certi_failed_centrals", set())
-                            alive_set = ({c_n for c_n, _ in ALIVE_OTHER_PROXIES} | {my_num}) if _PROXY_HEALTH_CHECKED else set(CENTRAL_ORDER)
-                            next_c = None
-                            curr_idx = CENTRAL_ORDER.index(prev_c) if prev_c in CENTRAL_ORDER else 0
-                            for step in range(1, len(CENTRAL_ORDER) + 1):
-                                cand_c = CENTRAL_ORDER[(curr_idx + step) % len(CENTRAL_ORDER)]
-                                if cand_c in alive_set and cand_c not in failed_set:
-                                    next_c = cand_c
-                                    break
-                            next_c = next_c or get_next_central_in_order(prev_c)
-                            dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 지연 초과! [{prev_c}번 ➔ {next_c}번 중앙컴] 회선으로 변경하여 재시도합니다.")
-                        state["certi_curr_central"] = next_c
-                        if next_c == my_num:
-                            state["certi_use_sub"] = False
-                        else:
-                            state["certi_use_sub"] = True
-                            CURRENT_PROXY_TARGET_NUM[key] = next_c
+                                    dprint(key, f"⏰ [모바일 웹 인증 {step_limit_sec:.0f}초 연속 타임아웃 (2/2회)] '{current_fsm}' 지연 반복! 13번컴 폰 IP를 교체하여 재시도합니다.")
+                            else:
+                                next_timeout_fsm = "CERTI_REQ_VPN_ROTATE"
+                                dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 지연 초과! 다음 미꾸라지 한국 서버로 IP를 교체하여 재시도합니다.")
                     else:
-                        dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 단계에서 {step_limit_sec:.0f}초간 다음 이미지를 찾지 못해 크롬 창을 닫고 다시 시작합니다.")
+                        failed_set = state.setdefault("certi_failed_centrals", set())
+                        alive_set = ({c_n for c_n, _ in ALIVE_OTHER_PROXIES} | {my_num}) if _PROXY_HEALTH_CHECKED else set(CENTRAL_ORDER)
+                        next_c = None
+                        curr_idx = CENTRAL_ORDER.index(prev_c) if prev_c in CENTRAL_ORDER else 0
+                        for step in range(1, len(CENTRAL_ORDER) + 1):
+                            cand_c = CENTRAL_ORDER[(curr_idx + step) % len(CENTRAL_ORDER)]
+                            if cand_c in alive_set and cand_c not in failed_set:
+                                next_c = cand_c
+                                break
+                        next_c = next_c or get_next_central_in_order(prev_c)
+                        dprint(key, f"⏰ [웹 인증 {step_limit_sec:.0f}초 타임아웃] '{current_fsm}' 지연 초과! [{prev_c}번 ➔ {next_c}번 중앙컴] 회선으로 변경하여 재시도합니다.")
+                    state["certi_curr_central"] = next_c
+                    if next_c == my_num:
+                        state["certi_use_sub"] = False
+                    else:
+                        state["certi_use_sub"] = True
+                        CURRENT_PROXY_TARGET_NUM[key] = next_c
 
                     state["certi_web_last_fsm"] = None
                     state["certi_web_step_start"] = curr_time
@@ -9074,25 +9072,36 @@ def ai_commander_worker(target_pc):
                         state["certi_done_logged"] = False
 
                         my_num = get_my_central_num()
-                        # 💡 매크로 재시작 시에는 무조건 내 중앙컴(my_num)부터 시작하도록 메모리(state) 값만 참조!
                         saved_c = str(state.get("certi_curr_central") or "").strip()
+                        prev_used_c = state.pop("certi_web_used_central", None)
 
-                        # 💡 미꾸라지(VPN) 사용 중 현실시간 6시간(21600초)이 경과했으면 다시 내 중앙컴(1~13번)으로 복귀!
+                        # 💡 미꾸라지/모바일(VPN) 사용 중 현실시간 6시간(21600초)이 경과했으면 다시 중앙컴(1~13번) 순차 로테이션으로 복귀!
                         if saved_c == "VPN":
                             vpn_enter_t = state.get("certi_vpn_enter_time", 0.0)
                             if vpn_enter_t <= 0.0 or (curr_time - vpn_enter_t >= 21600.0):
-                                dprint(key, "⏰ [미꾸라지VPN 6시간 경과 ➔ 중앙컴 복귀] 미꾸라지 사용 6시간이 지나 다시 내 중앙컴(1~13번)부터 순차 인증을 시도합니다!")
-                                saved_c = my_num
+                                dprint(key, "⏰ [모바일/VPN 6시간 경과 ➔ 중앙컴 복귀] 6시간이 지나 다시 중앙컴(1~13번) 순차 인증으로 복귀합니다!")
+                                saved_c = ""
                                 state["certi_vpn_enter_time"] = 0.0
                             else:
                                 rem_m = max(1, int((21600.0 - (curr_time - vpn_enter_t)) // 60))
-                                dprint(key, f"🐟 [미꾸라지VPN 6시간 유지 중] 남은 유지시간 약 {rem_m}분 ➔ 계속해서 미꾸라지로 인증합니다!")
+                                dprint(key, f"🐟 [모바일/VPN 6시간 유지 중] 남은 유지시간 약 {rem_m}분 ➔ 계속해서 모바일/VPN으로 인증합니다!")
 
+                        # 💡 매크로 실행 후 최초 인증 시 미니1~4 시작 IP를 +0, +3, +6, +9로 분산 배치
                         if saved_c != "VPN" and saved_c not in CENTRAL_ORDER:
-                            saved_c = my_num
+                            my_idx = CENTRAL_ORDER.index(my_num) if my_num in CENTRAL_ORDER else 0
+                            try:
+                                mini_idx = max(0, int(str(key).replace("미니", "").strip()) - 1)
+                            except Exception:
+                                mini_idx = 0
+                            saved_c = CENTRAL_ORDER[(my_idx + (mini_idx * 3)) % len(CENTRAL_ORDER)]
+                        elif prev_used_c and prev_used_c != "VPN" and saved_c == prev_used_c:
+                            # 수동 개입 등으로 suc.png를 건너뛰고 직전 IP를 이미 사용한 경우 다음 중앙컴으로 자동 전진
+                            next_c_rot = get_next_central_in_order(saved_c)
+                            dprint(key, f"🔄 [직전 사용 IP 순차 교체] 이전 인증에서 사용한 [{saved_c}번 중앙컴] 다음 순번인 [{next_c_rot}번 중앙컴]으로 전환합니다.")
+                            saved_c = next_c_rot
 
                         alive_nums = {c_n for c_n, _ in ALIVE_OTHER_PROXIES}
-                        if saved_c != "VPN" and saved_c != my_num and alive_nums and saved_c not in alive_nums:
+                        if saved_c != "VPN" and saved_c != my_num and _PROXY_HEALTH_CHECKED and saved_c not in alive_nums:
                             saved_c = get_next_central_in_order(saved_c)
 
                         state["certi_curr_central"] = saved_c
@@ -9336,10 +9345,12 @@ def ai_commander_worker(target_pc):
                             if use_sub_now:
                                 t_num = CURRENT_PROXY_TARGET_NUM.get(key) or state.get("certi_curr_central") or get_next_central_in_order(get_my_central_num())
                                 CURRENT_PROXY_TARGET_NUM[key] = t_num
+                                state["certi_web_used_central"] = str(t_num)
                                 t_ip = CENTRAL_TAILSCALE_MAP.get(t_num, "")
                                 dprint(key, f"🔎 [우회 인증 1단계] 바탕화면 'sub.png' 발견({pos[0]}, {pos[1]})! [{t_num}번 중앙컴({t_ip})] 회선으로 더블클릭합니다.")
                             else:
                                 my_num = get_my_central_num()
+                                state["certi_web_used_central"] = str(my_num)
                                 dprint(key, f"🔎 [인증 1단계] 바탕화면 '1.png' 발견({pos[0]}, {pos[1]})! 본인({my_num}번 중앙컴) 회선으로 더블클릭합니다.")
                             start_certi_move_and_action(pos[0], pos[1], next_fsm="CERTI_STEP_2_FIND", double=True, use_jitter=False, desc=f"{target_icon_name} 웹창 열기")
                         else:
@@ -9843,9 +9854,27 @@ def ai_commander_worker(target_pc):
                                     state["target_fsm"] = "CERTI_CAPTCHA_SOLVE"
                                     state["cooldown"] = curr_time + 2.0  # 💡 6단계->2단계: 2회차 캡차 확인 후 2.0초 대기 뒤 촬영/매칭!
                                 else:
-                                    dprint(key, "⚠️ [캡차 12회 연속 초과] 창을 닫고 처음부터 다시 시도합니다.")
+                                    release_central_ip_lock_async(key)
                                     pico_queues[key].put({"action": "CLOSE_TAB"})
-                                    state["target_fsm"] = "CERTI_STEP_1_FIND"
+                                    my_num_cap = get_my_central_num()
+                                    prev_c_cap = str(state.get("certi_curr_central") or my_num_cap).strip()
+                                    state["certi_web_used_central"] = None
+                                    state["certi_web_last_fsm"] = None
+                                    state["certi_last_box"] = None
+                                    if prev_c_cap == "VPN":
+                                        dprint(key, "⚠️ [캡차 12회 연속 초과] 창을 닫고 모바일/VPN IP를 교체하여 다시 시도합니다.")
+                                        state["target_fsm"] = "CERTI_REQ_VPN_ROTATE"
+                                    else:
+                                        next_c_cap = get_next_central_in_order(prev_c_cap)
+                                        state["certi_curr_central"] = next_c_cap
+                                        if next_c_cap == my_num_cap:
+                                            state["certi_use_sub"] = False
+                                        else:
+                                            state["certi_use_sub"] = True
+                                            CURRENT_PROXY_TARGET_NUM[key] = next_c_cap
+                                        dprint(key, f"⚠️ [캡차 12회 연속 초과] [{prev_c_cap}번 ➔ {next_c_cap}번 중앙컴] IP로 교체 후 다시 시도합니다.")
+                                        state["certi_ip_lock_log_time"] = 0.0
+                                        state["target_fsm"] = "CERTI_WAIT_IP_LOCK"
                                     state["cooldown"] = curr_time + 1.2
                             else:
                                 state["target_fsm"] = ret_fsm
@@ -9853,11 +9882,23 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.1
 
-                    # 11단계: suc.png 감지되면 인증 성공 -> IP 사용권 반납 후 닫기 (수동 웹인증➔접속 버튼 시작이면 12.png 생략하고 13.png 직행!)
+                    # 11단계: suc.png 감지되면 인증 성공 -> IP 사용권 반납 + 다음 인증용 중앙컴 IP 순차 예약 후 닫기
                     elif current_fsm == "CERTI_WAIT_SUC":
                         pos_suc = find_certi_img("suc.png", th=0.82)
                         if pos_suc:
                             release_central_ip_lock_async(key)
+                            my_num_suc = get_my_central_num()
+                            curr_c_suc = str(state.get("certi_curr_central") or my_num_suc).strip()
+                            state["certi_web_used_central"] = None
+                            if curr_c_suc != "VPN":
+                                next_c_suc = get_next_central_in_order(curr_c_suc)
+                                state["certi_curr_central"] = next_c_suc
+                                if next_c_suc == my_num_suc:
+                                    state["certi_use_sub"] = False
+                                else:
+                                    state["certi_use_sub"] = True
+                                    CURRENT_PROXY_TARGET_NUM[key] = next_c_suc
+                                dprint(key, f"🔄 [순차 IP 로테이션 예약] [{curr_c_suc}번 중앙컴] 인증 성공! 다음 인증은 [{next_c_suc}번 중앙컴] IP로 시도합니다.")
                             pico_queues[key].put({"action": "WAIT", "delay_min": 0.2, "delay_max": 0.35})
                             pico_queues[key].put({"action": "CLOSE_TAB"})
                             if state.get("certi_from_closed_game", False):
@@ -10500,6 +10541,19 @@ def ai_commander_worker(target_pc):
 
                     # 미니맵 오픈(Ctrl+M -> F1) 물리적 타건 완료 후 사냥/정비 상태 최종 복귀
                     elif current_fsm == "CERTI_DRAGON_MINIMAP_WAIT":
+                        # 🔄 수동 개입으로 suc.png를 건너뛴 경우에도 다음 인증은 다음 중앙컴 IP로 넘어가도록 보강
+                        prev_used_fin = state.pop("certi_web_used_central", None)
+                        if prev_used_fin and prev_used_fin != "VPN" and str(state.get("certi_curr_central") or "").strip() == prev_used_fin:
+                            my_num_fin = get_my_central_num()
+                            next_c_fin = get_next_central_in_order(prev_used_fin)
+                            state["certi_curr_central"] = next_c_fin
+                            if next_c_fin == my_num_fin:
+                                state["certi_use_sub"] = False
+                            else:
+                                state["certi_use_sub"] = True
+                                CURRENT_PROXY_TARGET_NUM[key] = next_c_fin
+                            dprint(key, f"🔄 [수동 복귀 IP 순차 예약] [{prev_used_fin}번 ➔ {next_c_fin}번 중앙컴] 다음 인증 IP를 예약했습니다.")
+
                         # ▶️ [버프 타이머 일시정지 해제 & 계열마법/라이트 0초 확정 저장 + 10초 텀 예약]
                         state["buff_element_time"] = 0.0
                         state["buff_light_time"] = 0.0
