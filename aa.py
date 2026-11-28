@@ -1595,8 +1595,8 @@ def _handle_proxy_client(client_sock, is_exit_server=False, pc_key=None):
             now_t = time.time()
             my_num = get_my_central_num()
             target_num = CURRENT_PROXY_TARGET_NUM.get(pc_key) if pc_key else None
-            if not target_num or target_num == my_num or (target_num != "VPN" and target_num not in CENTRAL_TAILSCALE_MAP):
-                target_num = get_next_central_in_order(my_num)
+            if not target_num or (target_num != "VPN" and target_num not in CENTRAL_TAILSCALE_MAP):
+                target_num = my_num
                 if pc_key:
                     CURRENT_PROXY_TARGET_NUM[pc_key] = target_num
 
@@ -1672,28 +1672,33 @@ def _handle_proxy_client(client_sock, is_exit_server=False, pc_key=None):
                     except Exception: pass
                 return
 
-            ehost = CENTRAL_TAILSCALE_MAP.get(target_num)
-            if ehost:
-                try:
-                    remote_sock = socket.create_connection((ehost, PROXY_DIRECT_EXIT_PORT), timeout=4.0)
-                    if now_t - _LAST_PROXY_LOG_TIME > 3.0:
-                        print(f"🔗 [프록시 우회 연결] {pc_key} 크롬 ➔ [{target_num}번 중앙컴({ehost})] 회선으로 정상 연결됨!")
-                        _LAST_PROXY_LOG_TIME = now_t
-                except Exception:
-                    remote_sock = None
-
-            if remote_sock is not None:
-                try: remote_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                except Exception: pass
-                client_sock.settimeout(None)
-                remote_sock.settimeout(None)
-                threading.Thread(target=_proxy_pipe_sockets, args=(client_sock, remote_sock), daemon=True).start()
-                _proxy_pipe_sockets(remote_sock, client_sock)
-                return
-            else:
+            if target_num == my_num:
                 if now_t - _LAST_PROXY_LOG_TIME > 3.0:
-                    print(f"🔗 [프록시 직결 모드] 현재 켜져 있는 타 중앙컴(31280)이 없어 내 중앙컴 회선으로 즉시 연결합니다!")
+                    print(f"🔗 [내 중앙컴 직결] {pc_key} 크롬 ➔ [본인 {my_num}번 중앙컴] 회선으로 직접 연결합니다!")
                     _LAST_PROXY_LOG_TIME = now_t
+            else:
+                ehost = CENTRAL_TAILSCALE_MAP.get(target_num)
+                if ehost:
+                    try:
+                        remote_sock = socket.create_connection((ehost, PROXY_DIRECT_EXIT_PORT), timeout=4.0)
+                        if now_t - _LAST_PROXY_LOG_TIME > 3.0:
+                            print(f"🔗 [프록시 우회 연결] {pc_key} 크롬 ➔ [{target_num}번 중앙컴({ehost})] 회선으로 정상 연결됨!")
+                            _LAST_PROXY_LOG_TIME = now_t
+                    except Exception:
+                        remote_sock = None
+
+                if remote_sock is not None:
+                    try: remote_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    except Exception: pass
+                    client_sock.settimeout(None)
+                    remote_sock.settimeout(None)
+                    threading.Thread(target=_proxy_pipe_sockets, args=(client_sock, remote_sock), daemon=True).start()
+                    _proxy_pipe_sockets(remote_sock, client_sock)
+                    return
+                else:
+                    if now_t - _LAST_PROXY_LOG_TIME > 3.0:
+                        print(f"🔗 [프록시 직결 모드] 현재 켜져 있는 타 중앙컴(31280)이 없어 내 중앙컴 회선으로 즉시 연결합니다!")
+                        _LAST_PROXY_LOG_TIME = now_t
 
         # 2) 31280 포트로 들어온 신호 판독 (IP_LOCK 통신 vs 일반 웹사이트 프록시)
         req_data = b""
@@ -9157,19 +9162,18 @@ def ai_commander_worker(target_pc):
                             state["certi_locked_central"] = target_c
                             state["certi_lock_hb_time"] = curr_time
                             state["certi_busy_skipped"] = set()
+                            state["certi_use_sub"] = True
+                            CURRENT_PROXY_TARGET_NUM[key] = target_c
                             if target_c == my_num:
-                                state["certi_use_sub"] = False
-                                dprint(key, f"🔒 [IP 순차 승인 완료] 본인 중앙컴({my_num}번) IP 사용권 획득! '1.png' 인증을 시작합니다.")
+                                dprint(key, f"🔒 [IP 순차 승인 완료] 본인 중앙컴({my_num}번) 직결 IP 사용권 획득! 'sub.png' 시크릿 인증을 시작합니다.")
                             else:
-                                state["certi_use_sub"] = True
-                                CURRENT_PROXY_TARGET_NUM[key] = target_c
                                 if target_c == "VPN" and USE_MOBILE_PROXY_FOR_VPN:
                                     c_ip = state.get("certi_mobile_ip") or _get_mobile_proxy_host()
                                     label_c = "13번컴 모바일폰"
                                 else:
                                     c_ip = CENTRAL_TAILSCALE_MAP.get(target_c, "")
                                     label_c = "미꾸라지VPN" if target_c == "VPN" else f"{target_c}번 중앙컴"
-                                dprint(key, f"🔒 [IP 순차 승인 완료] [{label_c}({c_ip})] 프록시 IP 사용권 획득! 'sub.png' 인증을 시작합니다.")
+                                dprint(key, f"🔒 [IP 순차 승인 완료] [{label_c}({c_ip})] 프록시 IP 사용권 획득! 'sub.png' 시크릿 인증을 시작합니다.")
                             state["target_fsm"] = "CERTI_STEP_1_FIND"
                             state["cooldown"] = curr_time + 0.1
                         else:
@@ -9331,28 +9335,23 @@ def ai_commander_worker(target_pc):
                         else:
                             state["cooldown"] = curr_time + 0.03
 
-                    # 1단계: 바탕화면에서 1.png(본인 회선) 또는 sub.png(타 중앙컴 순차 프록시) 찾아 이동 후 더블클릭
+                    # 1단계: 본인/타 중앙컴/VPN 모두 바탕화면 'sub.png'(시크릿 모드) 하나로 통합 실행
                     elif current_fsm == "CERTI_STEP_1_FIND":
-                        use_sub_now = state.get("certi_use_sub", False)
-                        if use_sub_now:
-                            pos = find_certi_img("sub.png", th=0.82) or find_certi_img("qq/sub.png", th=0.82)
-                            target_icon_name = "sub.png"
-                        else:
-                            pos = find_certi_img("1.png", th=0.82)
-                            target_icon_name = "1.png"
+                        pos = find_certi_img("sub.png", th=0.82) or find_certi_img("qq/sub.png", th=0.82)
+                        target_icon_name = "sub.png"
 
                         if pos:
-                            if use_sub_now:
-                                t_num = CURRENT_PROXY_TARGET_NUM.get(key) or state.get("certi_curr_central") or get_next_central_in_order(get_my_central_num())
-                                CURRENT_PROXY_TARGET_NUM[key] = t_num
-                                state["certi_web_used_central"] = str(t_num)
-                                t_ip = CENTRAL_TAILSCALE_MAP.get(t_num, "")
-                                dprint(key, f"🔎 [우회 인증 1단계] 바탕화면 'sub.png' 발견({pos[0]}, {pos[1]})! [{t_num}번 중앙컴({t_ip})] 회선으로 더블클릭합니다.")
+                            my_num = get_my_central_num()
+                            t_num = str(state.get("certi_curr_central") or CURRENT_PROXY_TARGET_NUM.get(key) or my_num).strip()
+                            CURRENT_PROXY_TARGET_NUM[key] = t_num
+                            state["certi_web_used_central"] = t_num
+                            if t_num == my_num:
+                                dprint(key, f"🔎 [직결 인증 1단계] 바탕화면 'sub.png' 발견({pos[0]}, {pos[1]})! 본인({my_num}번 중앙컴) 직결 회선으로 더블클릭합니다.")
                             else:
-                                my_num = get_my_central_num()
-                                state["certi_web_used_central"] = str(my_num)
-                                dprint(key, f"🔎 [인증 1단계] 바탕화면 '1.png' 발견({pos[0]}, {pos[1]})! 본인({my_num}번 중앙컴) 회선으로 더블클릭합니다.")
-                            start_certi_move_and_action(pos[0], pos[1], next_fsm="CERTI_STEP_2_FIND", double=True, use_jitter=False, desc=f"{target_icon_name} 웹창 열기")
+                                t_ip = CENTRAL_TAILSCALE_MAP.get(t_num, "")
+                                label_c = "모바일/VPN" if t_num == "VPN" else f"{t_num}번 중앙컴({t_ip})"
+                                dprint(key, f"🔎 [우회 인증 1단계] 바탕화면 'sub.png' 발견({pos[0]}, {pos[1]})! [{label_c}] 회선으로 더블클릭합니다.")
+                            start_certi_move_and_action(pos[0], pos[1], next_fsm="CERTI_STEP_2_FIND", double=True, use_jitter=False, desc=f"{target_icon_name} 시크릿 웹창 열기")
                         else:
                             if curr_time >= state.get("certi_1_next_desktop_time", 0):
                                 next_interval = g_val(2.5, 3.5)
@@ -35618,7 +35617,7 @@ for i, pc in enumerate(MINI_PCS):
                 f'$s=$w.createshortcut($w.specialfolders(\'desktop\')+\'\\sub.lnk\');'
                 f'$c=\'c:\\program files\\google\\chrome\\application\\chrome.exe\';'
                 f'$s.targetpath=$c;'
-                f'$s.arguments=\'--proxy-server={host_ip}:{my_port} https://store.plaync.com/store/linclassic?locale=ko-kr\';'
+                f'$s.arguments=\'--incognito --proxy-server={host_ip}:{my_port} https://store.plaync.com/store/linclassic?locale=ko-kr\';'
                 f'$s.iconlocation=$c+\',4\';'
                 f'$s.save()" && exit'
             )
